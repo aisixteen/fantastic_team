@@ -22,12 +22,14 @@ Run it from the directory the team lives in, or pass `--dir PATH` (created if mi
 
 When the team starts it reads `team.yaml` from its directory (if there is one) and creates the agent tree from it, then sends the instructions to the first agent.
 
-The web UI's home screen is the dispatcher (agent `dispatcher`): the team's
-tree of groups and workers. A click on a group or the team shows that level,
-a click on a worker opens its view, and Back returns with the scroll place
-kept. The dispatcher is placed on `canvas_page` at the first start only. It
-asks the worker view (`worker_view`, under the dispatcher) for a worker's
-view; it reads no secrets and sends no work.
+The web UI's home screen is the dispatcher (agent `dispatcher`): a sidebar of
+the team's groups. In each group, every worker is followed by a `subagents (N)`
+expander, and its subagents (kernel agents whose parent is that worker) show
+under it only when expanded. A click on a worker or a subagent opens that agent
+as a full-screen chat, and Back returns to the sidebar with its scroll and
+expansion kept. The dispatcher is placed on `canvas_page` at the first start
+only. It reads no secrets and sends no work. The `sidebar` verb answers the
+list; `open` answers the chat for one agent (`view: chat`, `target`, `fullscreen`).
 
 ## 3. team.yaml
 

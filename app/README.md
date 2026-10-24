@@ -6,21 +6,29 @@ macOS, Windows and Linux. The window loads the local web UI on
 
 ## The home screen
 
-The dispatcher is the team's main view: one tree of the team, its groups and
-their workers. It is planned at start (agent `dispatcher`, under the root) and
-placed on the canvas by the first start only. A row shows the worker's state,
-task, minutes and cost; a stalled worker reads `stalled N min`.
+The dispatcher is the team's main view: a sidebar with the team's groups, and
+in each group the workers on one level with their subagents. It is planned at
+start (agent `dispatcher`, under the root) and placed on the canvas by the
+first start only.
 
-- A click on a group or the team shows that node's level alone (a group
-  shows its workers with no team layer above them), and pushes the place
-  it left.
-- A click on a worker opens its view: its cells, chat last.
-- Back pops the place and restores the scroll position it left.
-- On a phone (430px wide and under) the rows stack in one column.
+- Each worker is a row with its state (`busy`, `idle`, `stalled N min`,
+  `done`, `failed`) and its current task. Workers and subagents sit in one
+  flat list per group: workers in normal weight with ● (busy) or ○, subagents
+  smaller and muted with ◇.
+- Each worker has a `subagents (N)` expander. It starts collapsed. Expanding
+  one shows only that worker's subagents (its kernel agents), with the tool
+  or kind and the last status. The expansion is held in the page and
+  remembered in this browser per worker; it is not stored on the server.
+- A click on a worker or a subagent opens that agent as a full-screen chat.
+  The chat targets that agent alone. Inline agent views are not in this
+  slice (see Remaining).
+- Back returns to the sidebar, restoring its scroll position and which
+  workers were expanded.
+- On a phone (430px wide and under) the sidebar stacks above the content.
 
 The page talks to the dispatcher through fantastic's html connector
-(`fantastic.send('dispatcher', …)`). Without that connection it says so
-on one line instead of failing.
+(`fantastic.send('dispatcher', …)`), with the `sidebar` and `open` verbs. Without
+that connection it says so on one line instead of failing.
 
 ## Build locally
 
@@ -67,6 +75,12 @@ and `crates/team/tests/app_packaging.rs` guard against committed signing data.
 
 Not in this slice:
 
+- Sidebar, what is left (#122): inline agent views inside a chat (TBD per the
+  issue, out of scope); a real streaming chat UI inside the full-screen pane
+  (the pane only names the target agent's chat cell today); status text such as
+  `2m` and PR numbers on the rows, from live data; the dispatcher overview
+  footer row; per-worker expander persistence across restarts on the server
+  side (today it is per browser).
 - The Tauri window crate, behind a `tauri` feature, built like
   `aisixteen/fantastic` `src/app`: tauri 2.12.1, opening the window on the
   launcher's `web_url`.
