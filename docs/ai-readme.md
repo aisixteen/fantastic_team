@@ -7,6 +7,7 @@ You are reading the text of the `fantastic_team` binary, the team's start-up. Us
 - Build: `cargo build --workspace`. The binary is `fantastic_team`.
 - Check: `fantastic_team ai-readme` prints this file. `fantastic_team --help` prints the usage text.
 - Tests: `cargo test --workspace`. Secrets check: `scripts/check-secrets.sh .`
+- e2e: `python3 e2e/run.py --only-free` runs the binary on a scripted model and a fake forge (no network, no key). See `e2e/README.md`.
 
 ## 2. Start the team
 
@@ -73,3 +74,12 @@ Work comes from GitHub issues. A maintainer adds the label `team-ready` to an is
 - `… is not set on this laptop`: export the variable named in the remote's keys, then run `remote-start.sh` again.
 - `no remote \`name\``: add it first with `remote-add.sh`.
 - `already running · pid …`: the team is up. Use `remote-stop.sh` before starting again.
+
+## 8. Pack evals
+
+A worker pack may carry sample tasks in `evals/*.yaml`. Each file is a YAML list of `{id, task, check}`. A check is one of `contains: text`, `regex: pattern`, `file_exists: path` or `exit_code: n`.
+
+- `eval` is a verb of the `team_pack.tools` bundle, not a CLI subcommand: `{"type": "eval", "pack": "<pack dir>", "worker": "<worker agent id>", "timeout_s": 60}`. `timeout_s` is optional and bounds each eval.
+- It sends each task to the worker as a `send` and checks the reply. It returns `pass_rate`, `passed`, `total`, `total_time_s`, `total_cost` (null when no eval reported a cost), `per_eval` and a one-line `text` such as `evals: 1/2 passed, pass rate 50%, time 0.3s, cost n/a`.
+- It refuses a missing pack (`pack not found`), a pack with no evals (`pack has no evals`) and an empty worker. It creates no agent and writes nothing.
+- `install` does not run the evals yet, and enable is not gated on them. The measured record (`pack_record.rs`) is built from eval results but is not signed or published.

@@ -11,6 +11,7 @@ A task is one Markdown file a worker carries out alone, start to finish: what to
 | `research` | a question answered from sources | a report file |
 | `docs` | documentation written or updated | a pushed branch |
 | `triage` | open issues sorted and prioritised | a report file; nothing is changed on GitHub |
+| `design-briefs` | an app's screens carved into `design/` briefs for Claude Design | a pushed branch and a draft PR, only when something changed |
 
 Each template has three parts: **Rules** (what the worker must never do), **The cycle** (the steps, in order, from the start to the report) and **The task** (what you write).
 
@@ -53,3 +54,34 @@ field NAME=default
 ```
 
 Every `{{NAME}}` the template uses must be a declared field or one the generator fills; `sh tests/new_task.sh` renders every template and fails on any `{{…}}` left over.
+
+## Design briefs
+
+The `design-briefs` kind carves an app's screens into one Markdown brief each, under `design/` in the app's repository, for Claude Design to turn into HTML. The maintainer pastes each page back into `design/html/`, and the task never touches that folder.
+
+The loop: the task writes a brief per screen → Claude Design makes the HTML → the maintainer saves it as `design/html/NN-screen.html` → the page is mapped into the UI. The task is idempotent: a run at the same commit changes no file and opens no pull request. The worker writes the briefs into a staging directory, and `scripts/design-sync.sh` does the rest: it keeps screen numbers stable, copies only the briefs that differ, and records the status of each screen in `design/manifest.md`.
+
+Check the script and its tests by hand (CI is manual-only):
+
+```
+sh scripts/design-sync.sh --check design
+sh tests/design_briefs.sh
+```
+
+To run it for this repository (the team web UI, `crates/team/web`):
+
+```
+scripts/new-task.sh design-briefs "Design briefs for fantastic_team" \
+    --set APP=fantastic_team --set REPO=aisixteen/fantastic_team \
+    --set SRC=crates/team/web --set BRANCH=design/briefs-fantastic-team
+```
+
+To run it against the fantastic canvas, the same task with the canvas's repository, source and branch:
+
+```
+scripts/new-task.sh design-briefs "Design briefs for the fantastic canvas" \
+    --set APP=fantastic-canvas --set REPO=aisixteen/fantastic \
+    --set SRC=src/tui/web/canvas --set BRANCH=design/briefs-canvas
+```
+
+Each run writes `design/` in the repository it carves, and the pull request changes `design/` only.

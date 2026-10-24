@@ -5,6 +5,7 @@
 //! is a thin wrapper around `fantastic_tui::main_with`.
 #![deny(missing_docs)]
 
+pub mod app_control;
 pub mod board;
 pub mod cadence_feed;
 pub mod cadencer;
@@ -14,18 +15,19 @@ pub mod driver;
 pub mod driver_config;
 pub mod driver_rules;
 pub mod instructions;
-pub mod peer_transport;
-pub mod pack_listing;
-pub mod pack_record;
-pub mod peers;
-pub mod peer_envelope;
 pub mod pack_eval;
+pub mod pack_listing;
 pub mod pack_manifest;
+pub mod pack_record;
 pub mod pack_scan;
+pub mod peer_envelope;
+pub mod peer_transport;
+pub mod peers;
 pub mod puller;
 pub mod repo_config;
 pub mod setup_github;
 pub mod tree;
+pub mod watchdog;
 pub mod webhook;
 pub mod worker_view;
 
@@ -309,6 +311,7 @@ async fn persist_seeded_records(kernel: &Arc<Kernel>) -> Result<(), String> {
 
 pub mod directives;
 pub mod pack_bundle;
+pub mod pack_registry;
 
 #[cfg(test)]
 mod tests {

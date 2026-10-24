@@ -351,6 +351,14 @@ mod tests {
         assert_eq!(authority_addr("127.0.0.1:8080"), "127.0.0.1:8080");
     }
 
+    /// A loopback listener and its port. The socket stays bound for as long
+    /// as the caller holds it, so no other test can be handed the same port.
+    async fn bind_free() -> (TcpListener, u16) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        (listener, port)
+    }
+
     /// Serve `200 ok` to every connection until the test ends.
     fn serve_200(listener: TcpListener) {
         tokio::spawn(async move {
@@ -384,8 +392,7 @@ mod tests {
     async fn launch_starts_child_and_returns_url_when_ready() {
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_binary(dir.path(), "fake", "exec sleep 30");
-        let port = free_port().unwrap();
-        let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+        let (listener, port) = bind_free().await;
         serve_200(listener);
         let target = Target::Start { binary: bin, port };
         let mut l = launch(&target, None, Duration::from_secs(10))
@@ -401,7 +408,8 @@ mod tests {
     async fn launch_reports_child_that_exits_early() {
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_binary(dir.path(), "fake", "exit 3");
-        let port = free_port().unwrap();
+        // Held, never served: no other test can take this port and answer 200.
+        let (_held, port) = bind_free().await;
         let target = Target::Start { binary: bin, port };
         let started = Instant::now();
         let err = match launch(&target, None, Duration::from_secs(20)).await {
@@ -418,8 +426,7 @@ mod tests {
     async fn stop_kills_the_child_and_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_binary(dir.path(), "fake", "exec sleep 30");
-        let port = free_port().unwrap();
-        let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+        let (listener, port) = bind_free().await;
         serve_200(listener);
         let target = Target::Start { binary: bin, port };
         let mut l = launch(&target, None, Duration::from_secs(10))
@@ -446,8 +453,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_ready_times_out_on_a_closed_port() {
-        let port = free_port().unwrap();
+    async fn bind_free_ports_are_distinct_while_held() {
+        let handles: Vec<_> = (0..64).map(|_| tokio::spawn(bind_free())).collect();
+        let mut held = Vec::new();
+        for h in handles {
+            held.push(h.await.unwrap());
+        }
+        let mut ports: Vec<u16> = held.iter().map(|(_, p)| *p).collect();
+        ports.sort_unstable();
+        ports.dedup();
+        assert_eq!(ports.len(), 64, "every held listener owns its own port");
+        for (_, port) in &held {
+            let err = TcpListener::bind(("127.0.0.1", *port)).await.unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_ready_times_out_when_nothing_answers() {
+        // Bound but never accepted: connects queue in the backlog and no
+        // response ever comes, so every attempt times out.
+        let (_held, port) = bind_free().await;
         let r = wait_ready(
             &format!("http://127.0.0.1:{port}/"),
             Duration::from_millis(300),

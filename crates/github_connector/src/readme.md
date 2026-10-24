@@ -4,7 +4,9 @@ One GitHub App, many repos. The connector is optional: bind it in `team.yaml` wi
 
 Record fields: `app` (`{credentials: {store, ref}}`: the ref holds `app_id` and `private_key`, a PEM RSA key, bound to `api_url`'s host), `repos` (the allowlist, `owner/name`), `api_url` (default `https://api.github.com`), `git` (a git connector agent whose worktrees push uses), `directive`, `timeout_s`.
 
-Verbs: `push`, `pr_create`, `issues`, `issue_view`, `label_events`, `comment`, `label`, `pr_status`, `whoami`, `directive`, `reflect`.
+Verbs: `push`, `pr_create`, `issues`, `issue_view`, `issue_create`, `issue_state`, `label_events`, `comment`, `label`, `pr_status`, `whoami`, `directive`, `reflect`.
+
+`issue_create {repo, title, body, project?}` opens an issue as the app. Given `project` (a ProjectV2 node id), it also adds the issue to that board. `issue_state {repo, number, state, sender?}` opens or closes an issue. Closing an issue labelled `epic` is refused unless `sender` is `maintainer`; reopening is never refused. A pull request number is refused.
 
 `label_events {repo, number}` returns only the `labeled` and `unlabeled` events of an issue as `{event, label, actor, created_at}`, oldest first. It is how a reader checks who applied a label; an unknown or missing issue is a GitHub error, named, with no token in the reply.
 

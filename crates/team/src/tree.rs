@@ -298,10 +298,35 @@ mod tests {
     use crate::config::parse;
     use crate::dispatcher;
 
-    const SAMPLE: &str = "templates:\n  lead_t:\n    handler_module: ram_store.tools\n    model: m\n    endpoint: http://e\n    can_call: [worker_exec, worker_files, queue, git]\n  worker_t:\n    handler_module: ram_store.tools\n    model: m\n    endpoint: http://e\n    can_call: [worker_exec, worker_files]\nfirst_agent:\n  template: lead_t\nconnectors:\n  git:\n    kind: team_git.tools\n    record:\n      remote: origin\n      repo_dir: /tmp/clone\n      workspace_root: /tmp/wt\n      default_branch: main\nqueue:\n  id: queue\n";
+    /// The sample config. `{CLONE}` and `{WT}` are filled with absolute paths
+    /// from this OS (the git connector requires absolute dirs), inside YAML
+    /// single quotes so backslashes survive on Windows.
+    const SAMPLE: &str = "templates:\n  lead_t:\n    handler_module: ram_store.tools\n    model: m\n    endpoint: http://e\n    can_call: [worker_exec, worker_files, queue, git]\n  worker_t:\n    handler_module: ram_store.tools\n    model: m\n    endpoint: http://e\n    can_call: [worker_exec, worker_files]\nfirst_agent:\n  template: lead_t\nconnectors:\n  git:\n    kind: team_git.tools\n    record:\n      remote: origin\n      repo_dir: '{CLONE}'\n      workspace_root: '{WT}'\n      default_branch: main\nqueue:\n  id: queue\n";
+
+    fn sample_yaml() -> String {
+        let quoted = |p: std::path::PathBuf| p.to_string_lossy().replace('\'', "''");
+        let tmp = std::env::temp_dir();
+        SAMPLE
+            .replace("{CLONE}", &quoted(tmp.join("clone")))
+            .replace("{WT}", &quoted(tmp.join("wt")))
+    }
 
     fn sample() -> TeamConfig {
-        parse(SAMPLE).unwrap()
+        parse(&sample_yaml()).unwrap()
+    }
+
+    #[test]
+    fn sample_git_dirs_are_absolute_on_this_os() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let git = tree
+            .iter()
+            .find(|p| p.id == "git")
+            .expect("a git connector");
+        for key in ["repo_dir", "workspace_root"] {
+            let v = git.record[key].as_str().expect(key);
+            assert!(Path::new(v).is_absolute(), "{key} = {v}");
+        }
     }
 
     fn ids(t: &[Planned]) -> Vec<String> {

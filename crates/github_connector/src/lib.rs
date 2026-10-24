@@ -219,6 +219,8 @@ impl Bundle for GithubConnectorBundle {
             "push": "push {repo, branch, path} → {repo, branch, path, pushed}",
             "pr_create": "pr_create {repo, branch, title, body?} → {repo, number, url, draft, base} (draft only)",
             "issues": "issues {repo, label?, state?} → {repo, issues: [{number, title, state, labels}]}",
+            "issue_create": "issue_create {repo, title, body, project?} → {repo, number, url, added_to_board} (opened as the app; project = a ProjectV2 node id to add it to)",
+            "issue_state": "issue_state {repo, number, state: open|closed, sender?} → {repo, number, state} (closing an `epic` issue needs sender maintainer)",
             "issue_view": "issue_view {repo, number} → {repo, number, title, state, labels, body, comments}",
             "label_events": "label_events {repo, number} → {repo, number, events: [{event, label, actor, created_at}]} (labeled and unlabeled only)",
             "comment": "comment {repo, number, body} → {repo, number, comment_id, url}",

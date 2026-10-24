@@ -92,6 +92,11 @@ fn main() -> ExitCode {
         eprintln!("fantastic_team: {e}");
         return ExitCode::from(1);
     }
+    // The graceful stop can wait on an agent mid-model-call; bound it (#119).
+    // The lock registry is keyed by the absolute working directory.
+    if let Ok(cwd) = std::env::current_dir() {
+        fantastic_team::watchdog::spawn(cwd, fantastic_team::watchdog::GRACE);
+    }
     finish(fantastic_tui::main_with(args.fantastic_args(), extras))
 }
 
