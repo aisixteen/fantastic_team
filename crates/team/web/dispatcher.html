@@ -13,6 +13,7 @@
   #pane { flex: 1; min-width: 0; }
   .group-title { font-weight: 600; margin: 12px 0 4px; color: #374151; }
   .group-load { font-size: 12px; color: #6b7280; margin: 0 0 4px; }
+  .team-load { font-size: 12px; color: #6b7280; margin: 12px 0 0; padding-top: 8px; border-top: 1px solid #e5e7eb; }
   .item { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
   .item:hover { background: #f3f4f6; }
   .worker { font-size: 1em; }
@@ -115,6 +116,10 @@ function el(tag, cls, text) {
   return n;
 }
 
+function num(v) {
+  return typeof v === 'number' && isFinite(v) ? v : 0;
+}
+
 function stateClass(state) {
   const s = String(state || '');
   if (s.indexOf('stalled') === 0) return 'state-stalled';
@@ -203,6 +208,15 @@ function renderSidebar(reply) {
     (g.items || []).forEach(function (it) { nav.appendChild(itemRow(it)); });
   });
   loose.forEach(function (it) { nav.appendChild(itemRow(it)); });
+  if (reply && reply.load) {
+    nav.appendChild(el('div', 'team-load',
+      'tasks: held ' + num(reply.load.tasks && reply.load.tasks.held) +
+      ' · in review ' + num(reply.load.tasks && reply.load.tasks.in_review) +
+      ' · done ' + num(reply.load.tasks && reply.load.tasks.done) +
+      ' · blocked ' + num(reply.load.tasks && reply.load.tasks.blocked) +
+      ' · queued ' + num(reply.load.tasks && reply.load.tasks.queued) +
+      ' · done last hour ' + num(reply.load.done_last_hour)));
+  }
   if (adopted) loadSidebar();
 }
 

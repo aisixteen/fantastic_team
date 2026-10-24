@@ -825,6 +825,31 @@ mod tests {
     }
 
     #[test]
+    fn html_draws_team_load_footer() {
+        // The team load the sidebar reply carries is drawn as a footer row.
+        assert!(
+            HTML.contains("reply.load"),
+            "the page never reads reply.load"
+        );
+        assert!(HTML.contains(".team-load"));
+        assert!(HTML.contains("done last hour"));
+        for key in ["held", "in_review", "done", "blocked", "queued"] {
+            assert!(
+                HTML.contains(&format!("tasks.{key}")),
+                "no tasks.{key} in the footer"
+            );
+        }
+    }
+
+    #[test]
+    fn html_team_load_footer_is_text_only_and_optional() {
+        // Without a load from the board, no footer row is drawn.
+        assert!(HTML.contains("if (reply && reply.load"));
+        // The footer is text only, like the rest of the page.
+        assert!(!HTML.contains("innerHTML"));
+    }
+
+    #[test]
     fn sidebar_shows_raw_load_for_groups_without_ai_only() {
         let mut groups = BTreeMap::new();
         groups.insert("a".to_string(), vec!["w1".to_string()]);

@@ -45,7 +45,9 @@ buttons.
 The load numbers (#127) reach the sidebar in its reply. A group with no AI
 driver shows its raw counts under its title (`busy N · idle N · stalled N`); a
 group with a driver shows nothing here, since its AI writes the summary. The
-team gets `load` {tasks, done_last_hour} in the reply, not drawn yet.
+The team load {tasks, done_last_hour} is drawn as a footer row under the tree:
+`tasks: held N · in review N · done N · blocked N · queued N · done last hour N`.
+It is left out when the board gave no load.
 
 The page talks to the dispatcher through fantastic's html connector
 (`fantastic.send('dispatcher', …)`), with the `sidebar`, `open` and `control` verbs. Without
@@ -106,7 +108,8 @@ Not in this slice:
 
 - Sidebar, what is left (#122): inline agent views inside a chat (TBD per the
   issue, out of scope); status text such as `2m` and PR numbers on the rows,
-  from live data; the dispatcher overview footer row; per-worker expander
+  from live data; the PR-waiting count and the cadencer stall flags on the
+  overview row (#57, the dispatcher's other items); per-worker expander
   persistence across restarts on the server side (today it is per browser).
 - Chat, what is left (#37): the TS chat cell's features not ported: tool
   blocks, inquiry buttons, context stats, attachments, reasoning blocks (not
