@@ -208,3 +208,40 @@ fn ci_e2e_runs_the_driver_on_built_binaries() {
         "tests/e2e.sh missing"
     );
 }
+
+#[test]
+fn ci_builds_and_tests_both_builds() {
+    let doc = doc();
+    let root = repo_root();
+    assert!(root.join("patches").join("github-exec.patch").is_file());
+    for script in ["build.sh", "build-github.sh"] {
+        assert!(root.join("scripts").join(script).is_file(), "{script}");
+    }
+    assert!(root.join("tests").join("build_github.sh").is_file());
+    let units = run_text(job(&doc, "units"));
+    assert!(
+        units.contains("scripts/build-github.sh --check"),
+        "units lack the patch check"
+    );
+    assert!(
+        units.contains("scripts/build-github.sh --test"),
+        "units lack the github tests"
+    );
+    assert!(
+        units.contains("tests/build_github.sh"),
+        "units lack the build script test"
+    );
+    let build = run_text(job(&doc, "build"));
+    assert!(
+        build.contains("scripts/build-github.sh"),
+        "build job lacks the github build"
+    );
+    let text = raw();
+    assert!(text.contains("name: fantastic_team-${{ matrix.os }}"));
+    assert!(text.contains("name: fantastic_team-github-${{ matrix.os }}"));
+    let e2e = run_text(job(&doc, "e2e"));
+    assert!(
+        e2e.contains("--build general") && e2e.contains("--build github"),
+        "{e2e}"
+    );
+}

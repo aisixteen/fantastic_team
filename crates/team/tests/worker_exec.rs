@@ -293,28 +293,21 @@ async fn a_push_from_a_worker_sends_no_credentials() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn forge_commands_are_refused_before_they_run() {
+async fn gh_version_is_not_refused_in_the_general_build() {
     let planted = plant();
     let _ = planted;
     let team = TempDir::new().unwrap();
-    let kernel = boot(team.path(), "worker_exec_gate", None).await;
-    let cases: [(&str, &[&str]); 3] = [
-        ("gh", &["--version"]),
-        ("git", &["push", "origin", "HEAD"]),
-        ("sh", &["-c", "gh auth token"]),
-    ];
-    for (command, args) in cases {
-        let reply = run(&kernel, "worker_exec_gate", command, args).await;
-        assert_eq!(reply["reason"], json!("unauthorized"), "{reply}");
-        assert!(
-            reply["error"]
-                .as_str()
-                .unwrap_or("")
-                .contains("command not allowed"),
-            "{reply}"
-        );
-        assert!(reply.get("job_id").is_none(), "{reply}");
-    }
+    let kernel = boot(team.path(), "worker_exec_open", None).await;
+    // gh may not be installed: only the allowlist gate is asserted.
+    let reply = run(&kernel, "worker_exec_open", "gh", &["--version"]).await;
+    assert_ne!(reply["reason"], json!("unauthorized"), "{reply}");
+    assert!(
+        !reply["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("command not allowed"),
+        "{reply}"
+    );
     down(kernel, team.path()).await;
 }
 

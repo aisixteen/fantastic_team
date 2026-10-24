@@ -4,6 +4,10 @@
 macOS, Windows and Linux. The window loads the local web UI on
 `127.0.0.1` only; no frontend is bundled.
 
+This is the general build (Team). The GitHub build (Team GitHub) is the same app with
+`patches/github-exec.patch` applied: product name "AISixteen Fantastic Team GitHub",
+identifier `com.aisixteen.team.github`, and a launcher that starts `fantastic_team-github`.
+
 ## The home screen
 
 The dispatcher is the team's main view: a sidebar with the team's groups, and

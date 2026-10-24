@@ -13,11 +13,13 @@ You need `git`, a Rust toolchain with `cargo`, and Linux or macOS (verified on L
 ```
 git clone https://github.com/aisixteen/fantastic_team
 cd fantastic_team
-cargo build --release
+sh scripts/build.sh
 ./target/release/fantastic_team --help
 ```
 
-The binary is `target/release/fantastic_team`. There are no releases yet, so build from source. On macOS the build needs `MACOSX_DEPLOYMENT_TARGET=14.0`; `.cargo/config.toml.example` sets it under `[env]`.
+There are two builds. The **general** build (Team, the default) gives workers stock exec. The **GitHub** build (Team GitHub) applies [patches/github-exec.patch](patches/github-exec.patch) to a copy of the tree, so workers cannot reach forge CLIs, `git push` or credentials: `sh scripts/build-github.sh` makes `target/github/release/fantastic_team-github`. The github connector is in both builds.
+
+The general binary is `target/release/fantastic_team`. There are no releases yet, so build from source. On macOS the build needs `MACOSX_DEPLOYMENT_TARGET=14.0`; `.cargo/config.toml.example` sets it under `[env]`.
 
 For the step-by-step version, with the GitHub App registration and troubleshooting, see docs/install.md.
 

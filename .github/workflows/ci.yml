@@ -67,6 +67,14 @@ jobs:
         run: |
           sh tests/new_task.sh
           sh tests/remote_scripts.sh
+          sh tests/build_github.sh
+      # the GitHub build is the general tree plus patches/github-exec.patch (#136)
+      - name: github patch applies
+        if: runner.os != 'Windows'
+        run: sh scripts/build-github.sh --check
+      - name: github build tests
+        if: runner.os != 'Windows'
+        run: sh scripts/build-github.sh --test
 
   build:
     name: build (${{ matrix.os }})
@@ -98,12 +106,21 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
-      - name: release build
+      - name: release build (general)
         run: cargo build --release -p fantastic-team
+      - name: release build (github)
+        if: runner.os != 'Windows'
+        run: sh scripts/build-github.sh
       - uses: actions/upload-artifact@v4
         with:
           name: fantastic_team-${{ matrix.os }}
           path: target/release/fantastic_team${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: runner.os != 'Windows'
+        with:
+          name: fantastic_team-github-${{ matrix.os }}
+          path: target/github/release/fantastic_team-github
           if-no-files-found: error
 
   e2e:
@@ -121,7 +138,23 @@ jobs:
         with:
           name: fantastic_team-${{ matrix.os }}
           path: bin
+      - uses: actions/download-artifact@v4
+        if: runner.os != 'Windows'
+        with:
+          name: fantastic_team-github-${{ matrix.os }}
+          path: bin-github
       - name: model-free e2e on the built binary
         run: |
           chmod +x bin/fantastic_team || true
           sh tests/e2e.sh bin/fantastic_team${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: model-free e2e on the github binary
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x bin-github/fantastic_team-github
+          sh tests/e2e.sh bin-github/fantastic_team-github
+      - name: scripted e2e tests, general build
+        if: runner.os != 'Windows'
+        run: python3 e2e/run.py --only-free --build general --bin bin/fantastic_team
+      - name: scripted e2e tests, github build
+        if: runner.os != 'Windows'
+        run: python3 e2e/run.py --only-free --build github --bin bin-github/fantastic_team-github

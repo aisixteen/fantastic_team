@@ -12,15 +12,17 @@ This guide installs `fantastic_team` from source. It covers what is in the repo 
 
 - Linux or macOS. Verified on Linux only; macOS: not yet verified.
 - `git` and a Rust toolchain with `cargo`.
-- `gh` (optional, for the GitHub CLI checks the team's worker uses; `gh --version` must run).
+- `gh` (optional; the general build lets a worker run it, the GitHub build refuses it).
 
 ## 2. Build
 
     git clone https://github.com/aisixteen/fantastic_team
     cd fantastic_team
-    cargo build --release
+    sh scripts/build.sh
 
-The binary is `target/release/fantastic_team`.
+The binary is `target/release/fantastic_team`. This is the **general** build (Team), the default: workers get stock exec. The github connector is in it.
+
+For the **GitHub** build (Team GitHub), run `sh scripts/build-github.sh`. It copies the tracked tree to a temporary folder, applies [patches/github-exec.patch](../patches/github-exec.patch) there, builds it and writes `target/github/release/fantastic_team-github`. In that build a worker cannot run forge CLIs, `git push` or credential commands; every GitHub action goes through the github connector. Your source tree is never changed.
 
 Check it runs:
 

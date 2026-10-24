@@ -1,0 +1,97 @@
+[
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "env",
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "say": "Reading the task.",
+  "calls": [
+   {
+    "target": "worker_files",
+    "type": "read",
+    "args": {
+     "path": "tasks/queue/acme-widgets-1.md"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "git",
+    "type": "worktree_add",
+    "args": {
+     "path": "{{run_dir}}/work/wt/greeting",
+     "branch": "team/issue-1",
+     "base": "main"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_files",
+    "type": "write",
+    "args": {
+     "path": "wt/greeting/greeting.txt",
+     "bytes": "hello from the team\n"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "cat",
+     "args": [
+      "wt/greeting/greeting.txt"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "git",
+    "type": "commit",
+    "args": {
+     "path": "{{run_dir}}/work/wt/greeting",
+     "message": "Add greeting.txt (#1)"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "github",
+    "type": "push",
+    "args": {
+     "branch": "team/issue-1",
+     "path": "{{run_dir}}/work/wt/greeting"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ }
+]
