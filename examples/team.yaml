@@ -68,6 +68,16 @@ connectors:
     directive: Workers may make a worktree, commit, and push a work branch. Never the default branch, never a force.
 queue:
   id: queue
+# Optional. Groups of workers: the dispatcher shows them, and a group may name an
+# AI driver (an agent id) that gets its digest. A group with no driver has no AI.
+# groups:
+#   build:
+#     driver: lead
+#     members: [worker_1, worker_2]
+# Optional. The board caches these repos (owner/name) through a connector above.
+# board:
+#   repos: [aisixteen/fantastic_team]
+#   github: git
 credentials:
   id: credentials
   backend: env

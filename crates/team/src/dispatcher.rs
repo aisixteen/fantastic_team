@@ -418,7 +418,7 @@ fn groups_of(meta: &serde_json::Map<String, Value>) -> BTreeMap<String, Vec<Stri
     out
 }
 
-/// The dispatcher bundle: `sidebar`, `tree`, `open`, `control`, `place`.
+/// The dispatcher bundle: `sidebar`, `tree`, `open`, `control`.
 #[derive(Default)]
 pub struct DispatcherBundle;
 
@@ -434,7 +434,6 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
             "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher)",
             "control": "control {node, action: start|pause|stop, confirm?} → {sent, error?} (or a question for stop without confirm); the node's refusal or no reply is sent: false with its error",
-            "place": "place {canvas} → puts the dispatcher cell on that canvas",
         })
     }
 
@@ -522,15 +521,6 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                         out
                     }
                 }
-            }
-            "place" => {
-                let canvas = payload["canvas"]
-                    .as_str()
-                    .unwrap_or("canvas_page")
-                    .to_string();
-                peers
-                    .ask(&canvas, json!({"type": "create_agent", "id": format!("{agent_id}_view"), "handler_module": "html.tools", "html": HTML}))
-                    .await
             }
             other => json!({"error": format!("team_dispatcher: unknown type '{other}'")}),
         };

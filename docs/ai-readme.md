@@ -41,6 +41,8 @@ list; `open` answers the chat for one agent (`view: chat`, `target`, `fullscreen
 - `first_agent`: `id`, `template`, `directive_file`.
 - `connectors`: for example `git` (`kind: team_git.tools`, with `repo_dir`, `workspace_root`, `remote`, `default_branch`) and a `directive` that says what its agents may do.
 - `queue`: the queue agent's id.
+- `groups` (optional): the team's groups by name. Each has `members` (worker ids) and an optional `driver` (the agent that gets the group's digest; none means the group has no AI). The dispatcher shows these groups; the board reads them too.
+- `board` (optional): `repos` (`owner/name`, at least one) and `github` (the id of a connector of this file). The board caches the open issues and PRs of those repos and is created under the root, so the GitHub connector and the queue name it in their `callable_by`. Without a `board` section there is no board agent.
 - `credentials`: `backend: env`, and per ref the host and the NAMES of the environment variables that hold the key (for example `ANTHROPIC_API_KEY`).
 
 Keys are never written in `team.yaml`. Set the environment variables named there in your shell, and tell the user which names to set.

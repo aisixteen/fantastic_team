@@ -16,7 +16,7 @@ use fantastic_kernel::{Item, Kernel, Status};
 use serde_json::{json, Value};
 
 use crate::config::{self, TeamConfig};
-use crate::{dispatcher, worker_exec, worker_view};
+use crate::{board, dispatcher, worker_exec, worker_view};
 
 /// The dispatcher's agent id: the team's main view, created at start.
 pub const DISPATCHER_ID: &str = "dispatcher";
@@ -24,6 +24,8 @@ pub const DISPATCHER_ID: &str = "dispatcher";
 pub const CANVAS_ID: &str = "canvas_page";
 /// The worker view agent, under the dispatcher; it opens a worker's view.
 pub const WORKER_VIEW_ID: &str = "worker_view";
+/// The board agent, under the root, when `team.yaml` has a `board` section.
+pub const BOARD_ID: &str = "board";
 
 /// Tools the binary always knows; a template may grant them without a definition.
 pub const BUILTIN_TOOLS: [&str; 5] = [
@@ -47,6 +49,8 @@ pub enum Role {
     Store,
     /// A tool, under the lead.
     Tool,
+    /// The board: the team's cache of its repos, under the root.
+    Board,
 }
 
 /// One agent of the plan: its `create_agent` record and where it goes.
@@ -130,9 +134,9 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
             "id": DISPATCHER_ID,
             "parent_id": DEFAULT_ROOT_ID,
             "handler_module": dispatcher::HANDLER_MODULE,
-            "board": "board",
+            "board": BOARD_ID,
             "team": lead,
-            "groups": {},
+            "groups": dispatcher_groups(cfg),
             // The dispatcher may place itself on the canvas and open worker views;
             // nothing else is granted.
             "can_call": { (CANVAS_ID): "*", (WORKER_VIEW_ID): "*" },
@@ -166,7 +170,63 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     for (id, c) in &cfg.connectors {
         out.push(tool_plan(id, &lead, config::connector_record(id, c)));
     }
+    if let Some(b) = &cfg.board {
+        // The board is a sibling of the lead, so the GitHub connector and the
+        // queue must name it in their callable_by; the lead's own grants stay.
+        for p in out
+            .iter_mut()
+            .filter(|p| p.id == b.github || p.id == cfg.queue.id)
+        {
+            if let Some(by) = p.record["callable_by"].as_object_mut() {
+                by.insert("board".into(), json!("*"));
+            }
+        }
+        out.push(board_plan(cfg, b));
+    }
     Ok(out)
+}
+
+/// The groups as the dispatcher reads them: name → member ids.
+pub fn dispatcher_groups(cfg: &TeamConfig) -> Value {
+    cfg.groups
+        .iter()
+        .map(|(n, g)| (n.clone(), json!(g.members)))
+        .collect()
+}
+
+/// The groups as the board reads them: name → driver ("" for none) and members.
+fn team_groups(cfg: &TeamConfig) -> Value {
+    cfg.groups
+        .iter()
+        .map(|(n, g)| {
+            let driver = g.driver.clone().unwrap_or_default();
+            (n.clone(), json!({"driver": driver, "members": g.members}))
+        })
+        .collect()
+}
+
+/// The board under the root: it reads GitHub and writes its state to the queue.
+fn board_plan(cfg: &TeamConfig, b: &config::BoardCfg) -> Planned {
+    let mut can_call = serde_json::Map::new();
+    can_call.insert(b.github.clone(), json!("*"));
+    can_call.insert(cfg.queue.id.clone(), json!("*"));
+    Planned {
+        id: BOARD_ID.into(),
+        parent: DEFAULT_ROOT_ID.into(),
+        role: Role::Board,
+        record: json!({
+            "type": "create_agent",
+            "id": BOARD_ID,
+            "parent_id": DEFAULT_ROOT_ID,
+            "handler_module": board::HANDLER_MODULE,
+            "repos": b.repos,
+            "github": b.github,
+            "store": cfg.queue.id,
+            "team_groups": team_groups(cfg),
+            "can_call": can_call,
+            "callable_by": {"$self": "*", "$parent": "*", (DISPATCHER_ID): "*"},
+        }),
+    }
 }
 
 /// A tool under `parent`: its record with the header a tool needs.
@@ -239,14 +299,25 @@ pub async fn deliver_instructions(
     }
 }
 
-/// Put the dispatcher on the canvas: the first start only, since the dispatcher
-/// is created only then. Best effort: a canvas that is not there is reported,
-/// not fatal, so the team still starts.
+/// Put the dispatcher's view on the canvas: the first start only, since the
+/// dispatcher is created only then. The team (not the dispatcher) creates the
+/// view under the canvas, so the canvas needs no grant to the dispatcher. Best
+/// effort: a canvas that is not there is reported, not fatal, so the team still starts.
 async fn place_dispatcher(kernel: &Arc<Kernel>) {
+    let view = format!("{DISPATCHER_ID}_view");
+    if exists(kernel, &view) {
+        return;
+    }
     let mut outs = kernel
         .send(vec![Item::new(
-            DISPATCHER_ID,
-            json!({"type": "place", "canvas": CANVAS_ID}),
+            DEFAULT_ROOT_ID,
+            json!({
+                "type": "create_agent",
+                "id": view,
+                "parent_id": CANVAS_ID,
+                "handler_module": "html.tools",
+                "html": dispatcher::HTML,
+            }),
         )])
         .await;
     if let Some(o) = outs.pop() {
@@ -465,6 +536,105 @@ mod tests {
         assert!(second.created.is_empty());
         assert_eq!(second.reused, ids(&tree));
         assert!(second.reused.iter().any(|c| c == "dispatcher"));
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// The sample with groups and a board section added at the end.
+    fn with_groups_and_board() -> String {
+        sample_yaml()
+            + "groups:\n  a:\n    driver: lead\n    members: [w1, w2]\n  b:\n    members: [w3]\nboard:\n  repos: [o/r]\n  github: git\n"
+    }
+
+    #[test]
+    fn plan_fills_dispatcher_groups_from_config() {
+        let cfg = parse(&with_groups_and_board()).unwrap();
+        let tree = plan(&cfg, Path::new("/team")).unwrap();
+        let d = tree.iter().find(|p| p.id == "dispatcher").unwrap();
+        assert_eq!(d.record["groups"], json!({"a": ["w1", "w2"], "b": ["w3"]}));
+    }
+
+    #[test]
+    fn plan_creates_board_agent_with_groups_and_reachable_github() {
+        let tree = plan(
+            &parse(&with_groups_and_board()).unwrap(),
+            Path::new("/team"),
+        )
+        .unwrap();
+        let b = tree
+            .iter()
+            .find(|p| p.id == "board")
+            .expect("a board agent");
+        assert_eq!(b.role, Role::Board);
+        assert_eq!(b.parent, DEFAULT_ROOT_ID);
+        assert_eq!(b.record["type"], "create_agent");
+        assert_eq!(b.record["handler_module"], board::HANDLER_MODULE);
+        assert_eq!(b.record["store"], "queue");
+        assert_eq!(b.record["github"], "git");
+        assert_eq!(b.record["repos"], json!(["o/r"]));
+        assert_eq!(b.record["team_groups"]["a"]["driver"], "lead");
+        assert_eq!(b.record["team_groups"]["a"]["members"], json!(["w1", "w2"]));
+        assert_eq!(b.record["team_groups"]["b"]["driver"], "");
+        assert_eq!(b.record["can_call"], json!({"git": "*", "queue": "*"}));
+        let git = tree.iter().position(|p| p.id == "git").unwrap();
+        let board_at = tree.iter().position(|p| p.id == "board").unwrap();
+        assert!(board_at > git, "the board comes after the tools it calls");
+        let git_rec = &tree[git].record;
+        assert_eq!(git_rec["callable_by"]["board"], "*");
+        assert_eq!(git_rec["callable_by"]["$parent"], "*");
+    }
+
+    #[test]
+    fn plan_without_board_section_has_no_board_agent() {
+        let tree = plan(&sample(), Path::new("/team")).unwrap();
+        assert!(!tree.iter().any(|p| p.id == "board"));
+        let d = tree.iter().find(|p| p.id == "dispatcher").unwrap();
+        assert_eq!(d.record["groups"], json!({}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn place_dispatcher_puts_view_on_the_canvas() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        if !exists(&kernel, CANVAS_ID) {
+            let outs = kernel
+                .send(vec![Item::new(
+                    DEFAULT_ROOT_ID,
+                    json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"}),
+                )])
+                .await;
+            assert!(
+                matches!(outs[0].status, Status::Completed),
+                "{}",
+                outs[0].result
+            );
+        }
+        place_dispatcher(&kernel).await;
+        let view = kernel
+            .agents
+            .get(&fantastic_kernel::AgentId::from("dispatcher_view"))
+            .expect("the dispatcher view is on the canvas");
+        assert_eq!(view.handler_module.as_deref(), Some("html.tools"));
+        assert_eq!(
+            view.parent_id.as_ref().map(|p| p.0.as_str()),
+            Some(CANVAS_ID)
+        );
+        drop(view);
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn place_dispatcher_without_canvas_leaves_no_view_and_no_panic() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        assert!(!exists(&kernel, CANVAS_ID));
+        place_dispatcher(&kernel).await;
+        assert!(!exists(&kernel, "dispatcher_view"));
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }

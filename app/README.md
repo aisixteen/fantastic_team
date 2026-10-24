@@ -106,12 +106,12 @@ Not in this slice:
 - Dispatcher, what is left (#29, #36): teams on other machines through the
   relay (#47, #49); connections and waiting-for-you panels from real data;
   start, pause and stop for a group or the whole team (the page controls one
-  worker at a time); add and remove worker; the board agent in the
-  planned tree (it needs a GitHub connector the lead's tools cannot reach
-  from the root yet), so rows come from the team's groups only until then;
-  filling the dispatcher's `groups` from team state; cadencer stall flags
-  (#57); the Tauri window loading the dispatcher instead of the canvas; the
-  in-process kernel (#87); a real browser check of the page.
+  worker at a time); add and remove worker; board cadence and driver settings
+  per group (`groups` in `team.yaml` set members and driver only); cadencer
+  stall flags (#57); the Tauri window loading the dispatcher instead of the
+  canvas; the in-process kernel (#87); a real browser check of the page; a
+  test that runs the team start with a live canvas page (the place step is
+  covered only with a stand-in canvas).
 - GitHub app setup UI (#30).
 - Remote attach through a tunnel (#21).
 - Mobile.
