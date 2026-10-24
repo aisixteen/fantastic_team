@@ -72,6 +72,27 @@ pub fn digest_lines(nodes: &[Value], group: &str) -> Vec<String> {
         .collect()
 }
 
+/// One plain line of the board's load counts, for a digest. Numbers only: no
+/// mode, no bar, no "x / N". `None` until the board has given task counts.
+pub fn load_line(load: &Value, tokens_per_hour: u64) -> Option<String> {
+    let tasks = load.get("tasks")?;
+    let workers = &load["workers"];
+    let n = |v: &Value, k: &str| v[k].as_u64().unwrap_or(0);
+    Some(format!(
+        "load: busy {} idle {} stalled {} · held {} in_review {} done {} blocked {} queued {} · done/h {} · tok/h {}",
+        n(workers, "busy"),
+        n(workers, "idle"),
+        n(workers, "stalled"),
+        n(tasks, "held"),
+        n(tasks, "in_review"),
+        n(tasks, "done"),
+        n(tasks, "blocked"),
+        n(tasks, "queued"),
+        n(load, "done_last_hour"),
+        tokens_per_hour,
+    ))
+}
+
 /// Plan one delivery per digest. A group with an AI driver sends to that
 /// driver; a group without one sends to `board` and `maintainer`. A digest
 /// with no lines sends nothing.

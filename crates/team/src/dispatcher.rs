@@ -209,12 +209,17 @@ fn worker_items(
 
 /// The sidebar: per group one flat ordered list, and the workers under no group
 /// in one more. Subagents start collapsed; `expanded` names the open workers.
+/// `load` is the board's `load` object (`Null` when none came). A group with no
+/// AI driver gets its raw counts as `load` {busy, idle, stalled}; a group with
+/// a driver gets none, since its AI shows the summary. The team gets `load`
+/// {tasks, done_last_hour} when the board gave one.
 pub fn sidebar(
     team: &str,
     groups: &BTreeMap<String, Vec<String>>,
     rows: &[Row],
     subs: &BTreeMap<String, Vec<Sub>>,
     expanded: &BTreeSet<String>,
+    load: &Value,
 ) -> Value {
     let mut grouped: Vec<String> = Vec::new();
     let mut gs = Vec::new();
@@ -226,7 +231,16 @@ pub fn sidebar(
                 items.extend(worker_items(r, subs, expanded));
             }
         }
-        gs.push(json!({"id": gid, "items": items}));
+        let mut group = json!({"id": gid, "items": items});
+        let lg = &load["groups"][gid.as_str()];
+        if lg.is_object() && lg["driver"].as_str().unwrap_or("").is_empty() {
+            group["load"] = json!({
+                "busy": lg["busy"],
+                "idle": lg["idle"],
+                "stalled": lg["stalled"],
+            });
+        }
+        gs.push(group);
     }
     let mut loose = Vec::new();
     for r in rows {
@@ -234,7 +248,14 @@ pub fn sidebar(
             loose.extend(worker_items(r, subs, expanded));
         }
     }
-    json!({"team": team, "groups": gs, "ungrouped": loose})
+    let mut out = json!({"team": team, "groups": gs, "ungrouped": loose});
+    if !load.is_null() {
+        out["load"] = json!({
+            "tasks": load["tasks"],
+            "done_last_hour": load["done_last_hour"],
+        });
+    }
+    out
 }
 
 /// The full-screen chat for one agent (a worker or a subagent). The chat targets
@@ -396,7 +417,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
-            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded",
+            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts",
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
             "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher)",
             "control": "control {node, action: start|pause|stop, confirm?} → {sent} or a question",
@@ -452,7 +473,9 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                     .iter()
                     .map(|r| (r.id.clone(), subagents_of(&agents, &r.id)))
                     .collect();
-                sidebar(&team, &groups, &rows, &subs, &expanded_of(payload))
+                let reply = peers.ask(&board, json!({"type": "rows"})).await;
+                let load = reply.get("load").cloned().unwrap_or(Value::Null);
+                sidebar(&team, &groups, &rows, &subs, &expanded_of(payload), &load)
             }
             "open" => {
                 let node = payload["node"].as_str().unwrap_or("").to_string();
@@ -602,7 +625,14 @@ mod tests {
         groups.insert("A".to_string(), vec!["w1".to_string(), "w2".to_string()]);
         let rows = rows_w();
         let subs = subs_of(&rows);
-        let sb = sidebar("team", &groups, &rows, &subs, &BTreeSet::new());
+        let sb = sidebar(
+            "team",
+            &groups,
+            &rows,
+            &subs,
+            &BTreeSet::new(),
+            &Value::Null,
+        );
         let items = group_items(&sb, "A");
         let exp = items
             .iter()
@@ -620,7 +650,7 @@ mod tests {
         let rows = rows_w();
         let subs = subs_of(&rows);
         let open = toggle(&BTreeSet::new(), "w1");
-        let sb = sidebar("team", &groups, &rows, &subs, &open);
+        let sb = sidebar("team", &groups, &rows, &subs, &open, &Value::Null);
         let items = group_items(&sb, "A");
         let shown: Vec<&Value> = items.iter().filter(|i| i["kind"] == "subagent").collect();
         assert_eq!(shown.len(), 2);
@@ -631,7 +661,7 @@ mod tests {
             .unwrap();
         assert_eq!(w2["expanded"], json!(false));
         let again = toggle(&open, "w1");
-        let sb2 = sidebar("team", &groups, &rows, &subs, &again);
+        let sb2 = sidebar("team", &groups, &rows, &subs, &again, &Value::Null);
         assert!(!group_items(&sb2, "A")
             .iter()
             .any(|i| i["kind"] == "subagent"));
@@ -644,7 +674,7 @@ mod tests {
         let rows = rows_w();
         let subs = subs_of(&rows);
         let open = toggle(&BTreeSet::new(), "w1");
-        let sb = sidebar("team", &groups, &rows, &subs, &open);
+        let sb = sidebar("team", &groups, &rows, &subs, &open, &Value::Null);
         let items = group_items(&sb, "A");
         // Flat: every item is a leaf of the one list, with no nested children.
         assert!(items.iter().all(|i| i.get("children").is_none()));
@@ -757,6 +787,8 @@ mod tests {
     fn html_sidebar_has_expander_back_and_remembers_state() {
         // The sidebar request, the subagent style, the expander label.
         assert!(HTML.contains("type: 'sidebar'"));
+        // A group with no AI shows its raw load under its title.
+        assert!(HTML.contains("g.load.busy"));
         assert!(HTML.contains(".sub {"));
         assert!(HTML.contains("subagents ("));
         // Back restores both the scroll and the expansion the level had.
@@ -768,5 +800,51 @@ mod tests {
         assert!(HTML.contains("try {"));
         // Kernel values go in as text only: no innerHTML anywhere.
         assert!(!HTML.contains("innerHTML"));
+    }
+
+    #[test]
+    fn sidebar_shows_raw_load_for_groups_without_ai_only() {
+        let mut groups = BTreeMap::new();
+        groups.insert("a".to_string(), vec!["w1".to_string()]);
+        groups.insert("b".to_string(), vec!["w2".to_string()]);
+        let rows = rows_w();
+        let subs = subs_of(&rows);
+        let load = json!({
+            "groups": {
+                "a": {"busy": 1, "idle": 2, "stalled": 3, "driver": ""},
+                "b": {"busy": 4, "idle": 5, "stalled": 6, "driver": "drv"},
+            },
+            "tasks": {"held": 1, "in_review": 0, "done": 2, "blocked": 0, "queued": 3},
+            "done_last_hour": 2,
+        });
+        let sb = sidebar("team", &groups, &rows, &subs, &BTreeSet::new(), &load);
+        let group = |id: &str| {
+            sb["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|g| g["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        let a = group("a");
+        assert_eq!(a["load"]["busy"], 1);
+        assert_eq!(a["load"]["idle"], 2);
+        assert_eq!(a["load"]["stalled"], 3);
+        assert!(group("b").get("load").is_none(), "{}", group("b"));
+        assert_eq!(sb["load"]["tasks"]["queued"], 3);
+        assert_eq!(sb["load"]["done_last_hour"], 2);
+        assert!(!sb.to_string().contains("\"mode\""), "{sb}");
+        // With no load from the board, the sidebar has no load keys at all.
+        let bare = sidebar(
+            "team",
+            &groups,
+            &rows,
+            &subs,
+            &BTreeSet::new(),
+            &Value::Null,
+        );
+        assert!(bare.get("load").is_none());
+        assert!(!group_items(&bare, "a").is_empty());
     }
 }

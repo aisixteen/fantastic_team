@@ -4,6 +4,10 @@
 macOS, Windows and Linux. The window loads the local web UI on
 `127.0.0.1` only; no frontend is bundled.
 
+This is the general build (Team). The GitHub build (Team GitHub) is the same app with
+`patches/github-exec.patch` applied: product name "AISixteen Fantastic Team GitHub",
+identifier `com.aisixteen.team.github`, and a launcher that starts `fantastic_team-github`.
+
 ## The home screen
 
 The dispatcher is the team's main view: a sidebar with the team's groups, and
@@ -25,6 +29,11 @@ first start only.
 - Back returns to the sidebar, restoring its scroll position and which
   workers were expanded.
 - On a phone (430px wide and under) the sidebar stacks above the content.
+
+The load numbers (#127) reach the sidebar in its reply. A group with no AI
+driver shows its raw counts under its title (`busy N · idle N · stalled N`); a
+group with a driver shows nothing here, since its AI writes the summary. The
+team gets `load` {tasks, done_last_hour} in the reply, not drawn yet.
 
 The page talks to the dispatcher through fantastic's html connector
 (`fantastic.send('dispatcher', …)`), with the `sidebar` and `open` verbs. Without

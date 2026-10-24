@@ -5,11 +5,12 @@
     python3 e2e/run.py --only-turns           the turns tier: a real model, by hand (skips without a key)
     python3 e2e/run.py --only-turns --dry-run discover the turns tests and collect their probes; start nothing
     python3 e2e/run.py --only task/one_issue_to_draft_pr
+    python3 e2e/run.py --build github         the tests for the GitHub build (default: general)
     python3 e2e/run.py --selftest             prove the harness itself, no binary
     python3 e2e/run.py --bin PATH ...         use a built binary instead of building
 
 A test is a folder `e2e/tests/<group>/<id>/` with `test.yaml` (`costs`, `timeout`,
-`plug`), `team.yaml`, a plug's input (`script.json` for the scripted plug) and
+`plug`, `build`), `team.yaml`, a plug's input (`script.json` for the scripted plug) and
 `probe.py`, whose `run(ctx)` returns the exit code of its `Verdict`.
 A test whose plug has no key in the environment is skipped (`SKIP`), not failed.
 Runs live under `e2e/runs/<stamp>/<group>/<id>/` (gitignored: they hold model output).
@@ -74,7 +75,8 @@ def discover() -> list[dict]:
             out.append({"name": name, "dir": dirpath,
                         "costs": meta.get("costs", "free"),
                         "timeout": int(meta.get("timeout", "180")),
-                        "plug": meta.get("plug", "scripted")})
+                        "plug": meta.get("plug", "scripted"),
+                        "build": meta.get("build", "any")})
     return sorted(out, key=lambda t: t["name"])
 
 
@@ -101,6 +103,11 @@ def collect_probe(test_dir: str) -> tuple[bool, str]:
     if not callable(getattr(mod, "run", None)):
         return False, "probe.py defines no run(ctx)"
     return True, "run(ctx) defined"
+
+
+def for_build(tests: list[dict], build: str) -> list[dict]:
+    """The tests that run on a build: those that name no build (`any`) or that one."""
+    return [t for t in tests if t["build"] in ("any", build)]
 
 
 class Ctx:
@@ -280,6 +287,14 @@ def selftest() -> int:
         if f:
             f.stop()
         shutil.rmtree(tmp, ignore_errors=True)
+    sample = [{"name": n, "build": b} for n, b in
+              [("a", "any"), ("b", "general"), ("c", "github")]]
+    v.check("the build filter keeps any and the selected build",
+            [t["name"] for t in for_build(sample, "general")] == ["a", "b"]
+            and [t["name"] for t in for_build(sample, "github")] == ["a", "c"])
+    names = {t["name"]: t["build"] for t in discover()}
+    v.check("the exec tests name their build", names.get("exec/general_allows_gh") == "general"
+            and names.get("exec/github_refuses_forge_calls") == "github")
     selftest_relay(v)
     selftest_selection(v)
     selftest_turns(v)
@@ -409,12 +424,14 @@ def main() -> int:
     ap.add_argument("--only", action="append", default=[], metavar="GROUP/ID")
     ap.add_argument("--bin", help="a built fantastic_team (default: cargo build)")
     ap.add_argument("--selftest", action="store_true", help="check the harness, no binary")
+    ap.add_argument("--build", choices=["general", "github"], default="general",
+                    help="which build the binary is; runs the tests for that build (default general)")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
 
     if a.selftest:
         return selftest()
-    tests = discover()
+    tests = for_build(discover(), a.build)
     if a.only:
         missing = set(a.only) - {t["name"] for t in tests}
         if missing:
@@ -422,7 +439,7 @@ def main() -> int:
     tests = pick(tests, a.only, a.only_free, a.only_turns)
     if a.list:
         for t in tests:
-            print(f"{t['name']}\t{t['costs']}\t{t['plug']}")
+            print(f"{t['name']}\t{t['costs']}\t{t['plug']}\t{t['build']}")
         return 0
     if not tests:
         sys.exit("no tests selected")

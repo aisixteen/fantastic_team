@@ -1,0 +1,7 @@
+[
+  {"calls": [{"target": "worker_exec", "type": "run", "args": {"command": "gh", "args": ["--version"], "wait_s": 30}}]},
+  {"calls": [{"target": "worker_exec", "type": "run", "args": {"command": "git", "args": ["push", "origin", "HEAD"], "wait_s": 30}}]},
+  {"calls": [{"target": "worker_exec", "type": "run", "args": {"command": "curl", "args": ["https://api.github.com/user"], "wait_s": 30}}]},
+  {"calls": [{"target": "worker_exec", "type": "run", "args": {"command": "echo", "args": ["an-ordinary-command-still-runs"], "wait_s": 30}}]},
+  {"calls": [{"name": "done"}]}
+]

@@ -1,0 +1,6 @@
+# The one Rust toolchain for this repo: the units, the builds and the reproducible-build
+# check all read it (#137). Bump it on purpose, in its own change.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

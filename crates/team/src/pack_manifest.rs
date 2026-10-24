@@ -2,8 +2,9 @@
 //! version, author, license, price (free only, for now), the content hash of
 //! its files, an opaque signature, and its PORTS: what the pack needs from the
 //! team (a model with requirements, a connector, a sandboxed exec). Never a
-//! model name, a key or a token. Signature verification and wiring into
-//! `pack`/`install` come later.
+//! model name, a key or a token. `pack` writes this manifest as `pack.yaml`
+//! and `install` checks it (validation, content hash, scan). Signature
+//! creation and verification, and running evals on install, come later.
 
 use std::path::{Component, Path};
 

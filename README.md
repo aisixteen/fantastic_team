@@ -13,13 +13,15 @@ You need `git`, a Rust toolchain with `cargo`, and Linux or macOS (verified on L
 ```
 git clone https://github.com/aisixteen/fantastic_team
 cd fantastic_team
-cargo build --release
+sh scripts/build.sh
 ./target/release/fantastic_team --help
 ```
 
-The binary is `target/release/fantastic_team`. There are no releases yet, so build from source. On macOS the build needs `MACOSX_DEPLOYMENT_TARGET=14.0`; `.cargo/config.toml.example` sets it under `[env]`.
+There are two builds. The **general** build (Team, the default) gives workers stock exec. The **GitHub** build (Team GitHub) applies [patches/github-exec.patch](patches/github-exec.patch) to a copy of the tree, so workers cannot reach forge CLIs, `git push` or credentials: `sh scripts/build-github.sh` makes `target/github/release/fantastic_team-github`. The github connector is in both builds.
 
-For the step-by-step version, with the GitHub App registration and troubleshooting, see docs/install.md.
+The general binary is `target/release/fantastic_team`. There are no releases yet, so build from source. On macOS the build needs `MACOSX_DEPLOYMENT_TARGET=14.0`; `.cargo/config.toml.example` sets it under `[env]`.
+
+For the step-by-step version, with the GitHub App registration and troubleshooting, see docs/install.md. The builds are reproducible in intent: `rust-toolchain.toml` pins the toolchain, `scripts/checksums.sh` writes `SHA256SUMS`, and `scripts/verify.sh` checks a binary against it (docs/install.md, Reproducible builds).
 
 ## Configure
 
@@ -130,6 +132,21 @@ scripts/remote-stop.sh gpu       # asks first; drains (SIGTERM); --now kills
 
 A team is run by **the lead**: an AI agent configured in `team.yaml` that works from a directive. It spawns worker agents when there is work, gives each a task, checks on them, and deletes workers when the queue is empty. Its model, directive and templates come from config; no provider or model is named in the code.
 
+## Load and progress
+
+The cadencer's `status` carries the team's load as plain counts: workers busy,
+idle and stalled (per group and in all), tasks held, in review, done, blocked
+and queued, the number done in the last hour, and the tokens the drivers have
+spent. The code gives only these numbers. It has no mode, no total and no bar.
+The group's driver AI reads them in its digest, one plain `load:` line, and
+decides what to show: progress against a fixed list, or load alone when work
+keeps arriving. With no AI in a group, the raw numbers are all that is shown.
+Tasks waiting on CI are not counted (that needs a GitHub poll). Lanes in use are
+not reported: the pinned fantastic does not expose them. Tokens come from the
+`reflect` usage of each group driver (workers are not counted); the first beat
+after a restart counts the driver's lifetime total once, and a counter that
+drops (a restarted driver) counts from zero again.
+
 ## Any model, any mix
 
 Workers are fantastic AI agents: Anthropic models over the API with your own key, or local models (vLLM, llama.cpp) on your own GPU.
@@ -140,6 +157,15 @@ Results can stay as files in the team's folder. When work belongs somewhere else
 
 - **git**: a branch pushed to any remote (SSH or HTTPS).
 - **GitHub** (optional): as a GitHub App you register yourself. Draft pull requests, issue comments, labels, reading a task queue from issues. Register with your own app; the private key stays in your credential store.
+
+## Worker packs
+
+A worker pack is a folder: `pack.yaml` (the manifest: name, version, author, license, price `free`, the sha256 content hash of the other files, an empty signature, the ports the pack needs, and the list of files), `manifest.yaml`, `worker.json` (the record with its model, credentials and other bindings stripped), and `directives/`, `templates/`, `evals/`. The `team_pack.tools` verbs are `pack {worker, out}`, `install {pack, into}` and `eval {pack, worker, timeout_s?}`. `eval` runs the pack's evals on a worker and reports the pass rate; it writes nothing.
+
+- `pack` scans every file before it writes anything (`crates/team/src/pack_scan.rs`). It refuses secrets, directives or templates that ask for a key, read `~/.ssh` or send data out, and any code file (`.rs`, `.py`, `.sh`, executables under `bin/`, …). A refused pack writes nothing and the reply lists each finding by path, rule and line, never the matched text.
+- `install` refuses a pack with no `pack.yaml`, an invalid manifest, a content hash that differs from the files it lists (a tampered file), a scan refusal, or an installed version. It checks all of this before its first write, then copies the pack as a template under `<into>/<name>-<version>/`. It creates no agent. The reply carries the pack's parsed ports (`{"kind": "model" | "connector" | "exec:sandboxed", …}`) so the caller can show what the pack asks for.
+
+Not yet: signatures, running a pack's evals on install, the bindings prompt, and the CLI, MCP and web UI surfaces for these verbs.
 
 ## What is in this repo
 
