@@ -13,6 +13,7 @@ use crate::api::{redact, Api};
 use crate::{app, bad, push, Cfg, SENTENCE, UNHANDLED};
 
 const STATE_TEXT: &str = "team_github issues: `state` must be open, closed or all";
+const STATE_OPEN_CLOSED_TEXT: &str = "team_github issue_state: `state` must be open or closed";
 const LABEL_TEXT: &str =
     "team_github label: give `add` and/or `remove` — each a non-empty list of label names";
 const DRAFT_TEXT: &str =
@@ -46,6 +47,8 @@ pub(crate) async fn dispatch(
         "label" => label(id, kernel, cfg, p).await,
         "pr_status" => pr_status(id, kernel, cfg, p).await,
         "issue_edit" => issue_edit(id, kernel, cfg, p).await,
+        "issue_create" => issue_create(id, kernel, cfg, p).await,
+        "issue_state" => issue_state(id, kernel, cfg, p).await,
         "project_field_set" => project_field_set(id, kernel, cfg, p).await,
         "read_file" => read_file(id, kernel, cfg, p).await,
         other => {
@@ -901,6 +904,162 @@ async fn project_field_set(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, p: &Va
             ));
         }
         Ok(json!({"repo": repo, "item": item, "field": field}))
+    }
+    .await;
+    finish(r, &token)
+}
+
+/// Open an issue on a repo as the app. With `project`, also add it to that board.
+async fn issue_create(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, p: &Value) -> Value {
+    const V: &str = "issue_create";
+    let repo = match repo_arg(p, V, cfg) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let title = match str_arg(p, V, "title") {
+        Ok(s) => s.to_string(),
+        Err(e) => return e,
+    };
+    let body = match str_arg(p, V, "body") {
+        Ok(s) => s.to_string(),
+        Err(e) => return e,
+    };
+    let project = match p.get("project") {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_str().filter(|s| !s.is_empty()) {
+            Some(s) => Some(s.to_string()),
+            None => {
+                return bad(
+                    "team_github issue_create: `project` must be a ProjectV2 node id".into(),
+                    "project",
+                    v.clone(),
+                )
+            }
+        },
+    };
+    let api = Api::new(cfg);
+    let token = match app::token_for(id, kernel, cfg, &api, V, &repo).await {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    const ADD: &str = "mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } } }";
+    let r: Result<Value, Value> = async {
+        let issue = ge(api
+            .call(
+                V,
+                Method::POST,
+                &format!("/repos/{repo}/issues"),
+                &[],
+                &token,
+                Some(&json!({"title": title, "body": body})),
+            )
+            .await)?;
+        let number = issue["number"].clone();
+        let mut added = false;
+        if let Some(proj) = &project {
+            let reply = ge(api
+                .call(
+                    V,
+                    Method::POST,
+                    "/graphql",
+                    &[],
+                    &token,
+                    Some(&json!({
+                        "query": ADD,
+                        "variables": {"project": proj, "content": issue["node_id"]},
+                    })),
+                )
+                .await)?;
+            // GraphQL reports failures inside a 200 reply.
+            if reply["errors"].is_array() {
+                return Err(bad(
+                    format!(
+                        "team_github issue_create: #{number} was created but not added to the board: {}",
+                        reply["errors"]
+                    ),
+                    "project",
+                    json!(proj),
+                ));
+            }
+            added = true;
+        }
+        Ok(json!({
+            "repo": repo,
+            "number": number,
+            "url": issue["html_url"],
+            "added_to_board": added,
+        }))
+    }
+    .await;
+    finish(r, &token)
+}
+
+/// Open or close an issue. Closing an issue labelled `epic` is the maintainer's alone.
+async fn issue_state(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, p: &Value) -> Value {
+    const V: &str = "issue_state";
+    let repo = match repo_arg(p, V, cfg) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let number = match number_arg(p, V) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let state = match p.get("state").and_then(|v| v.as_str()) {
+        Some(s @ ("open" | "closed")) => s.to_string(),
+        _ => {
+            return bad(
+                STATE_OPEN_CLOSED_TEXT.into(),
+                "state",
+                p.get("state").cloned().unwrap_or(Value::Null),
+            )
+        }
+    };
+    let sender = p.get("sender").and_then(|v| v.as_str()).unwrap_or("");
+    let api = Api::new(cfg);
+    let token = match app::token_for(id, kernel, cfg, &api, V, &repo).await {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let r: Result<Value, Value> = async {
+        let issue = ge(api
+            .call(
+                V,
+                Method::GET,
+                &format!("/repos/{repo}/issues/{number}"),
+                &[],
+                &token,
+                None,
+            )
+            .await)?;
+        if issue.get("pull_request").is_some() {
+            return Err(bad(
+                format!("team_github issue_state: #{number} is a pull request, not an issue"),
+                "number",
+                json!(number),
+            ));
+        }
+        let epic = names_of(&issue["labels"])
+            .iter()
+            .any(|l| l.eq_ignore_ascii_case("epic"));
+        if state == "closed" && epic && sender != "maintainer" {
+            return Err(bad(
+                format!("team_github issue_state: #{number} is labelled `epic`; only the maintainer closes it"),
+                "number",
+                json!(number),
+            ));
+        }
+        ge(api
+            .call(
+                V,
+                Method::PATCH,
+                &format!("/repos/{repo}/issues/{number}"),
+                &[],
+                &token,
+                Some(&json!({"state": state})),
+            )
+            .await)?;
+        Ok(json!({"repo": repo, "number": number, "state": state}))
     }
     .await;
     finish(r, &token)
