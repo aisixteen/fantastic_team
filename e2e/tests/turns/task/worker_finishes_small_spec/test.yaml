@@ -1,0 +1,3 @@
+costs: turns
+timeout: 1800
+plug: anthropic

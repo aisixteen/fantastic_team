@@ -108,6 +108,10 @@ def parse_stream(raw: bytes) -> str:
 
 
 class ScriptedModel:
+    model_name = MODEL  # what team.yaml's `{{model_name}}` takes
+    key_env = None  # no real key
+    real = False  # a script answers; nothing is sent upstream
+
     def __init__(self, script: list[dict], variables: dict | None = None) -> None:
         self.turns = [render_turn(fill(t, variables or {})) for t in script]
         self.requests: list[dict] = []  # parsed JSON bodies, in order
@@ -181,6 +185,10 @@ class ScriptedModel:
     @property
     def consumed(self) -> bool:
         return self.served == len(self.turns) and self.overrun == 0
+
+    @property
+    def errored(self) -> bool:
+        return self.overrun > 0
 
 
 def load(path: str, variables: dict | None = None) -> ScriptedModel:
