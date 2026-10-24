@@ -14,6 +14,7 @@ bad() { FAIL=$((FAIL + 1)); echo "FAIL $1${2:+ — $2}"; }
 if grep -q 'WORKER_ALLOWED: &str = r#"(?!' "$ROOT/crates/team/src/worker_exec.rs"; then
   ok "general_source_has_no_forge_refusal (skipped: the tree is the patched copy)"
   ok "the_real_patch_applies (skipped: the tree is the patched copy)"
+  ok "github_build_prints_patch_hash (skipped: the tree is the patched copy)"
 else
 # 1. general_source_has_no_forge_refusal
 if ! grep -qE '\(\?!|gh\|glab\|hub' "$ROOT/crates/team/src/worker_exec.rs"; then ok general_source_has_no_forge_refusal
@@ -23,6 +24,11 @@ else bad general_source_has_no_forge_refusal; fi
 if [ -f "$ROOT/patches/github-exec.patch" ] && sh "$B" --check >"$T/out" 2>&1 \
   && grep -q 'patches/github-exec.patch' "$T/out"; then ok the_real_patch_applies
 else bad the_real_patch_applies "$(cat "$T/out" 2>/dev/null)"; fi
+# 2b. github_build_prints_patch_hash
+if command -v sha256sum >/dev/null 2>&1; then want_hash=$(sha256sum "$ROOT/patches/github-exec.patch" | awk '{print $1}')
+else want_hash=$(shasum -a 256 "$ROOT/patches/github-exec.patch" | awk '{print $1}'); fi
+if sh "$B" --check >"$T/hash.out" 2>&1 && grep -qF "patch sha256: $want_hash" "$T/hash.out"; then ok github_build_prints_patch_hash
+else bad github_build_prints_patch_hash "$(cat "$T/hash.out" 2>/dev/null)"; fi
 fi
 
 # 3. a_bad_patch_fails_and_leaves_the_tree_alone

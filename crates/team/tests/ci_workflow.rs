@@ -245,3 +245,50 @@ fn ci_builds_and_tests_both_builds() {
         "{e2e}"
     );
 }
+
+#[test]
+fn repro_job_builds_twice_in_different_dirs_and_has_no_signing() {
+    let doc = doc();
+    let repro = job(&doc, "repro");
+    assert!(
+        if_text(repro).contains("inputs.e2e"),
+        "repro job must be gated on inputs.e2e"
+    );
+    assert_eq!(needs(repro), vec!["units".to_string()], "repro needs units");
+    let text = run_text(repro);
+    for want in ["scripts/build.sh", "scripts/build-github.sh", "SHA256SUMS"] {
+        assert!(text.contains(want), "repro steps lack `{want}`");
+    }
+    assert!(
+        text.contains("RUNNER_TEMP") && text.contains("CARGO_TARGET_DIR"),
+        "repro must build in two directories with two target dirs"
+    );
+    // Signing stays on the maintainer's laptop: nothing in the job reaches for secrets or a signer.
+    let whole = serde_yaml::to_string(repro).expect("repro job serializes");
+    for banned in ["secrets.", "gpg", "codesign", "notarytool"] {
+        assert!(
+            !whole.to_lowercase().contains(banned),
+            "repro job mentions {banned}"
+        );
+    }
+    assert!(
+        !raw().contains("@stable"),
+        "ci.yml must take the toolchain from rust-toolchain.toml, not @stable"
+    );
+    assert!(
+        run_text(job(&doc, "units")).contains("tests/repro_scripts.sh"),
+        "units shell tests must run tests/repro_scripts.sh"
+    );
+    let inputs = key(
+        key(triggers(&doc), "workflow_dispatch").expect("workflow_dispatch"),
+        "inputs",
+    )
+    .expect("inputs");
+    let strict = key(inputs, "strict").expect("input `strict` exists");
+    assert_eq!(key(strict, "type").and_then(Value::as_str), Some("boolean"));
+    assert_eq!(key(strict, "default"), Some(&Value::Bool(false)));
+
+    let pin = std::fs::read_to_string(repo_root().join("rust-toolchain.toml"))
+        .expect("rust-toolchain.toml exists");
+    assert!(pin.contains("channel = \"1."), "toolchain pin: {pin}");
+}

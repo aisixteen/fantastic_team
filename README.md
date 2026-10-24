@@ -21,7 +21,7 @@ There are two builds. The **general** build (Team, the default) gives workers st
 
 The general binary is `target/release/fantastic_team`. There are no releases yet, so build from source. On macOS the build needs `MACOSX_DEPLOYMENT_TARGET=14.0`; `.cargo/config.toml.example` sets it under `[env]`.
 
-For the step-by-step version, with the GitHub App registration and troubleshooting, see docs/install.md.
+For the step-by-step version, with the GitHub App registration and troubleshooting, see docs/install.md. The builds are reproducible in intent: `rust-toolchain.toml` pins the toolchain, `scripts/checksums.sh` writes `SHA256SUMS`, and `scripts/verify.sh` checks a binary against it (docs/install.md, Reproducible builds).
 
 ## Configure
 
