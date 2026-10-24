@@ -18,6 +18,8 @@ pub fn exit_code(sig: i32) -> i32 {
 
 /// Signal numbers the watchdog reports.
 const SIGINT: i32 = 2;
+// Only the unix signal wait and the tests name SIGTERM; Windows has only Ctrl-C.
+#[cfg(any(unix, test))]
 const SIGTERM: i32 = 15;
 
 /// Release `dir`'s kernel lock and remove its run file. Best effort: a missing
