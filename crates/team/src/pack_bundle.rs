@@ -9,12 +9,22 @@
 //! copies the pack under the canvas templates dir as a TEMPLATE. It never
 //! creates an agent: every effect goes through the `files` agent.
 //!
+//! `install {pack, into, bindings?}` also takes the buyer's bindings: a map from
+//! each port key (`model`, `connector:<name>`, `exec:sandboxed`) to the id of
+//! the agent that fills it. They are checked before the first write and kept in
+//! `<dest>/bindings.json`. The reply says which ports are `bound` and which are
+//! `unbound`, so the caller can ask the buyer and re-run. Install never gates on
+//! unbound ports; enforcing bindings at enable time is not built.
+//!
 //! `eval` runs a pack's evals on demand against a worker and reports the pass
 //! rate, time and cost. `install` runs them too, but only when it is given a
-//! bound worker (`install {pack, into, worker}`): after the copy it reports the
-//! same report under `evals`. Install only reports; it does not gate. Gating
-//! enable on the evals is not built.
+//! worker (`install {pack, into, worker}`): after the copy it reports the same
+//! report under `evals`, and an advisory `enable {allowed, min_pass_rate,
+//! reason}` verdict (`min_pass_rate` defaults to 1.0). Install never fails or
+//! rolls back on the verdict, and creates no agent, so nothing enforces it yet:
+//! enforcing the verdict where a worker is created from a template is not built.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -152,8 +162,33 @@ fn text_of(reply: &Value) -> Option<String> {
     )
 }
 
+/// Read a whole text file through the file bridge. The bridge answers with
+/// pages of `lines` (200 a page, `eof` on the last), so the pages are read in
+/// turn and joined with newlines. The file's last newline is not kept by the
+/// bridge, which is why `pack` writes its files without one.
 pub(crate) async fn read<P: Peers>(p: &P, path: &str) -> Option<String> {
-    text_of(&p.ask("files", json!({"type": "read", "path": path})).await)
+    let mut text = String::new();
+    let mut offset = 0u64;
+    loop {
+        let r = p
+            .ask(
+                "files",
+                json!({"type": "read", "path": path, "offset": offset}),
+            )
+            .await;
+        let page = text_of(&r)?;
+        let Some(lines) = r.get("lines").and_then(Value::as_array) else {
+            return Some(page);
+        };
+        if offset > 0 {
+            text.push('\n');
+        }
+        text.push_str(&page);
+        offset += lines.len() as u64;
+        if r.get("eof").and_then(Value::as_bool).unwrap_or(true) || lines.is_empty() {
+            return Some(text);
+        }
+    }
 }
 
 async fn write<P: Peers>(p: &P, path: &str, bytes: &str) -> bool {
@@ -226,6 +261,58 @@ fn port_json(port: &pack_manifest::Port) -> Value {
         Port::Connector(name) => json!({"kind": "connector", "name": name}),
         Port::ExecSandboxed => json!({"kind": "exec:sandboxed"}),
     }
+}
+
+/// The stable key of a port: `model`, `connector:<name>` or `exec:sandboxed`.
+/// Two `@model` ports share the key `model`, so a binding for it fills both.
+pub fn port_key(port: &pack_manifest::Port) -> String {
+    use pack_manifest::Port;
+    match port {
+        Port::Model(_) => "model".to_string(),
+        Port::Connector(name) => format!("connector:{name}"),
+        Port::ExecSandboxed => "exec:sandboxed".to_string(),
+    }
+}
+
+/// The buyer's bindings: a map from port key to the id of the agent that fills it.
+/// `Null` (no bindings given) is the empty map. Refuses a non-object, a key that
+/// is not a port key of the pack (the error names it), and a value that is not a
+/// safe agent id: a non-empty string, `valid_part`, and not key-shaped. The value
+/// is never echoed in the error, so a mistyped secret is not repeated back.
+pub fn check_bindings(
+    bindings: &Value,
+    ports: &[pack_manifest::Port],
+) -> Result<BTreeMap<String, String>, String> {
+    let obj = match bindings {
+        Value::Null => return Ok(BTreeMap::new()),
+        Value::Object(obj) => obj,
+        _ => return Err("bindings must be an object of {port key: agent id}".to_string()),
+    };
+    let keys: BTreeSet<String> = ports.iter().map(port_key).collect();
+    let mut out = BTreeMap::new();
+    for (key, value) in obj {
+        if !keys.contains(key) {
+            return Err(format!("binding key `{key}` is not a port of this pack"));
+        }
+        let id = value
+            .as_str()
+            .ok_or_else(|| format!("binding `{key}` must be an agent id string"))?;
+        if !valid_part(id) || pack_manifest::looks_like_key(id) {
+            return Err(format!("binding `{key}` is not a safe agent id"));
+        }
+        out.insert(key.clone(), id.to_string());
+    }
+    Ok(out)
+}
+
+/// The port keys of a pack in order, each once, that no binding fills.
+fn unbound_keys(ports: &[pack_manifest::Port], bound: &BTreeMap<String, String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    ports
+        .iter()
+        .map(port_key)
+        .filter(|k| seen.insert(k.clone()) && !bound.contains_key(k))
+        .collect()
 }
 
 /// The scan refusal reply: the findings with path, rule and line only.
@@ -306,6 +393,11 @@ pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
             }
         }
     }
+    // The bridge does not return a file's last newline, so none is packed: what
+    // `install` reads back is then exactly what was hashed here.
+    for (_, t) in gathered.iter_mut() {
+        *t = t.trim_end_matches('\n').to_string();
+    }
     let bytes: Vec<(String, Vec<u8>)> = gathered
         .iter()
         .map(|(p, t)| (p.clone(), t.clone().into_bytes()))
@@ -352,14 +444,23 @@ pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
 ///
 /// With a non-empty `worker`, the copied pack's evals run on it after the copy
 /// and the report goes under `evals` (or `skipped` when the pack has none, or
-/// `error` when they cannot be loaded). That report never fails the install and
-/// never gates it.
+/// `error` when they cannot be loaded). `enable_verdict` of that report, against
+/// `min_pass_rate`, goes under `enable`. Neither the report nor the verdict
+/// fails the install or rolls it back; the verdict is advice for the caller.
+///
+/// `bindings` (`{port key: agent id}`, or `Null`) fills the pack's ports. It is
+/// checked by `check_bindings` before the first write; the bound map is written
+/// to `<dest>/bindings.json` (the installer's data, not hashed) and the reply
+/// carries `bindings: {bound, unbound}`. Unbound ports never fail the install:
+/// the caller asks the user and re-runs with the map.
 pub async fn install<P: Peers>(
     p: &P,
     pack: &str,
     into: &str,
     worker: &str,
     timeout: Duration,
+    bindings: &Value,
+    min_pass_rate: f64,
 ) -> Value {
     let Some(text) = read(p, &format!("{pack}/{}", pack_manifest::MANIFEST_FILE)).await else {
         return err("pack has no pack.yaml");
@@ -404,6 +505,10 @@ pub async fn install<P: Peers>(
         .find(|(p, _)| p == "worker.json")
         .and_then(|(_, b)| serde_json::from_slice(b).ok())
         .unwrap_or(Value::Null);
+    let bound = match check_bindings(bindings, &ports) {
+        Ok(bound) => bound,
+        Err(e) => return err(&e),
+    };
 
     let mut copied = Vec::new();
     let mut failed = Vec::new();
@@ -420,6 +525,10 @@ pub async fn install<P: Peers>(
         let t = String::from_utf8_lossy(b).to_string();
         put(p, &dest_s, rel, &t, &mut copied, &mut failed).await;
     }
+    if !bound.is_empty() {
+        let text = serde_json::to_string_pretty(&bound).unwrap_or_default();
+        put(p, &dest_s, "bindings.json", &text, &mut copied, &mut failed).await;
+    }
     if !failed.is_empty() {
         return json!({"error": "write failed", "failed": failed, "files": copied});
     }
@@ -430,12 +539,62 @@ pub async fn install<P: Peers>(
         "version": version,
         "ports": ports.iter().map(port_json).collect::<Vec<_>>(),
         "grants": record.get("grants").cloned().unwrap_or(json!([])),
+        "bindings": {"bound": bound, "unbound": unbound_keys(&ports, &bound)},
         "files": copied,
     });
     if !worker.is_empty() {
-        reply["evals"] = evals_of_installed(p, &dest_s, worker, timeout).await;
+        let evals = evals_of_installed(p, &dest_s, worker, timeout).await;
+        reply["enable"] = enable_verdict(&evals, min_pass_rate);
+        reply["evals"] = evals;
     }
     reply
+}
+
+/// The advisory enable verdict for an eval report (`evals_of_installed`):
+/// `{allowed, min_pass_rate, reason}`. A pass rate at or above `min` is allowed.
+/// A pack with no evals is allowed, since there is nothing to gate on. An
+/// unloadable eval set, or any report without a pass rate, is blocked (fail closed).
+fn enable_verdict(evals: &Value, min: f64) -> Value {
+    let (allowed, reason) = if evals.get("skipped").is_some() {
+        (true, "pack has no evals to gate on".to_string())
+    } else if evals.get("error").is_some() {
+        (false, "evals could not be loaded".to_string())
+    } else {
+        match evals.get("pass_rate").and_then(Value::as_f64) {
+            Some(rate) if rate >= min => (
+                true,
+                format!(
+                    "pass rate {}% meets the required {}%",
+                    percent(rate),
+                    percent(min)
+                ),
+            ),
+            Some(rate) => (
+                false,
+                format!(
+                    "pass rate {}% is below the required {}%",
+                    percent(rate),
+                    percent(min)
+                ),
+            ),
+            None => (false, "eval report has no pass rate".to_string()),
+        }
+    };
+    json!({"allowed": allowed, "min_pass_rate": min, "reason": reason})
+}
+
+/// A rate in `0..=1` as a whole percent, rounded.
+fn percent(rate: f64) -> i64 {
+    (rate * 100.0).round() as i64
+}
+
+/// The `min_pass_rate` of a payload: a finite number in `0..=1`, else `None`
+/// (the caller then uses 1.0, every eval passing).
+fn min_pass_rate_from(payload: &Value) -> Option<f64> {
+    payload
+        .get("min_pass_rate")
+        .and_then(Value::as_f64)
+        .filter(|m| m.is_finite() && (0.0..=1.0).contains(m))
 }
 
 /// The eval report of the pack installed at `dest`, run against `worker`.
@@ -520,7 +679,7 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
     fn verb_docs(&self) -> Value {
         json!({
             "pack": "pack {worker, out} → writes pack.yaml (hash, ports, files) and the pack layout; refuses an existing out and a pack the secrets scan refuses",
-            "install": "install {pack, into, worker?, timeout_s?} → checks pack.yaml, the content hash and the scan, then copies as a template to <into>/<name>-<version>/; refuses an existing version; replies with the parsed ports; with a worker, runs the pack's evals on it and replies with the report under evals (reports only, no gating); creates no agent",
+            "install": "install {pack, into, worker?, bindings?, timeout_s?, min_pass_rate?} → checks pack.yaml, the content hash, the scan and the bindings, then copies as a template to <into>/<name>-<version>/; bindings is {port key: agent id} (keys: model, connector:<name>, exec:sandboxed) and is written to bindings.json; refuses an existing version, an unknown key and a non-id value; replies with the parsed ports and bindings {bound, unbound}; with a worker, runs the pack's evals on it and replies with the report under evals and an advisory enable {allowed, min_pass_rate, reason} (min_pass_rate is a number in 0..=1, default 1.0; allowed is false below it or when the evals cannot be loaded); the install is never refused or rolled back on the verdict; creates no agent",
             "eval": "eval {pack, worker, timeout_s?} → runs the pack's evals on the worker; returns pass rate, time, cost and per-eval results; writes nothing",
         })
     }
@@ -547,12 +706,15 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
         let out = match t {
             "pack" => pack(&peers, &s("worker"), &s("out")).await,
             "install" => {
+                let bindings = payload.get("bindings").cloned().unwrap_or(Value::Null);
                 install(
                     &peers,
                     &s("pack"),
                     &s("into"),
                     &s("worker"),
                     timeout_from(payload),
+                    &bindings,
+                    min_pass_rate_from(payload).unwrap_or(1.0),
                 )
                 .await
             }
@@ -695,7 +857,16 @@ mod tests {
     async fn install_copies_as_a_template_and_creates_no_agent() {
         let f = worker();
         pack(&f, "w", "pack").await;
-        let r = install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert_eq!(r["installed_as"], "template", "{r}");
         assert_eq!(r["ports"], json!([{"kind": "connector", "name": "github"}]));
         assert_eq!(r["grants"], json!(["g"]));
@@ -709,7 +880,16 @@ mod tests {
     async fn install_reports_the_path_with_forward_slashes() {
         let f = worker();
         pack(&f, "w", "pack").await;
-        let r = install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert_eq!(r["path"], "templates/w-1.0", "{r}");
     }
 
@@ -726,8 +906,26 @@ mod tests {
     async fn install_refuses_an_existing_version() {
         let f = worker();
         pack(&f, "w", "pack").await;
-        install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
-        let r = install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
+        install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert!(r.get("error").is_some(), "{r}");
     }
 
@@ -764,7 +962,16 @@ mod tests {
     #[tokio::test]
     async fn install_refuses_a_traversing_name() {
         let f = seeded_pack("name: ../../evil\nversion: \"1.0\"\n");
-        let r = install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert!(r.get("error").is_some(), "{r}");
         let files = f.files.lock().unwrap();
         assert!(files.keys().all(|k| !k.contains("evil")), "{files:?}");
@@ -775,7 +982,16 @@ mod tests {
     async fn install_refuses_a_bad_version() {
         for v in ["../x", "1/2", "1\\2", "..", "a..b"] {
             let f = seeded_pack(&format!("name: w\nversion: '{v}'\n"));
-            let r = install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
+            let r = install(
+                &f,
+                "pack",
+                "templates",
+                "",
+                Duration::from_secs(5),
+                &Value::Null,
+                1.0,
+            )
+            .await;
             assert!(r.get("error").is_some(), "{v}: {r}");
             let files = f.files.lock().unwrap();
             assert!(files.keys().all(|k| !k.starts_with("templates")), "{v}");
@@ -785,7 +1001,16 @@ mod tests {
     #[tokio::test]
     async fn install_refuses_a_backslash_name() {
         let f = seeded_pack("name: ..\\evil\nversion: \"1.0\"\n");
-        let r = install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert!(r.get("error").is_some(), "{r}");
     }
 
@@ -819,7 +1044,16 @@ mod tests {
             .lock()
             .unwrap()
             .push("templates/w-1.0/worker.json".into());
-        let r = install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert_eq!(r["error"], "write failed", "{r}");
         assert_eq!(r["failed"], json!(["worker.json"]));
         assert!(r.get("installed_as").is_none());
@@ -916,7 +1150,16 @@ mod tests {
             .map(|p| (p.clone(), f.get(&format!("pack/{p}")).unwrap().into_bytes()))
             .collect();
         assert_eq!(m.content_hash, pack_manifest::content_hash(&bytes));
-        let r = install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert_eq!(r["installed_as"], "template", "{r}");
     }
 
@@ -928,7 +1171,16 @@ mod tests {
             "pack/directives/x.md".into(),
             "Summarise the closed issues.".into(),
         );
-        let r = install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert_eq!(r["error"], "content hash mismatch", "{r}");
         let files = f.files.lock().unwrap();
         assert!(
@@ -961,7 +1213,16 @@ mod tests {
     #[tokio::test]
     async fn install_refuses_a_pack_with_a_code_file() {
         let f = hand_built_pack(&[("worker.json", "{}"), ("templates/run.sh", "echo hello\n")]);
-        let r = install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert_eq!(r["error"], "pack refused by scan", "{r}");
         assert!(
             r["findings"]
@@ -986,7 +1247,16 @@ mod tests {
             r#"{"name":"w","version":"1.0","ports":["@model window=200k tools","@connector:github"]}"#.into(),
         );
         pack(&f, "w", "pack").await;
-        let r = install(&f, "pack", "templates", "", Duration::from_secs(5)).await;
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert_eq!(
             r["ports"],
             json!([
@@ -995,6 +1265,179 @@ mod tests {
             ]),
             "{r}"
         );
+    }
+
+    /// A packed worker with a model port and a connector port.
+    async fn two_port_pack() -> FakeFiles {
+        let f = worker();
+        f.files.lock().unwrap().insert(
+            "w/worker.json".into(),
+            r#"{"name":"w","version":"1.0","ports":["@model window=200k tools","@connector:github"]}"#.into(),
+        );
+        pack(&f, "w", "pack").await;
+        f
+    }
+
+    #[test]
+    fn port_key_is_stable_and_duplicates_collapse() {
+        use pack_manifest::{Port, Requirement};
+        assert_eq!(port_key(&Port::Model(vec![Requirement::Tools])), "model");
+        assert_eq!(
+            port_key(&Port::Connector("github".into())),
+            "connector:github"
+        );
+        assert_eq!(port_key(&Port::ExecSandboxed), "exec:sandboxed");
+        let two_models = [Port::Model(vec![]), Port::Model(vec![Requirement::Tools])];
+        let bound = check_bindings(&json!({"model": "llm-1"}), &two_models).unwrap();
+        assert_eq!(bound.get("model").map(String::as_str), Some("llm-1"));
+    }
+
+    #[test]
+    fn check_bindings_accepts_null_and_refuses_non_objects() {
+        let ports = [pack_manifest::Port::ExecSandboxed];
+        assert!(check_bindings(&Value::Null, &ports).unwrap().is_empty());
+        assert!(check_bindings(&json!("llm-1"), &ports).is_err());
+    }
+
+    #[tokio::test]
+    async fn install_with_bindings_records_and_reports() {
+        let f = two_port_pack().await;
+        let bindings = json!({"model": "llm-1", "connector:github": "gh-1"});
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &bindings,
+            1.0,
+        )
+        .await;
+        assert!(r.get("error").is_none(), "{r}");
+        let written: Value = serde_json::from_str(
+            &f.get("templates/w-1.0/bindings.json")
+                .expect("bindings.json"),
+        )
+        .unwrap();
+        assert_eq!(written, bindings);
+        assert_eq!(r["bindings"]["bound"], bindings, "{r}");
+        assert_eq!(r["bindings"]["unbound"], json!([]), "{r}");
+        assert!(
+            r["files"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("bindings.json")),
+            "{r}"
+        );
+        assert!(f
+            .get("templates/w-1.0/worker.json")
+            .unwrap()
+            .contains("\"ports\""));
+    }
+
+    #[tokio::test]
+    async fn install_without_bindings_reports_all_unbound() {
+        let f = two_port_pack().await;
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["bindings"]["bound"], json!({}), "{r}");
+        assert_eq!(
+            r["bindings"]["unbound"],
+            json!(["model", "connector:github"]),
+            "{r}"
+        );
+        assert!(f.get("templates/w-1.0/bindings.json").is_none());
+    }
+
+    #[tokio::test]
+    async fn install_partial_bindings_lists_the_rest() {
+        let f = two_port_pack().await;
+        let bindings = json!({"model": "llm-1"});
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &bindings,
+            1.0,
+        )
+        .await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["bindings"]["bound"], bindings, "{r}");
+        assert_eq!(r["bindings"]["unbound"], json!(["connector:github"]), "{r}");
+    }
+
+    #[tokio::test]
+    async fn install_refuses_an_unknown_binding_key_and_writes_nothing() {
+        let f = two_port_pack().await;
+        let before = f.files.lock().unwrap().clone();
+        let bindings = json!({"connector:gitlab": "x"});
+        let r = install(
+            &f,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &bindings,
+            1.0,
+        )
+        .await;
+        assert!(
+            r["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("connector:gitlab"),
+            "{r}"
+        );
+        assert_eq!(
+            *f.files.lock().unwrap(),
+            before,
+            "a refused install writes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_refuses_a_secret_or_unsafe_binding_value() {
+        let values = [
+            json!("sk-abcdefghijklmnopqrstuvwxyz0123456789"),
+            json!("../x"),
+            json!(""),
+            json!(5),
+        ];
+        for v in values {
+            let f = two_port_pack().await;
+            let before = f.files.lock().unwrap().clone();
+            let bindings = json!({"model": v});
+            let r = install(
+                &f,
+                "pack",
+                "templates",
+                "",
+                Duration::from_secs(5),
+                &bindings,
+                1.0,
+            )
+            .await;
+            assert!(
+                r.get("error").is_some(),
+                "{bindings} should be refused: {r}"
+            );
+            assert_eq!(
+                *f.files.lock().unwrap(),
+                before,
+                "{bindings} wrote something"
+            );
+        }
     }
 
     /// Routes `files` to the in-memory files; every other agent is a worker that
@@ -1119,7 +1562,16 @@ mod tests {
     #[tokio::test]
     async fn install_with_worker_reports_evals() {
         let p = packed_with_evals(&[("a.yaml", PASSING_EVAL), ("b.yaml", FAILING_EVAL)]).await;
-        let r = install(&p, "pack", "templates", "worker-1", Duration::from_secs(5)).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert_eq!(r["installed_as"], "template", "{r}");
         assert_eq!(r["evals"]["passed"], 1, "{r}");
         assert_eq!(r["evals"]["total"], 2, "{r}");
@@ -1139,13 +1591,24 @@ mod tests {
     #[tokio::test]
     async fn install_without_worker_has_no_evals_key() {
         let p = packed_with_evals(&[("a.yaml", PASSING_EVAL)]).await;
-        let r = install(&p, "pack", "templates", "", Duration::from_secs(5)).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert!(r.get("evals").is_none(), "{r}");
+        assert!(r.get("enable").is_none(), "{r}");
         let mut keys: Vec<&str> = r.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort();
         assert_eq!(
             keys,
             [
+                "bindings",
                 "files",
                 "grants",
                 "installed_as",
@@ -1163,7 +1626,16 @@ mod tests {
     #[tokio::test]
     async fn install_with_worker_and_no_evals_is_skipped_not_failed() {
         let p = packed_with_evals(&[]).await;
-        let r = install(&p, "pack", "templates", "worker-1", Duration::from_secs(5)).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert_eq!(r["installed_as"], "template", "{r}");
         assert!(r.get("error").is_none(), "{r}");
         assert_eq!(r["evals"]["skipped"], "pack has no evals", "{r}");
@@ -1172,7 +1644,16 @@ mod tests {
     #[tokio::test]
     async fn install_with_failing_evals_still_installs() {
         let p = packed_with_evals(&[("b.yaml", FAILING_EVAL)]).await;
-        let r = install(&p, "pack", "templates", "worker-1", Duration::from_secs(5)).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert_eq!(r["installed_as"], "template", "{r}");
         assert!(r.get("error").is_none(), "{r}");
         assert_eq!(r["evals"]["pass_rate"], 0.0, "{r}");
@@ -1186,10 +1667,148 @@ mod tests {
             "pack/evals/a.yaml".into(),
             "- id: a\n  task: good\n  check: {contains: changed}\n".into(),
         );
-        let r = install(&p, "pack", "templates", "worker-1", Duration::from_secs(5)).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
         assert_eq!(r["error"], "content hash mismatch", "{r}");
         assert!(r.get("evals").is_none(), "{r}");
         assert_eq!(*p.sends.lock().unwrap(), 0, "a refused pack runs no evals");
+    }
+
+    #[test]
+    fn enable_verdict_allows_at_or_above_min_and_blocks_below() {
+        let half = json!({"pass_rate": 0.5, "passed": 1, "total": 2});
+        let v = enable_verdict(&half, 0.5);
+        assert_eq!(v["allowed"], true, "{v}");
+        assert_eq!(v["min_pass_rate"], 0.5, "{v}");
+        let v = enable_verdict(&half, 1.0);
+        assert_eq!(v["allowed"], false, "{v}");
+        let reason = v["reason"].as_str().unwrap();
+        assert!(reason.contains("50%"), "{v}");
+        assert!(reason.contains("100%"), "{v}");
+    }
+
+    #[test]
+    fn enable_verdict_skipped_allows_and_error_blocks() {
+        let v = enable_verdict(&json!({"skipped": "pack has no evals"}), 1.0);
+        assert_eq!(v["allowed"], true, "{v}");
+        assert_eq!(v["reason"], "pack has no evals to gate on", "{v}");
+        let v = enable_verdict(&json!({"error": "evals.yaml: bad"}), 1.0);
+        assert_eq!(v["allowed"], false, "{v}");
+        assert_eq!(v["reason"], "evals could not be loaded", "{v}");
+    }
+
+    #[test]
+    fn min_pass_rate_accepts_only_finite_numbers_in_range() {
+        assert_eq!(
+            min_pass_rate_from(&json!({"min_pass_rate": 0.5})),
+            Some(0.5)
+        );
+        assert_eq!(
+            min_pass_rate_from(&json!({"min_pass_rate": 0.0})),
+            Some(0.0)
+        );
+        assert_eq!(
+            min_pass_rate_from(&json!({"min_pass_rate": 1.0})),
+            Some(1.0)
+        );
+        assert_eq!(min_pass_rate_from(&json!({"min_pass_rate": 2.0})), None);
+        assert_eq!(min_pass_rate_from(&json!({"min_pass_rate": -0.1})), None);
+        assert_eq!(min_pass_rate_from(&json!({"min_pass_rate": "0.5"})), None);
+        assert_eq!(min_pass_rate_from(&json!({"min_pass_rate": null})), None);
+        assert_eq!(min_pass_rate_from(&json!({})), None);
+    }
+
+    #[tokio::test]
+    async fn install_with_all_passing_evals_allows_enable() {
+        let p = packed_with_evals(&[("a.yaml", PASSING_EVAL)]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert_eq!(r["enable"]["allowed"], true, "{r}");
+        assert_eq!(r["enable"]["min_pass_rate"], 1.0, "{r}");
+    }
+
+    #[tokio::test]
+    async fn install_with_failing_evals_blocks_enable_but_still_installs() {
+        let p = packed_with_evals(&[("a.yaml", PASSING_EVAL), ("b.yaml", FAILING_EVAL)]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert_eq!(r["installed_as"], "template", "{r}");
+        assert_eq!(r["enable"]["allowed"], false, "{r}");
+        assert!(p.files.get("templates/w-1.0/manifest.yaml").is_some());
+        assert!(p.files.get("templates/w-1.0/evals/b.yaml").is_some());
+    }
+
+    #[tokio::test]
+    async fn install_min_pass_rate_lowers_the_bar() {
+        let p = packed_with_evals(&[("a.yaml", PASSING_EVAL), ("b.yaml", FAILING_EVAL)]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            0.5,
+        )
+        .await;
+        assert_eq!(r["enable"]["allowed"], true, "{r}");
+        assert_eq!(r["enable"]["min_pass_rate"], 0.5, "{r}");
+    }
+
+    #[tokio::test]
+    async fn install_with_no_evals_or_eval_load_error_gates_correctly() {
+        let p = packed_with_evals(&[]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert_eq!(r["enable"]["allowed"], true, "{r}");
+        assert_eq!(r["enable"]["reason"], "pack has no evals to gate on", "{r}");
+
+        let p = packed_with_evals(&[("a.yaml", "- id: [unclosed\n")]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert_eq!(r["installed_as"], "template", "{r}");
+        assert_eq!(r["enable"]["allowed"], false, "{r}");
+        assert_eq!(r["enable"]["reason"], "evals could not be loaded", "{r}");
     }
 
     #[test]

@@ -180,7 +180,7 @@ impl Manifest {
 
 /// Whether a value looks like a key or token: a known key prefix, a private
 /// key block, or one long unbroken alphanumeric run mixing letters and digits.
-fn looks_like_key(s: &str) -> bool {
+pub(crate) fn looks_like_key(s: &str) -> bool {
     let t = s.trim();
     if KEY_PREFIXES.iter().any(|p| t.starts_with(p))
         || (t.contains("BEGIN") && t.contains("PRIVATE KEY"))
