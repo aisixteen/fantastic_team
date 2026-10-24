@@ -26,6 +26,11 @@ pub const CANVAS_ID: &str = "canvas_page";
 pub const WORKER_VIEW_ID: &str = "worker_view";
 /// The board agent, under the root, when `team.yaml` has a `board` section.
 pub const BOARD_ID: &str = "board";
+/// The page's agent: the dispatcher's html view on the canvas, made at the first start.
+pub const DISPATCHER_VIEW_ID: &str = "dispatcher_view";
+/// The verbs the page uses on a worker or a subagent: its chat (`history`, `send`,
+/// `stop`, `status`) and its events (`watch`). Granted by [`grant_chat`]; never `*`.
+pub const CHAT_VERBS: [&str; 5] = ["history", "send", "stop", "status", "watch"];
 
 /// Tools the binary always knows; a template may grant them without a definition.
 pub const BUILTIN_TOOLS: [&str; 5] = [
@@ -304,8 +309,8 @@ pub async fn deliver_instructions(
 /// view under the canvas, so the canvas needs no grant to the dispatcher. Best
 /// effort: a canvas that is not there is reported, not fatal, so the team still starts.
 async fn place_dispatcher(kernel: &Arc<Kernel>) {
-    let view = format!("{DISPATCHER_ID}_view");
-    if exists(kernel, &view) {
+    let view = DISPATCHER_VIEW_ID;
+    if exists(kernel, view) {
         return;
     }
     let mut outs = kernel
@@ -325,6 +330,55 @@ async fn place_dispatcher(kernel: &Arc<Kernel>) {
             eprintln!("dispatcher not placed on `{CANVAS_ID}`: {}", o.result);
         }
     }
+}
+
+/// Grant the page's agent the chat verbs on each worker in `workers` and on every
+/// agent whose parent is one of them (its subagents), on both ends: the view's
+/// `can_call` names the agent and the agent's `callable_by` names the view. An
+/// operator write made at each start, so it is idempotent. An agent that is not
+/// live is skipped; a refusal is reported, not fatal. Returns how many agents got
+/// the grant. An agent made after the start gets it at the next start.
+pub fn grant_chat(kernel: &Arc<Kernel>, workers: &[String]) -> usize {
+    if !exists(kernel, DISPATCHER_VIEW_ID) {
+        return 0;
+    }
+    let live: Vec<String> = workers
+        .iter()
+        .filter(|w| exists(kernel, w))
+        .cloned()
+        .collect();
+    let mut targets: BTreeSet<String> = live.iter().cloned().collect();
+    for e in kernel.agents.iter() {
+        let a = e.value();
+        if a.parent_id.as_ref().is_some_and(|p| live.contains(&p.0)) {
+            targets.insert(a.id.0.clone());
+        }
+    }
+    let verbs = json!(CHAT_VERBS);
+    let view = fantastic_kernel::AgentId::from(DISPATCHER_VIEW_ID);
+    let mut granted = 0;
+    for id in targets {
+        let agent = fantastic_kernel::AgentId::from(id.as_str());
+        let by_agent = kernel.edit_callable_by(&agent, |cb| {
+            if cb.get(DISPATCHER_VIEW_ID) == Some(&verbs) {
+                return false;
+            }
+            cb.insert(DISPATCHER_VIEW_ID.into(), verbs.clone());
+            true
+        });
+        let by_view = kernel.edit_can_call(&view, |cc| {
+            if cc.get(&id) == Some(&verbs) {
+                return false;
+            }
+            cc.insert(id.clone(), verbs.clone());
+            true
+        });
+        match (by_agent, by_view) {
+            (Ok(_), Ok(_)) => granted += 1,
+            (Err(e), _) | (_, Err(e)) => eprintln!("dispatcher chat: `{id}`: {e}"),
+        }
+    }
+    granted
 }
 
 /// Start-up: plan the tree from `team.yaml` in `dir` (if there is one), apply it
@@ -349,6 +403,12 @@ pub fn run_at_start(
             if applied.created.iter().any(|c| c == DISPATCHER_ID) {
                 place_dispatcher(&kernel).await;
             }
+            let workers: Vec<String> = cfg
+                .groups
+                .values()
+                .flat_map(|g| g.members.iter().cloned())
+                .collect();
+            grant_chat(&kernel, &workers);
             if let Some(text) = instructions {
                 if instructions_due(&applied, &cfg.first_agent.id, resend) {
                     deliver_instructions(&kernel, &cfg.first_agent.id, text).await?;
@@ -635,6 +695,70 @@ mod tests {
         assert!(!exists(&kernel, CANVAS_ID));
         place_dispatcher(&kernel).await;
         assert!(!exists(&kernel, "dispatcher_view"));
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn chat_verbs_are_the_chat_ones_only() {
+        assert_eq!(CHAT_VERBS, ["history", "send", "stop", "status", "watch"]);
+        assert!(!CHAT_VERBS.contains(&"*"));
+        assert_eq!(DISPATCHER_VIEW_ID, "dispatcher_view");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatcher_view_may_chat_with_workers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        let canvas = json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
+        let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, canvas)]).await;
+        assert!(
+            matches!(outs[0].status, Status::Completed),
+            "{}",
+            outs[0].result
+        );
+        place_dispatcher(&kernel).await;
+        // a worker and one of its subagents, made as the lead makes them
+        for rec in [
+            json!({"type": "create_agent", "id": "w1", "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"}),
+            json!({"type": "create_agent", "id": "w1_sub", "parent_id": "w1", "handler_module": "ram_store.tools"}),
+        ] {
+            let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, rec)]).await;
+            assert!(
+                matches!(outs[0].status, Status::Completed),
+                "{}",
+                outs[0].result
+            );
+        }
+        let granted = grant_chat(&kernel, &["w1".to_string(), "nobody".to_string()]);
+        assert_eq!(granted, 2);
+        let grants = |id: &str, field: &str| {
+            kernel
+                .agents
+                .get(&fantastic_kernel::AgentId::from(id))
+                .map(|a| a.meta.read().unwrap()[field].clone())
+                .unwrap_or(Value::Null)
+        };
+        for worker in ["w1", "w1_sub"] {
+            assert_eq!(
+                grants(worker, "callable_by")[DISPATCHER_VIEW_ID],
+                json!(CHAT_VERBS),
+                "{worker}"
+            );
+            assert_eq!(
+                grants(DISPATCHER_VIEW_ID, "can_call")[worker],
+                json!(CHAT_VERBS),
+                "{worker}"
+            );
+        }
+        // a second start is idempotent: the same grants, the same count (w1 and its subagent)
+        assert_eq!(grant_chat(&kernel, &["w1".to_string()]), 2);
+        assert_eq!(
+            grants("w1", "callable_by")[DISPATCHER_VIEW_ID],
+            json!(CHAT_VERBS)
+        );
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
