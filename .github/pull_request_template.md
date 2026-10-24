@@ -19,7 +19,7 @@ AISixteen Fantastic Team app open pull requests here (see CONTRIBUTING.md).
 ## Security
 
 - [ ] No key, token or private path in code, tests, docs or commit messages (`scripts/check-secrets.sh .` is clean).
-- [ ] Workers still get no forge credentials and no forge CLIs.
+- [ ] Workers still get no forge credentials, and in the GitHub build (`patches/github-exec.patch`) no forge CLIs.
 
 ## Checks
 

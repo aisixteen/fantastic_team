@@ -5,6 +5,7 @@ Built the way fantastic's `e2e/` is: one folder per test, a plug picks what answ
 ```
 python3 e2e/run.py --only-free          every free test; no network, no key; builds the binary with cargo
 python3 e2e/run.py --only task/one_issue_to_draft_pr --bin PATH
+python3 e2e/run.py --build github --bin PATH   the tests for the GitHub build (default: general)
 python3 e2e/run.py --selftest           the harness proves itself, no binary
 python3 e2e/run.py --list
 ```
@@ -24,8 +25,12 @@ Needs `python3`, `git` (with `git http-backend`) and `openssl` (a throwaway app 
 - `run.py`: the launcher.
 - `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted`); a test never names a model, an endpoint or a key.
 - `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start, stop, `send`, wiring), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks).
-- `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`), `team.yaml`, `script.json` (the scripted plug's turns), `probe.py` (`run(ctx)` returns the exit code).
+- `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`, `build`: `any` (default), `general` or `github`; `run.py --build` runs the tests for `any` and that build), `team.yaml`, `script.json` (the scripted plug's turns), `probe.py` (`run(ctx)` returns the exit code).
 - `runs/`: one folder per run, gitignored (it holds model output).
+
+## Two builds
+
+The general build (stock exec) and the GitHub build (`patches/github-exec.patch`, built by `scripts/build-github.sh`) share the `any` tests. `exec/general_allows_gh` runs on the general binary only; `exec/github_refuses_forge_calls`, `secrets/github_no_credential_in_worker` and `task/github_pr_through_connector` on the GitHub binary only.
 
 ## How a free test runs
 
