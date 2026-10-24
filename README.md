@@ -75,6 +75,15 @@ Results can stay as files in the team's folder. When work belongs somewhere else
 - Delivery agents enforce the rules themselves: no pushes to the default branch, no force-pushes, pull requests as drafts, an allowlist of repositories.
 - You review and merge. The team merges only PRs you approved on their current head (`app-merge`).
 
+## Worker packs
+
+A worker pack is a folder: `pack.yaml` (the manifest: name, version, author, license, price `free`, the sha256 content hash of the other files, an empty signature, the ports the pack needs, and the list of files), `manifest.yaml`, `worker.json` (the record with its model, credentials and other bindings stripped), and `directives/`, `templates/`, `evals/`. The `team_pack.tools` verbs are `pack {worker, out}` and `install {pack, into}`.
+
+- `pack` scans every file before it writes anything (`crates/team/src/pack_scan.rs`). It refuses secrets, directives or templates that ask for a key, read `~/.ssh` or send data out, and any code file (`.rs`, `.py`, `.sh`, executables under `bin/`, …). A refused pack writes nothing and the reply lists each finding by path, rule and line, never the matched text.
+- `install` refuses a pack with no `pack.yaml`, an invalid manifest, a content hash that differs from the files it lists (a tampered file), a scan refusal, or an installed version. It checks all of this before its first write, then copies the pack as a template under `<into>/<name>-<version>/`. It creates no agent. The reply carries the pack's parsed ports (`{"kind": "model" | "connector" | "exec:sandboxed", …}`) so the caller can show what the pack asks for.
+
+Not yet: signatures, running a pack's evals on install, the bindings prompt, and the CLI, MCP and web UI surfaces for these verbs.
+
 ## What is in this repo
 
 | Part | What it is |
