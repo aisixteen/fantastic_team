@@ -26,6 +26,8 @@
   .state-done { color: #15803d; }
   .error { color: #b91c1c; }
   .task { color: #6b7280; }
+  .controls { display: inline-flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+  .controls button { font: inherit; font-size: 0.9em; min-height: 32px; min-width: 52px; padding: 4px 10px; }
   .cell { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
   @media (max-width: 430px) {
     #layout { flex-direction: column; gap: 8px; }
@@ -50,6 +52,8 @@
 // restoring its scroll and the expanded workers the level had. A group with no
 // AI driver also carries `load` {busy, idle, stalled}, shown as a plain line
 // under its title; a group with a driver shows its AI's summary instead.
+// `control {node, action, confirm?}` starts, pauses or stops a worker. A stop
+// asks first (the reply's question); a refusal from the team is shown as an error.
 // Kernel values go in as text only (textContent), never as markup.
 const expanded = new Set();   // workers whose subagents are shown
 const seen = new Set();       // workers already checked against the remembered state
@@ -104,6 +108,15 @@ function workerRow(it) {
   row.appendChild(el('span', 'name', it.id));
   row.appendChild(el('span', stateClass(it.state), it.state));
   if (it.task) row.appendChild(el('span', 'task', it.task));
+  const controls = el('span', 'controls');
+  ['start', 'pause', 'stop'].forEach(function (action) {
+    const b = el('button', '', action.charAt(0).toUpperCase() + action.slice(1));
+    b.type = 'button';
+    b.dataset.control = action;
+    b.dataset.node = it.id;
+    controls.appendChild(b);
+  });
+  row.appendChild(controls);
   return row;
 }
 
@@ -180,6 +193,25 @@ async function loadSidebar() {
   }
 }
 
+// Start, pause or stop one worker. A stop asks first: the team's question is
+// shown with window.confirm, and only a yes sends it again with confirm. A
+// refusal is shown as an error; the sidebar reloads either way.
+async function control(node, action, confirm) {
+  let reply;
+  try {
+    reply = await ask({ type: 'control', node: node, action: action, confirm: !!confirm });
+  } catch (err) {
+    showError(String(err && err.message ? err.message : err));
+    return;
+  }
+  if (reply && reply.question) {
+    if (!window.confirm(reply.question)) return;
+    return control(node, action, true);
+  }
+  await loadSidebar();
+  if (reply && reply.error) showError(reply.error);
+}
+
 function toggleWorker(worker) {
   if (expanded.has(worker)) {
     expanded.delete(worker);
@@ -248,6 +280,8 @@ async function back() {
 }
 
 document.getElementById('sidebar').addEventListener('click', function (e) {
+  const ctl = e.target && e.target.closest ? e.target.closest('[data-control]') : null;
+  if (ctl) { control(ctl.dataset.node, ctl.dataset.control, false); return; }
   const exp = e.target && e.target.closest ? e.target.closest('[data-expander]') : null;
   if (exp) { toggleWorker(exp.dataset.expander); return; }
   const node = e.target && e.target.closest ? e.target.closest('[data-node]') : null;

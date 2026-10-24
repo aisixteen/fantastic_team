@@ -30,13 +30,21 @@ first start only.
   workers were expanded.
 - On a phone (430px wide and under) the sidebar stacks above the content.
 
+**Controls.** Each worker row has Start, Pause and Stop buttons. A button sends
+`control {node, action, confirm}` to the dispatcher. The dispatcher accepts only
+`start`, `pause` and `stop`; any other action is refused and nothing is sent. Stop
+asks for confirmation first: the team's question is shown in a dialog, and a no
+sends nothing. A refusal by the node, or no reply from it, is shown as an error on
+the page, never as sent. The sidebar reloads after each control. Subagents have no
+buttons.
+
 The load numbers (#127) reach the sidebar in its reply. A group with no AI
 driver shows its raw counts under its title (`busy N · idle N · stalled N`); a
 group with a driver shows nothing here, since its AI writes the summary. The
 team gets `load` {tasks, done_last_hour} in the reply, not drawn yet.
 
 The page talks to the dispatcher through fantastic's html connector
-(`fantastic.send('dispatcher', …)`), with the `sidebar` and `open` verbs. Without
+(`fantastic.send('dispatcher', …)`), with the `sidebar`, `open` and `control` verbs. Without
 that connection it says so on one line instead of failing.
 
 ## Build locally
@@ -97,8 +105,8 @@ Not in this slice:
   launcher runs the headless binary as a child process).
 - Dispatcher, what is left (#29, #36): teams on other machines through the
   relay (#47, #49); connections and waiting-for-you panels from real data;
-  start, pause and stop per node in the page (the `control` verb exists, the
-  page does not call it yet); add and remove worker; the board agent in the
+  start, pause and stop for a group or the whole team (the page controls one
+  worker at a time); add and remove worker; the board agent in the
   planned tree (it needs a GitHub connector the lead's tools cannot reach
   from the root yet), so rows come from the team's groups only until then;
   filling the dispatcher's `groups` from team state; cadencer stall flags

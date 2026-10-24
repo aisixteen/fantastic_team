@@ -279,8 +279,21 @@ pub fn open_target(node: &str, kind: &str) -> Value {
     }
 }
 
+/// The only actions the dispatcher sends a node. Anything else is refused here,
+/// before anything is sent.
+pub const CONTROL_ACTIONS: [&str; 3] = ["start", "pause", "stop"];
+
 /// `stop` needs an explicit confirm; anything else is answered with a question.
 pub fn control_reply(node: &str, action: &str, confirm: bool) -> Value {
+    if !CONTROL_ACTIONS.contains(&action) {
+        return json!({
+            "error": format!("team_dispatcher: unknown control action '{action}'"),
+            "sent": false,
+        });
+    }
+    if node.is_empty() {
+        return json!({"error": "team_dispatcher: control needs a node", "sent": false});
+    }
     if action == "stop" && !confirm {
         return json!({
             "question": format!("Stop {node}? Send again with confirm: true."),
@@ -420,7 +433,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
             "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts",
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
             "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher)",
-            "control": "control {node, action: start|pause|stop, confirm?} → {sent} or a question",
+            "control": "control {node, action: start|pause|stop, confirm?} → {sent, error?} (or a question for stop without confirm); the node's refusal or no reply is sent: false with its error",
             "place": "place {canvas} → puts the dispatcher cell on that canvas",
         })
     }
@@ -489,10 +502,26 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                 let action = payload["action"].as_str().unwrap_or("");
                 let confirm = payload["confirm"].as_bool().unwrap_or(false);
                 let reply = control_reply(&node, action, confirm);
-                if reply["sent"] == json!(true) {
-                    peers.ask(&node, json!({"type": action})).await;
+                if reply["sent"] != json!(true) {
+                    return Ok(Some(reply));
                 }
-                reply
+                // The node's own answer decides: a refusal or no reply is not "sent".
+                let peer = peers.ask(&node, json!({"type": action})).await;
+                let peer_error = if peer.is_null() {
+                    Some(json!(format!("team_dispatcher: no reply from '{node}'")))
+                } else {
+                    peer.get("error").filter(|e| !e.is_null()).cloned()
+                };
+                match peer_error {
+                    Some(error) => {
+                        json!({"sent": false, "node": node, "action": action, "error": error})
+                    }
+                    None => {
+                        let mut out = reply;
+                        out["reply"] = peer;
+                        out
+                    }
+                }
             }
             "place" => {
                 let canvas = payload["canvas"]
@@ -846,5 +875,187 @@ mod tests {
         );
         assert!(bare.get("load").is_none());
         assert!(!group_items(&bare, "a").is_empty());
+    }
+
+    #[test]
+    fn control_refuses_actions_outside_start_pause_stop() {
+        for action in ["delete_agent", "reflect"] {
+            let r = control_reply("w1", action, true);
+            assert_eq!(r["sent"], json!(false), "{r}");
+            assert!(r["error"].as_str().is_some(), "{r}");
+        }
+        for action in ["start", "pause"] {
+            assert_eq!(control_reply("w1", action, false)["sent"], json!(true));
+        }
+        let stop = control_reply("w1", "stop", true);
+        assert_eq!(stop["sent"], json!(true), "{stop}");
+        assert_eq!(stop["action"], json!("stop"));
+    }
+
+    const PROBE: &str = "probe_test.tools";
+
+    /// Records every message it gets. It refuses `pause` as an unknown verb.
+    struct ProbeBundle {
+        seen: Arc<std::sync::Mutex<Vec<Value>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl fantastic_kernel::bundle::Bundle for ProbeBundle {
+        fn name(&self) -> &str {
+            PROBE
+        }
+
+        async fn handle(
+            &self,
+            _agent_id: &fantastic_kernel::AgentId,
+            payload: &Value,
+            _kernel: &Arc<fantastic_kernel::Kernel>,
+        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
+        {
+            if payload["type"] == json!("boot") {
+                return Ok(None);
+            }
+            self.seen.lock().unwrap().push(payload.clone());
+            if payload["type"] == json!("pause") {
+                return Ok(Some(json!({"error": "no such verb"})));
+            }
+            Ok(Some(json!({"ok": true})))
+        }
+    }
+
+    /// A kernel booted the way `crate::start` boots, with the probe registered,
+    /// a dispatcher that may call it, and the probe that may be called by it.
+    async fn kernel_with_probe(
+        dir: &std::path::Path,
+        seen: Arc<std::sync::Mutex<Vec<Value>>>,
+    ) -> Arc<fantastic_kernel::Kernel> {
+        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+        use fantastic_kernel::Item;
+        let mut reg = crate::registry();
+        reg.register(PROBE, ProbeBundle { seen });
+        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir)).unwrap();
+        fantastic_kernel::lock::acquire(dir).unwrap();
+        booted.write_seed().unwrap();
+        let kernel = booted.kernel.clone();
+        crate::boot_kernel(&kernel).await.unwrap();
+        for item in [
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
+                "handler_module": HANDLER_MODULE, "can_call": {"probe": "*"}}),
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "probe",
+                "handler_module": PROBE, "callable_by": {"dispatcher": "*"}}),
+        ] {
+            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
+        }
+        kernel
+    }
+
+    async fn ask_kernel(kernel: &Arc<fantastic_kernel::Kernel>, to: &str, payload: Value) -> Value {
+        kernel
+            .send(vec![fantastic_kernel::Item::new(to, payload)])
+            .await
+            .remove(0)
+            .result
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn control_via_kernel_does_not_relay_an_unknown_action() {
+        use fantastic_kernel::bootstrap;
+        let dir = tempfile::TempDir::new().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kernel = kernel_with_probe(dir.path(), seen.clone()).await;
+        let out = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "probe", "action": "delete_agent"}),
+        )
+        .await;
+        assert_eq!(out["sent"], json!(false), "{out}");
+        assert!(out["error"].as_str().is_some(), "{out}");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "{:?}",
+            seen.lock().unwrap()
+        );
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn control_via_kernel_reports_a_peer_refusal() {
+        use fantastic_kernel::bootstrap;
+        let dir = tempfile::TempDir::new().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kernel = kernel_with_probe(dir.path(), seen.clone()).await;
+        let out = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "probe", "action": "pause"}),
+        )
+        .await;
+        assert_eq!(out["sent"], json!(false), "{out}");
+        assert!(
+            out["error"].as_str().unwrap_or("").contains("no such verb"),
+            "{out}"
+        );
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn control_via_kernel_stop_needs_confirm_then_reaches_the_node() {
+        use fantastic_kernel::bootstrap;
+        let dir = tempfile::TempDir::new().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kernel = kernel_with_probe(dir.path(), seen.clone()).await;
+        let asked = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "probe", "action": "stop"}),
+        )
+        .await;
+        assert_eq!(asked["sent"], json!(false), "{asked}");
+        assert!(asked["question"].as_str().is_some(), "{asked}");
+        assert!(seen.lock().unwrap().is_empty());
+        let done = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "probe", "action": "stop", "confirm": true}),
+        )
+        .await;
+        assert_eq!(done["sent"], json!(true), "{done}");
+        assert_eq!(*seen.lock().unwrap(), vec![json!({"type": "stop"})]);
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// The text of one top-level JS function: from its header to the closing
+    /// brace at column zero.
+    fn js_fn(name: &str) -> &'static str {
+        let start = HTML
+            .find(&format!("function {name}("))
+            .unwrap_or_else(|| panic!("no function {name}"));
+        let end = HTML[start..].find("\n}\n").expect("closing brace") + start;
+        &HTML[start..end]
+    }
+
+    #[test]
+    fn html_has_per_worker_controls_that_confirm_stop() {
+        assert!(HTML.contains("type: 'control'"));
+        assert!(HTML.contains("data-control"));
+        assert!(HTML.contains("confirm:"));
+        assert!(HTML.contains("window.confirm("));
+        // The buttons exist in the worker row only, never on a subagent row.
+        let worker = js_fn("workerRow");
+        assert!(worker.contains("dataset.control"), "{worker}");
+        assert!(worker.contains("el('button'"), "{worker}");
+        assert!(!js_fn("subRow").contains("dataset.control"));
+        // The click handler routes a control button before it opens a node.
+        let click = HTML
+            .find("addEventListener('click'")
+            .expect("click handler");
+        let handler = &HTML[click..];
+        let control_at = handler.find("[data-control]").expect("control in handler");
+        let node_at = handler.find("[data-node]").expect("node in handler");
+        assert!(control_at < node_at, "control must be routed first");
     }
 }

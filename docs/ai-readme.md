@@ -31,6 +31,7 @@ as a full-screen chat, and Back returns to the sidebar with its scroll and
 expansion kept. The dispatcher is placed on `canvas_page` at the first start
 only. It reads no secrets and sends no work. The `sidebar` verb answers the
 list; `open` answers the chat for one agent (`view: chat`, `target`, `fullscreen`).
+`control {node, action, confirm?}` sends start, pause or stop to a worker (any other action is refused); stop needs `confirm: true`, and the answer is `{sent, error?}`.
 
 ## 3. team.yaml
 
