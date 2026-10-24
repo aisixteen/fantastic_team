@@ -209,6 +209,14 @@ fn readme_describes_the_pack_surfaces() {
         text.contains("`pack_listing`"),
         "README must name the listing agent"
     );
+    assert!(
+        text.contains("without a final newline"),
+        "README must say packed files lose their final newline"
+    );
+    assert!(
+        text.contains("exits non-zero when it carries an `error`"),
+        "README must say the CLI exit code reflects a verb error"
+    );
 }
 
 #[test]

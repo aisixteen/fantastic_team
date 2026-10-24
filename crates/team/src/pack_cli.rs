@@ -168,16 +168,46 @@ pub fn parse(args: &[String]) -> Result<(String, Value), String> {
     Ok((verb.agent.to_string(), payload))
 }
 
+/// The verb-level error in the row `send` prints (`{pid, status, result}`), if
+/// the reply carries one: `result.error`, or a top-level `error`.
+pub fn reply_error(stdout: &str) -> Option<String> {
+    let row: Value = serde_json::from_str(stdout.trim()).ok()?;
+    let err = row
+        .get("result")
+        .and_then(|r| r.get("error"))
+        .or_else(|| row.get("error"))?;
+    Some(match err.as_str() {
+        Some(s) => s.to_string(),
+        None => err.to_string(),
+    })
+}
+
 /// Run `packs` from the command line: the verb goes to its agent through
 /// fantastic's `send`, which needs the team's kernel running in this directory.
-/// `send` prints the item's row (the reply is under `result`) and exits; its
-/// exit code is 0 when the item completed, so a verb-level `error` in the reply
-/// is printed but does not change the exit code.
+/// `send` exits the process itself and exits 0 whenever the item completed, so
+/// it runs as a child of this binary; its row is printed as it came, and a
+/// verb-level `error` in the reply (or a failed `send`) is returned as Err, which
+/// the caller turns into a non-zero exit.
 pub fn run_cli(args: &[String]) -> Result<(), String> {
+    use std::io::Write as _;
     let (agent, payload) = parse(args)?;
     let item = json!({"target": agent, "payload": payload}).to_string();
-    let extras: &[fantastic_tui::Extra] = &[crate::register_team];
-    fantastic_tui::main_with(vec!["send".to_string(), item], extras).map_err(|e| e.to_string())
+    let exe = std::env::current_exe().map_err(|e| format!("packs: no executable path: {e}"))?;
+    let out = std::process::Command::new(exe)
+        .arg("send")
+        .arg(item)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| format!("packs: could not run send: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let _ = write!(std::io::stdout(), "{stdout}");
+    if let Some(e) = reply_error(&stdout) {
+        return Err(format!("packs: {e}"));
+    }
+    if !out.status.success() {
+        return Err(format!("packs: send failed ({})", out.status));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -281,6 +311,17 @@ mod tests {
                 json!({"type": "eval", "pack": "pack", "worker": "w", "timeout_s": 5})
             )
         );
+    }
+
+    #[test]
+    fn reply_error_finds_a_verb_level_error() {
+        let bad = r#"{"pid": 1, "status": "completed", "result": {"error": "no such pack"}}"#;
+        assert_eq!(reply_error(bad).as_deref(), Some("no such pack"));
+        let top = r#"{"status": "failed", "error": {"code": 3}}"#;
+        assert!(reply_error(top).is_some());
+        let ok = r#"{"pid": 1, "status": "completed", "result": {"packs": []}}"#;
+        assert_eq!(reply_error(ok), None);
+        assert_eq!(reply_error("not json"), None);
     }
 
     #[test]
