@@ -966,7 +966,7 @@ mod tests {
         let out = ask_kernel(
             &kernel,
             "dispatcher",
-            json!({"type": "control", "node": "probe", "action": "delete_agent"}),
+            json!({"type": "control", "node": "probe", "action": "frobnicate"}),
         )
         .await;
         assert_eq!(out["sent"], json!(false), "{out}");
