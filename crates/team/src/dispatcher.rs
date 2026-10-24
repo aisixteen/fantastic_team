@@ -259,7 +259,10 @@ pub fn sidebar(
 }
 
 /// The full-screen chat for one agent (a worker or a subagent). The chat targets
-/// that agent alone; Back returns to the sidebar.
+/// that agent alone; Back returns to the sidebar. The page streams the chat
+/// itself, over the chat verbs granted by `tree::grant_chat`: it loads the history,
+/// sends, stops and watches the parts. This reply only names the target and the
+/// cell that is drawn.
 pub fn chat_open(node: &str) -> Value {
     json!({
         "view": "chat",
@@ -822,6 +825,32 @@ mod tests {
     }
 
     #[test]
+    fn html_draws_team_load_footer() {
+        // The team load the sidebar reply carries is drawn as a footer row.
+        assert!(
+            HTML.contains("reply.load"),
+            "the page never reads reply.load"
+        );
+        // The row is created with the team-load class and the footer text.
+        assert!(HTML.contains("el('div', 'team-load'"));
+        assert!(HTML.contains(" · done last hour ' + num(reply.load.done_last_hour)"));
+        for key in ["held", "in_review", "done", "blocked", "queued"] {
+            assert!(
+                HTML.contains(&format!("tasks.{key}")),
+                "no tasks.{key} in the footer"
+            );
+        }
+    }
+
+    #[test]
+    fn html_team_load_footer_is_text_only_and_optional() {
+        // Without a load from the board, no footer row is drawn.
+        assert!(HTML.contains("if (reply && reply.load"));
+        // The footer is text only, like the rest of the page.
+        assert!(!HTML.contains("innerHTML"));
+    }
+
+    #[test]
     fn sidebar_shows_raw_load_for_groups_without_ai_only() {
         let mut groups = BTreeMap::new();
         groups.insert("a".to_string(), vec!["w1".to_string()]);
@@ -1049,5 +1078,64 @@ mod tests {
         let control_at = handler.find("[data-control]").expect("control in handler");
         let node_at = handler.find("[data-node]").expect("node in handler");
         assert!(control_at < node_at, "control must be routed first");
+    }
+
+    #[test]
+    fn dispatcher_page_streams_chat() {
+        // The chat runs over the chat verbs and the part events of the target agent.
+        for needle in [
+            "type: 'history'",
+            "type: 'send'",
+            "type: 'stop'",
+            "fantastic.watch(",
+            "'part_start'",
+            "'part_delta'",
+            "'part_end'",
+            "'part_abort'",
+            "'done'",
+        ] {
+            assert!(HTML.contains(needle), "the page has no {needle}");
+        }
+        let show = js_fn("showChat");
+        assert!(show.contains("loadHistory("), "{show}");
+        assert!(show.contains("watchNode("), "{show}");
+        assert!(js_fn("sendChat").contains("type: 'send'"));
+        assert!(js_fn("stopChat").contains("type: 'stop'"));
+    }
+
+    #[test]
+    fn dispatcher_page_chat_uses_textcontent() {
+        // Streamed and history text is data: it is drawn as text, never as markup.
+        assert!(!HTML.contains("innerHTML"));
+        assert!(!HTML.contains("insertAdjacentHTML"));
+        assert!(js_fn("onChatEvent").contains("textContent"));
+        assert!(js_fn("bubble").contains("el('div'"), "{}", js_fn("bubble"));
+    }
+
+    #[test]
+    fn dispatcher_page_unwatches_on_back() {
+        // Leaving the chat (Back, or the sidebar) drops the watch and the drafts.
+        assert!(js_fn("hideChat").contains("dropChat()"));
+        assert!(js_fn("back").contains("hideChat()"));
+        let drop = js_fn("dropChat");
+        assert!(drop.contains("c.off()"), "{drop}");
+        assert!(drop.contains("drafts.clear()"), "{drop}");
+    }
+
+    #[test]
+    fn dispatcher_page_reopen_drops_the_old_chat_first() {
+        // A second open must not stack a second watch or draw the stream twice.
+        let show = js_fn("showChat");
+        let drop_at = show
+            .find("dropChat()")
+            .expect("showChat drops the old chat");
+        let watch_at = show.find("watchNode(").expect("showChat watches");
+        assert!(drop_at < watch_at, "{show}");
+    }
+
+    #[test]
+    fn dispatcher_page_ask_node_is_generic_and_ask_is_unchanged() {
+        assert!(js_fn("askNode").contains("fantastic.send(id, payload)"));
+        assert!(js_fn("ask").contains("fantastic.send('dispatcher', payload)"));
     }
 }
