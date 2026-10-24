@@ -349,6 +349,20 @@ pub struct Live {
     pub inquiry: Option<String>,
     /// The time of its newest conversation row, unix seconds, when known.
     pub newest_row: Option<u64>,
+    /// Its cumulative token count (prompt plus output) from its `reflect` usage.
+    pub tokens: u64,
+}
+
+/// Seconds without activity after which a worker holding a task is stalled:
+/// the cadencer's default `stall_after`.
+pub const DEFAULT_STALL_AFTER_S: u64 = 300;
+/// The window the throughput figure counts over, seconds.
+pub const LOAD_WINDOW_S: u64 = 3600;
+
+/// A worker is stalled only while holding a task and idle past the threshold.
+/// The one definition: the cadencer's digest lines and the load counts use it.
+pub fn is_stalled(holds_task: bool, idle_s: u64, stall_after_s: u64) -> bool {
+    holds_task && idle_s >= stall_after_s
 }
 
 /// One row per agent the board knows, in the shape `cadence_feed::tree_from_board` reads.
@@ -455,6 +469,94 @@ fn agent_rows(board: &Board, live: &BTreeMap<String, Live>, now: u64) -> Vec<Val
 /// How an inquiry's first row begins (ai-core's `inquiry_head`).
 const INQUIRY_HEAD: &str = "[inquiry from ";
 
+/// Worker counts: busy, idle and stalled. Each worker is counted once.
+#[derive(Default)]
+struct Workers {
+    busy: u64,
+    idle: u64,
+    stalled: u64,
+}
+
+impl Workers {
+    fn of<'a>(rows: impl Iterator<Item = &'a Value>, stall_after_s: u64) -> Self {
+        let mut w = Workers::default();
+        for r in rows.filter(|r| r["state"].as_str() != Some("group")) {
+            let holds = !r["task"].as_str().unwrap_or("").is_empty();
+            let idle_s = r["idle_s"].as_u64().unwrap_or(0);
+            if is_stalled(holds, idle_s, stall_after_s) {
+                w.stalled += 1;
+            } else if r["state"].as_str() == Some("busy") {
+                w.busy += 1;
+            } else {
+                w.idle += 1;
+            }
+        }
+        w
+    }
+
+    fn json(&self) -> Value {
+        json!({"busy": self.busy, "idle": self.idle, "stalled": self.stalled})
+    }
+}
+
+/// The load the board and the cadencer already hold, as plain integer counts.
+/// Pure: reads the board, the groups, the live data and `now`. It has no mode,
+/// no total and no label; the owning agent decides what to show.
+///
+/// Shape: `workers` and `groups.<name>` are {busy, idle, stalled}; `tasks` is
+/// {held, in_review, done, blocked, queued}; `done_last_hour` counts Done tasks
+/// updated inside `LOAD_WINDOW_S`; `tokens_total` is the cumulative token count
+/// of the group drivers only (the cadencer turns its change into tokens per hour;
+/// workers' tokens are not counted). `groups.<g>.driver` is the group's driver id,
+/// empty when it has none.
+/// `waiting_ci` is absent on purpose: it needs a GitHub `pr_status` poll, which
+/// the load view does not make.
+pub fn load_numbers(
+    board: &Board,
+    groups: &BTreeMap<String, Group>,
+    live: &BTreeMap<String, Live>,
+    now: u64,
+    stall_after_s: u64,
+) -> Value {
+    let rows = rows_from(board, groups, live, now);
+    let mut group_load = serde_json::Map::new();
+    for gname in groups.keys() {
+        let members = rows
+            .iter()
+            .filter(|r| r["parent"].as_str() == Some(gname.as_str()));
+        let mut g = Workers::of(members, stall_after_s).json();
+        g["driver"] = json!(groups[gname].driver);
+        group_load.insert(gname.clone(), g);
+    }
+    let drivers: BTreeSet<&str> = groups
+        .values()
+        .map(|g| g.driver.as_str())
+        .filter(|d| !d.is_empty())
+        .collect();
+    let driver_tokens: u64 = live
+        .iter()
+        .filter(|(name, _)| drivers.contains(name.as_str()))
+        .map(|(_, l)| l.tokens)
+        .sum();
+    let tasks = board.tasks.values();
+    let count = |f: &dyn Fn(&Task) -> bool| tasks.clone().filter(|t| f(t)).count() as u64;
+    let done_last_hour =
+        count(&|t| t.status == Status::Done && now.saturating_sub(t.updated) < LOAD_WINDOW_S);
+    json!({
+        "workers": Workers::of(rows.iter(), stall_after_s).json(),
+        "groups": group_load,
+        "tasks": {
+            "held": count(&|t| t.status == Status::InWork),
+            "in_review": count(&|t| t.status == Status::Done && t.pr.is_some()),
+            "done": count(&|t| t.status == Status::Done),
+            "blocked": count(&|t| t.status == Status::Failed),
+            "queued": count(&|t| t.status == Status::Pending),
+        },
+        "done_last_hour": done_last_hour,
+        "tokens_total": driver_tokens,
+    })
+}
+
 fn content_of(row: &Value) -> &str {
     row["content"].as_str().unwrap_or("")
 }
@@ -512,11 +614,14 @@ async fn live_of(peers: &dyn Peers, name: &str, driver: &str) -> Live {
     let reflect = peers.ask(name, json!({"type": "reflect"})).await;
     let history = peers.ask(name, json!({"type": "rows"})).await;
     let rows: Vec<Value> = history["rows"].as_array().cloned().unwrap_or_default();
+    let usage = &reflect["usage"];
     Live {
         generating: status["status"].as_str() == Some("generating"),
         cache_hit: reflect["cache_hit"].as_f64().unwrap_or(0.0),
         inquiry: open_inquiry(&rows, driver),
         newest_row: newest_row(&rows),
+        tokens: usage["prompt_tokens"].as_u64().unwrap_or(0)
+            + usage["output_tokens"].as_u64().unwrap_or(0),
     }
 }
 
@@ -682,6 +787,10 @@ async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Valu
             let mut names: BTreeSet<String> = board.agents.keys().cloned().collect();
             for g in cfg.groups.values() {
                 names.extend(g.members.iter().cloned());
+                // A driver is read even when it is in no group's members.
+                if !g.driver.is_empty() {
+                    names.insert(g.driver.clone());
+                }
             }
             for name in &names {
                 let driver = cfg
@@ -692,7 +801,11 @@ async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Valu
                     .unwrap_or("");
                 live.insert(name.clone(), live_of(peers, name, driver).await);
             }
-            json!({"rows": rows_from(&board, &cfg.groups, &live, now)})
+            let stall_after_s = p["stall_after_s"].as_u64().unwrap_or(DEFAULT_STALL_AFTER_S);
+            json!({
+                "rows": rows_from(&board, &cfg.groups, &live, now),
+                "load": load_numbers(&board, &cfg.groups, &live, now, stall_after_s),
+            })
         }
         "task" => {
             let id = p["id"].as_str().unwrap_or("");
@@ -1236,5 +1349,221 @@ mod tests {
         assert_eq!(m1["parent"], "g1");
         kernel.shutdown().await;
         crate::bootstrap::shutdown(dir.path()).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod load_tests {
+    use super::*;
+
+    const NOW: u64 = 10_000;
+
+    fn task(id: &str, status: Status, claimers: &[&str], pr: Option<&str>, updated: u64) -> Task {
+        Task {
+            id: id.into(),
+            title: String::new(),
+            status,
+            claimers: claimers.iter().map(|c| c.to_string()).collect(),
+            pr: pr.map(str::to_string),
+            note: None,
+            updated,
+        }
+    }
+
+    /// One pending, two in work, three done (two with a PR), one failed.
+    /// Group g1 has w1 (busy, fresh) and w2 (holds a task, silent 400s: stalled).
+    /// Group g2 has w3 (idle, fresh).
+    fn fixed_board() -> (Board, BTreeMap<String, Group>) {
+        let mut b = Board::default();
+        let rows = [
+            task("o/r#1", Status::Pending, &[], None, NOW - 5),
+            task("o/r#2", Status::InWork, &["w1"], None, NOW - 10),
+            task("o/r#3", Status::InWork, &["w2"], None, NOW - 10),
+            task("o/r#4", Status::Done, &["w1"], Some("p4"), NOW - 100),
+            task("o/r#5", Status::Done, &["w1"], Some("p5"), NOW - 200),
+            task("o/r#6", Status::Done, &["w3"], None, NOW - 4000),
+            task("o/r#7", Status::Failed, &["w3"], None, NOW - 50),
+        ];
+        for t in rows {
+            b.tasks.insert(t.id.clone(), t);
+        }
+        b.touch_agent("w1", "working", 0.0, NOW - 1);
+        b.touch_agent("w2", "working", 0.0, NOW - 400);
+        b.touch_agent("w3", "waiting", 0.0, NOW - 5);
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            "g1".to_string(),
+            Group {
+                driver: "d1".into(),
+                members: vec!["w1".into(), "w2".into()],
+            },
+        );
+        groups.insert(
+            "g2".to_string(),
+            Group {
+                driver: String::new(),
+                members: vec!["w3".into()],
+            },
+        );
+        (b, groups)
+    }
+
+    #[test]
+    fn load_counts_from_a_fixed_board() {
+        let (b, groups) = fixed_board();
+        let load = load_numbers(&b, &groups, &BTreeMap::new(), NOW, 300);
+        assert_eq!(load["tasks"]["held"], 2);
+        assert_eq!(load["tasks"]["queued"], 1);
+        assert_eq!(load["tasks"]["done"], 3);
+        assert_eq!(load["tasks"]["in_review"], 2);
+        assert_eq!(load["tasks"]["blocked"], 1);
+        assert_eq!(load["groups"]["g1"]["busy"], 1);
+        assert_eq!(load["groups"]["g1"]["stalled"], 1);
+        assert_eq!(load["groups"]["g1"]["idle"], 0);
+        assert_eq!(load["groups"]["g2"]["idle"], 1);
+        assert_eq!(load["groups"]["g2"]["busy"], 0);
+    }
+
+    #[test]
+    fn stalled_worker_is_stalled_not_busy() {
+        let (b, groups) = fixed_board();
+        let load = load_numbers(&b, &groups, &BTreeMap::new(), NOW, 300);
+        assert_eq!(load["workers"]["stalled"], 1);
+        assert_eq!(load["workers"]["busy"], 1, "w1 holds a task but is fresh");
+        assert_eq!(load["workers"]["idle"], 1);
+        let w = load["workers"]["busy"].as_u64().unwrap()
+            + load["workers"]["idle"].as_u64().unwrap()
+            + load["workers"]["stalled"].as_u64().unwrap();
+        assert_eq!(w, 3, "every worker is counted once");
+    }
+
+    #[test]
+    fn throughput_counts_only_tasks_done_in_the_window() {
+        let mut b = Board::default();
+        b.tasks.insert(
+            "o/r#1".into(),
+            task("o/r#1", Status::Done, &["w1"], Some("p1"), NOW - 100),
+        );
+        b.tasks.insert(
+            "o/r#2".into(),
+            task("o/r#2", Status::Done, &["w1"], Some("p2"), NOW - 4000),
+        );
+        b.tasks.insert(
+            "o/r#3".into(),
+            task("o/r#3", Status::InWork, &["w1"], None, NOW - 10),
+        );
+        b.tasks.insert(
+            "o/r#4".into(),
+            task(
+                "o/r#4",
+                Status::Done,
+                &["w1"],
+                Some("p4"),
+                NOW - LOAD_WINDOW_S,
+            ),
+        );
+        let load = load_numbers(&b, &BTreeMap::new(), &BTreeMap::new(), NOW, 300);
+        assert_eq!(load["done_last_hour"], 1);
+    }
+
+    #[test]
+    fn load_numbers_has_integer_leaves_only() {
+        fn walk(v: &Value, path: &str) {
+            match v {
+                Value::Object(m) => {
+                    for (k, child) in m {
+                        assert!(k != "total" && k != "of", "forbidden key {k} at {path}");
+                        walk(child, &format!("{path}/{k}"));
+                    }
+                }
+                Value::Number(n) => assert!(n.is_u64(), "non-integer at {path}: {n}"),
+                // A group's driver id is the one string: data, empty for none.
+                Value::String(_) if path.ends_with("/driver") => {}
+                other => panic!("non-integer leaf at {path}: {other}"),
+            }
+        }
+        let (b, groups) = fixed_board();
+        let load = load_numbers(&b, &groups, &BTreeMap::new(), NOW, 300);
+        walk(&load, "");
+    }
+
+    /// A board for the token tests: group g1 has driver `d` and member `w`, the
+    /// driverless group g2 has member `x`. `d` is not a member of any group.
+    fn token_groups() -> BTreeMap<String, Group> {
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            "g1".to_string(),
+            Group {
+                driver: "d".into(),
+                members: vec!["w".into()],
+            },
+        );
+        groups.insert(
+            "g2".to_string(),
+            Group {
+                driver: String::new(),
+                members: vec!["x".into()],
+            },
+        );
+        groups
+    }
+
+    #[test]
+    fn load_numbers_tokens_total_counts_only_group_drivers() {
+        let groups = token_groups();
+        let mut live = BTreeMap::new();
+        live.insert(
+            "d".to_string(),
+            Live {
+                tokens: 500,
+                ..Live::default()
+            },
+        );
+        live.insert(
+            "w".to_string(),
+            Live {
+                tokens: 900,
+                ..Live::default()
+            },
+        );
+        live.insert(
+            "x".to_string(),
+            Live {
+                tokens: 40,
+                ..Live::default()
+            },
+        );
+        let load = load_numbers(&Board::default(), &groups, &live, NOW, 300);
+        assert_eq!(load["tokens_total"], 500);
+    }
+
+    /// Answers the board's reads: each agent's `reflect` usage, and no store file.
+    struct TokenPeers;
+
+    #[async_trait::async_trait]
+    impl Peers for TokenPeers {
+        async fn ask(&self, to: &str, p: Value) -> Value {
+            match (to, p["type"].as_str().unwrap_or("")) {
+                ("store", "read") => json!({"error": "not found"}),
+                ("d", "reflect") => json!({"usage": {"prompt_tokens": 300, "output_tokens": 200}}),
+                ("w", "reflect") => json!({"usage": {"prompt_tokens": 600, "output_tokens": 300}}),
+                (_, "rows") => json!({"rows": []}),
+                _ => json!({"reply": "noted"}),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rows_handler_reads_the_driver_even_if_not_a_member() {
+        let cfg = BoardCfg {
+            repos: Vec::new(),
+            github: "gh".into(),
+            store: "store".into(),
+            ask_to: "user".into(),
+            stale_secs: 1800,
+            groups: token_groups(),
+        };
+        let out = dispatch(&TokenPeers, &cfg, "rows", &json!({"type": "rows"})).await;
+        assert_eq!(out["load"]["tokens_total"], 500);
     }
 }
