@@ -48,6 +48,34 @@ pub struct TeamConfig {
     /// The credential store the team creates when it has none.
     #[serde(default)]
     pub credentials: Option<CredentialStore>,
+    /// The team's groups, by name: an optional AI driver and the worker ids in it.
+    #[serde(default)]
+    pub groups: BTreeMap<String, GroupCfg>,
+    /// The board: the repos it caches and the GitHub connector that reads them.
+    #[serde(default)]
+    pub board: Option<BoardCfg>,
+}
+
+/// A group of the team: its AI driver (none when absent) and its members.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupCfg {
+    /// The agent that receives the group's digest. Absent for a group with no AI.
+    #[serde(default)]
+    pub driver: Option<String>,
+    /// The worker ids in the group.
+    #[serde(default)]
+    pub members: Vec<String>,
+}
+
+/// The board section: what it caches and through which connector.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoardCfg {
+    /// The repos to cache, `owner/name`.
+    pub repos: Vec<String>,
+    /// The GitHub connector's id (a connector of this file).
+    pub github: String,
 }
 
 /// An agent template: the record fields of an AI agent, as data.
@@ -248,6 +276,35 @@ pub fn validate(cfg: &TeamConfig) -> Result<(), String> {
                         r.store, s.id
                     ));
                 }
+            }
+        }
+    }
+    for (g, grp) in &cfg.groups {
+        if g.trim().is_empty() {
+            return Err("group name is empty".into());
+        }
+        if *g == cfg.first_agent.id {
+            return Err(format!("group `{g}`: the name is the first agent's id"));
+        }
+        if grp.driver.as_deref().is_some_and(|d| d.trim().is_empty()) {
+            return Err(format!("group `{g}`: driver is empty"));
+        }
+        if grp.members.iter().any(|m| m.trim().is_empty()) {
+            return Err(format!("group `{g}`: a member id is empty"));
+        }
+    }
+    if let Some(b) = &cfg.board {
+        if !cfg.connectors.contains_key(&b.github) {
+            return Err(format!("board: github `{}` is not a connector", b.github));
+        }
+        if b.repos.is_empty() {
+            return Err("board: repos needs at least one owner/name".into());
+        }
+        for r in &b.repos {
+            let parts: Vec<&str> = r.split('/').collect();
+            let ok = parts.len() == 2 && parts.iter().all(|p| !p.trim().is_empty());
+            if !ok {
+                return Err(format!("board: repo `{r}` is not owner/name"));
             }
         }
     }
@@ -631,5 +688,43 @@ mod tests {
     fn a_missing_file_is_named() {
         let e = load(Path::new("/nonexistent/team.yaml")).unwrap_err();
         assert!(e.starts_with("cannot read /nonexistent/team.yaml: "));
+    }
+
+    #[test]
+    fn groups_reject_empty_member_and_unknown_keys() {
+        let g = |body: &str| parse(&format!("{MIN}groups:\n  a:\n{body}"));
+        let e = g("    members: [\"\"]\n").unwrap_err();
+        assert_eq!(e, "group `a`: a member id is empty");
+        let e = g("    driver: \"\"\n").unwrap_err();
+        assert_eq!(e, "group `a`: driver is empty");
+        let e = g("    members: [w1]\n    colour: red\n").unwrap_err();
+        assert!(e.contains("unknown field `colour`"), "{e}");
+        let e = parse(&format!("{MIN}groups:\n  lead:\n    members: [w1]\n")).unwrap_err();
+        assert_eq!(e, "group `lead`: the name is the first agent's id");
+        let ok = parse(&format!(
+            "{MIN}groups:\n  a:\n    driver: d\n    members: [w1]\n"
+        ))
+        .unwrap();
+        assert_eq!(ok.groups["a"].driver.as_deref(), Some("d"));
+        assert_eq!(ok.groups["a"].members, ["w1"]);
+    }
+
+    #[test]
+    fn board_names_a_known_connector_and_repos() {
+        let with = |board: &str| {
+            parse(&format!(
+                "{MIN}connectors:\n  git:\n    kind: team_github.tools\nboard:\n{board}"
+            ))
+        };
+        let ok = with("  repos: [o/r]\n  github: git\n").unwrap();
+        assert_eq!(ok.board.as_ref().unwrap().repos, ["o/r"]);
+        let e = with("  repos: [o/r]\n  github: gh\n").unwrap_err();
+        assert_eq!(e, "board: github `gh` is not a connector");
+        let e = with("  repos: []\n  github: git\n").unwrap_err();
+        assert_eq!(e, "board: repos needs at least one owner/name");
+        let e = with("  repos: [o]\n  github: git\n").unwrap_err();
+        assert_eq!(e, "board: repo `o` is not owner/name");
+        let e = with("  repos: [o/r]\n  github: git\n  ask_to: me\n").unwrap_err();
+        assert!(e.contains("unknown field `ask_to`"), "{e}");
     }
 }
