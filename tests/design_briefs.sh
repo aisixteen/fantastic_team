@@ -181,5 +181,32 @@ if [ -f "$f" ] && grep -q '^<!-- template: design-briefs' "$f" && ! grep -qiE 'l
     ok template_names_the_rules_and_screens
 else bad template_names_the_rules_and_screens "template missing or incomplete: $f"; fi
 
+# 8. committed_design_dir_is_valid — the design/ this repo commits (the first run of the task).
+D="$ROOT/design"
+sh "$G" --check "$D" >"$R" 2>&1
+rc=$?
+missing=
+for n in 00-overview 01-dispatcher 02-group-canvas 03-worker-canvas 04-escalations 05-connections 06-settings 07-phone; do
+    if [ -f "$D/$n.md" ] && grep -q "^| $n |" "$D/manifest.md" 2>/dev/null; then :; else missing="$missing $n"; fi
+done
+if [ "$rc" = 0 ] && [ -z "$missing" ] && [ ! -e "$D/html" ]; then
+    ok committed_design_dir_is_valid
+else bad committed_design_dir_is_valid "rc=$rc missing=$missing out=$(cat "$R")"; fi
+
+# 9. committed_design_resync_is_idempotent — re-staging the committed briefs at the manifest's commit changes nothing.
+C="$T/resync"
+rm -rf "$C"
+mkdir -p "$C/staging"
+cp -R "$D" "$C/design" 2>/dev/null
+commit=$(sed -n 's/^source commit: //p' "$C/design/manifest.md" 2>/dev/null)
+for f in "$C"/design/[0-9][0-9]-*.md; do
+    [ -f "$f" ] && cp "$f" "$C/staging/"
+done
+DESIGN_SYNC_DATE=2026-10-24 sh "$G" --app fantastic_team --commit "$commit" --staging "$C/staging" --out "$C/design" >"$R" 2>&1
+rc=$?
+if [ "$rc" = 0 ] && [ "$(cat "$R")" = "no change" ] && [ -d "$D" ] && diff -r "$D" "$C/design" >/dev/null 2>&1; then
+    ok committed_design_resync_is_idempotent
+else bad committed_design_resync_is_idempotent "rc=$rc out=$(cat "$R")"; fi
+
 echo "design_briefs: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
