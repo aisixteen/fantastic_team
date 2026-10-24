@@ -26,6 +26,7 @@ pub mod puller;
 pub mod repo_config;
 pub mod setup_github;
 pub mod tree;
+pub mod watchdog;
 pub mod webhook;
 pub mod worker_view;
 
