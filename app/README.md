@@ -4,6 +4,24 @@
 macOS, Windows and Linux. The window loads the local web UI on
 `127.0.0.1` only; no frontend is bundled.
 
+## The home screen
+
+The dispatcher is the team's main view: one tree of the team, its groups and
+their workers. It is planned at start (agent `dispatcher`, under the root) and
+placed on the canvas by the first start only. A row shows the worker's state,
+task, minutes and cost; a stalled worker reads `stalled N min`.
+
+- A click on a group or the team shows that node's level alone (a group
+  shows its workers with no team layer above them), and pushes the place
+  it left.
+- A click on a worker opens its view: its cells, chat last.
+- Back pops the place and restores the scroll position it left.
+- On a phone (430px wide and under) the rows stack in one column.
+
+The page talks to the dispatcher through fantastic's html connector
+(`fantastic.send('dispatcher', …)`). Without that connection it says so
+on one line instead of failing.
+
 ## Build locally
 
 The launcher (`crates/team_app`, binary `fantastic_team_app`) starts the
@@ -54,7 +72,15 @@ Not in this slice:
   launcher's `web_url`.
 - In-process home kernel through `TeamHandle` once #87 merges (today the
   launcher runs the headless binary as a child process).
-- Board and worker views as the home screen (#29, #36).
+- Dispatcher, what is left (#29, #36): teams on other machines through the
+  relay (#47, #49); connections and waiting-for-you panels from real data;
+  start, pause and stop per node in the page (the `control` verb exists, the
+  page does not call it yet); add and remove worker; the board agent in the
+  planned tree (it needs a GitHub connector the lead's tools cannot reach
+  from the root yet), so rows come from the team's groups only until then;
+  filling the dispatcher's `groups` from team state; cadencer stall flags
+  (#57); the Tauri window loading the dispatcher instead of the canvas; the
+  in-process kernel (#87); a real browser check of the page.
 - GitHub app setup UI (#30).
 - Remote attach through a tunnel (#21).
 - Mobile.

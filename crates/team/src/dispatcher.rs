@@ -152,15 +152,55 @@ pub fn control_reply(node: &str, action: &str, confirm: bool) -> Value {
     json!({"sent": true, "node": node, "action": action})
 }
 
-/// Read the tree of a team from its board and its declared groups.
-async fn tree_of(
+/// What a node is: the team itself, one of its groups, or otherwise a worker.
+/// `tree` and `open` both classify through this, so they agree.
+pub fn kind_of(node: &str, team: &str, groups: &BTreeMap<String, Vec<String>>) -> &'static str {
+    if node == team {
+        "team"
+    } else if groups.contains_key(node) {
+        "group"
+    } else {
+        "worker"
+    }
+}
+
+/// The subtree a click shows. The team is the whole tree; a group is the group
+/// with its own workers (no team layer above it); a worker is its row. An id
+/// that is no worker of the team is an error, not an empty tree.
+pub fn subtree(
+    team: &str,
+    groups: &BTreeMap<String, Vec<String>>,
+    rows: &[Row],
+    node: &str,
+) -> Value {
+    match kind_of(node, team, groups) {
+        "team" => build_tree(team, groups, rows),
+        "group" => {
+            let kids: Vec<Value> = groups
+                .get(node)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|m| rows.iter().find(|r| &r.id == m))
+                .map(|r| json!({"kind": "worker", "row": r}))
+                .collect();
+            json!({"kind": "group", "id": node, "children": kids})
+        }
+        _ => match rows.iter().find(|r| r.id == node) {
+            Some(r) => json!({"kind": "worker", "row": r}),
+            None => json!({"error": format!("dispatcher: unknown node '{node}'")}),
+        },
+    }
+}
+
+/// The rows of every worker the team knows: those in its groups and those on the board.
+async fn rows_of(
     peers: &dyn Peers,
     board: &str,
-    team: &str,
     groups: &BTreeMap<String, Vec<String>>,
     limit: u64,
     now: u64,
-) -> Value {
+) -> Vec<Row> {
     let snap = peers.ask(board, json!({"type": "board"})).await;
     let mut ids: Vec<String> = groups.values().flatten().cloned().collect();
     if let Some(agents) = snap["agents"].as_object() {
@@ -170,13 +210,20 @@ async fn tree_of(
             }
         }
     }
-    let rows: Vec<Row> = ids.iter().map(|w| row_of(w, &snap, now, limit)).collect();
-    build_tree(team, groups, &rows)
+    ids.iter().map(|w| row_of(w, &snap, now, limit)).collect()
+}
+
+/// The group a worker belongs to, if any (its view cycles within that group).
+fn group_of_worker(node: &str, groups: &BTreeMap<String, Vec<String>>) -> Option<String> {
+    groups
+        .iter()
+        .find(|(_, members)| members.iter().any(|m| m == node))
+        .map(|(g, _)| g.clone())
 }
 
 fn groups_of(meta: &serde_json::Map<String, Value>) -> BTreeMap<String, Vec<String>> {
     let mut out = BTreeMap::new();
-    if let Some(obj) = meta["groups"].as_object() {
+    if let Some(obj) = meta.get("groups").and_then(Value::as_object) {
         for (g, v) in obj {
             let members = v
                 .as_array()
@@ -226,9 +273,20 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
             .get(agent_id)
             .map(|e| e.meta.read().expect("meta").clone())
             .unwrap_or_default();
-        let board = meta["board"].as_str().unwrap_or("board").to_string();
-        let team = meta["team"].as_str().unwrap_or("team").to_string();
-        let limit = meta["stall_minutes"].as_u64().unwrap_or(30);
+        let board = meta
+            .get("board")
+            .and_then(Value::as_str)
+            .unwrap_or("board")
+            .to_string();
+        let team = meta
+            .get("team")
+            .and_then(Value::as_str)
+            .unwrap_or("team")
+            .to_string();
+        let limit = meta
+            .get("stall_minutes")
+            .and_then(Value::as_u64)
+            .unwrap_or(30);
         let groups = groups_of(&meta);
         let peers = KernelPeers(kernel.clone());
         let now = std::time::SystemTime::now()
@@ -238,25 +296,31 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
         let out = match t {
             "tree" => {
                 let node = payload["node"].as_str().unwrap_or(&team).to_string();
-                let groups = if node == team {
-                    groups
-                } else {
-                    let mut g = BTreeMap::new();
-                    if let Some(m) = groups.get(&node) {
-                        g.insert(node.clone(), m.clone());
-                    }
-                    g
-                };
-                tree_of(&peers, &board, &node, &groups, limit, now).await
+                let rows = rows_of(&peers, &board, &groups, limit, now).await;
+                subtree(&team, &groups, &rows, &node)
             }
             "open" => {
                 let node = payload["node"].as_str().unwrap_or("").to_string();
-                let kind = if groups.contains_key(&node) || node == team {
-                    "group"
-                } else {
-                    "worker"
-                };
-                open_target(&node, kind)
+                let kind = kind_of(&node, &team, &groups);
+                let mut out = open_target(&node, kind);
+                out["kind"] = json!(kind);
+                if kind == "worker" {
+                    // The worker's own view, from the worker view agent (#36).
+                    let wv = meta
+                        .get("worker_view")
+                        .and_then(Value::as_str)
+                        .unwrap_or("worker_view");
+                    let group = group_of_worker(&node, &groups);
+                    let view = peers
+                        .ask(wv, json!({"type": "open", "worker": node, "group": group}))
+                        .await;
+                    if view.get("worker").is_some() {
+                        out["view"] = view;
+                    } else {
+                        out["view_error"] = view;
+                    }
+                }
+                out
             }
             "control" => {
                 let node = payload["node"].as_str().unwrap_or("").to_string();
@@ -344,6 +408,95 @@ mod tests {
         let r = control_reply("w1", "stop", false);
         assert_eq!(r["sent"], json!(false));
         assert!(r["question"].as_str().is_some());
+    }
+
+    fn groups_a() -> BTreeMap<String, Vec<String>> {
+        let mut g = BTreeMap::new();
+        g.insert("A".to_string(), vec!["w1".to_string()]);
+        g
+    }
+
+    fn rows_w() -> Vec<Row> {
+        vec![row_of("w1", &board(), 0, 30), row_of("w2", &board(), 0, 30)]
+    }
+
+    #[test]
+    fn tree_of_a_group_is_the_group_with_its_workers_no_fake_team() {
+        let t = subtree("team", &groups_a(), &rows_w(), "A");
+        assert_eq!(t["kind"], "group");
+        assert_eq!(t["id"], "A");
+        let kids = t["children"].as_array().unwrap();
+        assert_eq!(kids.len(), 1);
+        assert_eq!(kids[0]["row"]["id"], "w1");
+    }
+
+    #[test]
+    fn tree_of_a_worker_is_its_row() {
+        let t = subtree("team", &groups_a(), &rows_w(), "w2");
+        assert_eq!(t["kind"], "worker");
+        assert_eq!(t["row"]["id"], "w2");
+    }
+
+    #[test]
+    fn open_classifies_team_group_worker_with_one_helper() {
+        let g = groups_a();
+        assert_eq!(kind_of("team", "team", &g), "team");
+        assert_eq!(kind_of("A", "team", &g), "group");
+        assert_eq!(kind_of("w1", "team", &g), "worker");
+        assert_eq!(kind_of("nope", "team", &g), "worker");
+        let e = subtree("team", &g, &rows_w(), "nope");
+        assert!(e["error"].as_str().is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_worker_returns_the_worker_view() {
+        use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
+        use fantastic_kernel::Item;
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        // As the plan creates them: the view agent under the dispatcher.
+        kernel
+            .send(vec![Item::new(
+                DEFAULT_ROOT_ID,
+                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
+                    "handler_module": HANDLER_MODULE, "can_call": {"worker_view": "*"}}),
+            )])
+            .await;
+        kernel
+            .send(vec![Item::new(
+                DEFAULT_ROOT_ID,
+                json!({"type": "create_agent", "parent_id": "dispatcher", "id": "worker_view",
+                    "handler_module": crate::worker_view::HANDLER_MODULE,
+                    "callable_by": {"$self": "*", "$parent": "*"}}),
+            )])
+            .await;
+        let out = kernel
+            .send(vec![Item::new(
+                "dispatcher",
+                json!({"type": "open", "node": "w1"}),
+            )])
+            .await
+            .remove(0)
+            .result;
+        assert_eq!(out["kind"], "worker");
+        assert_eq!(out["url"], "/worker/w1");
+        assert_eq!(out["view"]["worker"], "w1");
+        let cells = out["view"]["cells"].as_array().unwrap();
+        let chat = serde_json::to_value(crate::worker_view::chat_cell("w1")).unwrap();
+        assert_eq!(cells.last().unwrap(), &chat);
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn html_loads_tree_calls_open_and_has_back() {
+        assert!(HTML.contains("fantastic.send("));
+        assert!(HTML.contains("type: 'tree'"));
+        assert!(HTML.contains("type: 'open'"));
+        assert!(HTML.contains("getElementById('back')"));
+        assert!(HTML.contains("scrollY"));
+        assert!(HTML.contains("function esc("));
+        assert!(HTML.contains("textContent"));
     }
 
     #[test]

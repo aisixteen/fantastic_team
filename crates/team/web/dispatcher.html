@@ -6,6 +6,8 @@
 <title>Dispatcher</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; }
+  .bar { display: flex; gap: 8px; align-items: center; }
+  .bar button { font: inherit; padding: 4px 10px; }
   .node { border-bottom: 1px solid #ddd; padding: 8px 0; cursor: pointer; }
   .group { margin-left: 16px; }
   .row { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -13,59 +15,166 @@
   .state-failed { color: #b91c1c; }
   .state-done { color: #15803d; }
   .conn-missing { color: #b91c1c; }
-  @media (max-width: 430px) { .row { flex-direction: column; gap: 2px; } }
+  .error { color: #b91c1c; }
+  .cell { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
+  @media (max-width: 430px) {
+    .row { flex-direction: column; gap: 2px; }
+    .group { margin-left: 8px; }
+  }
 </style>
 </head>
 <body>
-<h2 id="title">Team</h2>
+<div class="bar"><button id="back" type="button" hidden>Back</button><h2 id="title">Team</h2></div>
+<div id="error" class="error"></div>
 <div id="connections"></div>
 <div id="waiting"></div>
 <div id="tree"></div>
 <script>
-// Contract: the dispatcher answers the `tree` verb with nodes of kind team,
-// group or worker. A worker row carries: id, state, task, minutes, cost.
-// A click calls `open` for the node; back returns with the scroll place kept.
-const scrollPlaces = [];
+// Contract: `tree` answers the whole team (kind team), or with `node` one
+// node's subtree (kind group, or a worker row). Worker rows carry id, state,
+// task, minutes, cost. `open {node}` says what a click shows: a worker gives its
+// view (cells, chat last); a group or team gives a level, drawn by the same
+// render as the team. Back pops the stack and restores the scroll it left.
+// Every value from the kernel goes through esc() or textContent.
+const stack = [];   // levels left behind: { node, scrollY }
+let level;          // the node on screen now (undefined = the whole team)
+
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function showError(msg) {
+  document.getElementById('error').textContent = msg || '';
+}
+
+// One request to the dispatcher agent through the html connector. Rejects,
+// rather than throws, when the page has no connection.
+function ask(payload) {
+  if (typeof fantastic === 'undefined' || !fantastic || typeof fantastic.send !== 'function') {
+    return Promise.reject(new Error('no connection to the team: fantastic is not loaded'));
+  }
+  return Promise.resolve(fantastic.send('dispatcher', payload));
+}
 
 function rowHtml(r) {
-  const cls = r.state.startsWith('stalled') ? 'state-stalled'
-    : r.state === 'failed' ? 'state-failed'
-    : r.state === 'done' ? 'state-done' : '';
+  const state = String(r.state || '');
+  const cls = state.indexOf('stalled') === 0 ? 'state-stalled'
+    : state === 'failed' ? 'state-failed'
+    : state === 'done' ? 'state-done' : '';
   const time = r.minutes == null ? '' : r.minutes + ' min';
-  return '<div class="node" data-node="' + r.id + '" data-kind="worker">' +
-    '<div class="row"><strong>' + r.id + '</strong>' +
-    '<span class="' + cls + '">' + r.state + '</span>' +
-    '<span>' + (r.task || '') + '</span>' +
-    '<span>' + time + '</span>' +
-    '<span>$' + (r.cost || 0).toFixed(2) + '</span></div></div>';
+  const cost = Number(r.cost || 0).toFixed(2);
+  return '<div class="node" data-node="' + esc(r.id) + '" data-kind="worker">' +
+    '<div class="row"><strong>' + esc(r.id) + '</strong>' +
+    '<span class="' + cls + '">' + esc(state) + '</span>' +
+    '<span>' + esc(r.task || '') + '</span>' +
+    '<span>' + esc(time) + '</span>' +
+    '<span>$' + esc(cost) + '</span></div></div>';
 }
 
 function nodeHtml(n) {
   if (n.kind === 'worker') return rowHtml(n.row);
   const kids = (n.children || []).map(nodeHtml).join('');
-  return '<div class="node" data-node="' + n.id + '" data-kind="' + n.kind + '"><strong>' +
-    n.id + '</strong></div><div class="group">' + kids + '</div>';
+  return '<div class="node" data-node="' + esc(n.id) + '" data-kind="' + esc(n.kind) + '"><strong>' +
+    esc(n.id) + '</strong></div><div class="group">' + kids + '</div>';
 }
 
+// One render for every level: the team, a group, or a single worker's row.
 function render(tree) {
-  document.getElementById('tree').innerHTML = nodeHtml(tree);
+  const t = document.getElementById('tree');
+  if (!tree || tree.error) {
+    t.textContent = '';
+    showError(tree && tree.error ? tree.error : 'no tree from the team');
+    return;
+  }
+  document.getElementById('title').textContent = tree.id || 'Team';
+  t.innerHTML = nodeHtml(tree);
+}
+
+// A worker's view: its title, then one box per cell (chat is last).
+function renderWorker(reply, node) {
+  const t = document.getElementById('tree');
+  const view = reply && reply.view;
+  t.textContent = '';
+  document.getElementById('title').textContent = node;
+  if (!view || !Array.isArray(view.cells)) {
+    showError('No view for ' + node + '.');
+    return;
+  }
+  showError('');
+  view.cells.forEach(function (cell) {
+    const box = document.createElement('div');
+    box.className = 'cell';
+    const label = document.createElement('strong');
+    label.textContent = cell.label || cell.kind || '';
+    const kind = document.createElement('span');
+    kind.textContent = ' ' + (cell.kind || '') + (cell.target ? ' → ' + cell.target : '');
+    box.appendChild(label);
+    box.appendChild(kind);
+    t.appendChild(box);
+  });
+}
+
+function updateBack() {
+  document.getElementById('back').hidden = stack.length === 0;
+}
+
+async function showLevel(node) {
+  level = node;
+  try {
+    const tree = await ask(node === undefined ? { type: 'tree' } : { type: 'tree', node: node });
+    showError('');
+    render(tree);
+  } catch (err) {
+    showError(String(err && err.message ? err.message : err));
+  }
+}
+
+async function openNode(node, kind) {
+  let reply;
+  try {
+    reply = await ask({ type: 'open', node: node });
+  } catch (err) {
+    showError(String(err && err.message ? err.message : err));
+    return;
+  }
+  if (!reply || reply.error) {
+    showError(reply && reply.error ? reply.error : 'cannot open ' + node);
+    return;
+  }
+  stack.push({ node: level, scrollY: window.scrollY });
+  if (reply.kind === 'worker' || kind === 'worker') {
+    renderWorker(reply, node);
+  } else {
+    window.scrollTo(0, 0);
+    await showLevel(node);
+  }
+  updateBack();
+}
+
+async function back() {
+  const p = stack.pop();
+  if (!p) return;
+  await showLevel(p.node);
+  window.scrollTo(0, p.scrollY || 0);
+  updateBack();
 }
 
 document.addEventListener('click', function (e) {
-  const el = e.target.closest('[data-node]');
+  const el = e.target && e.target.closest ? e.target.closest('[data-node]') : null;
   if (!el) return;
-  scrollPlaces.push(window.scrollY);
   window.dispatchEvent(new CustomEvent('dispatcher:open', {
     detail: { node: el.dataset.node, kind: el.dataset.kind }
   }));
+  openNode(el.dataset.node, el.dataset.kind);
 });
 
-window.addEventListener('dispatcher:back', function () {
-  const y = scrollPlaces.pop();
-  if (y !== undefined) window.scrollTo(0, y);
-});
-
+document.getElementById('back').addEventListener('click', back);
+window.addEventListener('dispatcher:back', back);
 window.addEventListener('dispatcher:tree', function (e) { render(e.detail); });
+
+showLevel(undefined);
 </script>
 </body>
 </html>
