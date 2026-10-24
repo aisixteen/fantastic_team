@@ -30,8 +30,10 @@ pub struct Entry {
 /// A parsed registry index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Index {
-    /// All manifests in the index.
+    /// All well-formed manifests in the index.
     pub entries: Vec<Entry>,
+    /// One reason per entry that was skipped, like `entry 2 (name): ...`.
+    pub skipped: Vec<String>,
 }
 
 /// Permission changes between two versions of a pack.
@@ -57,7 +59,10 @@ pub enum Decision {
 }
 
 impl Index {
-    /// Parse an index document. Any entry with a non-https url fails the parse.
+    /// Parse an index document. A document that is not JSON, or has no
+    /// `entries` list, is an error. A malformed entry (bad field, non-https
+    /// url, or a version that is not dotted numbers) is skipped and reported
+    /// in `skipped`, so one bad entry does not make the whole index unusable.
     pub fn parse(json: &str) -> Result<Self, String> {
         let root: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
         let items = root
@@ -65,25 +70,39 @@ impl Index {
             .and_then(Value::as_array)
             .ok_or("index must have an `entries` list")?;
         let mut entries = Vec::with_capacity(items.len());
-        for item in items {
-            let entry = Entry {
-                name: str_field(item, "name")?,
-                version: str_field(item, "version")?,
-                hash: str_field(item, "hash")?,
-                signer_key: str_field(item, "signer_key")?,
-                url: str_field(item, "url")?,
-                ports: str_list(item, "ports")?,
-                grants: str_list(item, "grants")?,
-                revoked: item
-                    .get("revoked")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-            };
-            check_https(&entry.url)?;
-            entries.push(entry);
+        let mut skipped = Vec::new();
+        for (i, item) in items.iter().enumerate() {
+            match parse_entry(item) {
+                Ok(entry) => entries.push(entry),
+                Err(reason) => {
+                    let name = item.get("name").and_then(Value::as_str).unwrap_or("?");
+                    skipped.push(format!("entry {} ({name}): {reason}", i + 1));
+                }
+            }
         }
-        Ok(Index { entries })
+        Ok(Index { entries, skipped })
     }
+}
+
+/// Build one entry from its JSON object, or say why it is malformed.
+fn parse_entry(item: &Value) -> Result<Entry, String> {
+    let version = str_field(item, "version")?;
+    parse_version(&version)?;
+    let url = str_field(item, "url")?;
+    check_https(&url)?;
+    Ok(Entry {
+        name: str_field(item, "name")?,
+        version,
+        hash: str_field(item, "hash")?,
+        signer_key: str_field(item, "signer_key")?,
+        url,
+        ports: str_list(item, "ports")?,
+        grants: str_list(item, "grants")?,
+        revoked: item
+            .get("revoked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
 }
 
 fn str_field(v: &Value, key: &str) -> Result<String, String> {
@@ -116,11 +135,27 @@ fn check_https(url: &str) -> Result<(), String> {
     }
 }
 
-/// Version parts compared numerically where possible.
-fn version_key(v: &str) -> Vec<u64> {
+/// Split a dotted numeric version (`1.2.0`) into its numeric parts. Rejects an
+/// empty string, an empty part, and any part that is not all ASCII digits.
+fn parse_version(v: &str) -> Result<Vec<u64>, String> {
+    if v.is_empty() {
+        return Err("version must not be empty".to_string());
+    }
     v.split('.')
-        .map(|p| p.parse::<u64>().unwrap_or(0))
+        .map(|p| {
+            if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(format!("version must be dotted numbers: `{v}`"));
+            }
+            p.parse::<u64>()
+                .map_err(|_| format!("version part too large: `{v}`"))
+        })
         .collect()
+}
+
+/// Sort key for a version. Entries are validated at parse, so the fallback
+/// is not reached for indexed entries.
+fn version_key(v: &str) -> Vec<u64> {
+    parse_version(v).unwrap_or_default()
 }
 
 /// The entry for exactly this name and pinned hash, or an error.
@@ -225,9 +260,55 @@ mod tests {
     }
 
     #[test]
-    fn a_non_https_url_is_refused() {
-        let json = r#"{"entries":[{"name":"x","version":"1.0.0","hash":"h","signer_key":"k","url":"http://example.org/x.tar"}]}"#;
-        assert!(Index::parse(json).is_err());
+    fn one_bad_entry_does_not_fail_the_index() {
+        let json = r#"{"entries":[
+ {"name":"good1","version":"1.0.0","hash":"h1","signer_key":"k","url":"https://example.org/a.tar"},
+ {"name":"bad","version":"1.0.0","hash":"h2","signer_key":"k","url":"http://example.org/x.tar"},
+ {"name":"good2","version":"2.0.0","hash":"h3","signer_key":"k","url":"https://example.org/b.tar"}
+]}"#;
+        let idx = Index::parse(json).unwrap();
+        assert_eq!(idx.entries.len(), 2);
+        assert!(idx.entries.iter().any(|e| e.name == "good1"));
+        assert!(idx.entries.iter().any(|e| e.name == "good2"));
+        assert_eq!(idx.skipped.len(), 1, "{:?}", idx.skipped);
+        assert!(idx.skipped[0].contains("bad"), "{:?}", idx.skipped);
+        assert!(idx.skipped[0].contains("https"), "{:?}", idx.skipped);
+        assert!(idx.skipped[0].contains("entry 2"), "{:?}", idx.skipped);
+    }
+
+    #[test]
+    fn a_bad_document_is_still_an_error() {
+        assert!(Index::parse("not json").is_err());
+        assert!(Index::parse(r#"{"packs":[]}"#).is_err());
+    }
+
+    #[test]
+    fn non_numeric_version_is_rejected_at_parse() {
+        let json = r#"{"entries":[
+ {"name":"notes","version":"1.2.0","hash":"h1","signer_key":"k","url":"https://example.org/a.tar"},
+ {"name":"notes","version":"1.2.0-rc1","hash":"h2","signer_key":"k","url":"https://example.org/b.tar"},
+ {"name":"notes","version":"1.x","hash":"h3","signer_key":"k","url":"https://example.org/c.tar"},
+ {"name":"notes","version":"","hash":"h4","signer_key":"k","url":"https://example.org/d.tar"},
+ {"name":"notes","version":"1..2","hash":"h5","signer_key":"k","url":"https://example.org/e.tar"}
+]}"#;
+        let idx = Index::parse(json).unwrap();
+        assert_eq!(idx.entries.len(), 1);
+        assert_eq!(idx.skipped.len(), 4, "{:?}", idx.skipped);
+        assert!(idx.skipped.iter().all(|s| s.contains("version")));
+        let newest = update_candidate(&idx, ("notes", "h0"), true).unwrap();
+        assert_eq!(newest.version, "1.2.0");
+        assert!(update_candidate(&idx, ("notes", "h1"), true).is_none());
+    }
+
+    #[test]
+    fn update_candidate_orders_numerically() {
+        let json = r#"{"entries":[
+ {"name":"notes","version":"1.9.0","hash":"a","signer_key":"k","url":"https://example.org/a.tar"},
+ {"name":"notes","version":"1.10.0","hash":"b","signer_key":"k","url":"https://example.org/b.tar"}
+]}"#;
+        let idx = Index::parse(json).unwrap();
+        let newest = update_candidate(&idx, ("notes", "z"), true).unwrap();
+        assert_eq!(newest.version, "1.10.0");
     }
 
     #[test]

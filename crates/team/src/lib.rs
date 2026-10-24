@@ -279,6 +279,7 @@ async fn boot_kernel(kernel: &Arc<Kernel>) -> Result<(), String> {
 
 pub mod directives;
 pub mod pack_bundle;
+pub mod pack_registry;
 
 #[cfg(test)]
 mod tests {
