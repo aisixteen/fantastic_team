@@ -3,7 +3,6 @@
 //! runs on both send and receive: key-like fields and secret-shaped values are
 //! refused, and the refusal names the field or shape, never the value.
 
-use std::io::Read;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -48,12 +47,18 @@ impl TeamId {
             Err(e) => return Err(e),
         }
         std::fs::create_dir_all(dir)?;
-        let mut b = [0u8; 16];
-        std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
-        let id: String = b.iter().map(|x| format!("{x:02x}")).collect();
+        let id = random_hex16()?;
         std::fs::write(&path, format!("{id}\n"))?;
         Ok(Self(id))
     }
+}
+
+/// 16 random bytes from the OS entropy source, as 32 lowercase hex digits.
+/// Uses `getrandom`, which works on every platform (no device file).
+pub(crate) fn random_hex16() -> std::io::Result<String> {
+    let mut b = [0u8; 16];
+    getrandom::getrandom(&mut b).map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 fn is_hex32(s: &str) -> bool {
@@ -247,6 +252,24 @@ mod tests {
         let first = TeamId::load_or_create(dir.path()).unwrap();
         let second = TeamId::load_or_create(dir.path()).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn team_id_creates_a_missing_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b");
+        let id = TeamId::load_or_create(&nested).unwrap();
+        assert!(nested.join("team_id").is_file());
+        assert!(is_hex32(id.as_str()));
+    }
+
+    #[test]
+    fn random_hex16_is_32_hex_and_differs_between_calls() {
+        let a = random_hex16().unwrap();
+        let b = random_hex16().unwrap();
+        assert!(is_hex32(&a), "{a}");
+        assert!(is_hex32(&b), "{b}");
+        assert_ne!(a, b);
     }
 
     #[test]
