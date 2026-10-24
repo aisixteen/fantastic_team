@@ -8,7 +8,7 @@ python3 e2e/run.py --only task/one_issue_to_draft_pr --bin PATH
 python3 e2e/run.py --only-turns         the turns tests, a real model, by hand; SKIP without a key
 python3 e2e/run.py --only-turns --dry-run   discover the turns tests and collect their probes; starts nothing
 python3 e2e/run.py --build github --bin PATH   the tests for the GitHub build (default: general)
-ython3 e2e/run.py --selftest           the harness proves itself, no binary
+python3 e2e/run.py --selftest           the harness proves itself, no binary
 python3 e2e/run.py --list
 ```
 
@@ -44,7 +44,7 @@ Each run writes `cost.json` in its run folder (tokens, requests, model, the USD 
 - `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted` or `plug: anthropic`); a test never names a model, an endpoint or a key. A team.yaml takes `{{model_name}}` (the plug's model) and `{{model_endpoint}}`.
 - `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start, stop, `send`, wiring), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks).
 - `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`, `build`: `any` (default), `general` or `github`; `run.py --build` runs the tests for `any` and that build), `team.yaml`, `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code).
- `runs/`: one folder per run, gitignored (it holds model output).
+- `runs/`: one folder per run, gitignored (it holds model output).
 
 ## Two builds
 
