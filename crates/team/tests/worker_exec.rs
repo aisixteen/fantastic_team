@@ -105,6 +105,30 @@ fn lines(reply: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Test-local path normalization: forward slashes, no trailing slash, and lowercase
+/// only on Windows. It does not map drive letters to MSYS prefixes (/c, /tmp).
+fn norm(p: &str) -> String {
+    let mut s = p.replace('\\', "/");
+    while s.ends_with('/') {
+        s.pop();
+    }
+    if cfg!(windows) {
+        s = s.to_lowercase();
+    }
+    s
+}
+
+/// True when `value` names `<team>/sandbox/home<tail>`, in native or MSYS form. It
+/// matches the team tempdir's unique final component plus the sandbox-relative tail,
+/// so it is separator- and MSYS-insensitive, yet the planted home and other tempdirs
+/// never match.
+fn points_into_sandbox(value: &str, team: &Path, tail: &str) -> bool {
+    let name = team.file_name().unwrap().to_string_lossy();
+    let want = norm(&format!("{name}/sandbox/home{tail}"));
+    let got = norm(value);
+    got == want || got.ends_with(&format!("/{want}"))
+}
+
 /// A stand-in forge that answers EVERY request 401 and records whether any
 /// request carried credentials.
 async fn auth_wall() -> (u16, Arc<AtomicUsize>, Arc<AtomicBool>) {
@@ -188,8 +212,24 @@ async fn a_worker_shell_sees_the_sandbox_home_and_no_credentials() {
     let reply = run(&kernel, "worker_exec_env", "sh", &["-c", "echo $HOME; env"]).await;
     assert_eq!(reply["exit_code"], json!(0), "{reply}");
     let out = lines(&reply);
-    let home = sandbox_home(team.path()).to_string_lossy().into_owned();
-    assert!(out.contains(&home), "{out:?}");
+    // The shell may report paths in its own form (Git-for-Windows sh shows HOME
+    // as /tmp/.tmpXXXX/...), so check that both point into this team's sandbox.
+    assert!(
+        out.first()
+            .is_some_and(|h| points_into_sandbox(h, team.path(), "")),
+        "{out:?}"
+    );
+    let env_home = out.iter().find_map(|l| l.strip_prefix("HOME="));
+    assert!(
+        env_home.is_some_and(|v| points_into_sandbox(v, team.path(), "")),
+        "{out:?}"
+    );
+    let env_xdg = out.iter().find_map(|l| l.strip_prefix("XDG_CONFIG_HOME="));
+    assert!(
+        env_xdg.is_some_and(|v| points_into_sandbox(v, team.path(), "/.config")),
+        "{out:?}"
+    );
+    assert!(!out.iter().any(|l| l.contains("planted-home")), "{out:?}");
     for l in &out {
         if let Some((name, _)) = l.split_once('=') {
             assert!(!forbidden_env_name(name), "forbidden name leaked: {name}");
@@ -276,4 +316,47 @@ async fn forge_commands_are_refused_before_they_run() {
         assert!(reply.get("job_id").is_none(), "{reply}");
     }
     down(kernel, team.path()).await;
+}
+
+#[test]
+fn sandbox_path_check_accepts_msys_and_windows_forms() {
+    let team = Path::new("/var/folders/x/.tmpAbC");
+    assert!(points_into_sandbox("/tmp/.tmpAbC/sandbox/home", team, ""));
+    assert!(points_into_sandbox(
+        "C:\\Users\\R~1\\AppData\\Local\\Temp\\.tmpAbC\\sandbox\\home\\.config",
+        team,
+        "/.config"
+    ));
+    assert!(points_into_sandbox(
+        &sandbox_home(team).to_string_lossy(),
+        team,
+        ""
+    ));
+}
+
+#[test]
+fn sandbox_path_check_rejects_foreign_homes() {
+    let team = Path::new("/var/folders/x/.tmpAbC");
+    assert!(!points_into_sandbox("/home/dev", team, ""));
+    assert!(!points_into_sandbox(
+        "/var/folders/x/.tmpAbC/planted-home",
+        team,
+        ""
+    ));
+    assert!(!points_into_sandbox("/tmp/.tmpZzZ/sandbox/home", team, ""));
+    assert!(!points_into_sandbox(
+        "/tmp/xx.tmpAbC/sandbox/home",
+        team,
+        ""
+    ));
+    assert!(!points_into_sandbox(
+        "/tmp/.tmpAbC/sandbox/home",
+        team,
+        "/.config"
+    ));
+    assert!(!points_into_sandbox(
+        "/tmp/.tmpAbC/sandbox/home/.config",
+        team,
+        ""
+    ));
 }

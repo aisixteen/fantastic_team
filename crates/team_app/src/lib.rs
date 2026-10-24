@@ -1,13 +1,19 @@
 //! App shell for the headless team binary's web UI (#37, part a).
 //! No logic here: resolve a target, start or attach, show its URL.
 
+use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::process::{Child, Command};
 
 /// The headless binary name (`[[bin]] name` in crates/team/Cargo.toml).
 pub const HEADLESS_BINARY: &str = "fantastic_team";
+
+/// The loopback port the packaged window loads (`app/tauri.conf.json`).
+pub const DEFAULT_PORT: u16 = 8765;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -31,7 +37,7 @@ fn next_value<'a, I: Iterator<Item = &'a String>>(
 }
 
 /// Parse `--attach <url>` / `--port <n>` / `--binary <path>`.
-/// With no flags: start the headless binary on a free port.
+/// With no flags: start the headless binary on `DEFAULT_PORT`.
 pub fn target_from_args(args: &[String]) -> Result<Target, String> {
     let mut attach = None;
     let mut port: Option<u16> = None;
@@ -61,12 +67,27 @@ pub fn target_from_args(args: &[String]) -> Result<Target, String> {
     }
     let port = match port {
         Some(p) => p,
-        None => free_port().map_err(|e| e.to_string())?,
+        None => DEFAULT_PORT,
     };
     Ok(Target::Start {
         binary: binary.unwrap_or_else(|| HEADLESS_BINARY.to_string()),
         port,
     })
+}
+
+/// Pull `--dir <path>` out of the args; the rest goes to `target_from_args`.
+pub fn take_dir(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>), String> {
+    let mut dir = None;
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--dir" {
+            dir = Some(PathBuf::from(next_value(&mut it, arg)?));
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    Ok((dir, rest))
 }
 
 /// Split `http://authority/path` into (authority, path).
@@ -122,14 +143,24 @@ async fn http_status(addr: &str, host: &str, path: &str) -> std::io::Result<u16>
         .ok_or_else(|| std::io::Error::other("bad HTTP response"))
 }
 
-/// Poll `url` until it answers 200 or `timeout` passes.
-pub async fn wait_ready(url: &str, timeout: Duration) -> Result<(), String> {
-    let (auth, path) = split_http(url).ok_or_else(|| "not an http:// URL".to_string())?;
-    let addr = if auth.contains(':') {
+/// A connect address for an authority: `host` gets port 80, `host:port` is kept.
+/// A bracketed IPv6 host counts as having a port only after the closing `]`.
+pub fn authority_addr(auth: &str) -> String {
+    let has_port = match auth.rfind(']') {
+        Some(i) => auth[i + 1..].starts_with(':'),
+        None => auth.contains(':'),
+    };
+    if has_port {
         auth.to_string()
     } else {
         format!("{auth}:80")
-    };
+    }
+}
+
+/// Poll `url` until it answers 200 or `timeout` passes.
+pub async fn wait_ready(url: &str, timeout: Duration) -> Result<(), String> {
+    let (auth, path) = split_http(url).ok_or_else(|| "not an http:// URL".to_string())?;
+    let addr = authority_addr(auth);
     let deadline = Instant::now() + timeout;
     loop {
         let attempt = tokio::time::timeout(Duration::from_secs(2), http_status(&addr, auth, path));
@@ -143,6 +174,80 @@ pub async fn wait_ready(url: &str, timeout: Duration) -> Result<(), String> {
     }
 }
 
+/// A running (or attached) web UI. For `Start`, the child is killed on drop.
+pub struct Launched {
+    child: Option<Child>,
+    pub url: String,
+}
+
+/// Start the headless binary (or attach to a URL) and wait until its web UI
+/// answers 200. If the child exits first, the error carries its exit status.
+pub async fn launch(
+    target: &Target,
+    dir: Option<&Path>,
+    ready_timeout: Duration,
+) -> Result<Launched, String> {
+    let url = web_url(target);
+    let Target::Start { binary, port } = target else {
+        wait_ready(&url, ready_timeout).await?;
+        return Ok(Launched { child: None, url });
+    };
+    let mut cmd = Command::new(binary);
+    cmd.args(start_args(*port))
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if let Some(d) = dir {
+        cmd.arg("--dir").arg(d);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to start {binary}: {e}"))?;
+    enum Outcome {
+        Exited(Result<ExitStatus, std::io::Error>),
+        Ready(Result<(), String>),
+    }
+    let outcome = tokio::select! {
+        status = child.wait() => Outcome::Exited(status),
+        r = wait_ready(&url, ready_timeout) => Outcome::Ready(r),
+    };
+    match outcome {
+        Outcome::Exited(status) => Err(match status {
+            Ok(s) => format!("{binary} exited before serving {url}: {s}"),
+            Err(e) => format!("{binary} exited before serving {url}: {e}"),
+        }),
+        Outcome::Ready(Ok(())) => Ok(Launched {
+            child: Some(child),
+            url,
+        }),
+        Outcome::Ready(Err(e)) => {
+            let _ = child.kill().await;
+            Err(e)
+        }
+    }
+}
+
+impl Launched {
+    /// Wait for the child to exit. Never returns for an attached web UI.
+    pub async fn exited(&mut self) -> std::io::Result<ExitStatus> {
+        match self.child.as_mut() {
+            Some(c) => c.wait().await,
+            None => std::future::pending().await,
+        }
+    }
+
+    /// Kill the child if it is still running. Safe to call twice; a no-op
+    /// for an attached web UI.
+    pub async fn stop(&mut self) -> Result<(), String> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(());
+        };
+        if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+            child.kill().await.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,11 +258,11 @@ mod tests {
     }
 
     #[test]
-    fn default_is_start_on_a_free_port() {
+    fn default_is_start_on_the_packaged_port() {
         match target_from_args(&[]).unwrap() {
             Target::Start { binary, port } => {
                 assert_eq!(binary, HEADLESS_BINARY);
-                assert_ne!(port, 0);
+                assert_eq!(port, DEFAULT_PORT);
             }
             other => panic!("expected Start, got {other:?}"),
         }
@@ -211,9 +316,164 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn default_port_matches_packaged_window() {
+        let conf = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../app/tauri.conf.json"),
+        )
+        .expect("read app/tauri.conf.json");
+        let rest = conf
+            .split("http://127.0.0.1:")
+            .nth(1)
+            .expect("conf names a loopback url");
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let packaged: u16 = digits.parse().expect("packaged port");
+        assert_eq!(DEFAULT_PORT, packaged);
+        match target_from_args(&[]).unwrap() {
+            Target::Start { port, .. } => assert_eq!(port, DEFAULT_PORT),
+            other => panic!("expected Start, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn take_dir_pulls_out_the_dir_flag() {
+        let (dir, rest) = take_dir(&args(&["--dir", "/x", "--port", "9"])).unwrap();
+        assert_eq!(dir, Some(std::path::PathBuf::from("/x")));
+        assert_eq!(rest, args(&["--port", "9"]));
+        assert!(take_dir(&args(&["--dir"])).is_err());
+    }
+
+    #[test]
+    fn authority_keeps_an_explicit_port_and_adds_80_otherwise() {
+        assert_eq!(authority_addr("[::1]"), "[::1]:80");
+        assert_eq!(authority_addr("[::1]:8080"), "[::1]:8080");
+        assert_eq!(authority_addr("127.0.0.1"), "127.0.0.1:80");
+        assert_eq!(authority_addr("127.0.0.1:8080"), "127.0.0.1:8080");
+    }
+
+    /// A loopback listener and its port. The socket stays bound for as long
+    /// as the caller holds it, so no other test can be handed the same port.
+    async fn bind_free() -> (TcpListener, u16) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        (listener, port)
+    }
+
+    /// Serve `200 ok` to every connection until the test ends.
+    fn serve_200(listener: TcpListener) {
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = s.read(&mut buf).await;
+                    let _ = s
+                        .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .await;
+                    let _ = s.shutdown().await;
+                });
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    fn fake_binary(dir: &std::path::Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
-    async fn wait_ready_times_out_on_a_closed_port() {
-        let port = free_port().unwrap();
+    async fn launch_starts_child_and_returns_url_when_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(dir.path(), "fake", "exec sleep 30");
+        let (listener, port) = bind_free().await;
+        serve_200(listener);
+        let target = Target::Start { binary: bin, port };
+        let mut l = launch(&target, None, Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert_eq!(l.url, web_url(&target));
+        assert!(l.child.as_ref().unwrap().id().is_some());
+        l.stop().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_reports_child_that_exits_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(dir.path(), "fake", "exit 3");
+        // Held, never served: no other test can take this port and answer 200.
+        let (_held, port) = bind_free().await;
+        let target = Target::Start { binary: bin, port };
+        let started = Instant::now();
+        let err = match launch(&target, None, Duration::from_secs(20)).await {
+            Ok(_) => panic!("launch should fail when the child exits"),
+            Err(e) => e,
+        };
+        assert!(err.contains("exit"), "error names the exit: {err}");
+        assert!(err.contains('3'), "error carries the status: {err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_kills_the_child_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(dir.path(), "fake", "exec sleep 30");
+        let (listener, port) = bind_free().await;
+        serve_200(listener);
+        let target = Target::Start { binary: bin, port };
+        let mut l = launch(&target, None, Duration::from_secs(10))
+            .await
+            .unwrap();
+        l.stop().await.unwrap();
+        let child = l.child.as_mut().unwrap();
+        assert!(child.try_wait().unwrap().is_some());
+        l.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn launch_attach_spawns_nothing() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        serve_200(listener);
+        let target = Target::Attach {
+            url: format!("http://127.0.0.1:{port}/"),
+        };
+        let mut l = launch(&target, None, Duration::from_secs(5)).await.unwrap();
+        assert!(l.child.is_none());
+        assert_eq!(l.url, web_url(&target));
+        l.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bind_free_ports_are_distinct_while_held() {
+        let handles: Vec<_> = (0..64).map(|_| tokio::spawn(bind_free())).collect();
+        let mut held = Vec::new();
+        for h in handles {
+            held.push(h.await.unwrap());
+        }
+        let mut ports: Vec<u16> = held.iter().map(|(_, p)| *p).collect();
+        ports.sort_unstable();
+        ports.dedup();
+        assert_eq!(ports.len(), 64, "every held listener owns its own port");
+        for (_, port) in &held {
+            let err = TcpListener::bind(("127.0.0.1", *port)).await.unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_ready_times_out_when_nothing_answers() {
+        // Bound but never accepted: connects queue in the backlog and no
+        // response ever comes, so every attempt times out.
+        let (_held, port) = bind_free().await;
         let r = wait_ready(
             &format!("http://127.0.0.1:{port}/"),
             Duration::from_millis(300),

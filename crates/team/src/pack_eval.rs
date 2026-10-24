@@ -6,6 +6,10 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use serde_json::{json, Value};
+
+use crate::pack_bundle::{list, read};
+use crate::puller::Peers;
 
 /// How an eval decides whether its outcome is a pass.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,7 +46,6 @@ pub struct Outcome {
     pub exit_code: i32,
     /// The cost as the executor reports it, if it reports one.
     pub cost: Option<f64>,
-
 }
 
 /// Runs one task. An `Err` becomes an eval failure with that reason.
@@ -183,6 +186,82 @@ fn check_outcome(check: &Check, out: &Outcome) -> Result<(), String> {
             }
         }
     }
+}
+
+/// Runs each task on one worker agent by sending it `{"type":"send","text":task}`,
+/// the message the cadencer and the tree already use. The reply's `error` is the
+/// executor error. Otherwise `text`, `files`, `exit_code` and `cost` are read when
+/// present, and default to empty, no files, 0 and no cost.
+pub struct PeersExecutor<'a, P: Peers> {
+    peers: &'a P,
+    worker: String,
+}
+
+impl<'a, P: Peers> PeersExecutor<'a, P> {
+    /// An executor that sends each task to `worker` through `peers`.
+    pub fn new(peers: &'a P, worker: &str) -> Self {
+        Self {
+            peers,
+            worker: worker.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl<P: Peers> EvalExecutor for PeersExecutor<'_, P> {
+    async fn run(&self, task: &str) -> Result<Outcome, String> {
+        let reply = self
+            .peers
+            .ask(&self.worker, json!({"type": "send", "text": task}))
+            .await;
+        if let Some(e) = reply.get("error") {
+            return Err(e.as_str().map_or_else(|| e.to_string(), str::to_string));
+        }
+        let files = reply
+            .get("files")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Outcome {
+            text: reply
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            files,
+            exit_code: reply
+                .get("exit_code")
+                .and_then(Value::as_i64)
+                .and_then(|n| i32::try_from(n).ok())
+                .unwrap_or(0),
+            cost: reply.get("cost").and_then(Value::as_f64),
+        })
+    }
+}
+
+/// Load a pack's evals: every `evals/*.yaml` file under `pack_dir`, read through
+/// the `files` agent in name order. `.keep` and other files are skipped.
+pub async fn load_evals<P: Peers>(p: &P, pack_dir: &str) -> Result<Vec<Eval>, String> {
+    let dir = format!("{pack_dir}/evals");
+    let mut names: Vec<String> = list(p, &dir)
+        .await
+        .into_iter()
+        .filter(|n| n.ends_with(".yaml"))
+        .collect();
+    names.sort();
+    let mut files = Vec::with_capacity(names.len());
+    for name in names {
+        let text = read(p, &format!("{dir}/{name}"))
+            .await
+            .ok_or_else(|| format!("{name}: could not be read"))?;
+        files.push((name, text));
+    }
+    parse_evals(files.iter().map(|(n, t)| (n.as_str(), t.as_str())))
 }
 
 fn fail(id: &str, reason: String, elapsed: Duration) -> EvalResult {
@@ -415,6 +494,40 @@ mod tests {
         let without = vec![ev("c", "silent", Check::ExitCode(0))];
         let s = run_evals(&without, &Fake, Duration::from_secs(2)).await;
         assert!(s.total_cost.is_none());
+    }
+
+    /// A worker that answers every message with one fixed reply.
+    struct Worker(Value);
+
+    #[async_trait]
+    impl Peers for Worker {
+        async fn ask(&self, _to: &str, _payload: Value) -> Value {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn peers_executor_maps_a_worker_error_to_a_failed_eval() {
+        let w = Worker(json!({"error": "x"}));
+        let exec = PeersExecutor::new(&w, "worker-1");
+        let evals = vec![ev("a", "t", Check::ExitCode(0))];
+        let s = run_evals(&evals, &exec, Duration::from_secs(2)).await;
+        assert!(!s.per_eval[0].passed);
+        assert!(s.per_eval[0]
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("executor error"));
+    }
+
+    #[tokio::test]
+    async fn peers_executor_maps_a_text_reply_to_an_outcome() {
+        let w = Worker(json!({"text": "hello", "files": ["a.txt"], "exit_code": 0, "cost": 0.5}));
+        let exec = PeersExecutor::new(&w, "worker-1");
+        let evals = vec![ev("a", "t", Check::FileExists("a.txt".to_string()))];
+        let s = run_evals(&evals, &exec, Duration::from_secs(2)).await;
+        assert!(s.per_eval[0].passed, "{:?}", s.per_eval[0].reason);
+        assert_eq!(s.per_eval[0].cost, Some(0.5));
     }
 
     #[tokio::test]

@@ -16,7 +16,14 @@ use fantastic_kernel::{Item, Kernel, Status};
 use serde_json::{json, Value};
 
 use crate::config::{self, TeamConfig};
-use crate::worker_exec;
+use crate::{dispatcher, worker_exec, worker_view};
+
+/// The dispatcher's agent id: the team's main view, created at start.
+pub const DISPATCHER_ID: &str = "dispatcher";
+/// The canvas the dispatcher is placed on at the first start.
+pub const CANVAS_ID: &str = "canvas_page";
+/// The worker view agent, under the dispatcher; it opens a worker's view.
+pub const WORKER_VIEW_ID: &str = "worker_view";
 
 /// Tools the binary always knows; a template may grant them without a definition.
 pub const BUILTIN_TOOLS: [&str; 5] = [
@@ -32,6 +39,8 @@ pub const BUILTIN_TOOLS: [&str; 5] = [
 pub enum Role {
     /// The first agent, created under the root.
     Lead,
+    /// The dispatcher: the main view, created under the root.
+    Dispatcher,
     /// The lead's memory store, under the root.
     Memory,
     /// The credential store, under the root.
@@ -112,6 +121,30 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
             record: config::store_record(s),
         });
     }
+    out.push(Planned {
+        id: DISPATCHER_ID.into(),
+        parent: DEFAULT_ROOT_ID.into(),
+        role: Role::Dispatcher,
+        record: json!({
+            "type": "create_agent",
+            "id": DISPATCHER_ID,
+            "parent_id": DEFAULT_ROOT_ID,
+            "handler_module": dispatcher::HANDLER_MODULE,
+            "board": "board",
+            "team": lead,
+            "groups": {},
+            // The dispatcher may place itself on the canvas and open worker views;
+            // nothing else is granted.
+            "can_call": { (CANVAS_ID): "*", (WORKER_VIEW_ID): "*" },
+        }),
+    });
+    // Under the dispatcher, so its `$parent` and `$subtree` baseline lets the
+    // dispatcher open a worker's view without a further grant.
+    out.push(tool_plan(
+        WORKER_VIEW_ID,
+        DISPATCHER_ID,
+        json!({"handler_module": worker_view::HANDLER_MODULE}),
+    ));
     let work = worker_exec::work_dir(team_dir)
         .to_string_lossy()
         .into_owned();
@@ -152,20 +185,20 @@ fn tool_plan(id: &str, parent: &str, mut rec: Value) -> Planned {
     }
 }
 
-/// True when the agent `id` already exists in the kernel.
-async fn exists(kernel: &Arc<Kernel>, id: &str) -> bool {
+/// True when the agent `id` is live in the kernel. Read from the kernel's table,
+/// not by a `reflect`: a team bundle need not answer `reflect` (the dispatcher
+/// and worker view do not), so a reflect would call a live agent missing.
+fn exists(kernel: &Arc<Kernel>, id: &str) -> bool {
     kernel
-        .send(vec![Item::new(id, json!({"type": "reflect"}))])
-        .await
-        .first()
-        .is_some_and(|o| matches!(o.status, Status::Completed) && o.result.get("id").is_some())
+        .agents
+        .contains_key(&fantastic_kernel::AgentId::from(id))
 }
 
 /// Create the planned agents that are missing; leave the existing ones as they are.
 pub async fn apply(kernel: &Arc<Kernel>, plan: &[Planned]) -> Result<Applied, String> {
     let mut out = Applied::default();
     for p in plan {
-        if exists(kernel, &p.id).await {
+        if exists(kernel, &p.id) {
             out.reused.push(p.id.clone());
             continue;
         }
@@ -206,6 +239,23 @@ pub async fn deliver_instructions(
     }
 }
 
+/// Put the dispatcher on the canvas: the first start only, since the dispatcher
+/// is created only then. Best effort: a canvas that is not there is reported,
+/// not fatal, so the team still starts.
+async fn place_dispatcher(kernel: &Arc<Kernel>) {
+    let mut outs = kernel
+        .send(vec![Item::new(
+            DISPATCHER_ID,
+            json!({"type": "place", "canvas": CANVAS_ID}),
+        )])
+        .await;
+    if let Some(o) = outs.pop() {
+        if o.result.get("error").is_some() || !matches!(o.status, Status::Completed) {
+            eprintln!("dispatcher not placed on `{CANVAS_ID}`: {}", o.result);
+        }
+    }
+}
+
 /// Start-up: plan the tree from `team.yaml` in `dir` (if there is one), apply it
 /// to a headless kernel, deliver the instructions when due, then stop the kernel.
 /// Returns `None` when there is no `team.yaml`.
@@ -225,6 +275,9 @@ pub fn run_at_start(
         let kernel = crate::start(dir).await.map_err(|e| e.to_string())?;
         let res: Result<Applied, String> = async {
             let applied = apply(&kernel, &tree).await?;
+            if applied.created.iter().any(|c| c == DISPATCHER_ID) {
+                place_dispatcher(&kernel).await;
+            }
             if let Some(text) = instructions {
                 if instructions_due(&applied, &cfg.first_agent.id, resend) {
                     deliver_instructions(&kernel, &cfg.first_agent.id, text).await?;
@@ -243,11 +296,37 @@ pub fn run_at_start(
 mod tests {
     use super::*;
     use crate::config::parse;
+    use crate::dispatcher;
 
-    const SAMPLE: &str = "templates:\n  lead_t:\n    handler_module: ram_store.tools\n    model: m\n    endpoint: http://e\n    can_call: [worker_exec, worker_files, queue, git]\n  worker_t:\n    handler_module: ram_store.tools\n    model: m\n    endpoint: http://e\n    can_call: [worker_exec, worker_files]\nfirst_agent:\n  template: lead_t\nconnectors:\n  git:\n    kind: team_git.tools\n    record:\n      remote: origin\n      repo_dir: /tmp/clone\n      workspace_root: /tmp/wt\n      default_branch: main\nqueue:\n  id: queue\n";
+    /// The sample config. `{CLONE}` and `{WT}` are filled with absolute paths
+    /// from this OS (the git connector requires absolute dirs), inside YAML
+    /// single quotes so backslashes survive on Windows.
+    const SAMPLE: &str = "templates:\n  lead_t:\n    handler_module: ram_store.tools\n    model: m\n    endpoint: http://e\n    can_call: [worker_exec, worker_files, queue, git]\n  worker_t:\n    handler_module: ram_store.tools\n    model: m\n    endpoint: http://e\n    can_call: [worker_exec, worker_files]\nfirst_agent:\n  template: lead_t\nconnectors:\n  git:\n    kind: team_git.tools\n    record:\n      remote: origin\n      repo_dir: '{CLONE}'\n      workspace_root: '{WT}'\n      default_branch: main\nqueue:\n  id: queue\n";
+
+    fn sample_yaml() -> String {
+        let quoted = |p: std::path::PathBuf| p.to_string_lossy().replace('\'', "''");
+        let tmp = std::env::temp_dir();
+        SAMPLE
+            .replace("{CLONE}", &quoted(tmp.join("clone")))
+            .replace("{WT}", &quoted(tmp.join("wt")))
+    }
 
     fn sample() -> TeamConfig {
-        parse(SAMPLE).unwrap()
+        parse(&sample_yaml()).unwrap()
+    }
+
+    #[test]
+    fn sample_git_dirs_are_absolute_on_this_os() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let git = tree
+            .iter()
+            .find(|p| p.id == "git")
+            .expect("a git connector");
+        for key in ["repo_dir", "workspace_root"] {
+            let v = git.record[key].as_str().expect(key);
+            assert!(Path::new(v).is_absolute(), "{key} = {v}");
+        }
     }
 
     fn ids(t: &[Planned]) -> Vec<String> {
@@ -262,6 +341,8 @@ mod tests {
             [
                 "lead",
                 "lead_memory",
+                "dispatcher",
+                "worker_view",
                 "worker_exec",
                 "worker_files",
                 "queue",
@@ -270,14 +351,36 @@ mod tests {
         );
         assert_eq!(tree[0].parent, DEFAULT_ROOT_ID);
         assert_eq!(tree[1].parent, DEFAULT_ROOT_ID);
-        for p in &tree[2..] {
+        for p in tree
+            .iter()
+            .filter(|p| p.role == Role::Tool && p.id != WORKER_VIEW_ID)
+        {
             assert_eq!(p.parent, "lead", "{}", p.id);
-            assert_eq!(p.role, Role::Tool);
         }
+        let d = tree.iter().find(|p| p.id == "dispatcher").unwrap();
+        assert_eq!(d.parent, DEFAULT_ROOT_ID);
+        let v = tree.iter().find(|p| p.id == WORKER_VIEW_ID).unwrap();
+        assert_eq!(v.parent, "dispatcher");
         let grants = tree[0].record["can_call"].as_object().unwrap();
         for g in ["worker_exec", "worker_files", "queue", "git"] {
             assert!(grants.contains_key(g), "{g}");
         }
+    }
+
+    #[test]
+    fn plan_contains_a_dispatcher_agent_with_board_and_team() {
+        let tree = plan(&sample(), Path::new("/team")).unwrap();
+        let d = tree
+            .iter()
+            .find(|p| p.id == "dispatcher")
+            .expect("the plan has a dispatcher");
+        assert_eq!(d.role, Role::Dispatcher);
+        assert_eq!(d.parent, DEFAULT_ROOT_ID);
+        assert_eq!(d.record["type"], "create_agent");
+        assert_eq!(d.record["handler_module"], dispatcher::HANDLER_MODULE);
+        assert_eq!(d.record["board"], "board");
+        assert_eq!(d.record["team"], "lead");
+        assert_eq!(d.record["groups"], json!({}));
     }
 
     #[test]
@@ -357,9 +460,11 @@ mod tests {
         let kernel = crate::start(dir.path()).await.unwrap();
         let first = apply(&kernel, &tree).await.unwrap();
         assert_eq!(first.created, ids(&tree));
+        assert!(first.created.iter().any(|c| c == "dispatcher"));
         let second = apply(&kernel, &tree).await.unwrap();
         assert!(second.created.is_empty());
         assert_eq!(second.reused, ids(&tree));
+        assert!(second.reused.iter().any(|c| c == "dispatcher"));
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }

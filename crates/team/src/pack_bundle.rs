@@ -8,15 +8,23 @@
 //! `install` checks the manifest, the content hash and the scan before it
 //! copies the pack under the canvas templates dir as a TEMPLATE. It never
 //! creates an agent: every effect goes through the `files` agent.
+//!
+//! Install does not run the evals yet: `eval` runs them on demand against a
+//! worker and reports the pass rate. Gating enable on the evals is not built.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::pack_eval::{load_evals, run_evals, summary_text, PeersExecutor};
 use crate::pack_manifest;
 use crate::pack_scan;
 use crate::puller::{KernelPeers, Peers};
+
+/// The per-eval timeout when `eval` is not given `timeout_s`.
+pub const DEFAULT_EVAL_TIMEOUT_S: f64 = 60.0;
 
 /// Handler module name of the pack bundle.
 pub const HANDLER_MODULE: &str = "team_pack.tools";
@@ -80,6 +88,21 @@ pub fn install_dir(into: &Path, name: &str, version: &str) -> PathBuf {
     into.join(format!("{name}-{version}"))
 }
 
+/// The key of an installed pack's directory, as a string: `<into>/<name>-<version>`.
+/// Built with `/` by hand, not from a `PathBuf`: the key is sent to the peer
+/// file verbs and echoed back as `path`, so it is a portable `/` path like every
+/// other path in this module, never an OS-rendered one (`\\` on Windows).
+fn install_dest(into: &str, name: &str, version: &str) -> String {
+    let dir = format!("{name}-{version}");
+    if into.is_empty() {
+        dir
+    } else if into.ends_with('/') {
+        format!("{into}{dir}")
+    } else {
+        format!("{into}/{dir}")
+    }
+}
+
 /// A name or version that is safe as one path segment and one manifest line:
 /// letters, digits, `.`, `_`, `-`, `+`; never empty, never `..`.
 pub fn valid_part(s: &str) -> bool {
@@ -126,7 +149,7 @@ fn text_of(reply: &Value) -> Option<String> {
     )
 }
 
-async fn read<P: Peers>(p: &P, path: &str) -> Option<String> {
+pub(crate) async fn read<P: Peers>(p: &P, path: &str) -> Option<String> {
     text_of(&p.ask("files", json!({"type": "read", "path": path})).await)
 }
 
@@ -141,7 +164,7 @@ async fn write<P: Peers>(p: &P, path: &str, bytes: &str) -> bool {
 }
 
 /// Entry names of a directory, from a `files` list reply.
-async fn list<P: Peers>(p: &P, path: &str) -> Vec<String> {
+pub(crate) async fn list<P: Peers>(p: &P, path: &str) -> Vec<String> {
     let r = p.ask("files", json!({"type": "list", "path": path})).await;
     if let Some(a) = r.get("files").and_then(Value::as_array) {
         return a
@@ -342,8 +365,7 @@ pub async fn install<P: Peers>(p: &P, pack: &str, into: &str) -> Value {
     if !valid_part(&name) || !valid_part(&version) {
         return err("pack name or version is not a safe path segment");
     }
-    let dest = install_dir(Path::new(into), &name, &version);
-    let dest_s = dest.to_string_lossy().to_string();
+    let dest_s = install_dest(into, &name, &version);
     if exists(p, &dest_s).await {
         return err("version already installed");
     }
@@ -398,7 +420,42 @@ pub async fn install<P: Peers>(p: &P, pack: &str, into: &str) -> Value {
     })
 }
 
-/// The `team_pack.tools` bundle: `pack` and `install`.
+/// Run the pack's evals against `worker` (each task sent as a `send`) and report
+/// the pass rate, time and cost. Refuses an empty worker, a missing pack and a
+/// pack with no evals. Creates no agent and writes nothing.
+pub async fn eval<P: Peers>(p: &P, pack: &str, worker: &str, timeout: Duration) -> Value {
+    if worker.is_empty() {
+        return err("worker is required");
+    }
+    if read(p, &format!("{pack}/manifest.yaml")).await.is_none() {
+        return err("pack not found");
+    }
+    let evals = match load_evals(p, pack).await {
+        Ok(evals) => evals,
+        Err(e) => return err(&e),
+    };
+    if evals.is_empty() {
+        return err("pack has no evals");
+    }
+    let exec = PeersExecutor::new(p, worker);
+    let s = run_evals(&evals, &exec, timeout).await;
+    json!({
+        "pass_rate": s.pass_rate,
+        "passed": s.passed,
+        "total": s.total,
+        "total_time_s": s.total_time.as_secs_f64(),
+        "total_cost": s.total_cost,
+        "per_eval": s.per_eval.iter().map(|r| json!({
+            "id": r.id,
+            "passed": r.passed,
+            "reason": r.reason,
+            "elapsed_s": r.elapsed.as_secs_f64(),
+        })).collect::<Vec<_>>(),
+        "text": summary_text(&s),
+    })
+}
+
+/// The `team_pack.tools` bundle: `pack`, `install` and `eval`.
 pub struct PackBundle;
 
 #[async_trait::async_trait]
@@ -411,6 +468,7 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
         json!({
             "pack": "pack {worker, out} → writes pack.yaml (hash, ports, files) and the pack layout; refuses an existing out and a pack the secrets scan refuses",
             "install": "install {pack, into} → checks pack.yaml, the content hash and the scan, then copies as a template to <into>/<name>-<version>/; refuses an existing version; replies with the parsed ports; creates no agent",
+            "eval": "eval {pack, worker, timeout_s?} → runs the pack's evals on the worker; returns pass rate, time, cost and per-eval results; writes nothing",
         })
     }
 
@@ -436,6 +494,21 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
         let out = match t {
             "pack" => pack(&peers, &s("worker"), &s("out")).await,
             "install" => install(&peers, &s("pack"), &s("into")).await,
+            "eval" => {
+                let timeout = payload
+                    .get("timeout_s")
+                    .and_then(Value::as_f64)
+                    .filter(|t| t.is_finite() && *t > 0.0)
+                    .unwrap_or(DEFAULT_EVAL_TIMEOUT_S)
+                    .min(86_400.0);
+                eval(
+                    &peers,
+                    &s("pack"),
+                    &s("worker"),
+                    Duration::from_secs_f64(timeout),
+                )
+                .await
+            }
             other => err(&format!("unknown verb: {other}")),
         };
         Ok(Some(out))
@@ -582,6 +655,23 @@ mod tests {
         assert!(f.get("templates/w-1.0/worker.json").is_some());
         let targets = f.targets.lock().unwrap();
         assert!(targets.iter().all(|t| t == "files"), "{targets:?}");
+    }
+
+    #[tokio::test]
+    async fn install_reports_the_path_with_forward_slashes() {
+        let f = worker();
+        pack(&f, "w", "pack").await;
+        let r = install(&f, "pack", "templates").await;
+        assert_eq!(r["path"], "templates/w-1.0", "{r}");
+    }
+
+    #[test]
+    fn install_dest_joins_with_one_slash() {
+        assert_eq!(install_dest("templates/", "w", "1.0"), "templates/w-1.0");
+        assert_eq!(install_dest("templates", "w", "1.0"), "templates/w-1.0");
+        assert_eq!(install_dest("a/b", "w", "1.0"), "a/b/w-1.0");
+        assert_eq!(install_dest("", "w", "1.0"), "w-1.0");
+        assert_eq!(install_dest("/", "w", "1.0"), "/w-1.0");
     }
 
     #[tokio::test]
@@ -855,6 +945,98 @@ mod tests {
                 {"kind": "model", "window": 200000, "tools": true},
                 {"kind": "connector", "name": "github"}
             ]),
+            "{r}"
+        );
+    }
+
+    /// Routes `files` to the in-memory files; every other agent is a worker that
+    /// answers the task "good" with "ok" and any other task with "nope".
+    struct PackAndWorker {
+        files: FakeFiles,
+    }
+
+    #[async_trait::async_trait]
+    impl Peers for PackAndWorker {
+        async fn ask(&self, to: &str, p: Value) -> Value {
+            if to == "files" {
+                return self.files.ask(to, p).await;
+            }
+            match p["text"].as_str() {
+                Some("good") => json!({"text": "ok"}),
+                _ => json!({"text": "nope"}),
+            }
+        }
+    }
+
+    fn eval_pack(evals: &[(&str, &str)]) -> PackAndWorker {
+        let f = FakeFiles::with("pack/manifest.yaml", "name: p\nversion: 1.0\n");
+        f.files
+            .lock()
+            .unwrap()
+            .insert("pack/evals/.keep".into(), String::new());
+        for (name, text) in evals {
+            f.files
+                .lock()
+                .unwrap()
+                .insert(format!("pack/evals/{name}"), text.to_string());
+        }
+        PackAndWorker { files: f }
+    }
+
+    const PASSING_EVAL: &str = "- id: a\n  task: good\n  check: {contains: ok}\n";
+    const FAILING_EVAL: &str = "- id: b\n  task: bad\n  check: {contains: ok}\n";
+
+    #[tokio::test]
+    async fn eval_runs_the_pack_evals_and_reports_rate() {
+        let p = eval_pack(&[("a.yaml", PASSING_EVAL), ("b.yaml", FAILING_EVAL)]);
+        let r = eval(&p, "pack", "worker-1", Duration::from_secs(5)).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["passed"], 1, "{r}");
+        assert_eq!(r["total"], 2, "{r}");
+        assert_eq!(r["pass_rate"], 0.5, "{r}");
+        assert!(r["text"].as_str().unwrap().contains("pass rate 50%"), "{r}");
+        assert_eq!(r["per_eval"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn eval_refuses_a_pack_with_no_evals() {
+        let p = eval_pack(&[]);
+        let r = eval(&p, "pack", "worker-1", Duration::from_secs(5)).await;
+        assert_eq!(r["error"], "pack has no evals", "{r}");
+    }
+
+    #[tokio::test]
+    async fn eval_refuses_a_missing_pack() {
+        let p = PackAndWorker {
+            files: FakeFiles::default(),
+        };
+        let r = eval(&p, "pack", "worker-1", Duration::from_secs(5)).await;
+        assert_eq!(r["error"], "pack not found", "{r}");
+    }
+
+    #[tokio::test]
+    async fn eval_refuses_an_empty_worker() {
+        let p = eval_pack(&[("a.yaml", PASSING_EVAL)]);
+        let r = eval(&p, "pack", "", Duration::from_secs(5)).await;
+        assert_eq!(r["error"], "worker is required", "{r}");
+    }
+
+    #[tokio::test]
+    async fn eval_runs_on_a_pack_written_by_pack() {
+        let f = worker();
+        f.files
+            .lock()
+            .unwrap()
+            .insert("w/evals/a.yaml".into(), PASSING_EVAL.into());
+        let r = pack(&f, "w", "pack").await;
+        assert!(r.get("error").is_none(), "{r}");
+        let p = PackAndWorker { files: f };
+        let r = eval(&p, "pack", "worker-1", Duration::from_secs(5)).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["passed"], 1, "{r}");
+        assert_eq!(r["total"], 1, "{r}");
+        assert!(
+            r["text"].as_str().unwrap().contains("pass rate 100%"),
             "{r}"
         );
     }

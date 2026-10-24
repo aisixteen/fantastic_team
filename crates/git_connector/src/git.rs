@@ -12,7 +12,7 @@ use fantastic_kernel::secret::SHOWN;
 use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Value};
 
-use crate::paths::{inside_root, is_worktree_of, not_worktree};
+use crate::paths::{canon, inside_root, is_worktree_of, not_worktree};
 use crate::{bad, missing_arg, Cfg, NAME, URL_CREDS};
 
 /// A token read from the credential store. It has no `Debug`, `Display` or
@@ -247,13 +247,13 @@ pub(crate) async fn common_dir(dir: &Path) -> Option<PathBuf> {
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )
     .await?;
-    PathBuf::from(t).canonicalize().ok()
+    canon(Path::new(&t))
 }
 
 /// The canonical top level of the worktree containing `dir`.
 pub(crate) async fn toplevel(dir: &Path) -> Option<PathBuf> {
     let t = plain(dir, &["rev-parse", "--show-toplevel"]).await?;
-    PathBuf::from(t).canonicalize().ok()
+    canon(Path::new(&t))
 }
 
 /// The URL of the record's remote: itself when it is a URL, else the name's URL.
