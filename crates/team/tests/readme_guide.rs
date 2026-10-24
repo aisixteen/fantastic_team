@@ -201,8 +201,14 @@ fn readme_not_yet_no_longer_lists_the_pack_cli_and_mcp() {
 #[test]
 fn readme_describes_the_pack_surfaces() {
     let text = readme();
-    assert!(text.contains("fantastic_team packs"), "README must name the CLI");
-    assert!(text.contains("`pack_listing`"), "README must name the listing agent");
+    assert!(
+        text.contains("fantastic_team packs"),
+        "README must name the CLI"
+    );
+    assert!(
+        text.contains("`pack_listing`"),
+        "README must name the listing agent"
+    );
 }
 
 #[test]
@@ -216,6 +222,25 @@ fn ai_readme_section_8_names_the_pack_cli() {
         !section.contains("not a CLI subcommand"),
         "section 8 must not say the verbs have no CLI"
     );
-    assert!(section.contains("fantastic_team packs eval"), "section 8 names the CLI form");
-    assert!(section.contains("`pack_listing`"), "section 8 names the agent ids");
+    assert!(
+        section.contains("fantastic_team packs eval"),
+        "section 8 names the CLI form"
+    );
+    assert!(
+        section.contains("`pack_listing`"),
+        "section 8 names the agent ids"
+    );
+}
+
+#[test]
+fn docs_say_which_workers_the_pack_agent_can_reach() {
+    let readme =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+    let ai = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/ai-readme.md"
+    ))
+    .unwrap();
+    assert!(readme.contains("`groups:`") && readme.contains("`callable_by`"));
+    assert!(ai.contains("`groups:`") && ai.contains("`callable_by`"));
 }
