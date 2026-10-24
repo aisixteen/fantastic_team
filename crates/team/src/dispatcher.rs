@@ -831,8 +831,9 @@ mod tests {
             HTML.contains("reply.load"),
             "the page never reads reply.load"
         );
-        assert!(HTML.contains(".team-load"));
-        assert!(HTML.contains("done last hour"));
+        // The row is created with the team-load class and the footer text.
+        assert!(HTML.contains("el('div', 'team-load'"));
+        assert!(HTML.contains(" · done last hour ' + num(reply.load.done_last_hour)"));
         for key in ["held", "in_review", "done", "blocked", "queued"] {
             assert!(
                 HTML.contains(&format!("tasks.{key}")),

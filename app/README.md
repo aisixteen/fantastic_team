@@ -44,7 +44,7 @@ buttons.
 
 The load numbers (#127) reach the sidebar in its reply. A group with no AI
 driver shows its raw counts under its title (`busy N · idle N · stalled N`); a
-group with a driver shows nothing here, since its AI writes the summary. The
+group with a driver shows nothing here, since its AI writes the summary.
 The team load {tasks, done_last_hour} is drawn as a footer row under the tree:
 `tasks: held N · in review N · done N · blocked N · queued N · done last hour N`.
 It is left out when the board gave no load.
