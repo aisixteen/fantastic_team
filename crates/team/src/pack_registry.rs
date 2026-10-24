@@ -205,7 +205,7 @@ fn parse_version(v: &str) -> Result<Vec<u64>, String> {
 
 /// Sort key for a version. Entries are validated at parse, so the fallback
 /// is not reached for indexed entries.
-fn version_key(v: &str) -> Vec<u64> {
+pub fn version_key(v: &str) -> Vec<u64> {
     parse_version(v).unwrap_or_default()
 }
 
