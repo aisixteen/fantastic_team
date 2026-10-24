@@ -1,8 +1,12 @@
 //! Worker packs: `pack` a worker into a directory, `install` it as a template.
 //!
-//! A pack is `manifest.yaml` (name, version), `worker.json` (the worker record
-//! with bindings stripped), and `directives/`, `templates/`, `evals/`.
-//! Install copies a pack under the canvas templates dir as a TEMPLATE. It never
+//! A pack is `pack.yaml` (the manifest: name, version, author, license, price,
+//! the content hash of the other files, ports and the file list, see
+//! `pack_manifest`), `manifest.yaml` (name and version), `worker.json` (the
+//! worker record with bindings stripped), and `directives/`, `templates/`,
+//! `evals/`. `pack` runs the secrets scan (`pack_scan`) before it writes.
+//! `install` checks the manifest, the content hash and the scan before it
+//! copies the pack under the canvas templates dir as a TEMPLATE. It never
 //! creates an agent: every effect goes through the `files` agent.
 //!
 //! Install does not run the evals yet: `eval` runs them on demand against a
@@ -15,6 +19,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::pack_eval::{load_evals, run_evals, summary_text, PeersExecutor};
+use crate::pack_manifest;
+use crate::pack_scan;
 use crate::puller::{KernelPeers, Peers};
 
 /// The per-eval timeout when `eval` is not given `timeout_s`.
@@ -202,10 +208,38 @@ async fn put<P: Peers>(
     }
 }
 
+/// A parsed port as the install reply shows it: `{kind, ...}`.
+fn port_json(port: &pack_manifest::Port) -> Value {
+    use pack_manifest::{Port, Requirement};
+    match port {
+        Port::Model(reqs) => {
+            let window = reqs.iter().find_map(|r| match r {
+                Requirement::Window(n) => Some(*n),
+                Requirement::Tools => None,
+            });
+            let tools = reqs.iter().any(|r| matches!(r, Requirement::Tools));
+            json!({"kind": "model", "window": window, "tools": tools})
+        }
+        Port::Connector(name) => json!({"kind": "connector", "name": name}),
+        Port::ExecSandboxed => json!({"kind": "exec:sandboxed"}),
+    }
+}
+
+/// The scan refusal reply: the findings with path, rule and line only.
+fn refused_by_scan(report: &pack_scan::ScanReport) -> Value {
+    let findings: Vec<Value> = report
+        .findings
+        .iter()
+        .map(|f| json!({"path": f.path, "rule": f.rule, "line": f.line}))
+        .collect();
+    json!({"error": "pack refused by scan", "findings": findings})
+}
+
 /// Pack the worker whose record is `<worker>/worker.json` into the directory `out`.
 /// Refuses any existing `out` (a directory with anything in it or empty), a worker
-/// with no name, a name or version that is not a safe path segment, and reports
-/// every failed write.
+/// with no name, a name or version that is not a safe path segment, and a pack the
+/// secrets scan refuses. Writes `pack.yaml` (the manifest, with the content hash
+/// of every other packed file) and `manifest.yaml`. Reports every failed write.
 pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
     if exists(p, out).await {
         return err("out already exists");
@@ -228,45 +262,78 @@ pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
     if !valid_part(&name) || !valid_part(&version) {
         return err("worker name or version is not a safe path segment");
     }
+    let Some(port_strings) = record.get("ports").map_or(Some(vec![]), |v| {
+        v.as_array()?
+            .iter()
+            .map(|x| x.as_str().map(String::from))
+            .collect::<Option<Vec<String>>>()
+    }) else {
+        return err("worker ports must be strings");
+    };
+    let text_field = |key: &str| {
+        record
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown")
+            .to_string()
+    };
     let stripped = strip_bindings(&record);
 
-    let mut written = Vec::new();
-
-    let mut failed = Vec::new();
-    put(
-        p,
-        out,
-        "manifest.yaml",
-        &manifest_yaml(&name, &version),
-        &mut written,
-        &mut failed,
-    )
-    .await;
-    let record_text = serde_json::to_string_pretty(&stripped).unwrap_or_default();
-    put(
-        p,
-        out,
-        "worker.json",
-        &record_text,
-        &mut written,
-        &mut failed,
-    )
-    .await;
+    // Gather every packed file first. Nothing is written until all checks pass.
+    let mut gathered: Vec<(String, String)> = vec![
+        ("manifest.yaml".to_string(), manifest_yaml(&name, &version)),
+        (
+            "worker.json".to_string(),
+            serde_json::to_string_pretty(&stripped).unwrap_or_default(),
+        ),
+    ];
     for d in PACK_DIRS {
-        put(p, out, &format!("{d}/.keep"), "", &mut written, &mut failed).await;
+        let keep = format!("{d}/.keep");
+        if !gathered.iter().any(|(p, _)| *p == keep) {
+            gathered.push((keep, String::new()));
+        }
         for entry in list(p, &format!("{worker}/{d}")).await {
-            if let Some(text) = read(p, &format!("{worker}/{d}/{entry}")).await {
-                put(
-                    p,
-                    out,
-                    &format!("{d}/{entry}"),
-                    &text,
-                    &mut written,
-                    &mut failed,
-                )
-                .await;
+            let rel = format!("{d}/{entry}");
+            if gathered.iter().any(|(p, _)| *p == rel) {
+                continue;
+            }
+            if let Some(text) = read(p, &format!("{worker}/{rel}")).await {
+                gathered.push((rel, text));
             }
         }
+    }
+    let bytes: Vec<(String, Vec<u8>)> = gathered
+        .iter()
+        .map(|(p, t)| (p.clone(), t.clone().into_bytes()))
+        .collect();
+    let report = pack_scan::scan(&bytes);
+    if report.refused {
+        return refused_by_scan(&report);
+    }
+    let manifest = pack_manifest::Manifest {
+        name: name.clone(),
+        version: version.clone(),
+        author: text_field("author"),
+        license: text_field("license"),
+        price: pack_manifest::FREE.to_string(),
+        content_hash: pack_manifest::content_hash(&bytes),
+        signature: String::new(),
+        ports: port_strings,
+        files: gathered.iter().map(|(p, _)| p.clone()).collect(),
+    };
+    if let Err(e) = manifest.validate() {
+        return err(&e);
+    }
+    let Ok(manifest_text) = serde_yaml::to_string(&manifest) else {
+        return err("pack manifest could not be written");
+    };
+    gathered.push((pack_manifest::MANIFEST_FILE.to_string(), manifest_text));
+
+    let mut written = Vec::new();
+    let mut failed = Vec::new();
+    for (rel, text) in &gathered {
+        put(p, out, rel, text, &mut written, &mut failed).await;
     }
     if !failed.is_empty() {
         return json!({"error": "write failed", "failed": failed, "files": written});
@@ -275,15 +342,26 @@ pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
 }
 
 /// Install the pack at `pack` as a template under `into`, as `<name>-<version>/`.
-/// Refuses an existing version, a name or version that is not a safe path
-/// segment (no `/`, `\`, `..`), and reports every failed write. Creates no agent.
+/// Refuses a pack with no `pack.yaml`, an invalid manifest, an existing version,
+/// a name or version that is not a safe path segment (no `/`, `\`, `..`), a file
+/// set whose content hash differs from the manifest, and a pack the secrets scan
+/// refuses. Every check runs before the first write. Creates no agent.
 pub async fn install<P: Peers>(p: &P, pack: &str, into: &str) -> Value {
-    let Some(manifest) = read(p, &format!("{pack}/manifest.yaml")).await else {
-        return err("pack manifest not found");
+    let Some(text) = read(p, &format!("{pack}/{}", pack_manifest::MANIFEST_FILE)).await else {
+        return err("pack has no pack.yaml");
     };
-    let Some((name, version)) = parse_manifest(&manifest) else {
-        return err("pack manifest has no name and version");
+    let manifest = match pack_manifest::Manifest::parse(&text) {
+        Ok(m) => m,
+        Err(e) => return err(&format!("pack.yaml: {e}")),
     };
+    if let Err(e) = manifest.validate() {
+        return err(&e);
+    }
+    let ports = match manifest.port_list() {
+        Ok(ports) => ports,
+        Err(e) => return err(&e),
+    };
+    let (name, version) = (manifest.name.clone(), manifest.version.clone());
     if !valid_part(&name) || !valid_part(&version) {
         return err("pack name or version is not a safe path segment");
     }
@@ -291,28 +369,42 @@ pub async fn install<P: Peers>(p: &P, pack: &str, into: &str) -> Value {
     if exists(p, &dest_s).await {
         return err("version already installed");
     }
-    let Some(raw) = read(p, &format!("{pack}/worker.json")).await else {
-        return err("pack worker record not found");
-    };
-    let record: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+
+    // Read every listed file, then check the hash and the scan before any write.
+    let mut bytes: Vec<(String, Vec<u8>)> = Vec::new();
+    for rel in &manifest.files {
+        match read(p, &format!("{pack}/{rel}")).await {
+            Some(t) => bytes.push((rel.clone(), t.into_bytes())),
+            None => return err(&format!("pack file missing: {rel}")),
+        }
+    }
+    if pack_manifest::content_hash(&bytes) != manifest.content_hash {
+        return err("content hash mismatch");
+    }
+    let report = pack_scan::scan(&bytes);
+    if report.refused {
+        return refused_by_scan(&report);
+    }
+    let record: Value = bytes
+        .iter()
+        .find(|(p, _)| p == "worker.json")
+        .and_then(|(_, b)| serde_json::from_slice(b).ok())
+        .unwrap_or(Value::Null);
 
     let mut copied = Vec::new();
     let mut failed = Vec::new();
-    for rel in layout_paths() {
-        if let Some(text) = read(p, &format!("{pack}/{rel}")).await {
-            put(p, &dest_s, &rel, &text, &mut copied, &mut failed).await;
-        }
-    }
-    for d in PACK_DIRS {
-        for entry in list(p, &format!("{pack}/{d}")).await {
-            let rel = format!("{d}/{entry}");
-            if copied.contains(&rel) {
-                continue;
-            }
-            if let Some(text) = read(p, &format!("{pack}/{rel}")).await {
-                put(p, &dest_s, &rel, &text, &mut copied, &mut failed).await;
-            }
-        }
+    put(
+        p,
+        &dest_s,
+        pack_manifest::MANIFEST_FILE,
+        &text,
+        &mut copied,
+        &mut failed,
+    )
+    .await;
+    for (rel, b) in &bytes {
+        let t = String::from_utf8_lossy(b).to_string();
+        put(p, &dest_s, rel, &t, &mut copied, &mut failed).await;
     }
     if !failed.is_empty() {
         return json!({"error": "write failed", "failed": failed, "files": copied});
@@ -322,7 +414,7 @@ pub async fn install<P: Peers>(p: &P, pack: &str, into: &str) -> Value {
         "path": dest_s,
         "name": name,
         "version": version,
-        "ports": record.get("ports").cloned().unwrap_or(json!([])),
+        "ports": ports.iter().map(port_json).collect::<Vec<_>>(),
         "grants": record.get("grants").cloned().unwrap_or(json!([])),
         "files": copied,
     })
@@ -374,8 +466,8 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
-            "pack": "pack {worker, out} → writes the pack layout; refuses an existing out",
-            "install": "install {pack, into} → copies as a template to <into>/<name>-<version>/; refuses an existing version; creates no agent",
+            "pack": "pack {worker, out} → writes pack.yaml (hash, ports, files) and the pack layout; refuses an existing out and a pack the secrets scan refuses",
+            "install": "install {pack, into} → checks pack.yaml, the content hash and the scan, then copies as a template to <into>/<name>-<version>/; refuses an existing version; replies with the parsed ports; creates no agent",
             "eval": "eval {pack, worker, timeout_s?} → runs the pack's evals on the worker; returns pass rate, time, cost and per-eval results; writes nothing",
         })
     }
@@ -492,7 +584,7 @@ mod tests {
     fn worker() -> FakeFiles {
         FakeFiles::with(
             "w/worker.json",
-            r#"{"name":"w","version":"1.0","model":"m","credentials":{"k":"v"},"ports":["p"],"grants":["g"]}"#,
+            r#"{"name":"w","version":"1.0","model":"m","credentials":{"k":"v"},"ports":["@connector:github"],"grants":["g"]}"#,
         )
     }
 
@@ -557,7 +649,7 @@ mod tests {
         pack(&f, "w", "pack").await;
         let r = install(&f, "pack", "templates").await;
         assert_eq!(r["installed_as"], "template", "{r}");
-        assert_eq!(r["ports"], json!(["p"]));
+        assert_eq!(r["ports"], json!([{"kind": "connector", "name": "github"}]));
         assert_eq!(r["grants"], json!(["g"]));
         assert!(f.get("templates/w-1.0/manifest.yaml").is_some());
         assert!(f.get("templates/w-1.0/worker.json").is_some());
@@ -591,12 +683,21 @@ mod tests {
         assert!(r.get("error").is_some(), "{r}");
     }
 
-    fn seeded_pack(manifest: &str) -> FakeFiles {
-        let f = FakeFiles::with("pack/manifest.yaml", manifest);
+    /// A pack whose `pack.yaml` names `name` and `version` (the rest is valid).
+    /// Its content hash is that of its one worker record, so only the names fail.
+    fn seeded_pack(name_and_version: &str) -> FakeFiles {
+        let f = FakeFiles::default();
+        let record = "{}";
         f.files
             .lock()
             .unwrap()
-            .insert("pack/worker.json".into(), "{}".into());
+            .insert("pack/worker.json".into(), record.into());
+        let files = vec![("worker.json".to_string(), record.as_bytes().to_vec())];
+        let hash = pack_manifest::content_hash(&files);
+        f.files.lock().unwrap().insert(
+            "pack/pack.yaml".into(),
+            format!("{name_and_version}author: a\nlicense: MIT\ncontent_hash: {hash}\nfiles:\n  - worker.json\n"),
+        );
         f
     }
 
@@ -614,7 +715,7 @@ mod tests {
 
     #[tokio::test]
     async fn install_refuses_a_traversing_name() {
-        let f = seeded_pack("name: ../../evil\nversion: 1.0\n");
+        let f = seeded_pack("name: ../../evil\nversion: \"1.0\"\n");
         let r = install(&f, "pack", "templates").await;
         assert!(r.get("error").is_some(), "{r}");
         let files = f.files.lock().unwrap();
@@ -625,7 +726,7 @@ mod tests {
     #[tokio::test]
     async fn install_refuses_a_bad_version() {
         for v in ["../x", "1/2", "1\\2", "..", "a..b"] {
-            let f = seeded_pack(&format!("name: w\nversion: {v}\n"));
+            let f = seeded_pack(&format!("name: w\nversion: '{v}'\n"));
             let r = install(&f, "pack", "templates").await;
             assert!(r.get("error").is_some(), "{v}: {r}");
             let files = f.files.lock().unwrap();
@@ -635,7 +736,7 @@ mod tests {
 
     #[tokio::test]
     async fn install_refuses_a_backslash_name() {
-        let f = seeded_pack("name: ..\\evil\nversion: 1.0\n");
+        let f = seeded_pack("name: ..\\evil\nversion: \"1.0\"\n");
         let r = install(&f, "pack", "templates").await;
         assert!(r.get("error").is_some(), "{r}");
     }
@@ -716,6 +817,138 @@ mod tests {
         );
     }
 
+    /// A worker with one directive, for the hash, scan and port tests.
+    fn worker_with_directive(directive: &str) -> FakeFiles {
+        let f = worker();
+        f.files
+            .lock()
+            .unwrap()
+            .insert("w/directives/x.md".into(), directive.into());
+        f
+    }
+
+    /// Hand-build a pack whose `pack.yaml` hashes exactly `files`.
+    fn hand_built_pack(files: &[(&str, &str)]) -> FakeFiles {
+        let f = FakeFiles::default();
+        let bytes: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
+            .collect();
+        let listed: String = files.iter().map(|(p, _)| format!("  - {p}\n")).collect();
+        let hash = pack_manifest::content_hash(&bytes);
+        let yaml = format!(
+            "name: w\nversion: \"1.0\"\nauthor: a\nlicense: MIT\ncontent_hash: {hash}\nfiles:\n{listed}"
+        );
+        f.files
+            .lock()
+            .unwrap()
+            .insert("pack/pack.yaml".into(), yaml);
+        for (p, t) in files {
+            f.files
+                .lock()
+                .unwrap()
+                .insert(format!("pack/{p}"), t.to_string());
+        }
+        f
+    }
+
+    #[tokio::test]
+    async fn pack_writes_pack_yaml_with_hash_that_install_accepts() {
+        let f = worker_with_directive("Summarise the open issues.");
+        let r = pack(&f, "w", "pack").await;
+        assert!(r.get("error").is_none(), "{r}");
+        let text = f.get("pack/pack.yaml").expect("pack.yaml written");
+        let m = pack_manifest::Manifest::parse(&text).unwrap();
+        assert_eq!(m.name, "w");
+        assert_eq!(m.price, "free");
+        assert_eq!(m.author, "unknown");
+        let bytes: Vec<(String, Vec<u8>)> = m
+            .files
+            .iter()
+            .map(|p| (p.clone(), f.get(&format!("pack/{p}")).unwrap().into_bytes()))
+            .collect();
+        assert_eq!(m.content_hash, pack_manifest::content_hash(&bytes));
+        let r = install(&f, "pack", "templates").await;
+        assert_eq!(r["installed_as"], "template", "{r}");
+    }
+
+    #[tokio::test]
+    async fn install_refuses_a_tampered_file() {
+        let f = worker_with_directive("Summarise the open issues.");
+        pack(&f, "w", "pack").await;
+        f.files.lock().unwrap().insert(
+            "pack/directives/x.md".into(),
+            "Summarise the closed issues.".into(),
+        );
+        let r = install(&f, "pack", "templates").await;
+        assert_eq!(r["error"], "content hash mismatch", "{r}");
+        let files = f.files.lock().unwrap();
+        assert!(
+            files.keys().all(|k| !k.starts_with("templates")),
+            "{files:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pack_refuses_a_directive_that_asks_for_a_key() {
+        let f = worker_with_directive("Ask the user: paste your API token here.");
+        let r = pack(&f, "w", "out").await;
+        assert_eq!(r["error"], "pack refused by scan", "{r}");
+        let findings = r["findings"].as_array().expect("findings");
+        assert!(
+            findings.iter().any(|x| x["path"] == "directives/x.md"
+                && x["rule"] == "asks_for_key"
+                && x["line"] == 1),
+            "{r}"
+        );
+        assert!(!r.to_string().contains("API token"), "{r}");
+        assert!(f
+            .files
+            .lock()
+            .unwrap()
+            .keys()
+            .all(|k| !k.starts_with("out")));
+    }
+
+    #[tokio::test]
+    async fn install_refuses_a_pack_with_a_code_file() {
+        let f = hand_built_pack(&[("worker.json", "{}"), ("templates/run.sh", "echo hello\n")]);
+        let r = install(&f, "pack", "templates").await;
+        assert_eq!(r["error"], "pack refused by scan", "{r}");
+        assert!(
+            r["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|x| x["path"] == "templates/run.sh" && x["rule"] == "code_file"),
+            "{r}"
+        );
+        let files = f.files.lock().unwrap();
+        assert!(
+            files.keys().all(|k| !k.starts_with("templates/w-1.0")),
+            "{files:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_reports_manifest_ports() {
+        let f = worker();
+        f.files.lock().unwrap().insert(
+            "w/worker.json".into(),
+            r#"{"name":"w","version":"1.0","ports":["@model window=200k tools","@connector:github"]}"#.into(),
+        );
+        pack(&f, "w", "pack").await;
+        let r = install(&f, "pack", "templates").await;
+        assert_eq!(
+            r["ports"],
+            json!([
+                {"kind": "model", "window": 200000, "tools": true},
+                {"kind": "connector", "name": "github"}
+            ]),
+            "{r}"
+        );
+    }
+
     /// Routes `files` to the in-memory files; every other agent is a worker that
     /// answers the task "good" with "ok" and any other task with "nope".
     struct PackAndWorker {
@@ -786,6 +1019,26 @@ mod tests {
         let p = eval_pack(&[("a.yaml", PASSING_EVAL)]);
         let r = eval(&p, "pack", "", Duration::from_secs(5)).await;
         assert_eq!(r["error"], "worker is required", "{r}");
+    }
+
+    #[tokio::test]
+    async fn eval_runs_on_a_pack_written_by_pack() {
+        let f = worker();
+        f.files
+            .lock()
+            .unwrap()
+            .insert("w/evals/a.yaml".into(), PASSING_EVAL.into());
+        let r = pack(&f, "w", "pack").await;
+        assert!(r.get("error").is_none(), "{r}");
+        let p = PackAndWorker { files: f };
+        let r = eval(&p, "pack", "worker-1", Duration::from_secs(5)).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["passed"], 1, "{r}");
+        assert_eq!(r["total"], 1, "{r}");
+        assert!(
+            r["text"].as_str().unwrap().contains("pass rate 100%"),
+            "{r}"
+        );
     }
 
     #[test]
