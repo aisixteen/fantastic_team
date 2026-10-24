@@ -85,3 +85,5 @@ scripts/new-task.sh design-briefs "Design briefs for the fantastic canvas" \
 ```
 
 Each run writes `design/` in the repository it carves, and the pull request changes `design/` only.
+
+The first run for this repo is committed at `design/` (the eight briefs at `aisixteen/fantastic_team` `90a87c0`); refresh it with the `design-briefs` task above, and `design/html/` stays the maintainer's.
