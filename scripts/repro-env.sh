@@ -15,10 +15,15 @@ export SOURCE_DATE_EPOCH
 export ZERO_AR_DATE=1 TZ=UTC LC_ALL=C
 
 # Remap the paths that would otherwise land in the binary (panic locations, debug info).
-# Cargo's home and rustup's home come from the environment when set.
+# Cargo's home and rustup's home come from the environment when set. The target dir is
+# remapped too (REPRO_TARGET, else CARGO_TARGET_DIR): build-script output under it can land in
+# the binary, and each side of the repro job has its own target dir. It is listed first.
 REPRO_CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}
 REPRO_RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}
-RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$REPRO_SRC=/src --remap-path-prefix=$REPRO_CARGO_HOME=/cargo --remap-path-prefix=$REPRO_RUSTUP_HOME=/rustup"
+REPRO_TARGET=${REPRO_TARGET:-${CARGO_TARGET_DIR:-}}
+REPRO_TARGET_REMAP=
+if [ -n "$REPRO_TARGET" ]; then REPRO_TARGET_REMAP="--remap-path-prefix=$REPRO_TARGET=/target "; fi
+RUSTFLAGS="${RUSTFLAGS:-} ${REPRO_TARGET_REMAP}--remap-path-prefix=$REPRO_SRC=/src --remap-path-prefix=$REPRO_CARGO_HOME=/cargo --remap-path-prefix=$REPRO_RUSTUP_HOME=/rustup"
 export RUSTFLAGS
 
 # Hash helpers: sha256sum on Linux and Git-for-Windows, shasum on macOS.

@@ -15,9 +15,17 @@ sha256_of() {
 }
 
 # 1. build_scripts_are_locked_and_remapped
+# The cargo command lines (not the # comments) must each carry --locked. A header comment
+# that mentions --locked does not count. $2 is the least number of cargo build/test lines.
+cargo_lines_locked() {
+  n=$(grep -v '^[[:space:]]*#' "$1" | grep -c 'cargo \(build\|test\)')
+  m=$(grep -v '^[[:space:]]*#' "$1" | grep 'cargo \(build\|test\)' | grep -c -- '--locked')
+  [ "$n" -ge "$2" ] && [ "$n" = "$m" ]
+}
 ok_locked=1
+cargo_lines_locked "$ROOT/scripts/build.sh" 1 || ok_locked=0
+cargo_lines_locked "$ROOT/scripts/build-github.sh" 2 || ok_locked=0
 for s in build.sh build-github.sh; do
-  grep -q -- '--locked' "$ROOT/scripts/$s" || ok_locked=0
   grep -q 'repro-env.sh' "$ROOT/scripts/$s" || ok_locked=0
 done
 env_out=$(cd "$ROOT" && sh -c '. scripts/repro-env.sh; echo $SOURCE_DATE_EPOCH $RUSTFLAGS' 2>"$T/env.err")
@@ -26,11 +34,16 @@ case "$epoch" in
   '' | *[!0-9]*) epoch_ok=0 ;;
   *) epoch_ok=1 ;;
 esac
-if [ "$ok_locked" = 1 ] && [ "$epoch_ok" = 1 ] \
+# With CARGO_TARGET_DIR set, the target dir is remapped too (a different target dir per side
+# must not change the binary).
+tgt_out=$(cd "$ROOT" && CARGO_TARGET_DIR=/x/tgt sh -c '. scripts/repro-env.sh; echo $RUSTFLAGS' 2>"$T/tgt.err")
+tgt_ok=1
+printf '%s\n' "$tgt_out" | grep -qF -- "--remap-path-prefix=/x/tgt=/target" || tgt_ok=0
+if [ "$ok_locked" = 1 ] && [ "$epoch_ok" = 1 ] && [ "$tgt_ok" = 1 ] \
   && printf '%s\n' "$env_out" | grep -qF -- "--remap-path-prefix=$ROOT=/src"; then
   ok build_scripts_are_locked_and_remapped
 else
-  bad build_scripts_are_locked_and_remapped "locked=$ok_locked epoch='$epoch' env='$env_out' $(cat "$T/env.err" 2>/dev/null)"
+  bad build_scripts_are_locked_and_remapped "locked=$ok_locked epoch='$epoch' target_remap=$tgt_ok env='$env_out' tgt='$tgt_out' $(cat "$T/env.err" "$T/tgt.err" 2>/dev/null)"
 fi
 
 # 2. checksums_lists_sha256_and_md5_sorted

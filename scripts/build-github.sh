@@ -45,16 +45,19 @@ case "$MODE" in
   check) exit 0 ;;
 esac
 # The copy is the source: its path is what gets remapped; the commit time comes from ROOT.
+# The target dir is chosen before repro-env.sh so that its path is remapped too.
+if [ "$MODE" = test ]; then OUT=${CARGO_TARGET_DIR:-$ROOT/target/github-test}
+else OUT=${CARGO_TARGET_DIR:-$ROOT/target/github}; fi
 REPRO_SRC=$COPY
 REPRO_REPO=$ROOT
+REPRO_TARGET=$OUT
 . "$ROOT/scripts/repro-env.sh"
 case "$MODE" in
   test)
-    CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target/github-test} cargo test --locked -p fantastic-team "$@"
+    CARGO_TARGET_DIR="$OUT" cargo test --locked -p fantastic-team "$@"
     exit $?
     ;;
 esac
-OUT=${CARGO_TARGET_DIR:-$ROOT/target/github}
 case "$(uname -s 2>/dev/null)" in MINGW* | MSYS* | CYGWIN*) EXE=.exe ;; *) EXE= ;; esac
 CARGO_TARGET_DIR="$OUT" cargo build --release --locked -p fantastic-team "$@"
 VER=$(sed -n 's/^version = "\(.*\)"/\1/p' "$COPY/Cargo.toml" | head -1)

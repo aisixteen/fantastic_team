@@ -291,4 +291,11 @@ fn repro_job_builds_twice_in_different_dirs_and_has_no_signing() {
     let pin = std::fs::read_to_string(repo_root().join("rust-toolchain.toml"))
         .expect("rust-toolchain.toml exists");
     assert!(pin.contains("channel = \"1."), "toolchain pin: {pin}");
+    // Every job that builds or tests guards that rustc is the pin, not whatever the runner has.
+    for name in ["units", "build", "repro"] {
+        assert!(
+            run_text(job(&doc, name)).contains("rustc -V"),
+            "job `{name}` lacks the rustc -V guard against the pin"
+        );
+    }
 }
