@@ -56,6 +56,20 @@ The tools a worker may call are agents it is granted per team: a worker on a wri
 - **Workers hold no secrets.** They work in their own folder with no credentials. Delivering — pushing a branch, opening a pull request, posting a comment — goes through a delivery agent that owns the credentials and the rules.
 - **Everything is measured.** Each task records its worker, model, time, tokens and cost, so you see what a task really costs and which model is worth it.
 
+## Load and progress
+
+The cadencer's `status` carries the team's load as plain counts: workers busy,
+idle and stalled (per group and in all), tasks held, in review, done, blocked
+and queued, the number done in the last hour, and the tokens the drivers have
+spent. The code gives only these numbers. It has no mode, no total and no bar.
+The group's driver AI reads them in its digest, one plain `load:` line, and
+decides what to show: progress against a fixed list, or load alone when work
+keeps arriving. With no AI in a group, the raw numbers are all that is shown.
+Tasks waiting on CI are not counted (that needs a GitHub poll). Lanes in use are
+not reported: the pinned fantastic does not expose them. Tokens come from the
+`reflect` usage of each agent; the first beat after a restart counts their
+lifetime total once.
+
 ## Any model, any mix
 
 Workers are fantastic AI agents: Anthropic models (Haiku, Sonnet, Opus) over the API with your own key, or local models (vLLM, llama.cpp, Strata) on your own GPU. Run several at once, mix them, and compare them on the same tasks — speed, cost and quality per task are in the log.

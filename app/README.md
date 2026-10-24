@@ -26,6 +26,10 @@ first start only.
   workers were expanded.
 - On a phone (430px wide and under) the sidebar stacks above the content.
 
+The load numbers (#127) reach the page through the cadencer's `status`, as
+`load`. The sidebar does not draw them yet: any page that shows them prints the
+keys and values as plain text, generically, with no switch on the keys.
+
 The page talks to the dispatcher through fantastic's html connector
 (`fantastic.send('dispatcher', …)`), with the `sidebar` and `open` verbs. Without
 that connection it says so on one line instead of failing.

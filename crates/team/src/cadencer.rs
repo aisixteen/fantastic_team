@@ -9,7 +9,7 @@
 //! and beats with the last tree given by a `tick`.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
@@ -92,9 +92,10 @@ fn holds_task(n: &Node) -> bool {
     !n.task.is_empty() || n.open_inquiry
 }
 
-/// Stalled only while holding a task and idle past the threshold.
+/// Stalled only while holding a task and idle past the threshold (the board's
+/// one definition, shared with the load counts).
 fn stalled(n: &Node, s: &Settings) -> bool {
-    holds_task(n) && n.idle_s >= s.stall_after_s
+    crate::board::is_stalled(holds_task(n), n.idle_s, s.stall_after_s)
 }
 
 fn changed(now: &Node, prev: Option<&Node>) -> bool {
@@ -309,13 +310,6 @@ fn digest_json(d: &Digest) -> Value {
     json!({"to": d.to, "lines": d.lines, "text": d.lines.join("\n")})
 }
 
-/// Seconds since the first call in this process; honors tokio paused time.
-fn now_s() -> u64 {
-    static ORIGIN: OnceLock<tokio::time::Instant> = OnceLock::new();
-    let origin = *ORIGIN.get_or_init(tokio::time::Instant::now);
-    tokio::time::Instant::now().duration_since(origin).as_secs()
-}
-
 #[derive(Default)]
 struct Inner {
     settings: Settings,
@@ -329,9 +323,24 @@ struct Inner {
     peers: Option<Arc<dyn Peers>>,
     board: Option<String>,
     timer_cfg: Option<(bool, u64)>,
+    /// The board's `load` object from the last read (`Null` when none came).
+    load: Value,
+    /// The cumulative token count at the last beat; the beat records the change.
+    tokens_seen: u64,
+    /// The clock's zero, set at first use. Per cadencer, so one cadencer's
+    /// clock never depends on another's (tokio paused time differs per test).
+    origin: Option<tokio::time::Instant>,
     last_beat_s: Option<u64>,
     next_beat_s: Option<u64>,
     timer: Option<JoinHandle<()>>,
+}
+
+impl Inner {
+    /// Seconds since this cadencer's first use; honors tokio paused time.
+    fn clock(&mut self) -> u64 {
+        let origin = *self.origin.get_or_insert_with(tokio::time::Instant::now);
+        tokio::time::Instant::now().duration_since(origin).as_secs()
+    }
 }
 
 fn timer_alive(inner: &Inner) -> bool {
@@ -340,11 +349,26 @@ fn timer_alive(inner: &Inner) -> bool {
 
 /// One beat: build digests from the stored tree, then remember it.
 fn beat(inner: &mut Inner) -> Vec<Digest> {
-    let digests = build(&inner.tree, &inner.prev, &inner.settings);
+    let now = inner.clock();
+    let mut digests = build(&inner.tree, &inner.prev, &inner.settings);
+    // The driver's tokens: the change of the board's cumulative counter since
+    // the last beat goes into the meter (the first beat counts from zero).
+    if let Some(total) = inner.load["tokens_total"].as_u64() {
+        let delta = total.saturating_sub(inner.tokens_seen);
+        inner.tokens_seen = total;
+        inner.meter.record_tokens(now, delta);
+    }
+    let tok = inner.meter.status(now)["driver_tokens_per_hour"]
+        .as_u64()
+        .unwrap_or(0);
+    if let Some(line) = cadence_feed::load_line(&inner.load, tok) {
+        for d in digests.iter_mut() {
+            d.lines.push(line.clone());
+        }
+    }
     inner.prev = inner.tree.clone();
     inner.ticks += 1;
     inner.digests_sent += digests.len() as u64;
-    let now = now_s();
     inner.last_beat_s = Some(now);
     inner.next_beat_s = if timer_alive(inner) {
         Some(now + inner.settings.cadence_s)
@@ -354,22 +378,32 @@ fn beat(inner: &mut Inner) -> Vec<Digest> {
     digests
 }
 
-/// Ask the board for its rows and turn them into the tree shape. `None` when
-/// the board gives no `rows` list.
-async fn read_board(peers: &dyn Peers, board: &str) -> Option<Vec<Node>> {
-    let reply = peers.ask(board, json!({"type": "rows"})).await;
+/// Ask the board for its rows and turn them into the tree shape, with the
+/// board's `load` object (`Null` when the reply has none). `None` when the
+/// board gives no `rows` list.
+async fn read_board(
+    peers: &dyn Peers,
+    board: &str,
+    stall_after_s: u64,
+) -> Option<(Vec<Node>, Value)> {
+    let reply = peers
+        .ask(
+            board,
+            json!({"type": "rows", "stall_after_s": stall_after_s}),
+        )
+        .await;
     let body = if reply.get("rows").is_some() {
         reply
     } else {
         reply.get("result")?.clone()
     };
     let rows = body.get("rows")?.as_array()?;
-    Some(
-        cadence_feed::tree_from_board(rows)
-            .iter()
-            .filter_map(node_from)
-            .collect(),
-    )
+    let nodes = cadence_feed::tree_from_board(rows)
+        .iter()
+        .filter_map(node_from)
+        .collect();
+    let load = body.get("load").cloned().unwrap_or(Value::Null);
+    Some((nodes, load))
 }
 
 /// Send each digest to its target. A failed send is counted, never fatal.
@@ -389,7 +423,8 @@ async fn deliver(shared: &Arc<Mutex<Inner>>, peers: Option<Arc<dyn Peers>>, dige
         if failed {
             g.delivery_errors += 1;
         } else {
-            g.meter.record_digest(now_s(), text.len() as u64);
+            let now = g.clock();
+            g.meter.record_digest(now, text.len() as u64);
         }
     }
 }
@@ -410,13 +445,15 @@ fn restart_timer(shared: &Arc<Mutex<Inner>>, inner: &mut Inner) {
         let mut every = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
         loop {
             every.tick().await;
-            let (peers, board) = {
+            let (peers, board, stall_after_s) = {
                 let g = shared.lock().expect("cadencer state");
-                (g.peers.clone(), g.board.clone())
+                (g.peers.clone(), g.board.clone(), g.settings.stall_after_s)
             };
             if let (Some(p), Some(b)) = (peers.as_ref(), board) {
-                if let Some(tree) = read_board(p.as_ref(), &b).await {
-                    shared.lock().expect("cadencer state").tree = tree;
+                if let Some((tree, load)) = read_board(p.as_ref(), &b, stall_after_s).await {
+                    let mut g = shared.lock().expect("cadencer state");
+                    g.tree = tree;
+                    g.load = load;
                 }
             }
             let (digests, peers) = {
@@ -427,7 +464,8 @@ fn restart_timer(shared: &Arc<Mutex<Inner>>, inner: &mut Inner) {
             deliver(&shared, peers, digests).await;
         }
     }));
-    inner.next_beat_s = Some(now_s() + inner.settings.cadence_s);
+    let now = inner.clock();
+    inner.next_beat_s = Some(now + inner.settings.cadence_s);
 }
 
 /// Only the parent, `maintainer`, `user` or the CLI leg (`mcp`) may steer the
@@ -483,16 +521,31 @@ fn dispatch(shared: &Arc<Mutex<Inner>>, payload: &Value) -> Value {
             }
             settings_json(&inner.settings)
         }
-        "status" => json!({
-            "settings": settings_json(&inner.settings),
-            "ticks": inner.ticks,
-            "last_beat_s": inner.last_beat_s,
-            "next_beat_s": inner.next_beat_s,
-            "digests_sent": inner.digests_sent,
-            "delivery_errors": inner.delivery_errors,
-            "digest_bytes_per_hour": inner.meter.status(now_s())["digest_bytes_per_hour"],
-            "driver_tokens_per_hour": inner.meter.status(now_s())["driver_tokens_per_hour"],
-        }),
+        "status" => {
+            let now = inner.clock();
+            let meter = inner.meter.status(now);
+            // The board's load counts, plus the cadencer's own per-hour figures.
+            let mut load = inner.load.as_object().cloned().unwrap_or_default();
+            load.insert(
+                "digest_bytes_per_hour".into(),
+                meter["digest_bytes_per_hour"].clone(),
+            );
+            load.insert(
+                "driver_tokens_per_hour".into(),
+                meter["driver_tokens_per_hour"].clone(),
+            );
+            json!({
+                "settings": settings_json(&inner.settings),
+                "ticks": inner.ticks,
+                "last_beat_s": inner.last_beat_s,
+                "next_beat_s": inner.next_beat_s,
+                "digests_sent": inner.digests_sent,
+                "delivery_errors": inner.delivery_errors,
+                "digest_bytes_per_hour": meter["digest_bytes_per_hour"],
+                "driver_tokens_per_hour": meter["driver_tokens_per_hour"],
+                "load": load,
+            })
+        }
         other => json!({"error": format!("team_cadencer: unknown type '{other}'")}),
     }
 }
@@ -538,7 +591,7 @@ impl Bundle for CadencerBundle {
             "set": "set {sender, enabled?, cadence?, stall_after?, quiet?, lead?, on?} → settings (sender must be the parent, maintainer or user); persisted in the agent record and restored at boot",
             "configure": "configure {board?, parent?} → {parent}; board and parent (kept as cadencer_parent) are persisted in the agent record and restored at boot, and the timer restarts",
             "boot": "the kernel's lifecycle verb, boot {} → {loaded}: loads the settings and board from the agent record and restarts the timer when enabled with a board",
-            "status": "status {} → {settings, ticks, last_beat_s, next_beat_s, digests_sent}",
+            "status": "status {} → {settings, ticks, last_beat_s, next_beat_s, digests_sent, digest_bytes_per_hour, driver_tokens_per_hour, load}; load is the board's counts (workers busy/idle/stalled per group, tasks held/in_review/done/blocked/queued, done_last_hour, tokens_total) and carries no mode",
         })
     }
 
@@ -1115,5 +1168,106 @@ mod tests {
         let s = status(&b);
         assert!(s["next_beat_s"].is_null());
         assert_eq!(s["ticks"], 0);
+    }
+
+    /// A board whose `rows` reply carries a `load` object, or none; its token
+    /// counter is read from a shared cell so a test can move it between beats.
+    struct LoadPeers {
+        with_load: bool,
+        tokens: Arc<Mutex<u64>>,
+        sent: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Peers for LoadPeers {
+        async fn ask(&self, to: &str, p: Value) -> Value {
+            if p["type"] == "rows" {
+                let mut reply = json!({"rows": [
+                    {"id": "g1", "parent": null, "has_ai": true, "state": "busy", "task": "x"},
+                    {"id": "w1", "parent": "g1", "has_ai": true, "state": "busy", "task": "build", "idle_s": 0}
+                ]});
+                if self.with_load {
+                    reply["load"] = json!({
+                        "workers": {"busy": 1, "idle": 0, "stalled": 0},
+                        "tasks": {"held": 1, "in_review": 0, "done": 0, "blocked": 0, "queued": 2},
+                        "done_last_hour": 0,
+                        "tokens_total": *self.tokens.lock().unwrap(),
+                    });
+                }
+                return reply;
+            }
+            let text = p["text"].as_str().unwrap_or("").to_string();
+            self.sent.lock().unwrap().push((to.to_string(), text));
+            json!({"ok": true})
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn status_reports_load_after_a_beat() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let tokens = Arc::new(Mutex::new(0));
+        let b = shared();
+        {
+            let mut g = b.lock().unwrap();
+            g.peers = Some(Arc::new(LoadPeers {
+                with_load: true,
+                tokens: tokens.clone(),
+                sent: sent.clone(),
+            }));
+            g.board = Some("board".into());
+        }
+        dispatch(&b, &json!({"type": "set", "sender": "user", "cadence": 60}));
+        run_for(60).await;
+        let s = status(&b);
+        assert_eq!(s["load"]["workers"]["busy"], 1);
+        assert_eq!(s["load"]["tasks"]["queued"], 2);
+        assert_eq!(s["load"]["tokens_total"], 0);
+        assert!(s["load"]["driver_tokens_per_hour"].is_u64());
+        assert!(s["load"]["digest_bytes_per_hour"].is_u64());
+        // The digest carries the load as one plain line, numbers only.
+        let line = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, t)| t.clone())
+            .find(|t| t.contains("load: "))
+            .expect("a digest with the load line");
+        assert!(line.contains("queued 2"), "{line}");
+        assert!(!line.contains('/') || line.contains("done/h"), "{line}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn read_board_still_works_without_load() {
+        let tokens = Arc::new(Mutex::new(0));
+        let peers = LoadPeers {
+            with_load: false,
+            tokens,
+            sent: Arc::new(Mutex::new(Vec::new())),
+        };
+        let (nodes, load) = read_board(&peers, "board", 300).await.expect("rows read");
+        assert_eq!(nodes.len(), 2);
+        assert!(load.is_null());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn driver_tokens_per_hour_is_fed_by_counters() {
+        let tokens = Arc::new(Mutex::new(1000));
+        let b = shared();
+        {
+            let mut g = b.lock().unwrap();
+            g.peers = Some(Arc::new(LoadPeers {
+                with_load: true,
+                tokens: tokens.clone(),
+                sent: Arc::new(Mutex::new(Vec::new())),
+            }));
+            g.board = Some("board".into());
+        }
+        dispatch(&b, &json!({"type": "set", "sender": "user", "cadence": 60}));
+        run_for(60).await; // first beat: counter 1000
+        *tokens.lock().unwrap() = 1500;
+        run_for(60).await; // second beat: counter 1500, so 500 more
+        assert_eq!(status(&b)["driver_tokens_per_hour"], 1500);
+        run_for(3600).await; // both beats are now outside the hour
+        assert_eq!(status(&b)["driver_tokens_per_hour"], 0);
     }
 }
