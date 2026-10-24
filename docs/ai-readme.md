@@ -7,6 +7,7 @@ You are reading the text of the `fantastic_team` binary, the team's start-up. Us
 - Build: `cargo build --workspace`. The binary is `fantastic_team`.
 - Check: `fantastic_team ai-readme` prints this file. `fantastic_team --help` prints the usage text.
 - Tests: `cargo test --workspace`. Secrets check: `scripts/check-secrets.sh .`
+- e2e: `python3 e2e/run.py --only-free` runs the binary on a scripted model and a fake forge (no network, no key). See `e2e/README.md`.
 
 ## 2. Start the team
 

@@ -256,6 +256,55 @@ fn settings_json(s: &Settings) -> Value {
     })
 }
 
+/// The record keys the settings and board are kept under: the verb arg names.
+/// Written into the cadencer's own agent record on `set` and `configure`, and
+/// read back at boot.
+fn record_patch(inner: &Inner) -> serde_json::Map<String, Value> {
+    let mut m = match settings_json(&inner.settings) {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    if let Some(b) = &inner.board {
+        m.insert("board".to_string(), json!(b));
+    }
+    // `parent` is a reserved record key, so the cadencer's parent has its own.
+    if let Some(p) = &inner.parent {
+        m.insert("cadencer_parent".to_string(), json!(p));
+    }
+    m
+}
+
+/// Load the keys `record_patch` writes from a record. Returns true when any
+/// of them was present.
+fn load_from_record(inner: &mut Inner, meta: &serde_json::Map<String, Value>) -> bool {
+    let mut loaded = false;
+    if let Some(b) = meta.get("board").and_then(|v| v.as_str()) {
+        inner.board = Some(b.to_string());
+        loaded = true;
+    }
+    if let Some(p) = meta.get("cadencer_parent").and_then(|v| v.as_str()) {
+        inner.parent = Some(p.to_string());
+        loaded = true;
+    }
+    let mut settings = serde_json::Map::new();
+    for k in ["enabled", "cadence", "stall_after", "quiet"] {
+        if let Some(v) = meta.get(k) {
+            settings.insert(k.to_string(), v.clone());
+            loaded = true;
+        }
+    }
+    apply_set(&mut inner.settings, &Value::Object(settings));
+    if let Some(arr) = meta.get("off").and_then(|v| v.as_array()) {
+        inner.settings.off = arr
+            .iter()
+            .filter_map(|x| x.as_str())
+            .map(String::from)
+            .collect();
+        loaded = true;
+    }
+    loaded
+}
+
 fn digest_json(d: &Digest) -> Value {
     json!({"to": d.to, "lines": d.lines, "text": d.lines.join("\n")})
 }
@@ -454,6 +503,29 @@ pub struct CadencerBundle {
     inner: Arc<Mutex<Inner>>,
 }
 
+impl CadencerBundle {
+    /// Boot: load the saved keys from the agent record, then restart the timer
+    /// when it is enabled and has a board.
+    fn restore(&self, agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
+        let meta = kernel
+            .resolve_target(agent_id.as_str())
+            .map(|a| a.meta.read().expect("meta lock poisoned").clone())
+            .unwrap_or_default();
+        json!({"loaded": boot_from_meta(&self.inner, &meta)})
+    }
+}
+
+/// Load the saved keys and restart the timer when it is enabled with a board.
+/// Returns true when the record had any of them.
+fn boot_from_meta(shared: &Arc<Mutex<Inner>>, meta: &serde_json::Map<String, Value>) -> bool {
+    let mut g = shared.lock().expect("cadencer state");
+    let loaded = load_from_record(&mut g, meta);
+    if g.settings.enabled && g.board.is_some() {
+        restart_timer(shared, &mut g);
+    }
+    loaded
+}
+
 #[async_trait::async_trait]
 impl Bundle for CadencerBundle {
     fn name(&self) -> &str {
@@ -463,15 +535,16 @@ impl Bundle for CadencerBundle {
     fn verb_docs(&self) -> Value {
         json!({
             "tick": "tick {tree: [{id, parent?, has_ai?, state, task, inquiry?, idle_s, time_on_task_s, cost, cache_hit, new_results}]} → {digests: [{to, lines, text}], sent}",
-            "set": "set {sender, enabled?, cadence?, stall_after?, quiet?, lead?, on?} → settings (sender must be the parent, maintainer or user)",
-            "configure": "configure {parent} → {parent}",
+            "set": "set {sender, enabled?, cadence?, stall_after?, quiet?, lead?, on?} → settings (sender must be the parent, maintainer or user); persisted in the agent record and restored at boot",
+            "configure": "configure {board?, parent?} → {parent}; board and parent (kept as cadencer_parent) are persisted in the agent record and restored at boot, and the timer restarts",
+            "boot": "the kernel's lifecycle verb, boot {} → {loaded}: loads the settings and board from the agent record and restarts the timer when enabled with a board",
             "status": "status {} → {settings, ticks, last_beat_s, next_beat_s, digests_sent}",
         })
     }
 
     async fn handle(
         &self,
-        _agent_id: &AgentId,
+        agent_id: &AgentId,
         payload: &Value,
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
@@ -479,7 +552,20 @@ impl Bundle for CadencerBundle {
             let mut g = self.inner.lock().expect("cadencer state");
             g.peers = Some(Arc::new(KernelPeers(kernel.clone())));
         }
-        Ok(Some(dispatch(&self.inner, payload)))
+        let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if t == "boot" {
+            return Ok(Some(self.restore(agent_id, kernel)));
+        }
+        let reply = dispatch(&self.inner, payload);
+        if matches!(t, "configure" | "set") && reply.get("error").is_none() {
+            // The lock is dropped before the record write.
+            let patch = {
+                let g = self.inner.lock().expect("cadencer state");
+                record_patch(&g)
+            };
+            let _ = kernel.update(agent_id, patch);
+        }
+        Ok(Some(reply))
     }
 }
 
@@ -975,5 +1061,59 @@ mod tests {
         assert!(got
             .iter()
             .any(|(to, text)| to == "g1" && text.contains("w1")));
+    }
+
+    #[test]
+    fn record_patch_and_load_roundtrip() {
+        let mut a = Inner {
+            board: Some("b".into()),
+            parent: Some("lead".into()),
+            ..Inner::default()
+        };
+        apply_set(
+            &mut a.settings,
+            &json!({"quiet": false, "cadence": 5, "stall_after": 7, "lead": "g", "on": false}),
+        );
+        let patch = record_patch(&a);
+        let mut b = Inner::default();
+        assert!(load_from_record(&mut b, &patch));
+        assert_eq!(b.board.as_deref(), Some("b"));
+        assert_eq!(b.parent.as_deref(), Some("lead"));
+        assert_eq!(patch["cadencer_parent"], "lead");
+        assert!(!patch.contains_key("parent"));
+        assert!(!b.settings.quiet);
+        assert_eq!(b.settings.cadence_s, 5);
+        assert_eq!(b.settings.stall_after_s, 7);
+        assert_eq!(b.settings.off, BTreeSet::from(["g".to_string()]));
+        assert_eq!(b.settings, a.settings);
+    }
+
+    #[test]
+    fn empty_record_loads_nothing() {
+        let mut b = Inner::default();
+        assert!(!load_from_record(&mut b, &serde_json::Map::new()));
+        assert_eq!(b.settings, Settings::default());
+        assert!(b.board.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn boot_from_record_restarts_timer() {
+        let b = shared();
+        let mut meta = serde_json::Map::new();
+        meta.insert("enabled".into(), json!(true));
+        meta.insert("cadence".into(), json!(5));
+        meta.insert("board".into(), json!("board"));
+        assert!(boot_from_meta(&b, &meta));
+        assert!(!status(&b)["next_beat_s"].is_null());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn boot_with_no_saved_keys_starts_no_timer() {
+        let b = shared();
+        assert!(!boot_from_meta(&b, &serde_json::Map::new()));
+        run_for(600).await;
+        let s = status(&b);
+        assert!(s["next_beat_s"].is_null());
+        assert_eq!(s["ticks"], 0);
     }
 }
