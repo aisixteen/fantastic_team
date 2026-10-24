@@ -111,23 +111,46 @@ fn readme_examples_hold_no_secret_values() {
     }
 }
 
+/// The fenced ```yaml blocks of the README, without their fences.
+fn readme_yaml_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        match current.as_mut() {
+            None => {
+                if line.trim_end() == "```yaml" {
+                    current = Some(String::new());
+                }
+            }
+            Some(body) => {
+                if line.trim_end() == "```" {
+                    blocks.push(current.take().unwrap());
+                } else {
+                    body.push_str(line);
+                    body.push('\n');
+                }
+            }
+        }
+    }
+    blocks
+}
+
 #[test]
 fn readme_defaults_match_repo_config() {
     let text = readme();
-    let code = format!(
-        "{}\n{}",
-        fs::read_to_string(root().join("crates/team/src/config.rs")).unwrap(),
-        fs::read_to_string(root().join("crates/team/src/repo_config.rs")).unwrap(),
-    );
-    let label = code
-        .lines()
-        .find(|l| l.contains("const DEFAULT_LABEL"))
-        .and_then(|l| l.split('"').nth(1))
-        .expect("DEFAULT_LABEL must be a string literal in config.rs or repo_config.rs");
     let defaults = text
         .lines()
         .find(|l| l.starts_with("Every key is optional"))
         .expect("README must state the defaults in an `Every key is optional` line");
+    // The code's own answer for an empty file, not a grep of its source.
+    let cfg = fantastic_team::repo_config::parse("").expect("an empty team.yaml must parse");
+    let label = fantastic_team::repo_config::DEFAULT_LABEL;
+    assert_eq!(cfg.task_labels, vec![label.to_string()]);
+    assert_eq!(cfg.review.approvals, 1);
+    assert!(
+        cfg.review.approvers.is_empty(),
+        "default approvers is any reviewer"
+    );
     assert!(
         defaults.contains(&format!("`{label}`")),
         "README default label disagrees with DEFAULT_LABEL `{label}`"
@@ -136,8 +159,24 @@ fn readme_defaults_match_repo_config() {
         defaults.contains("one approval"),
         "README must say the default is one approval"
     );
-    assert!(
-        code.contains("cfg.review.approvals, 1"),
-        "repo_config.rs must default review.approvals to 1, as the README says"
+}
+
+#[test]
+fn readme_repo_yaml_example_parses() {
+    let text = readme();
+    let block = readme_yaml_blocks(&text)
+        .into_iter()
+        .find(|b| b.lines().any(|l| l.starts_with("task_labels:")))
+        .expect("README must show a team.yaml example with task_labels");
+    let cfg = fantastic_team::repo_config::parse(&block)
+        .unwrap_or_else(|e| panic!("README team.yaml example must parse: {e}"));
+    assert_eq!(cfg.task_labels, vec!["team-ready".to_string()]);
+    assert_eq!(
+        cfg.paths,
+        vec!["src/**".to_string(), "docs/*.md".to_string()]
     );
+    assert_eq!(cfg.build.as_deref(), Some("cargo build"));
+    assert_eq!(cfg.test.as_deref(), Some("cargo test"));
+    assert_eq!(cfg.review.approvals, 1);
+    assert_eq!(cfg.review.approvers, vec!["alice".to_string()]);
 }
