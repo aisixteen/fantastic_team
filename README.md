@@ -141,6 +141,15 @@ Results can stay as files in the team's folder. When work belongs somewhere else
 - **git**: a branch pushed to any remote (SSH or HTTPS).
 - **GitHub** (optional): as a GitHub App you register yourself. Draft pull requests, issue comments, labels, reading a task queue from issues. Register with your own app; the private key stays in your credential store.
 
+## Worker packs
+
+A worker pack is a folder: `pack.yaml` (the manifest: name, version, author, license, price `free`, the sha256 content hash of the other files, an empty signature, the ports the pack needs, and the list of files), `manifest.yaml`, `worker.json` (the record with its model, credentials and other bindings stripped), and `directives/`, `templates/`, `evals/`. The `team_pack.tools` verbs are `pack {worker, out}`, `install {pack, into}` and `eval {pack, worker, timeout_s?}`. `eval` runs the pack's evals on a worker and reports the pass rate; it writes nothing.
+
+- `pack` scans every file before it writes anything (`crates/team/src/pack_scan.rs`). It refuses secrets, directives or templates that ask for a key, read `~/.ssh` or send data out, and any code file (`.rs`, `.py`, `.sh`, executables under `bin/`, …). A refused pack writes nothing and the reply lists each finding by path, rule and line, never the matched text.
+- `install` refuses a pack with no `pack.yaml`, an invalid manifest, a content hash that differs from the files it lists (a tampered file), a scan refusal, or an installed version. It checks all of this before its first write, then copies the pack as a template under `<into>/<name>-<version>/`. It creates no agent. The reply carries the pack's parsed ports (`{"kind": "model" | "connector" | "exec:sandboxed", …}`) so the caller can show what the pack asks for.
+
+Not yet: signatures, running a pack's evals on install, the bindings prompt, and the CLI, MCP and web UI surfaces for these verbs.
+
 ## What is in this repo
 
 | Part | What it is |
