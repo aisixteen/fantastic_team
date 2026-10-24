@@ -957,6 +957,7 @@ dependencies = [
  "fantastic-ram-store",
  "fantastic-team-secrets-guard",
  "fantastic-tui",
+ "getrandom 0.2.17",
  "hmac",
  "regex",
  "reqwest",
