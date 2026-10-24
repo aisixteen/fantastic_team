@@ -180,3 +180,132 @@ fn readme_repo_yaml_example_parses() {
     assert_eq!(cfg.review.approvals, 1);
     assert_eq!(cfg.review.approvers, vec!["alice".to_string()]);
 }
+
+/// Every `.rs` file under `dir` outside a `tests` folder, concatenated.
+fn rust_sources(dir: &std::path::Path) -> String {
+    let mut out = String::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in fs::read_dir(&d).expect("source dir must be readable") {
+            let p = entry.unwrap().path();
+            if p.is_dir() {
+                // the tests name the phrases they check; only the code counts
+                if p.file_name().is_none_or(|n| n != "tests") {
+                    stack.push(p);
+                }
+            } else if p.extension().is_some_and(|e| e == "rs") {
+                out.push_str(&fs::read_to_string(&p).unwrap());
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn readme_names_every_cli_subcommand_and_flag() {
+    let text = readme();
+    let source = format!(
+        "{}\n{}\n{}",
+        fs::read_to_string(root().join("crates/team/src/main.rs")).unwrap(),
+        fs::read_to_string(root().join("crates/team/src/instructions.rs")).unwrap(),
+        fs::read_to_string(root().join("crates/team/src/setup_github.rs")).unwrap(),
+    );
+    for name in [
+        "setup github",
+        "ai-readme",
+        "--instructions-file",
+        "--resend-instructions",
+        "--per-lead",
+    ] {
+        assert!(
+            text.contains(name),
+            "README must document `{name}` (it is in the binary)"
+        );
+        assert!(source.contains(name), "`{name}` is not in the code");
+    }
+}
+
+#[test]
+fn readme_documents_the_e2e_tiers_and_manual_ci() {
+    let text = readme();
+    for want in ["e2e/run.py", "--only-free", "--only-turns", "manual"] {
+        assert!(text.contains(want), "README must name `{want}`");
+    }
+    // every `python3 e2e/...` path the README names exists on disk
+    let mut checked = 0;
+    for line in text.lines() {
+        if let Some(i) = line.find("python3 e2e/") {
+            let rest = &line[i + "python3 ".len()..];
+            let path: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || "/._-".contains(*c))
+                .collect();
+            checked += 1;
+            assert!(
+                root().join(&path).exists(),
+                "README names `{path}`, which does not exist"
+            );
+        }
+    }
+    assert!(checked > 0, "README should name an e2e command");
+}
+
+#[test]
+fn readme_team_yaml_optional_keys_are_documented() {
+    let text = readme();
+    let config = fs::read_to_string(root().join("crates/team/src/config.rs")).unwrap();
+    for (key, field) in [("groups:", "pub groups"), ("board:", "pub board")] {
+        assert!(text.contains(key), "README must document the `{key}` key");
+        assert!(
+            config.contains(field),
+            "`{key}` is not read by config.rs (`{field}`)"
+        );
+    }
+    assert!(
+        text.contains("examples/team.yaml") && text.contains("templates/"),
+        "README must point to examples/team.yaml and templates/"
+    );
+}
+
+#[test]
+fn readme_does_not_name_unimplemented_features() {
+    let text = readme();
+    let code = format!(
+        "{}{}",
+        rust_sources(&root().join("crates")),
+        rust_sources(&root().join("app"))
+    );
+    for phrase in ["app-merge", "fewest tasks"] {
+        if text.contains(phrase) {
+            assert!(
+                code.contains(phrase),
+                "README claims `{phrase}`, which no code under crates/ or app/ implements"
+            );
+        }
+    }
+}
+
+#[test]
+fn readme_mentions_the_app() {
+    let text = readme();
+    assert!(
+        text.contains("app/README.md"),
+        "README must link app/README.md"
+    );
+    assert!(root().join("app/README.md").exists());
+    assert!(root().join("app/tauri.conf.json").exists());
+}
+
+#[test]
+fn install_guide_names_the_setup_command() {
+    let install = fs::read_to_string(root().join("docs/install.md")).unwrap();
+    assert!(
+        install.contains("fantastic_team setup github"),
+        "docs/install.md must name `fantastic_team setup github`"
+    );
+    assert!(
+        !install.contains("manifest flow is not in the repo"),
+        "docs/install.md still says the manifest flow is not in the repo"
+    );
+}
