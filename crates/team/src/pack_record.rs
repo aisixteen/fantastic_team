@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
+use crate::pack_eval::EvalSummary;
+
 /// One task's outcome, as the measuring shift saw it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskOutcome {
@@ -37,6 +39,20 @@ pub struct MeasuredRecord {
     pub measured_by: String,
     /// Signature over [`signing_payload`]; None until the record is signed.
     pub signature: Option<String>,
+}
+
+/// One outcome per eval result: `succeeded` is the eval's pass, `cost` the cost
+/// the executor reported, `elapsed_s` the eval's time. Pure: publishes nothing.
+pub fn outcomes_from_eval(pack_hash: &str, s: &EvalSummary) -> Vec<TaskOutcome> {
+    s.per_eval
+        .iter()
+        .map(|r| TaskOutcome {
+            pack_hash: pack_hash.to_string(),
+            succeeded: r.passed,
+            cost: r.cost,
+            elapsed_s: r.elapsed.as_secs_f64(),
+        })
+        .collect()
 }
 
 /// Aggregate the outcomes that belong to `pack_hash` into a record. Outcomes
@@ -177,6 +193,40 @@ mod tests {
     fn an_unsigned_record_is_not_publishable() {
         let rec = aggregate("p", &[outcome("p", true, None)], "team-a");
         assert!(publishable(&rec, true).is_none());
+    }
+
+    #[test]
+    fn outcomes_from_eval_matches_summary() {
+        use crate::pack_eval::{EvalResult, EvalSummary};
+        use std::time::Duration;
+        let r = |id: &str, passed: bool, cost: Option<f64>| EvalResult {
+            id: id.to_string(),
+            passed,
+            reason: None,
+            elapsed: Duration::from_millis(1500),
+            cost,
+        };
+        let s = EvalSummary {
+            passed: 2,
+            total: 3,
+            pass_rate: 2.0 / 3.0,
+            total_time: Duration::from_millis(4500),
+            total_cost: Some(0.5),
+            per_eval: vec![
+                r("a", true, Some(0.5)),
+                r("b", false, None),
+                r("c", true, None),
+            ],
+        };
+        let outs = outcomes_from_eval("p", &s);
+        assert_eq!(outs.len(), 3);
+        assert!(!outs[1].succeeded, "a failed eval is a failed outcome");
+        assert_eq!(outs[0].cost, Some(0.5));
+        assert_eq!(outs[0].elapsed_s, 1.5);
+        let rec = aggregate("p", &outs, "team-a");
+        assert_eq!(rec.tasks as usize, s.total);
+        assert_eq!(rec.successes as usize, s.passed);
+        assert!((rec.success_rate - s.pass_rate).abs() < 1e-9);
     }
 
     #[test]
