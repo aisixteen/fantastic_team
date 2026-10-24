@@ -14,14 +14,14 @@ pub mod driver;
 pub mod driver_config;
 pub mod driver_rules;
 pub mod instructions;
-pub mod pack_eval;
-pub mod pack_listing;
-pub mod pack_manifest;
-pub mod pack_record;
-pub mod pack_scan;
-pub mod peer_envelope;
 pub mod peer_transport;
+pub mod pack_listing;
+pub mod pack_record;
 pub mod peers;
+pub mod peer_envelope;
+pub mod pack_eval;
+pub mod pack_manifest;
+pub mod pack_scan;
 pub mod puller;
 pub mod repo_config;
 pub mod setup_github;
@@ -190,11 +190,12 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
 }
 
 /// Seed a fresh directory's base tree: a RAM memory store for the kernel's
-/// execution rows, a file-bridge store so records persist (open only to the kernel and its
-/// persistence loader, `kernel_state`), and the root
-/// pointed at the memory store. A root that already names a `memory_store_id`
-/// is left alone. Returns `Ok(true)` when it seeded, `Ok(false)` when there
-/// was nothing to do. Mirrors the blueprint in fantastic's terminal app.
+/// execution rows, and a file-bridge store so records persist. The file
+/// bridge is open only to the kernel and its persistence loader
+/// (`kernel_state`). The root is pointed at the memory store. A root that
+/// already names a `memory_store_id` is left alone. Returns `Ok(true)` when
+/// it seeded, `Ok(false)` when there was nothing to do. Mirrors the blueprint
+/// in fantastic's terminal app.
 pub async fn seed_base_tree(kernel: &Arc<Kernel>) -> Result<bool, String> {
     let root = kernel
         .send(vec![Item::new(DEFAULT_ROOT_ID, json!({"type": "reflect"}))])
@@ -284,13 +285,15 @@ async fn boot_kernel(kernel: &Arc<Kernel>) -> Result<(), String> {
 }
 
 /// The seed ran before the kernel's record writer subscribed, so the seeded
-/// agents were never queued for it. Touch each one now (an `update_agent` that
-/// re-sets a value it already has) so its record lands on disk; without them a
-/// restart finds the root pointing at a `kernel_memory` that has no record.
+/// agents were never queued for it. Touch each one now with an `update_agent`
+/// that re-sets a value the seed already wrote, so its record lands on disk.
+/// The touches never change a security field, so the record keeps the seed's
+/// own values. Without the touch a restart finds the root pointing at a
+/// `kernel_memory` that has no record.
 async fn persist_seeded_records(kernel: &Arc<Kernel>) -> Result<(), String> {
     for (id, key, value) in [
         ("kernel_memory", "admins", json!(["kernel"])),
-        ("store", "ingress_rule", json!("allow_all_ingress")),
+        ("store", "root", json!(".fantastic")),
     ] {
         let mut payload = json!({"type": "update_agent", "id": id});
         payload[key] = value;
