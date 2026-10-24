@@ -337,9 +337,16 @@ async fn paths_outside_the_root_are_refused() {
     .await;
     #[cfg(unix)]
     std::os::unix::fs::symlink(f.tmp.path(), f.ws.join("link")).unwrap();
-    let mut bad_paths = vec!["../escape", "/tmp"];
-    #[cfg(unix)]
-    bad_paths.push("link");
+    let bad_paths: Vec<&str> = {
+        #[cfg(unix)]
+        {
+            vec!["../escape", "/tmp", "link"]
+        }
+        #[cfg(not(unix))]
+        {
+            vec!["../escape", "/tmp"]
+        }
+    };
     for bad_path in bad_paths {
         let checks = [
             json!({"type": "status", "path": bad_path}),
@@ -356,7 +363,7 @@ async fn paths_outside_the_root_are_refused() {
                 r["error"],
                 format!(
                     "team_git {verb}: path `{bad_path}` is outside the workspace root `{}`",
-                    f.ws.canonicalize().unwrap().display()
+                    f.ws.display()
                 ),
                 "{verb} {bad_path}"
             );
