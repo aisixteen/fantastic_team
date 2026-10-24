@@ -5,6 +5,7 @@
 //! is a thin wrapper around `fantastic_tui::main_with`.
 #![deny(missing_docs)]
 
+pub mod app_control;
 pub mod board;
 pub mod cadence_feed;
 pub mod cadencer;
