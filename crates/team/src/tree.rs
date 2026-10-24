@@ -16,7 +16,7 @@ use fantastic_kernel::{Item, Kernel, Status};
 use serde_json::{json, Value};
 
 use crate::config::{self, TeamConfig};
-use crate::{board, dispatcher, worker_exec, worker_view};
+use crate::{board, dispatcher, pack_bundle, pack_listing, worker_exec, worker_view};
 
 /// The dispatcher's agent id: the team's main view, created at start.
 pub const DISPATCHER_ID: &str = "dispatcher";
@@ -40,6 +40,13 @@ pub const BUILTIN_TOOLS: [&str; 5] = [
     "kernel",
     "kernel_state",
 ];
+
+/// The pack verbs (`pack`, `install`, `eval`), under the lead: the CLI, MCP and `send` reach them.
+pub const PACK_ID: &str = "pack";
+/// The pack listing (`list`, `show`, `updates`), under the lead.
+pub const PACK_LISTING_ID: &str = "pack_listing";
+/// The file bridge the pack agents read and write through, rooted at the team's directory.
+pub const FILES_ID: &str = "files";
 
 /// What a planned agent is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +174,48 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         &lead,
         json!({"handler_module": "file_bridge.tools", "root": work, "allow": ["."]}),
     ));
+    // Only the pack agents may reach the files peer; the lead's own grants do not name it.
+    // `allow_all_ingress` opens the edge (as the base `store` does); `callable_by` still
+    // names who may call.
+    let mut files = tool_plan(
+        FILES_ID,
+        &lead,
+        json!({
+            "handler_module": "file_bridge.tools",
+            "root": team_dir.to_string_lossy().into_owned(),
+            "allow": ["."],
+            "ingress_rule": "allow_all_ingress",
+        }),
+    );
+    files.record["callable_by"] =
+        json!({"$self": "*", "$parent": "*", (PACK_ID): "*", (PACK_LISTING_ID): "*"});
+    out.push(files);
+    // `eval` and `install --worker` send each eval task to a worker by id, so the pack
+    // agent may call the lead and the configured group members (`send` only reaches an
+    // agent whose own `callable_by` names `pack`; the lead's does, below).
+    let mut pack_can_call = serde_json::Map::new();
+    pack_can_call.insert(FILES_ID.into(), json!("*"));
+    pack_can_call.insert(lead.clone(), json!("*"));
+    for m in cfg.groups.values().flat_map(|g| g.members.iter()) {
+        pack_can_call.insert(m.clone(), json!("*"));
+    }
+    out[0].record["callable_by"][PACK_ID] = json!("*");
+    out.push(pack_plan(
+        PACK_ID,
+        &lead,
+        json!({"handler_module": pack_bundle::HANDLER_MODULE, "can_call": pack_can_call}),
+    ));
+    out.push(pack_plan(
+        PACK_LISTING_ID,
+        &lead,
+        json!({
+            "handler_module": pack_listing::HANDLER_MODULE,
+            "index_path": "packs/index.json",
+            "templates_dir": "templates",
+            "store": FILES_ID,
+            "can_call": {(FILES_ID): "*"},
+        }),
+    ));
     out.push(tool_plan(
         &cfg.queue.id,
         &lead,
@@ -248,6 +297,15 @@ fn tool_plan(id: &str, parent: &str, mut rec: Value) -> Planned {
         role: Role::Tool,
         record: rec,
     }
+}
+
+/// A pack agent under `parent`: a tool that the CLI, MCP and `send` may call,
+/// and that reads its files through the `files` peer only. Its `callable_by`
+/// replaces the tool default, so the dispatcher is named too.
+fn pack_plan(id: &str, parent: &str, rec: Value) -> Planned {
+    let mut p = tool_plan(id, parent, rec);
+    p.record["callable_by"] = json!({"$self": "*", "$parent": "*", "dispatcher": "*"});
+    p
 }
 
 /// True when the agent `id` is live in the kernel. Read from the kernel's table,
@@ -476,6 +534,9 @@ mod tests {
                 "worker_view",
                 "worker_exec",
                 "worker_files",
+                "files",
+                "pack",
+                "pack_listing",
                 "queue",
                 "git"
             ]
@@ -598,6 +659,181 @@ mod tests {
         assert!(second.reused.iter().any(|c| c == "dispatcher"));
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn plan_creates_pack_agents_with_files_peer() {
+        let tree = plan(&sample(), Path::new("/team")).unwrap();
+        let find = |id: &str| {
+            tree.iter()
+                .find(|p| p.id == id)
+                .unwrap_or_else(|| panic!("the plan has no `{id}`"))
+        };
+        let files = find(FILES_ID);
+        assert_eq!(files.role, Role::Tool);
+        assert_eq!(files.parent, "lead");
+        assert_eq!(files.record["handler_module"], "file_bridge.tools");
+        assert_eq!(files.record["root"], "/team");
+        assert_eq!(files.record["allow"], json!(["."]));
+        assert_eq!(
+            files.record["callable_by"],
+            json!({"$self": "*", "$parent": "*", (PACK_ID): "*", (PACK_LISTING_ID): "*"}),
+        );
+
+        let pack = find(PACK_ID);
+        assert_eq!(pack.parent, "lead");
+        assert_eq!(pack.record["handler_module"], pack_bundle::HANDLER_MODULE);
+        assert_eq!(pack.record["can_call"], json!({"files": "*", "lead": "*"}));
+        assert_eq!(
+            pack.record["callable_by"],
+            json!({"$self": "*", "$parent": "*", "dispatcher": "*"}),
+        );
+
+        let listing = find(PACK_LISTING_ID);
+        assert_eq!(listing.parent, "lead");
+        assert_eq!(
+            listing.record["handler_module"],
+            pack_listing::HANDLER_MODULE
+        );
+        assert_eq!(listing.record["index_path"], "packs/index.json");
+        assert_eq!(listing.record["templates_dir"], "templates");
+        assert_eq!(listing.record["store"], "files");
+        assert_eq!(listing.record["can_call"], json!({"files": "*"}));
+        assert!(
+            listing.record.get("trusted_keys").is_none(),
+            "nothing is trusted until team.yaml says so"
+        );
+        assert_eq!(
+            listing.record["callable_by"],
+            json!({"$self": "*", "$parent": "*", "dispatcher": "*"}),
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn applied_pack_listing_answers_list_on_empty_index() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("templates")).unwrap();
+        std::fs::create_dir_all(dir.path().join("packs")).unwrap();
+        std::fs::write(dir.path().join("packs/index.json"), r#"{"entries":[]}"#).unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        let outs = kernel
+            .send(vec![Item::new(PACK_LISTING_ID, json!({"type": "list"}))])
+            .await;
+        let reply = &outs[0].result;
+        assert!(reply.get("error").is_none(), "{reply}");
+        assert_eq!(reply["packs"], json!([]), "{reply}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn applied_pack_verb_reaches_files_peer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("templates")).unwrap();
+        std::fs::create_dir_all(dir.path().join("w")).unwrap();
+        std::fs::write(
+            dir.path().join("w/worker.json"),
+            r#"{"name":"w","version":"1.0"}"#,
+        )
+        .unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        let packed = kernel
+            .send(vec![Item::new(
+                PACK_ID,
+                json!({"type": "pack", "worker": "w", "out": "pack"}),
+            )])
+            .await;
+        assert!(
+            packed[0].result.get("error").is_none(),
+            "{}",
+            packed[0].result
+        );
+        let outs = kernel
+            .send(vec![Item::new(
+                PACK_ID,
+                json!({"type": "install", "pack": "pack", "into": "templates"}),
+            )])
+            .await;
+        let reply = &outs[0].result;
+        assert!(reply.get("error").is_none(), "{reply}");
+        assert!(reply.get("files").is_some(), "{reply}");
+        assert!(dir.path().join("templates/w-1.0/worker.json").exists());
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn applied_pack_eval_reaches_a_worker() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("w/evals")).unwrap();
+        std::fs::write(
+            dir.path().join("w/worker.json"),
+            r#"{"name":"w","version":"1.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("w/evals/a.yaml"),
+            "- id: a\n  task: good\n  check: {contains: ok}\n",
+        )
+        .unwrap();
+        let cfg = parse(&with_groups_and_board()).unwrap();
+        let tree = plan(&cfg, dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        // A group member, as the lead would create it: it names `pack` in `callable_by`.
+        let made = kernel
+            .send(vec![Item::new(
+                DEFAULT_ROOT_ID,
+                json!({"type": "create_agent", "parent_id": "lead", "id": "w1",
+                       "handler_module": "ram_store.tools",
+                       "callable_by": {"$self": "*", "$parent": "*", "pack": "*"}}),
+            )])
+            .await;
+        assert!(made[0].result.get("error").is_none(), "{}", made[0].result);
+        let packed = kernel
+            .send(vec![Item::new(
+                PACK_ID,
+                json!({"type": "pack", "worker": "w", "out": "pack"}),
+            )])
+            .await;
+        assert!(
+            packed[0].result.get("error").is_none(),
+            "{}",
+            packed[0].result
+        );
+        for worker in ["w1", "lead"] {
+            let outs = kernel
+                .send(vec![Item::new(
+                    PACK_ID,
+                    json!({"type": "eval", "pack": "pack", "worker": worker, "timeout_s": 5}),
+                )])
+                .await;
+            let reply = outs[0].result.to_string();
+            assert!(!reply.contains("may not call"), "{worker}: {reply}");
+            assert!(
+                outs[0].result.get("per_eval").is_some(),
+                "{worker}: {reply}"
+            );
+        }
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn plan_lets_pack_call_the_lead_and_group_members() {
+        let cfg = parse(&with_groups_and_board()).unwrap();
+        let tree = plan(&cfg, Path::new("/team")).unwrap();
+        let pack = tree.iter().find(|p| p.id == PACK_ID).unwrap();
+        let can = pack.record["can_call"].as_object().unwrap();
+        for id in ["files", "lead", "w1", "w2", "w3"] {
+            assert_eq!(can.get(id), Some(&json!("*")), "pack cannot call {id}");
+        }
+        let lead = tree.iter().find(|p| p.id == "lead").unwrap();
+        assert_eq!(lead.record["callable_by"][PACK_ID], "*");
     }
 
     /// The sample with groups and a board section added at the end.

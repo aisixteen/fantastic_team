@@ -22,6 +22,17 @@ fn main() -> ExitCode {
             }
         };
     }
+    // `packs <verb> [--key value ...]`: send a pack verb to the running team, then
+    // stop. Handles its own arguments, like `setup`.
+    if all.first().map(String::as_str) == Some("packs") {
+        return match fantastic_team::pack_cli::run_cli(&all[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("fantastic_team: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
     // `ai-readme`: print the README for AIs and stop. No flags, no team.
     if all.first().map(String::as_str) == Some("ai-readme") {
         print!("{}", fantastic_team::AI_README);
