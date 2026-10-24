@@ -16,3 +16,6 @@ path = "src/main.rs"
 [dependencies]
 tokio.workspace = true
 
+
+[dev-dependencies]
+tempfile.workspace = true
