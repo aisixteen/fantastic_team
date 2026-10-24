@@ -1,10 +1,16 @@
 //! Pack registry index: a local index of signed manifests. Packs are pinned
 //! by hash, updates are opt-in and show a permission diff, and a revoked
 //! signature blocks new installs and warns existing ones. Pure decisions only:
-//! no fetching and no signature verification here.
+//! no fetching here.
+//!
+//! Every entry carries an ed25519 signature over its canonical payload
+//! (including `revoked`), made by a key on the caller's trusted-key list.
+//! Entries with a missing, malformed, bad or untrusted signature are skipped
+//! and reported in `skipped`, so a tampered `revoked` flag is never honoured.
 
-use serde_json::Value;
-use std::collections::BTreeSet;
+use ed25519_dalek::{Signature, VerifyingKey};
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One signed manifest in the index.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,7 +21,7 @@ pub struct Entry {
     pub version: String,
     /// Content hash the pack is pinned by.
     pub hash: String,
-    /// Key that signed this manifest.
+    /// Key that signed this manifest, as lowercase hex (32 bytes).
     pub signer_key: String,
     /// Download location; must be https.
     pub url: String,
@@ -25,6 +31,8 @@ pub struct Entry {
     pub grants: Vec<String>,
     /// True when the signature has been revoked.
     pub revoked: bool,
+    /// hex ed25519 signature over signing_payload
+    pub signature: String,
 }
 
 /// A parsed registry index.
@@ -63,7 +71,9 @@ impl Index {
     /// `entries` list, is an error. A malformed entry (bad field, non-https
     /// url, or a version that is not dotted numbers) is skipped and reported
     /// in `skipped`, so one bad entry does not make the whole index unusable.
-    pub fn parse(json: &str) -> Result<Self, String> {
+    /// An entry whose signature is missing, malformed, bad or made by a key
+    /// not in `trusted_keys` is skipped the same way.
+    pub fn parse(json: &str, trusted_keys: &[String]) -> Result<Self, String> {
         let root: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
         let items = root
             .get("entries")
@@ -72,7 +82,9 @@ impl Index {
         let mut entries = Vec::with_capacity(items.len());
         let mut skipped = Vec::new();
         for (i, item) in items.iter().enumerate() {
-            match parse_entry(item) {
+            match parse_entry(item)
+                .and_then(|entry| verify_entry(&entry, trusted_keys).map(|()| entry))
+            {
                 Ok(entry) => entries.push(entry),
                 Err(reason) => {
                     let name = item.get("name").and_then(Value::as_str).unwrap_or("?");
@@ -102,7 +114,46 @@ fn parse_entry(item: &Value) -> Result<Entry, String> {
             .get("revoked")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        signature: str_field(item, "signature")?,
     })
+}
+
+/// The canonical bytes a signature covers: a JSON object with sorted keys and
+/// every field except `signature`. The output is deterministic.
+pub fn signing_payload(e: &Entry) -> Vec<u8> {
+    let mut m: BTreeMap<&str, Value> = BTreeMap::new();
+    m.insert("name", json!(e.name));
+    m.insert("version", json!(e.version));
+    m.insert("hash", json!(e.hash));
+    m.insert("signer_key", json!(e.signer_key));
+    m.insert("url", json!(e.url));
+    m.insert("ports", json!(e.ports));
+    m.insert("grants", json!(e.grants));
+    m.insert("revoked", json!(e.revoked));
+    serde_json::to_vec(&m).unwrap_or_default()
+}
+
+/// Check the entry's signature against its own payload. The signer must be
+/// on `trusted_keys`, and the signature must verify strictly.
+pub fn verify_entry(e: &Entry, trusted_keys: &[String]) -> Result<(), String> {
+    if !trusted_keys.iter().any(|k| k == &e.signer_key) {
+        return Err("untrusted signer".to_string());
+    }
+    let key_bytes: [u8; 32] = decode_hex(&e.signer_key)?
+        .try_into()
+        .map_err(|_| "signer key must be 32 bytes".to_string())?;
+    let key = VerifyingKey::from_bytes(&key_bytes)
+        .map_err(|_| "signer key is not a valid ed25519 key".to_string())?;
+    let sig_bytes: [u8; 64] = decode_hex(&e.signature)?
+        .try_into()
+        .map_err(|_| "signature must be 64 bytes".to_string())?;
+    let sig = Signature::from_bytes(&sig_bytes);
+    key.verify_strict(&signing_payload(e), &sig)
+        .map_err(|_| "bad signature".to_string())
+}
+
+fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
+    hex::decode(s).map_err(|_| "key or signature is not hex".to_string())
 }
 
 fn str_field(v: &Value, key: &str) -> Result<String, String> {
@@ -243,32 +294,128 @@ pub fn installed_warnings(index: &Index, installed: &[(&str, &str)]) -> Vec<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
 
-    const INDEX: &str = r#"{"entries":[
- {"name":"notes","version":"1.0.0","hash":"h1","signer_key":"k1","url":"https://example.org/notes-1.0.0.tar","ports":["read"],"grants":["files.read"]},
- {"name":"notes","version":"1.2.0","hash":"h2","signer_key":"k1","url":"https://example.org/notes-1.2.0.tar","ports":["read","write"],"grants":["files.read"]},
- {"name":"notes","version":"1.1.0","hash":"h3","signer_key":"k1","url":"https://example.org/notes-1.1.0.tar","ports":["read"],"grants":["files.read"]},
- {"name":"notes","version":"1.3.0","hash":"h4","signer_key":"k2","url":"https://example.org/notes-1.3.0.tar","revoked":true}
-]}"#;
+    /// A signing key from a fixed seed, so the fixtures are deterministic.
+    fn key(seed: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn pubhex(k: &SigningKey) -> String {
+        hex::encode(k.verifying_key().to_bytes())
+    }
+
+    /// Two signers, and the trusted-key list that holds both.
+    fn two() -> (SigningKey, SigningKey, Vec<String>) {
+        let (k1, k2) = (key(1), key(2));
+        let trusted = vec![pubhex(&k1), pubhex(&k2)];
+        (k1, k2, trusted)
+    }
+
+    /// Unsigned notes fields for one version.
+    fn notes(version: &str, hash: &str, ports: &[&str], grants: &[&str]) -> Value {
+        json!({
+            "name": "notes",
+            "version": version,
+            "hash": hash,
+            "url": format!("https://example.org/notes-{version}.tar"),
+            "ports": ports,
+            "grants": grants,
+        })
+    }
+
+    fn revoked(mut v: Value) -> Value {
+        v["revoked"] = json!(true);
+        v
+    }
+
+    /// Sign the entry built from `fields` with `k`. The signer_key is set to
+    /// `k`'s public key and the hex signature is added to the JSON object.
+    fn signed(k: &SigningKey, mut fields: Value) -> Value {
+        let text = |key: &str| {
+            fields
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let list = |key: &str| -> Vec<String> {
+            fields
+                .get(key)
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let entry = Entry {
+            name: text("name"),
+            version: text("version"),
+            hash: text("hash"),
+            signer_key: pubhex(k),
+            url: text("url"),
+            ports: list("ports"),
+            grants: list("grants"),
+            revoked: fields
+                .get("revoked")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            signature: String::new(),
+        };
+        let sig = k.sign(&signing_payload(&entry));
+        let obj = fields.as_object_mut().expect("fields are a JSON object");
+        obj.insert("signer_key".into(), json!(entry.signer_key));
+        obj.insert("signature".into(), json!(hex::encode(sig.to_bytes())));
+        fields
+    }
+
+    fn index_doc(entries: Vec<Value>) -> String {
+        json!({ "entries": entries }).to_string()
+    }
+
+    /// Four signed notes versions. 1.3.0 is revoked and signed by k2.
+    fn fixture(k1: &SigningKey, k2: &SigningKey) -> String {
+        index_doc(vec![
+            signed(k1, notes("1.0.0", "h1", &["read"], &["files.read"])),
+            signed(
+                k1,
+                notes("1.2.0", "h2", &["read", "write"], &["files.read"]),
+            ),
+            signed(k1, notes("1.1.0", "h3", &["read"], &["files.read"])),
+            signed(k2, revoked(notes("1.3.0", "h4", &[], &[]))),
+        ])
+    }
 
     #[test]
     fn index_parses() {
-        let idx = Index::parse(INDEX).unwrap();
-        assert_eq!(idx.entries.len(), 4);
+        let (k1, k2, t) = two();
+        let idx = Index::parse(&fixture(&k1, &k2), &t).unwrap();
+        assert_eq!(idx.entries.len(), 4, "{:?}", idx.skipped);
+        assert!(idx.skipped.is_empty());
         assert_eq!(idx.entries[0].ports, vec!["read".to_string()]);
         assert!(idx.entries[3].revoked);
     }
 
     #[test]
     fn one_bad_entry_does_not_fail_the_index() {
-        let json = r#"{"entries":[
- {"name":"good1","version":"1.0.0","hash":"h1","signer_key":"k","url":"https://example.org/a.tar"},
- {"name":"bad","version":"1.0.0","hash":"h2","signer_key":"k","url":"http://example.org/x.tar"},
- {"name":"good2","version":"2.0.0","hash":"h3","signer_key":"k","url":"https://example.org/b.tar"}
-]}"#;
-        let idx = Index::parse(json).unwrap();
+        let k1 = key(1);
+        let t = vec![pubhex(&k1)];
+        let json = index_doc(vec![
+            signed(&k1, notes("1.0.0", "h1", &[], &[])),
+            signed(
+                &k1,
+                json!({"name":"bad","version":"1.0.0","hash":"h2","url":"http://example.org/x.tar"}),
+            ),
+            signed(
+                &k1,
+                json!({"name":"good2","version":"2.0.0","hash":"h3","url":"https://example.org/b.tar"}),
+            ),
+        ]);
+        let idx = Index::parse(&json, &t).unwrap();
         assert_eq!(idx.entries.len(), 2);
-        assert!(idx.entries.iter().any(|e| e.name == "good1"));
+        assert!(idx.entries.iter().any(|e| e.name == "notes"));
         assert!(idx.entries.iter().any(|e| e.name == "good2"));
         assert_eq!(idx.skipped.len(), 1, "{:?}", idx.skipped);
         assert!(idx.skipped[0].contains("bad"), "{:?}", idx.skipped);
@@ -278,20 +425,34 @@ mod tests {
 
     #[test]
     fn a_bad_document_is_still_an_error() {
-        assert!(Index::parse("not json").is_err());
-        assert!(Index::parse(r#"{"packs":[]}"#).is_err());
+        assert!(Index::parse("not json", &[]).is_err());
+        assert!(Index::parse(r#"{"packs":[]}"#, &[]).is_err());
     }
 
     #[test]
     fn non_numeric_version_is_rejected_at_parse() {
-        let json = r#"{"entries":[
- {"name":"notes","version":"1.2.0","hash":"h1","signer_key":"k","url":"https://example.org/a.tar"},
- {"name":"notes","version":"1.2.0-rc1","hash":"h2","signer_key":"k","url":"https://example.org/b.tar"},
- {"name":"notes","version":"1.x","hash":"h3","signer_key":"k","url":"https://example.org/c.tar"},
- {"name":"notes","version":"","hash":"h4","signer_key":"k","url":"https://example.org/d.tar"},
- {"name":"notes","version":"1..2","hash":"h5","signer_key":"k","url":"https://example.org/e.tar"}
-]}"#;
-        let idx = Index::parse(json).unwrap();
+        let k1 = key(1);
+        let t = vec![pubhex(&k1)];
+        let json = index_doc(vec![
+            signed(&k1, notes("1.2.0", "h1", &[], &[])),
+            signed(
+                &k1,
+                json!({"name":"notes","version":"1.2.0-rc1","hash":"h2","url":"https://example.org/b.tar"}),
+            ),
+            signed(
+                &k1,
+                json!({"name":"notes","version":"1.x","hash":"h3","url":"https://example.org/c.tar"}),
+            ),
+            signed(
+                &k1,
+                json!({"name":"notes","version":"","hash":"h4","url":"https://example.org/d.tar"}),
+            ),
+            signed(
+                &k1,
+                json!({"name":"notes","version":"1..2","hash":"h5","url":"https://example.org/e.tar"}),
+            ),
+        ]);
+        let idx = Index::parse(&json, &t).unwrap();
         assert_eq!(idx.entries.len(), 1);
         assert_eq!(idx.skipped.len(), 4, "{:?}", idx.skipped);
         assert!(idx.skipped.iter().all(|s| s.contains("version")));
@@ -302,18 +463,21 @@ mod tests {
 
     #[test]
     fn update_candidate_orders_numerically() {
-        let json = r#"{"entries":[
- {"name":"notes","version":"1.9.0","hash":"a","signer_key":"k","url":"https://example.org/a.tar"},
- {"name":"notes","version":"1.10.0","hash":"b","signer_key":"k","url":"https://example.org/b.tar"}
-]}"#;
-        let idx = Index::parse(json).unwrap();
+        let k1 = key(1);
+        let t = vec![pubhex(&k1)];
+        let json = index_doc(vec![
+            signed(&k1, notes("1.9.0", "a", &[], &[])),
+            signed(&k1, notes("1.10.0", "b", &[], &[])),
+        ]);
+        let idx = Index::parse(&json, &t).unwrap();
         let newest = update_candidate(&idx, ("notes", "z"), true).unwrap();
         assert_eq!(newest.version, "1.10.0");
     }
 
     #[test]
     fn resolve_matches_only_the_pinned_hash() {
-        let idx = Index::parse(INDEX).unwrap();
+        let (k1, k2, t) = two();
+        let idx = Index::parse(&fixture(&k1, &k2), &t).unwrap();
         assert_eq!(resolve(&idx, "notes", "h2").unwrap().version, "1.2.0");
         assert!(resolve(&idx, "notes", "h9").is_err());
         assert!(resolve(&idx, "other", "h2").is_err());
@@ -321,13 +485,15 @@ mod tests {
 
     #[test]
     fn no_update_without_opt_in() {
-        let idx = Index::parse(INDEX).unwrap();
+        let (k1, k2, t) = two();
+        let idx = Index::parse(&fixture(&k1, &k2), &t).unwrap();
         assert!(update_candidate(&idx, ("notes", "h1"), false).is_none());
     }
 
     #[test]
     fn update_picks_the_newest_unrevoked() {
-        let idx = Index::parse(INDEX).unwrap();
+        let (k1, k2, t) = two();
+        let idx = Index::parse(&fixture(&k1, &k2), &t).unwrap();
         let candidate = update_candidate(&idx, ("notes", "h1"), true).unwrap();
         assert_eq!(candidate.version, "1.2.0");
         assert!(update_candidate(&idx, ("notes", "h2"), true).is_none());
@@ -335,7 +501,8 @@ mod tests {
 
     #[test]
     fn permission_diff_lists_added_and_removed() {
-        let idx = Index::parse(INDEX).unwrap();
+        let (k1, k2, t) = two();
+        let idx = Index::parse(&fixture(&k1, &k2), &t).unwrap();
         let old = resolve(&idx, "notes", "h1").unwrap();
         let new = resolve(&idx, "notes", "h2").unwrap();
         let up = permission_diff(old, new);
@@ -349,7 +516,8 @@ mod tests {
 
     #[test]
     fn a_revoked_entry_refuses_new_installs() {
-        let idx = Index::parse(INDEX).unwrap();
+        let (k1, k2, t) = two();
+        let idx = Index::parse(&fixture(&k1, &k2), &t).unwrap();
         let revoked = resolve(&idx, "notes", "h4").unwrap();
         assert_eq!(
             install_decision(revoked),
@@ -361,9 +529,109 @@ mod tests {
 
     #[test]
     fn an_installed_revoked_pack_gets_a_warning() {
-        let idx = Index::parse(INDEX).unwrap();
+        let (k1, k2, t) = two();
+        let idx = Index::parse(&fixture(&k1, &k2), &t).unwrap();
         let warnings = installed_warnings(&idx, &[("notes", "h4"), ("notes", "h1")]);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("revoked"));
+    }
+
+    #[test]
+    fn tampered_revoked_flag_is_skipped() {
+        let k1 = key(1);
+        let t = vec![pubhex(&k1)];
+        // Signed as not revoked, then the flag is flipped without re-signing.
+        let mut e = signed(&k1, notes("1.2.0", "h2", &["read"], &[]));
+        e["revoked"] = json!(true);
+        let idx = Index::parse(&index_doc(vec![e]), &t).unwrap();
+        assert!(idx.entries.is_empty());
+        assert_eq!(idx.skipped.len(), 1, "{:?}", idx.skipped);
+        assert!(
+            idx.skipped[0].contains("bad signature"),
+            "{:?}",
+            idx.skipped
+        );
+        assert!(resolve(&idx, "notes", "h2").is_err());
+    }
+
+    #[test]
+    fn tampered_unrevoke_cannot_resurrect_update() {
+        let (k1, k2, t) = two();
+        let mut tampered = signed(&k2, revoked(notes("1.3.0", "h4", &[], &[])));
+        tampered["revoked"] = json!(false);
+        let json = index_doc(vec![
+            signed(&k1, notes("1.0.0", "h1", &["read"], &[])),
+            tampered,
+        ]);
+        let idx = Index::parse(&json, &t).unwrap();
+        assert_eq!(idx.entries.len(), 1, "{:?}", idx.entries);
+        assert_eq!(idx.entries[0].hash, "h1");
+        assert_eq!(idx.skipped.len(), 1, "{:?}", idx.skipped);
+        assert!(
+            idx.skipped[0].contains("bad signature"),
+            "{:?}",
+            idx.skipped
+        );
+        assert!(update_candidate(&idx, ("notes", "h1"), true).is_none());
+        assert!(installed_warnings(&idx, &[("notes", "h4")]).is_empty());
+    }
+
+    #[test]
+    fn untrusted_signer_is_skipped() {
+        let (k1, k3) = (key(1), key(3));
+        let t = vec![pubhex(&k1)];
+        let json = index_doc(vec![
+            signed(&k3, notes("1.4.0", "h5", &[], &[])),
+            signed(&k1, notes("1.2.0", "h2", &[], &[])),
+        ]);
+        let idx = Index::parse(&json, &t).unwrap();
+        assert_eq!(idx.entries.len(), 1, "{:?}", idx.entries);
+        assert_eq!(idx.entries[0].hash, "h2");
+        assert_eq!(idx.skipped.len(), 1, "{:?}", idx.skipped);
+        assert!(idx.skipped[0].contains("untrusted"), "{:?}", idx.skipped);
+    }
+
+    #[test]
+    fn missing_or_malformed_signature_is_skipped() {
+        let (k1, k3) = (key(1), key(3));
+        let t = vec![pubhex(&k1)];
+        let no_sig = {
+            let mut e = signed(&k1, notes("1.0.0", "h1", &[], &[]));
+            e.as_object_mut().unwrap().remove("signature");
+            e
+        };
+        let not_hex = {
+            let mut e = signed(&k1, notes("1.1.0", "h2", &[], &[]));
+            e["signature"] = json!("zz-not-hex");
+            e
+        };
+        let wrong_len = {
+            let mut e = signed(&k1, notes("1.2.0", "h3", &[], &[]));
+            e["signature"] = json!(hex::encode([0u8; 32]));
+            e
+        };
+        let other_key = {
+            // Made by k3 but claims k1 as the signer.
+            let mut e = signed(&k3, notes("1.3.0", "h4", &[], &[]));
+            e["signer_key"] = json!(pubhex(&k1));
+            e
+        };
+        let json = index_doc(vec![no_sig, not_hex, wrong_len, other_key]);
+        let idx = Index::parse(&json, &t).expect("a bad signature is not a parse error");
+        assert!(idx.entries.is_empty(), "{:?}", idx.entries);
+        assert_eq!(idx.skipped.len(), 4, "{:?}", idx.skipped);
+    }
+
+    #[test]
+    fn valid_signed_revoked_entry_is_honoured() {
+        let k1 = key(1);
+        let t = vec![pubhex(&k1)];
+        let json = index_doc(vec![signed(&k1, revoked(notes("1.2.0", "h2", &[], &[])))]);
+        let idx = Index::parse(&json, &t).unwrap();
+        assert_eq!(idx.entries.len(), 1, "{:?}", idx.skipped);
+        let e = resolve(&idx, "notes", "h2").unwrap();
+        assert_eq!(install_decision(e), Decision::Refuse("revoked".to_string()));
+        assert_eq!(installed_warnings(&idx, &[("notes", "h2")]).len(), 1);
+        assert!(update_candidate(&idx, ("notes", "h1"), true).is_none());
     }
 }
