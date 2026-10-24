@@ -18,9 +18,11 @@
 //!
 //! `eval` runs a pack's evals on demand against a worker and reports the pass
 //! rate, time and cost. `install` runs them too, but only when it is given a
-//! bound worker (`install {pack, into, worker}`): after the copy it reports the
-//! same report under `evals`. Install only reports; it does not gate. Gating
-//! enable on the evals is not built.
+//! worker (`install {pack, into, worker}`): after the copy it reports the same
+//! report under `evals`, and an advisory `enable {allowed, min_pass_rate,
+//! reason}` verdict (`min_pass_rate` defaults to 1.0). Install never fails or
+//! rolls back on the verdict, and creates no agent, so nothing enforces it yet:
+//! enforcing the verdict where a worker is created from a template is not built.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -412,8 +414,9 @@ pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
 ///
 /// With a non-empty `worker`, the copied pack's evals run on it after the copy
 /// and the report goes under `evals` (or `skipped` when the pack has none, or
-/// `error` when they cannot be loaded). That report never fails the install and
-/// never gates it.
+/// `error` when they cannot be loaded). `enable_verdict` of that report, against
+/// `min_pass_rate`, goes under `enable`. Neither the report nor the verdict
+/// fails the install or rolls it back; the verdict is advice for the caller.
 ///
 /// `bindings` (`{port key: agent id}`, or `Null`) fills the pack's ports. It is
 /// checked by `check_bindings` before the first write; the bound map is written
@@ -427,6 +430,7 @@ pub async fn install<P: Peers>(
     worker: &str,
     timeout: Duration,
     bindings: &Value,
+    min_pass_rate: f64,
 ) -> Value {
     let Some(text) = read(p, &format!("{pack}/{}", pack_manifest::MANIFEST_FILE)).await else {
         return err("pack has no pack.yaml");
@@ -509,9 +513,58 @@ pub async fn install<P: Peers>(
         "files": copied,
     });
     if !worker.is_empty() {
-        reply["evals"] = evals_of_installed(p, &dest_s, worker, timeout).await;
+        let evals = evals_of_installed(p, &dest_s, worker, timeout).await;
+        reply["enable"] = enable_verdict(&evals, min_pass_rate);
+        reply["evals"] = evals;
     }
     reply
+}
+
+/// The advisory enable verdict for an eval report (`evals_of_installed`):
+/// `{allowed, min_pass_rate, reason}`. A pass rate at or above `min` is allowed.
+/// A pack with no evals is allowed, since there is nothing to gate on. An
+/// unloadable eval set, or any report without a pass rate, is blocked (fail closed).
+fn enable_verdict(evals: &Value, min: f64) -> Value {
+    let (allowed, reason) = if evals.get("skipped").is_some() {
+        (true, "pack has no evals to gate on".to_string())
+    } else if evals.get("error").is_some() {
+        (false, "evals could not be loaded".to_string())
+    } else {
+        match evals.get("pass_rate").and_then(Value::as_f64) {
+            Some(rate) if rate >= min => (
+                true,
+                format!(
+                    "pass rate {}% meets the required {}%",
+                    percent(rate),
+                    percent(min)
+                ),
+            ),
+            Some(rate) => (
+                false,
+                format!(
+                    "pass rate {}% is below the required {}%",
+                    percent(rate),
+                    percent(min)
+                ),
+            ),
+            None => (false, "eval report has no pass rate".to_string()),
+        }
+    };
+    json!({"allowed": allowed, "min_pass_rate": min, "reason": reason})
+}
+
+/// A rate in `0..=1` as a whole percent, rounded.
+fn percent(rate: f64) -> i64 {
+    (rate * 100.0).round() as i64
+}
+
+/// The `min_pass_rate` of a payload: a finite number in `0..=1`, else `None`
+/// (the caller then uses 1.0, every eval passing).
+fn min_pass_rate_from(payload: &Value) -> Option<f64> {
+    payload
+        .get("min_pass_rate")
+        .and_then(Value::as_f64)
+        .filter(|m| m.is_finite() && (0.0..=1.0).contains(m))
 }
 
 /// The eval report of the pack installed at `dest`, run against `worker`.
@@ -596,7 +649,7 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
     fn verb_docs(&self) -> Value {
         json!({
             "pack": "pack {worker, out} → writes pack.yaml (hash, ports, files) and the pack layout; refuses an existing out and a pack the secrets scan refuses",
-            "install": "install {pack, into, worker?, bindings?, timeout_s?} → checks pack.yaml, the content hash, the scan and the bindings, then copies as a template to <into>/<name>-<version>/; bindings is {port key: agent id} (keys: model, connector:<name>, exec:sandboxed) and is written to bindings.json; refuses an existing version, an unknown key and a non-id value; replies with the parsed ports and bindings {bound, unbound}; with a worker, runs the pack's evals on it and replies with the report under evals (reports only, no gating); creates no agent",
+            "install": "install {pack, into, worker?, bindings?, timeout_s?, min_pass_rate?} → checks pack.yaml, the content hash, the scan and the bindings, then copies as a template to <into>/<name>-<version>/; bindings is {port key: agent id} (keys: model, connector:<name>, exec:sandboxed) and is written to bindings.json; refuses an existing version, an unknown key and a non-id value; replies with the parsed ports and bindings {bound, unbound}; with a worker, runs the pack's evals on it and replies with the report under evals and an advisory enable {allowed, min_pass_rate, reason} (min_pass_rate is a number in 0..=1, default 1.0; allowed is false below it or when the evals cannot be loaded); the install is never refused or rolled back on the verdict; creates no agent",
             "eval": "eval {pack, worker, timeout_s?} → runs the pack's evals on the worker; returns pass rate, time, cost and per-eval results; writes nothing",
         })
     }
@@ -631,6 +684,7 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
                     &s("worker"),
                     timeout_from(payload),
                     &bindings,
+                    min_pass_rate_from(payload).unwrap_or(1.0),
                 )
                 .await
             }
@@ -780,6 +834,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -802,6 +857,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert_eq!(r["path"], "templates/w-1.0", "{r}");
@@ -827,6 +883,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         let r = install(
@@ -836,6 +893,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert!(r.get("error").is_some(), "{r}");
@@ -881,6 +939,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert!(r.get("error").is_some(), "{r}");
@@ -900,6 +959,7 @@ mod tests {
                 "",
                 Duration::from_secs(5),
                 &Value::Null,
+                1.0,
             )
             .await;
             assert!(r.get("error").is_some(), "{v}: {r}");
@@ -918,6 +978,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert!(r.get("error").is_some(), "{r}");
@@ -960,6 +1021,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert_eq!(r["error"], "write failed", "{r}");
@@ -1065,6 +1127,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -1085,6 +1148,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert_eq!(r["error"], "content hash mismatch", "{r}");
@@ -1126,6 +1190,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert_eq!(r["error"], "pack refused by scan", "{r}");
@@ -1159,6 +1224,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert_eq!(
@@ -1214,6 +1280,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &bindings,
+            1.0,
         )
         .await;
         assert!(r.get("error").is_none(), "{r}");
@@ -1248,6 +1315,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert!(r.get("error").is_none(), "{r}");
@@ -1271,6 +1339,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &bindings,
+            1.0,
         )
         .await;
         assert!(r.get("error").is_none(), "{r}");
@@ -1290,6 +1359,7 @@ mod tests {
             "",
             Duration::from_secs(5),
             &bindings,
+            1.0,
         )
         .await;
         assert!(
@@ -1325,6 +1395,7 @@ mod tests {
                 "",
                 Duration::from_secs(5),
                 &bindings,
+                1.0,
             )
             .await;
             assert!(
@@ -1468,6 +1539,7 @@ mod tests {
             "worker-1",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -1496,9 +1568,11 @@ mod tests {
             "",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert!(r.get("evals").is_none(), "{r}");
+        assert!(r.get("enable").is_none(), "{r}");
         let mut keys: Vec<&str> = r.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort();
         assert_eq!(
@@ -1529,6 +1603,7 @@ mod tests {
             "worker-1",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -1546,6 +1621,7 @@ mod tests {
             "worker-1",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -1568,11 +1644,141 @@ mod tests {
             "worker-1",
             Duration::from_secs(5),
             &Value::Null,
+            1.0,
         )
         .await;
         assert_eq!(r["error"], "content hash mismatch", "{r}");
         assert!(r.get("evals").is_none(), "{r}");
         assert_eq!(*p.sends.lock().unwrap(), 0, "a refused pack runs no evals");
+    }
+
+    #[test]
+    fn enable_verdict_allows_at_or_above_min_and_blocks_below() {
+        let half = json!({"pass_rate": 0.5, "passed": 1, "total": 2});
+        let v = enable_verdict(&half, 0.5);
+        assert_eq!(v["allowed"], true, "{v}");
+        assert_eq!(v["min_pass_rate"], 0.5, "{v}");
+        let v = enable_verdict(&half, 1.0);
+        assert_eq!(v["allowed"], false, "{v}");
+        let reason = v["reason"].as_str().unwrap();
+        assert!(reason.contains("50%"), "{v}");
+        assert!(reason.contains("100%"), "{v}");
+    }
+
+    #[test]
+    fn enable_verdict_skipped_allows_and_error_blocks() {
+        let v = enable_verdict(&json!({"skipped": "pack has no evals"}), 1.0);
+        assert_eq!(v["allowed"], true, "{v}");
+        assert_eq!(v["reason"], "pack has no evals to gate on", "{v}");
+        let v = enable_verdict(&json!({"error": "evals.yaml: bad"}), 1.0);
+        assert_eq!(v["allowed"], false, "{v}");
+        assert_eq!(v["reason"], "evals could not be loaded", "{v}");
+    }
+
+    #[test]
+    fn min_pass_rate_accepts_only_finite_numbers_in_range() {
+        assert_eq!(
+            min_pass_rate_from(&json!({"min_pass_rate": 0.5})),
+            Some(0.5)
+        );
+        assert_eq!(
+            min_pass_rate_from(&json!({"min_pass_rate": 0.0})),
+            Some(0.0)
+        );
+        assert_eq!(
+            min_pass_rate_from(&json!({"min_pass_rate": 1.0})),
+            Some(1.0)
+        );
+        assert_eq!(min_pass_rate_from(&json!({"min_pass_rate": 2.0})), None);
+        assert_eq!(min_pass_rate_from(&json!({"min_pass_rate": -0.1})), None);
+        assert_eq!(min_pass_rate_from(&json!({"min_pass_rate": "0.5"})), None);
+        assert_eq!(min_pass_rate_from(&json!({"min_pass_rate": null})), None);
+        assert_eq!(min_pass_rate_from(&json!({})), None);
+    }
+
+    #[tokio::test]
+    async fn install_with_all_passing_evals_allows_enable() {
+        let p = packed_with_evals(&[("a.yaml", PASSING_EVAL)]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert_eq!(r["enable"]["allowed"], true, "{r}");
+        assert_eq!(r["enable"]["min_pass_rate"], 1.0, "{r}");
+    }
+
+    #[tokio::test]
+    async fn install_with_failing_evals_blocks_enable_but_still_installs() {
+        let p = packed_with_evals(&[("a.yaml", PASSING_EVAL), ("b.yaml", FAILING_EVAL)]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert_eq!(r["installed_as"], "template", "{r}");
+        assert_eq!(r["enable"]["allowed"], false, "{r}");
+        assert!(p.files.get("templates/w-1.0/manifest.yaml").is_some());
+        assert!(p.files.get("templates/w-1.0/evals/b.yaml").is_some());
+    }
+
+    #[tokio::test]
+    async fn install_min_pass_rate_lowers_the_bar() {
+        let p = packed_with_evals(&[("a.yaml", PASSING_EVAL), ("b.yaml", FAILING_EVAL)]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            0.5,
+        )
+        .await;
+        assert_eq!(r["enable"]["allowed"], true, "{r}");
+        assert_eq!(r["enable"]["min_pass_rate"], 0.5, "{r}");
+    }
+
+    #[tokio::test]
+    async fn install_with_no_evals_or_eval_load_error_gates_correctly() {
+        let p = packed_with_evals(&[]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert_eq!(r["enable"]["allowed"], true, "{r}");
+        assert_eq!(r["enable"]["reason"], "pack has no evals to gate on", "{r}");
+
+        let p = packed_with_evals(&[("a.yaml", "- id: [unclosed\n")]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert_eq!(r["installed_as"], "template", "{r}");
+        assert_eq!(r["enable"]["allowed"], false, "{r}");
+        assert_eq!(r["enable"]["reason"], "evals could not be loaded", "{r}");
     }
 
     #[test]
