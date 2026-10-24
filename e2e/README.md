@@ -5,26 +5,44 @@ Built the way fantastic's `e2e/` is: one folder per test, a plug picks what answ
 ```
 python3 e2e/run.py --only-free          every free test; no network, no key; builds the binary with cargo
 python3 e2e/run.py --only task/one_issue_to_draft_pr --bin PATH
+python3 e2e/run.py --only-turns         the turns tests, a real model, by hand; SKIP without a key
+python3 e2e/run.py --only-turns --dry-run   discover the turns tests and collect their probes; starts nothing
 python3 e2e/run.py --selftest           the harness proves itself, no binary
 python3 e2e/run.py --list
 ```
 
-Needs `python3`, `git` (with `git http-backend`) and `openssl` (a throwaway app key is made per run, never committed; without openssl the launcher says so and runs nothing). Exit code is non-zero when any test fails. A workflow (#46) calls `--only-free`; there is no workflow here, CI is manual.
+Needs `python3`, `git` (with `git http-backend`) and `openssl` (a throwaway app key is made per run, never committed; without openssl the launcher says so and runs nothing). Exit code is non-zero when any test fails; a test whose plug has no key is printed as `SKIP` and does not fail the run. A workflow (#46) calls `--only-free`; there is no workflow here, CI is manual, and CI never runs the turns tier.
+
+## The turns tier, by hand
+
+A turns test sends a real model's calls through the `anthropic` plug (`backends/anthropic.py`). It needs a key in the environment, and the launcher never writes it to disk:
+
+```
+ANTHROPIC_API_KEY=... python3 e2e/run.py --only-turns
+```
+
+- `ANTHROPIC_API_KEY` or `E2E_ANTHROPIC_KEY`: the key (either name; without one the turns tests are skipped).
+- `E2E_MODEL`: the model's name (default: `claude-haiku-5-5`, set in `backends/anthropic.py`).
+- `E2E_MAX_REQUESTS`: a hard cap on model requests per run (default 60); past it the relay answers 429, so a loop cannot run up the bill.
+- `E2E_PRICE_IN_PER_MTOK` and `E2E_PRICE_OUT_PER_MTOK`: USD per million input and output tokens. Set both to get a USD estimate in `cost.json`; without them the estimate is `null`.
+- `E2E_UPSTREAM`: the upstream base URL (default `https://api.anthropic.com`).
+
+Each run writes `cost.json` in its run folder (tokens, requests, model, the USD estimate if priced). It holds no key. The relay forwards the team's own `x-api-key` and streams the reply back unchanged; it never reads or stores the key value.
 
 ## Tiers
 
 | costs | what answers | status |
 | --- | --- | --- |
 | `free` | a scripted model (`backends/scripted.py`) and a fake forge (`helpers/forge.py`) | built |
-| `turns` | a real model through a provider plug (aisixteen/fantastic#302), run by hand | not built |
+| `turns` | a real model through the `anthropic` plug (aisixteen/fantastic#302), run by hand, needs `ANTHROPIC_API_KEY` or `E2E_ANTHROPIC_KEY` | built |
 | `gpu` | a local-model plug on the GPU box (aisixteen/fantastic#303) | not built |
 
 ## Layout
 
 - `run.py`: the launcher.
-- `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted`); a test never names a model, an endpoint or a key.
+- `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted` or `plug: anthropic`); a test never names a model, an endpoint or a key. A team.yaml takes `{{model_name}}` (the plug's model) and `{{model_endpoint}}`.
 - `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start, stop, `send`, wiring), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks).
-- `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`), `team.yaml`, `script.json` (the scripted plug's turns), `probe.py` (`run(ctx)` returns the exit code).
+- `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`), `team.yaml`, `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code).
 - `runs/`: one folder per run, gitignored (it holds model output).
 
 ## How a free test runs
@@ -45,6 +63,6 @@ These are facts about the binary at the commit this was built on, not decisions 
 
 ## Later
 
-- `driver/rulebook_reply_and_escalation` waits for the group driver (#95).
+- `driver/rulebook_reply_and_escalation` waits for the group driver (#95): the driver is a library (`crates/team/src/driver/`) with no agent, verb or `main.rs` wiring yet, so there is nothing for a turns test to drive. It is not written, and it is not a turns test until #95 wires the driver.
 - `dispatcher/digest_reaches_driver` waits for #58's delivery.
-- the `turns` and `gpu` tiers.
+- the `gpu` tier (a local-model plug, aisixteen/fantastic#303).

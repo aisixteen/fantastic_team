@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import os
 import secrets
+import threading
 import time
 
 from . import forge as forge_mod
 
 
 def fake_keys(ctx) -> dict:
-    """A fake model key (built from pieces), an app id and a throwaway app PEM."""
+    """The model key, an app id and a throwaway app PEM.
+
+    A fake plug gets a fake model key (built from pieces). A real plug (`ctx.model.real`)
+    gets its key from the environment, at run time; it goes into the team's environment
+    only, never onto disk. The app id and the PEM stay throwaway."""
     sdir = os.path.join(ctx.run_dir, "secrets")
     os.makedirs(sdir, exist_ok=True)
     with open(os.path.join(ctx.run_dir, ".gitignore"), "w") as f:  # keep keys out of scans
@@ -21,7 +26,13 @@ def fake_keys(ctx) -> dict:
     with open(pem) as f:
         pem_text = f.read()
     body = [l for l in pem_text.splitlines() if l and not l.startswith("-----")]
-    return {"model_key": "".join(["sk-", "ant-", secrets.token_hex(20)]),
+    if ctx.model.real:
+        model_key = os.environ.get(ctx.model.key_env or "", "")
+        if not model_key:
+            raise RuntimeError("a real plug needs its key in the environment")
+    else:
+        model_key = "".join(["sk-", "ant-", secrets.token_hex(20)])
+    return {"model_key": model_key,
             "app_id": "123", "pem": pem_text,
             "pem_chunk": body[1][:48] if len(body) > 1 else body[0][:48]}
 
@@ -45,3 +56,35 @@ def hand_over(ctx, text: str, wait_s: float = 120.0) -> bool:
         time.sleep(0.3)
     time.sleep(2.0)  # the last turn's reply is routed after the last request
     return ctx.model.served >= len(ctx.model.turns)
+
+
+def kick(ctx, text: str, timeout: float = 1800.0) -> threading.Thread:
+    """Send the lead its message in the background: a real model takes minutes to answer.
+
+    The team's reply (or error) lands in `ctx.kicked`. Pair with `wait_done`.
+    """
+    ctx.kicked = {}
+
+    def go():
+        try:
+            ctx.kicked["reply"] = ctx.team.send("lead", {"type": "send", "text": text}, timeout=timeout)
+        except Exception as e:  # recorded, the probe decides
+            ctx.kicked["error"] = str(e)
+
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    return t
+
+
+def wait_done(ctx, predicate, wait_s: float = 900.0, every: float = 5.0) -> bool:
+    """Poll `predicate()` until it is true. Stops early when the plug errored or the team exited."""
+    end = time.time() + wait_s
+    while time.time() < end:
+        if predicate():
+            return True
+        if ctx.model.errored:
+            return False
+        if ctx.team.proc and ctx.team.proc.poll() is not None:
+            return False
+        time.sleep(every)
+    return bool(predicate())
