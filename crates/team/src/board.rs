@@ -506,7 +506,9 @@ impl Workers {
 /// Shape: `workers` and `groups.<name>` are {busy, idle, stalled}; `tasks` is
 /// {held, in_review, done, blocked, queued}; `done_last_hour` counts Done tasks
 /// updated inside `LOAD_WINDOW_S`; `tokens_total` is the cumulative token count
-/// of the live agents (the cadencer turns its change into tokens per hour).
+/// of the group drivers only (the cadencer turns its change into tokens per hour;
+/// workers' tokens are not counted). `groups.<g>.driver` is the group's driver id,
+/// empty when it has none.
 /// `waiting_ci` is absent on purpose: it needs a GitHub `pr_status` poll, which
 /// the load view does not make.
 pub fn load_numbers(
@@ -522,8 +524,20 @@ pub fn load_numbers(
         let members = rows
             .iter()
             .filter(|r| r["parent"].as_str() == Some(gname.as_str()));
-        group_load.insert(gname.clone(), Workers::of(members, stall_after_s).json());
+        let mut g = Workers::of(members, stall_after_s).json();
+        g["driver"] = json!(groups[gname].driver);
+        group_load.insert(gname.clone(), g);
     }
+    let drivers: BTreeSet<&str> = groups
+        .values()
+        .map(|g| g.driver.as_str())
+        .filter(|d| !d.is_empty())
+        .collect();
+    let driver_tokens: u64 = live
+        .iter()
+        .filter(|(name, _)| drivers.contains(name.as_str()))
+        .map(|(_, l)| l.tokens)
+        .sum();
     let tasks = board.tasks.values();
     let count = |f: &dyn Fn(&Task) -> bool| tasks.clone().filter(|t| f(t)).count() as u64;
     let done_last_hour =
@@ -539,7 +553,7 @@ pub fn load_numbers(
             "queued": count(&|t| t.status == Status::Pending),
         },
         "done_last_hour": done_last_hour,
-        "tokens_total": live.values().map(|l| l.tokens).sum::<u64>(),
+        "tokens_total": driver_tokens,
     })
 }
 
@@ -773,6 +787,10 @@ async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Valu
             let mut names: BTreeSet<String> = board.agents.keys().cloned().collect();
             for g in cfg.groups.values() {
                 names.extend(g.members.iter().cloned());
+                // A driver is read even when it is in no group's members.
+                if !g.driver.is_empty() {
+                    names.insert(g.driver.clone());
+                }
             }
             for name in &names {
                 let driver = cfg
@@ -1459,11 +1477,93 @@ mod load_tests {
                     }
                 }
                 Value::Number(n) => assert!(n.is_u64(), "non-integer at {path}: {n}"),
+                // A group's driver id is the one string: data, empty for none.
+                Value::String(_) if path.ends_with("/driver") => {}
                 other => panic!("non-integer leaf at {path}: {other}"),
             }
         }
         let (b, groups) = fixed_board();
         let load = load_numbers(&b, &groups, &BTreeMap::new(), NOW, 300);
         walk(&load, "");
+    }
+
+    /// A board for the token tests: group g1 has driver `d` and member `w`, the
+    /// driverless group g2 has member `x`. `d` is not a member of any group.
+    fn token_groups() -> BTreeMap<String, Group> {
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            "g1".to_string(),
+            Group {
+                driver: "d".into(),
+                members: vec!["w".into()],
+            },
+        );
+        groups.insert(
+            "g2".to_string(),
+            Group {
+                driver: String::new(),
+                members: vec!["x".into()],
+            },
+        );
+        groups
+    }
+
+    #[test]
+    fn load_numbers_tokens_total_counts_only_group_drivers() {
+        let groups = token_groups();
+        let mut live = BTreeMap::new();
+        live.insert(
+            "d".to_string(),
+            Live {
+                tokens: 500,
+                ..Live::default()
+            },
+        );
+        live.insert(
+            "w".to_string(),
+            Live {
+                tokens: 900,
+                ..Live::default()
+            },
+        );
+        live.insert(
+            "x".to_string(),
+            Live {
+                tokens: 40,
+                ..Live::default()
+            },
+        );
+        let load = load_numbers(&Board::default(), &groups, &live, NOW, 300);
+        assert_eq!(load["tokens_total"], 500);
+    }
+
+    /// Answers the board's reads: each agent's `reflect` usage, and no store file.
+    struct TokenPeers;
+
+    #[async_trait::async_trait]
+    impl Peers for TokenPeers {
+        async fn ask(&self, to: &str, p: Value) -> Value {
+            match (to, p["type"].as_str().unwrap_or("")) {
+                ("store", "read") => json!({"error": "not found"}),
+                ("d", "reflect") => json!({"usage": {"prompt_tokens": 300, "output_tokens": 200}}),
+                ("w", "reflect") => json!({"usage": {"prompt_tokens": 600, "output_tokens": 300}}),
+                (_, "rows") => json!({"rows": []}),
+                _ => json!({"reply": "noted"}),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rows_handler_reads_the_driver_even_if_not_a_member() {
+        let cfg = BoardCfg {
+            repos: Vec::new(),
+            github: "gh".into(),
+            store: "store".into(),
+            ask_to: "user".into(),
+            stale_secs: 1800,
+            groups: token_groups(),
+        };
+        let out = dispatch(&TokenPeers, &cfg, "rows", &json!({"type": "rows"})).await;
+        assert_eq!(out["load"]["tokens_total"], 500);
     }
 }

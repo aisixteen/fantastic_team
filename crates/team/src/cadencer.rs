@@ -354,7 +354,12 @@ fn beat(inner: &mut Inner) -> Vec<Digest> {
     // The driver's tokens: the change of the board's cumulative counter since
     // the last beat goes into the meter (the first beat counts from zero).
     if let Some(total) = inner.load["tokens_total"].as_u64() {
-        let delta = total.saturating_sub(inner.tokens_seen);
+        // A lower total means the counter restarted: the new total is all new.
+        let delta = if total >= inner.tokens_seen {
+            total - inner.tokens_seen
+        } else {
+            total
+        };
         inner.tokens_seen = total;
         inner.meter.record_tokens(now, delta);
     }
@@ -1269,5 +1274,141 @@ mod tests {
         assert_eq!(status(&b)["driver_tokens_per_hour"], 1500);
         run_for(3600).await; // both beats are now outside the hour
         assert_eq!(status(&b)["driver_tokens_per_hour"], 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn driver_tokens_survive_a_counter_reset() {
+        let tokens = Arc::new(Mutex::new(1000));
+        let b = shared();
+        {
+            let mut g = b.lock().unwrap();
+            g.peers = Some(Arc::new(LoadPeers {
+                with_load: true,
+                tokens: tokens.clone(),
+                sent: Arc::new(Mutex::new(Vec::new())),
+            }));
+            g.board = Some("board".into());
+        }
+        dispatch(&b, &json!({"type": "set", "sender": "user", "cadence": 60}));
+        run_for(60).await; // first beat: counter 1000, all of it new
+        *tokens.lock().unwrap() = 200; // the agent restarted: its counter began again
+        run_for(60).await; // second beat: 200 tokens since the restart
+        assert_eq!(status(&b)["driver_tokens_per_hour"], 1200);
+    }
+
+    /// The board's load for a fixed list (`done` tasks done, `pending` queued),
+    /// or for a refilling queue when `recent`: its done tasks finished in the last hour.
+    fn board_load(done: usize, pending: usize, recent: bool) -> Value {
+        let now = 10_000;
+        let mut b = crate::board::Board::default();
+        let mut put = |i: usize, status: crate::board::Status, updated: u64| {
+            let id = format!("o/r#{i}");
+            let task = crate::board::Task {
+                id: id.clone(),
+                status,
+                updated,
+                ..Default::default()
+            };
+            b.tasks.insert(id, task);
+        };
+        for i in 0..done {
+            put(
+                i,
+                crate::board::Status::Done,
+                if recent { now - 10 } else { now - 9_000 },
+            );
+        }
+        for i in 0..pending {
+            put(1_000 + i, crate::board::Status::Pending, now);
+        }
+        crate::board::load_numbers(&b, &BTreeMap::new(), &BTreeMap::new(), now, 300)
+    }
+
+    /// The group's driver model, scripted: it records each digest it is sent,
+    /// answers with the reply it was given, and the board answers `rows` with a fixed load.
+    struct ScriptedDriver {
+        load: Value,
+        reply: String,
+        seen: Mutex<Vec<String>>,
+        answered: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Peers for ScriptedDriver {
+        async fn ask(&self, to: &str, p: Value) -> Value {
+            match p["type"].as_str().unwrap_or("") {
+                "rows" => json!({
+                    "rows": [
+                        {"id": "g1", "parent": null, "has_ai": true, "driver": "d1", "state": "busy", "task": "x"},
+                        {"id": "w1", "parent": "g1", "has_ai": true, "state": "busy", "task": "build", "idle_s": 0}
+                    ],
+                    "load": self.load,
+                }),
+                "send" if to == "d1" => {
+                    self.seen
+                        .lock()
+                        .unwrap()
+                        .push(p["text"].as_str().unwrap_or("").to_string());
+                    self.answered.lock().unwrap().push(self.reply.clone());
+                    json!({"ok": true, "reply": self.reply})
+                }
+                _ => json!({"error": "unexpected"}),
+            }
+        }
+    }
+
+    /// One real beat: read the board as the timer does, `beat`, then `deliver`.
+    async fn beat_and_deliver(
+        load: Value,
+        reply: &str,
+    ) -> (Arc<ScriptedDriver>, Arc<Mutex<Inner>>) {
+        let driver = Arc::new(ScriptedDriver {
+            load,
+            reply: reply.into(),
+            seen: Mutex::new(Vec::new()),
+            answered: Mutex::new(Vec::new()),
+        });
+        let peers: Arc<dyn Peers> = driver.clone();
+        let b = shared();
+        b.lock().unwrap().board = Some("board".into());
+        let (tree, load) = read_board(peers.as_ref(), "board", 300)
+            .await
+            .expect("rows read");
+        let digests = {
+            let mut g = b.lock().unwrap();
+            g.tree = tree;
+            g.load = load;
+            beat(&mut g)
+        };
+        deliver(&b, Some(peers), digests).await;
+        (driver, b)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scripted_driver_receives_the_beat_digest_via_deliver() {
+        // A fixed list: 12 done, 17 queued.
+        let (fixed, fb) = beat_and_deliver(board_load(12, 17, false), "12 / 29 done").await;
+        let seen = fixed.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "one digest to the driver");
+        assert!(seen[0].contains("queued 17"), "{}", seen[0]);
+        assert!(seen[0].contains("done 12"), "{}", seen[0]);
+        assert_eq!(fixed.answered.lock().unwrap().as_slice(), ["12 / 29 done"]);
+        assert_eq!(status(&fb)["delivery_errors"], 0);
+
+        // A refilling queue: 5 queued, 12 done in the last hour, no fixed total.
+        let (queue, qb) = beat_and_deliver(
+            board_load(12, 5, true),
+            "load: 5 queued, 12 done in the last hour",
+        )
+        .await;
+        let seen = queue.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1, "one digest to the driver");
+        assert!(seen[0].contains("queued 5"), "{}", seen[0]);
+        assert!(seen[0].contains("done/h 12"), "{}", seen[0]);
+        assert_eq!(
+            queue.answered.lock().unwrap().as_slice(),
+            ["load: 5 queued, 12 done in the last hour"]
+        );
+        assert_eq!(status(&qb)["delivery_errors"], 0);
     }
 }

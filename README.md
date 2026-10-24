@@ -141,8 +141,9 @@ decides what to show: progress against a fixed list, or load alone when work
 keeps arriving. With no AI in a group, the raw numbers are all that is shown.
 Tasks waiting on CI are not counted (that needs a GitHub poll). Lanes in use are
 not reported: the pinned fantastic does not expose them. Tokens come from the
-`reflect` usage of each agent; the first beat after a restart counts their
-lifetime total once.
+`reflect` usage of each group driver (workers are not counted); the first beat
+after a restart counts the driver's lifetime total once, and a counter that
+drops (a restarted driver) counts from zero again.
 
 ## Any model, any mix
 

@@ -1,14 +1,12 @@
 //! The load and progress view (#127): the code gives plain counts, the owning
 //! agent decides what to show. These tests check that no mode, enum or
-//! progress/load switch exists in the load code, and that a scripted model
-//! gets the same digest for a fixed list and for a refilling queue.
+//! progress/load switch exists in the load code, and that no total is made.
+//! The digest a scripted driver receives is tested in `cadencer.rs`, through
+//! the real beat and delivery path.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 
 use fantastic_team::board::{load_numbers, Board, Group, Live, Status, Task};
-use fantastic_team::cadence_feed::load_line;
-use serde_json::Value;
 
 /// The files the load code lives in.
 const LOAD_SOURCES: &[(&str, &str)] = &[
@@ -57,93 +55,4 @@ fn load_numbers_has_no_total_or_of_key() {
     assert!(!text.contains("\"total\""), "{text}");
     assert!(!text.contains("\"of\""), "{text}");
     assert!(load["tasks"].get("waiting_ci").is_none());
-}
-
-/// A stand-in for the group's driver model: it reads the digest it is sent
-/// and answers with the reply it was scripted to give.
-struct ScriptedModel {
-    reply: String,
-    seen: Mutex<Vec<String>>,
-}
-
-impl ScriptedModel {
-    fn new(reply: &str) -> Self {
-        ScriptedModel {
-            reply: reply.into(),
-            seen: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn answer(&self, digest: &str) -> String {
-        self.seen.lock().unwrap().push(digest.into());
-        self.reply.clone()
-    }
-}
-
-/// The one digest path both runs use: the load numbers, then the plain line.
-fn digest_for(load: &Value) -> String {
-    load_line(load, 0).expect("task counts are present")
-}
-
-fn board_with(done: usize, pending: usize, queued_done_recent: bool) -> Board {
-    let mut b = Board::default();
-    let now = 10_000;
-    let mut put = |i: usize, status: Status, updated: u64| {
-        let id = format!("o/r#{i}");
-        b.tasks.insert(
-            id.clone(),
-            Task {
-                id,
-                status,
-                updated,
-                pr: (status == Status::Done).then(|| format!("p{i}")),
-                ..Default::default()
-            },
-        );
-    };
-    for i in 0..done {
-        let updated = if queued_done_recent {
-            now - 10
-        } else {
-            now - 9_000
-        };
-        put(i, Status::Done, updated);
-    }
-    for i in 0..pending {
-        put(1_000 + i, Status::Pending, now);
-    }
-    b
-}
-
-#[test]
-fn scripted_model_renders_progress_or_load_only() {
-    let now = 10_000;
-    let groups = BTreeMap::new();
-    let live = BTreeMap::new();
-
-    // Fixed list: 29 tasks, 12 done, the rest queued.
-    let fixed = board_with(12, 17, false);
-    let fixed_digest = digest_for(&load_numbers(&fixed, &groups, &live, now, 300));
-    let fixed_model = ScriptedModel::new("12 / 29 done · 3 in review");
-    let fixed_reply = fixed_model.answer(&fixed_digest);
-
-    // Refilling queue: work keeps arriving, no fixed total.
-    let queue = board_with(12, 5, true);
-    let queue_digest = digest_for(&load_numbers(&queue, &groups, &live, now, 300));
-    let queue_model = ScriptedModel::new("load: 5 queued, 12 done in the last hour");
-    let queue_reply = queue_model.answer(&queue_digest);
-
-    // The driver received the numbers in both runs.
-    assert!(fixed_model.seen.lock().unwrap()[0].contains("queued 17"));
-    assert!(fixed_model.seen.lock().unwrap()[0].contains("done 12"));
-    assert!(queue_model.seen.lock().unwrap()[0].contains("queued 5"));
-    assert!(queue_model.seen.lock().unwrap()[0].contains("done/h 12"));
-    // Each reply is rendered as the model gave it.
-    assert_eq!(fixed_reply, "12 / 29 done · 3 in review");
-    assert_eq!(queue_reply, "load: 5 queued, 12 done in the last hour");
-    // The code path is the same function for both runs; only the input differs.
-    assert_eq!(
-        fixed_digest.split(" · ").next(),
-        queue_digest.split(" · ").next()
-    );
 }

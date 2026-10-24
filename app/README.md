@@ -26,9 +26,10 @@ first start only.
   workers were expanded.
 - On a phone (430px wide and under) the sidebar stacks above the content.
 
-The load numbers (#127) reach the page through the cadencer's `status`, as
-`load`. The sidebar does not draw them yet: any page that shows them prints the
-keys and values as plain text, generically, with no switch on the keys.
+The load numbers (#127) reach the sidebar in its reply. A group with no AI
+driver shows its raw counts under its title (`busy N · idle N · stalled N`); a
+group with a driver shows nothing here, since its AI writes the summary. The
+team gets `load` {tasks, done_last_hour} in the reply, not drawn yet.
 
 The page talks to the dispatcher through fantastic's html connector
 (`fantastic.send('dispatcher', …)`), with the `sidebar` and `open` verbs. Without
