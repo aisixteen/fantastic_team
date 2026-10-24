@@ -42,7 +42,6 @@ pub struct Outcome {
     pub exit_code: i32,
     /// The cost as the executor reports it, if it reports one.
     pub cost: Option<f64>,
-
 }
 
 /// Runs one task. An `Err` becomes an eval failure with that reason.
