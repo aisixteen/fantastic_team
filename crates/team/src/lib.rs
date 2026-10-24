@@ -190,10 +190,12 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
 }
 
 /// Seed a fresh directory's base tree: a RAM memory store for the kernel's
-/// execution rows, a file-bridge store so records persist, and the root
-/// pointed at the memory store. A root that already names a `memory_store_id`
-/// is left alone. Returns `Ok(true)` when it seeded, `Ok(false)` when there
-/// was nothing to do. Mirrors the blueprint in fantastic's terminal app.
+/// execution rows, and a file-bridge store so records persist. The file
+/// bridge is open only to the kernel and its persistence loader
+/// (`kernel_state`). The root is pointed at the memory store. A root that
+/// already names a `memory_store_id` is left alone. Returns `Ok(true)` when
+/// it seeded, `Ok(false)` when there was nothing to do. Mirrors the blueprint
+/// in fantastic's terminal app.
 pub async fn seed_base_tree(kernel: &Arc<Kernel>) -> Result<bool, String> {
     let root = kernel
         .send(vec![Item::new(DEFAULT_ROOT_ID, json!({"type": "reflect"}))])
@@ -222,7 +224,9 @@ pub async fn seed_base_tree(kernel: &Arc<Kernel>) -> Result<bool, String> {
             DEFAULT_ROOT_ID,
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID,
                    "id": "store", "handler_module": "file_bridge.tools",
-                   "root": ".fantastic", "allow": ["."]}),
+                   "root": ".fantastic", "allow": ["."],
+                   "ingress_rule": "allow_all_ingress",
+                   "callable_by": {"kernel_state": "*", "kernel": "*"}}),
         ),
         (
             "kernel",
@@ -265,7 +269,7 @@ pub async fn start(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>
 /// Everything after the lock: seed the base tree, then start the kernel.
 /// Any error here makes `start` shut down and release the lock.
 async fn boot_kernel(kernel: &Arc<Kernel>) -> Result<(), String> {
-    seed_base_tree(kernel).await?;
+    let seeded = seed_base_tree(kernel).await?;
     let started = kernel.start(true).await;
     if started
         .get("error")
@@ -274,6 +278,32 @@ async fn boot_kernel(kernel: &Arc<Kernel>) -> Result<(), String> {
     {
         return Err(fantastic_bundle::py_str(&started["error"]));
     }
+    if seeded {
+        persist_seeded_records(kernel).await?;
+    }
+    Ok(())
+}
+
+/// The seed ran before the kernel's record writer subscribed, so the seeded
+/// agents were never queued for it. Touch each one now with an `update_agent`
+/// that re-sets a value the seed already wrote, so its record lands on disk.
+/// The touches never change a security field, so the record keeps the seed's
+/// own values. Without the touch a restart finds the root pointing at a
+/// `kernel_memory` that has no record.
+async fn persist_seeded_records(kernel: &Arc<Kernel>) -> Result<(), String> {
+    for (id, key, value) in [
+        ("kernel_memory", "admins", json!(["kernel"])),
+        ("store", "root", json!(".fantastic")),
+    ] {
+        let mut payload = json!({"type": "update_agent", "id": id});
+        payload[key] = value;
+        for o in kernel.send(vec![Item::new("kernel", payload)]).await {
+            if !matches!(o.status, Status::Completed) {
+                return Err(format!("base tree: persisting {id} failed: {}", o.result));
+            }
+        }
+    }
+    kernel.flush_records().await;
     Ok(())
 }
 
@@ -477,14 +507,50 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn the_seeded_store_has_no_ingress_rule() {
+    async fn the_seeded_store_opens_only_for_the_kernel() {
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = boot_unstarted(dir.path());
         assert!(seed_base_tree(&kernel).await.unwrap());
         let store = reflect_of(&kernel, "store").await;
-        // The reflect reports the resolved posture: sealed is `deny_ingress`.
-        assert_eq!(store["ingress_rule"], "deny_ingress");
-        assert_eq!(store["sealed"], true);
+        assert_eq!(store["ingress_rule"], "allow_all_ingress");
+        assert_eq!(store["sealed"], false);
+        // Only the kernel and its persistence loader may call it (`$self` is
+        // the substrate's own entry on every agent; no `*`, no `user`).
+        let by = store["callable_by"].as_object().expect("callable_by");
+        let mut keys: Vec<&str> = by.keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["$self", "kernel", "kernel_state"],
+            "callable_by: {by:?}"
+        );
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn any_agent_record_survives_a_restart() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = start(dir.path()).await.unwrap();
+        for o in kernel
+            .send(vec![Item::new(
+                DEFAULT_ROOT_ID,
+                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID,
+                       "id": "plain", "handler_module": "ram_store.tools",
+                       "custom_field": "kept"}),
+            )])
+            .await
+        {
+            assert!(matches!(o.status, Status::Completed), "{}", o.result);
+        }
+        kernel.flush_records().await;
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+
+        let kernel = start(dir.path()).await.unwrap();
+        let plain = kernel.resolve_target("plain").expect("agent restored");
+        let kept = plain.meta.read().unwrap().get("custom_field").cloned();
+        assert_eq!(kept, Some(json!("kept")));
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
