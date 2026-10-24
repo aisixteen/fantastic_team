@@ -17,16 +17,18 @@ cd "$T" || exit 1
 # 1. every_kind_is_listed
 sh "$G" --list >"$R" 2>&1
 n=0
-for k in code-git code-github research docs triage; do grep -q "^$k:" "$R" || n=$((n + 1)); done
+for k in code-git code-github design-briefs research docs triage; do grep -q "^$k:" "$R" || n=$((n + 1)); done
 if [ "$n" = 0 ] && ! grep -q '^README' "$R"; then ok every_kind_is_listed
 else bad every_kind_is_listed "$(cat "$R")"; fi
 
 # 2. every_template_renders_with_no_unfilled_placeholder
-for k in code-git code-github research docs triage; do
+for k in code-git code-github design-briefs research docs triage; do
     flags=
     for f in $(awk 'NR>1 && /^-->$/ {exit} /^field / {sub(/^field /, ""); sub(/=.*/, ""); print}' "$ROOT/templates/$k.md"); do
         case $f in
             REPO) flags="$flags --set REPO=owner/name" ;;
+            APP) flags="$flags --set APP=fantastic_team" ;;
+            SRC) flags="$flags --set SRC=crates/team/web" ;;
             ISSUE) flags="$flags --set ISSUE=42" ;;
             BRANCH) flags="$flags --set BRANCH=fix/42-x" ;;
             CHECK) flags="$flags --set CHECK=make-test" ;;
@@ -90,7 +92,7 @@ else bad a_bad_set_is_refused "rc=$rc $(cat "$R")"; fi
 # 9. an_unknown_kind_is_refused
 sh "$G" poetry "x" >"$R" 2>&1
 rc=$?
-if [ "$rc" = 2 ] && [ "$(cat "$R")" = "new-task: no template \`poetry\` — kinds: code-git code-github docs research triage" ]; then
+if [ "$rc" = 2 ] && [ "$(cat "$R")" = "new-task: no template \`poetry\` — kinds: code-git code-github design-briefs docs research triage" ]; then
     ok an_unknown_kind_is_refused
 else bad an_unknown_kind_is_refused "rc=$rc $(cat "$R")"; fi
 sh "$G" README "x" >"$R" 2>&1
