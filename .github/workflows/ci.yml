@@ -1,0 +1,111 @@
+# CI, run by hand only (#46): `gh workflow run ci.yml --ref <branch>`, or the Actions tab.
+# Units by default; `-f e2e=true` adds release builds and the model-free e2e after every
+# unit leg passed. No secrets: the tests use fake models and a fake forge.
+name: ci
+run-name: ci · ${{ inputs.e2e && 'full' || 'units' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      e2e:
+        description: "Full run: release builds and the model-free e2e (a finished milestone or a release)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  units:
+    name: units (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-units-${{ hashFiles('**/Cargo.lock') }}
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+      - name: secrets guard
+        run: sh scripts/check-secrets.sh .
+      - name: shell tests
+        if: runner.os != 'Windows'
+        run: |
+          sh tests/new_task.sh
+          sh tests/remote_scripts.sh
+
+  build:
+    name: build (${{ matrix.os }})
+    if: inputs.e2e == true
+    needs: units
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
+      - name: release build
+        run: cargo build --release -p fantastic-team
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fantastic_team-${{ matrix.os }}
+          path: target/release/fantastic_team${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
+
+  e2e:
+    name: e2e (${{ matrix.os }})
+    if: inputs.e2e == true
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: fantastic_team-${{ matrix.os }}
+          path: bin
+      - name: model-free e2e on the built binary
+        run: |
+          chmod +x bin/fantastic_team || true
+          sh tests/e2e.sh bin/fantastic_team${{ runner.os == 'Windows' && '.exe' || '' }}
