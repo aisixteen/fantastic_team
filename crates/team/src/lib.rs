@@ -6,10 +6,22 @@
 #![deny(missing_docs)]
 
 pub mod board;
+pub mod cadence_feed;
 pub mod cadencer;
 pub mod config;
 pub mod dispatcher;
+pub mod driver;
+pub mod driver_config;
+pub mod driver_rules;
 pub mod instructions;
+pub mod peer_transport;
+pub mod pack_listing;
+pub mod pack_record;
+pub mod peers;
+pub mod peer_envelope;
+pub mod pack_eval;
+pub mod pack_manifest;
+pub mod pack_scan;
 pub mod puller;
 pub mod repo_config;
 pub mod setup_github;
@@ -41,8 +53,10 @@ pub fn register_team(reg: &mut BundleRegistry) {
         team_github_connector::GithubConnectorBundle,
     );
     reg.register(puller::HANDLER_MODULE, puller::PullerBundle);
+    reg.register(pack_listing::HANDLER_MODULE, pack_listing::ListingBundle);
     reg.register(webhook::HANDLER_MODULE, webhook::WebhookBundle);
     reg.register(board::HANDLER_MODULE, board::BoardBundle);
+    reg.register(pack_bundle::HANDLER_MODULE, pack_bundle::PackBundle);
     reg.register(dispatcher::HANDLER_MODULE, dispatcher::DispatcherBundle);
     reg.register(
         cadencer::HANDLER_MODULE,
@@ -264,7 +278,7 @@ async fn boot_kernel(kernel: &Arc<Kernel>) -> Result<(), String> {
 }
 
 pub mod directives;
-pub mod pack_registry;
+pub mod pack_bundle;
 
 #[cfg(test)]
 mod tests {
