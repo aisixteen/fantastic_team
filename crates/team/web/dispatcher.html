@@ -6,66 +6,251 @@
 <title>Dispatcher</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; }
-  .node { border-bottom: 1px solid #ddd; padding: 8px 0; cursor: pointer; }
-  .group { margin-left: 16px; }
-  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .bar { display: flex; gap: 8px; align-items: center; }
+  .bar button { font: inherit; padding: 4px 10px; }
+  #layout { display: flex; gap: 16px; align-items: flex-start; }
+  #sidebar { width: 280px; flex: none; }
+  #pane { flex: 1; min-width: 0; }
+  .group-title { font-weight: 600; margin: 12px 0 4px; color: #374151; }
+  .item { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+  .item:hover { background: #f3f4f6; }
+  .worker { font-size: 1em; }
+  .worker .name { font-weight: 600; }
+  .dot { width: 1em; text-align: center; }
+  .expander { color: #6b7280; font-size: 0.9em; }
+  .sub { font-size: 0.85em; color: #6b7280; padding-left: 28px; }
+  .sub .name { font-weight: 400; }
   .state-stalled { color: #b45309; }
   .state-failed { color: #b91c1c; }
   .state-done { color: #15803d; }
-  .conn-missing { color: #b91c1c; }
-  @media (max-width: 430px) { .row { flex-direction: column; gap: 2px; } }
+  .error { color: #b91c1c; }
+  .task { color: #6b7280; }
+  .cell { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
+  @media (max-width: 430px) {
+    #layout { flex-direction: column; gap: 8px; }
+    #sidebar { width: 100%; }
+    .sub { padding-left: 16px; }
+  }
 </style>
 </head>
 <body>
-<h2 id="title">Team</h2>
-<div id="connections"></div>
-<div id="waiting"></div>
-<div id="tree"></div>
+<div class="bar"><button id="back" type="button" hidden>Back</button><h2 id="title">Team</h2></div>
+<div id="error" class="error"></div>
+<div id="layout">
+  <nav id="sidebar" aria-label="Workers and subagents"></nav>
+  <section id="pane" hidden></section>
+</div>
 <script>
-// Contract: the dispatcher answers the `tree` verb with nodes of kind team,
-// group or worker. A worker row carries: id, state, task, minutes, cost.
-// A click calls `open` for the node; back returns with the scroll place kept.
-const scrollPlaces = [];
+// Contract: `sidebar {expanded}` answers one flat list per group: each worker
+// (kind worker), then its subagents expander (kind subagents, with count and
+// expanded), then its subagents (kind subagent, with tool and status) only when
+// that worker is expanded. `open {node}` for a worker or a subagent answers a
+// full-screen chat (view chat, target the node). Back returns to the sidebar,
+// restoring its scroll and the expanded workers the level had.
+// Kernel values go in as text only (textContent), never as markup.
+const expanded = new Set();   // workers whose subagents are shown
+const seen = new Set();       // workers already checked against the remembered state
+const stack = [];             // levels left behind: { scrollY, expanded }
 
-function rowHtml(r) {
-  const cls = r.state.startsWith('stalled') ? 'state-stalled'
-    : r.state === 'failed' ? 'state-failed'
-    : r.state === 'done' ? 'state-done' : '';
-  const time = r.minutes == null ? '' : r.minutes + ' min';
-  return '<div class="node" data-node="' + r.id + '" data-kind="worker">' +
-    '<div class="row"><strong>' + r.id + '</strong>' +
-    '<span class="' + cls + '">' + r.state + '</span>' +
-    '<span>' + (r.task || '') + '</span>' +
-    '<span>' + time + '</span>' +
-    '<span>$' + (r.cost || 0).toFixed(2) + '</span></div></div>';
+// Remembered per worker in this browser. A blocked or full store only costs the
+// memory, never the page.
+function keyOf(worker) { return 'fantastic.team.subagents.' + worker; }
+function remembered(worker) {
+  try { return localStorage.getItem(keyOf(worker)) === '1'; } catch (e) { return false; }
+}
+function remember(worker, on) {
+  try {
+    if (on) localStorage.setItem(keyOf(worker), '1');
+    else localStorage.removeItem(keyOf(worker));
+  } catch (e) { /* the expansion still holds for this page */ }
 }
 
-function nodeHtml(n) {
-  if (n.kind === 'worker') return rowHtml(n.row);
-  const kids = (n.children || []).map(nodeHtml).join('');
-  return '<div class="node" data-node="' + n.id + '" data-kind="' + n.kind + '"><strong>' +
-    n.id + '</strong></div><div class="group">' + kids + '</div>';
+function showError(msg) {
+  document.getElementById('error').textContent = msg || '';
 }
 
-function render(tree) {
-  document.getElementById('tree').innerHTML = nodeHtml(tree);
+// One request to the dispatcher agent through the html connector. Rejects,
+// rather than throws, when the page has no connection.
+function ask(payload) {
+  if (typeof fantastic === 'undefined' || !fantastic || typeof fantastic.send !== 'function') {
+    return Promise.reject(new Error('no connection to the team: fantastic is not loaded'));
+  }
+  return Promise.resolve(fantastic.send('dispatcher', payload));
 }
 
-document.addEventListener('click', function (e) {
-  const el = e.target.closest('[data-node]');
-  if (!el) return;
-  scrollPlaces.push(window.scrollY);
-  window.dispatchEvent(new CustomEvent('dispatcher:open', {
-    detail: { node: el.dataset.node, kind: el.dataset.kind }
-  }));
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = String(text);
+  return n;
+}
+
+function stateClass(state) {
+  const s = String(state || '');
+  if (s.indexOf('stalled') === 0) return 'state-stalled';
+  if (s === 'failed') return 'state-failed';
+  if (s === 'done') return 'state-done';
+  return '';
+}
+
+function workerRow(it) {
+  const row = el('div', 'item worker');
+  row.dataset.node = it.id;
+  row.dataset.kind = 'worker';
+  row.appendChild(el('span', 'dot', it.busy ? '●' : '○'));
+  row.appendChild(el('span', 'name', it.id));
+  row.appendChild(el('span', stateClass(it.state), it.state));
+  if (it.task) row.appendChild(el('span', 'task', it.task));
+  return row;
+}
+
+function expanderRow(it) {
+  const row = el('div', 'item expander');
+  row.dataset.expander = it.worker;
+  row.setAttribute('role', 'button');
+  row.setAttribute('aria-expanded', it.expanded ? 'true' : 'false');
+  row.appendChild(el('span', 'dot', it.expanded ? '▾' : '▸'));
+  row.appendChild(el('span', '', 'subagents (' + it.count + ')'));
+  return row;
+}
+
+function subRow(it) {
+  const row = el('div', 'item sub');
+  row.dataset.node = it.id;
+  row.dataset.kind = 'subagent';
+  row.appendChild(el('span', 'dot', '◇'));
+  row.appendChild(el('span', 'name', it.id));
+  row.appendChild(el('span', 'task', it.tool));
+  row.appendChild(el('span', 'task', it.status));
+  return row;
+}
+
+function itemRow(it) {
+  if (it.kind === 'worker') return workerRow(it);
+  if (it.kind === 'subagents') return expanderRow(it);
+  return subRow(it);
+}
+
+// Remembered expansion is read once per worker, the first time it is listed.
+function adoptRemembered(items) {
+  let changed = false;
+  items.forEach(function (it) {
+    if (it.kind !== 'worker' || seen.has(it.id)) return;
+    seen.add(it.id);
+    if (remembered(it.id) && !expanded.has(it.id)) {
+      expanded.add(it.id);
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function renderSidebar(reply) {
+  const nav = document.getElementById('sidebar');
+  nav.textContent = '';
+  document.getElementById('title').textContent = (reply && reply.team) || 'Team';
+  const groups = (reply && reply.groups) || [];
+  const loose = (reply && reply.ungrouped) || [];
+  let adopted = false;
+  groups.concat([{ id: null, items: loose }]).forEach(function (g) {
+    if (adoptRemembered(g.items || [])) adopted = true;
+  });
+  groups.forEach(function (g) {
+    nav.appendChild(el('div', 'group-title', 'Group: ' + g.id));
+    (g.items || []).forEach(function (it) { nav.appendChild(itemRow(it)); });
+  });
+  loose.forEach(function (it) { nav.appendChild(itemRow(it)); });
+  if (adopted) loadSidebar();
+}
+
+async function loadSidebar() {
+  try {
+    const reply = await ask({ type: 'sidebar', expanded: Array.from(expanded) });
+    showError('');
+    renderSidebar(reply);
+  } catch (err) {
+    showError(String(err && err.message ? err.message : err));
+  }
+}
+
+function toggleWorker(worker) {
+  if (expanded.has(worker)) {
+    expanded.delete(worker);
+    remember(worker, false);
+  } else {
+    expanded.add(worker);
+    remember(worker, true);
+  }
+  loadSidebar();
+}
+
+// The full-screen chat for one agent: the pane replaces the sidebar, and its one
+// box is the agent's chat cell from the reply.
+function showChat(reply, node) {
+  const pane = document.getElementById('pane');
+  pane.textContent = '';
+  const cell = reply.cell || {};
+  const box = el('div', 'cell');
+  box.appendChild(el('strong', '', cell.label || 'Chat'));
+  box.appendChild(el('span', '', ' ' + (cell.kind || 'chat') + ' → ' + (cell.target || node)));
+  pane.appendChild(box);
+  pane.hidden = false;
+  document.getElementById('sidebar').hidden = true;
+  document.getElementById('title').textContent = node;
+  window.scrollTo(0, 0);
+}
+
+function hideChat() {
+  const pane = document.getElementById('pane');
+  pane.textContent = '';
+  pane.hidden = true;
+  document.getElementById('sidebar').hidden = false;
+}
+
+function updateBack() {
+  document.getElementById('back').hidden = stack.length === 0;
+}
+
+async function openNode(node) {
+  let reply;
+  try {
+    reply = await ask({ type: 'open', node: node });
+  } catch (err) {
+    showError(String(err && err.message ? err.message : err));
+    return;
+  }
+  if (!reply || reply.error || reply.view !== 'chat') {
+    showError(reply && reply.error ? reply.error : 'cannot open ' + node);
+    return;
+  }
+  stack.push({ scrollY: window.scrollY, expanded: Array.from(expanded) });
+  showError('');
+  showChat(reply, node);
+  updateBack();
+}
+
+async function back() {
+  const p = stack.pop();
+  if (!p) return;
+  hideChat();
+  expanded.clear();
+  p.expanded.forEach(function (w) { expanded.add(w); });
+  await loadSidebar();
+  window.scrollTo(0, p.scrollY || 0);
+  updateBack();
+}
+
+document.getElementById('sidebar').addEventListener('click', function (e) {
+  const exp = e.target && e.target.closest ? e.target.closest('[data-expander]') : null;
+  if (exp) { toggleWorker(exp.dataset.expander); return; }
+  const node = e.target && e.target.closest ? e.target.closest('[data-node]') : null;
+  if (node) openNode(node.dataset.node);
 });
 
-window.addEventListener('dispatcher:back', function () {
-  const y = scrollPlaces.pop();
-  if (y !== undefined) window.scrollTo(0, y);
-});
+document.getElementById('back').addEventListener('click', back);
+window.addEventListener('dispatcher:back', back);
 
-window.addEventListener('dispatcher:tree', function (e) { render(e.detail); });
+loadSidebar();
 </script>
 </body>
 </html>
