@@ -26,12 +26,6 @@ pub const CANVAS_ID: &str = "canvas_page";
 pub const WORKER_VIEW_ID: &str = "worker_view";
 /// The board agent, under the root, when `team.yaml` has a `board` section.
 pub const BOARD_ID: &str = "board";
-/// The pack verbs (`pack`, `install`, `eval`), under the lead: the CLI, MCP and `send` reach them.
-pub const PACK_ID: &str = "pack";
-/// The pack listing (`list`, `show`, `updates`), under the lead.
-pub const PACK_LISTING_ID: &str = "pack_listing";
-/// The file bridge the pack agents read and write through, rooted at the team's directory.
-pub const FILES_ID: &str = "files";
 
 /// Tools the binary always knows; a template may grant them without a definition.
 pub const BUILTIN_TOOLS: [&str; 5] = [
@@ -41,6 +35,13 @@ pub const BUILTIN_TOOLS: [&str; 5] = [
     "kernel",
     "kernel_state",
 ];
+
+/// The pack verbs (`pack`, `install`, `eval`), under the lead: the CLI, MCP and `send` reach them.
+pub const PACK_ID: &str = "pack";
+/// The pack listing (`list`, `show`, `updates`), under the lead.
+pub const PACK_LISTING_ID: &str = "pack_listing";
+/// The file bridge the pack agents read and write through, rooted at the team's directory.
+pub const FILES_ID: &str = "files";
 
 /// What a planned agent is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
