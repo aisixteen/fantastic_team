@@ -165,12 +165,26 @@ async fn worktree_add_makes_a_branch_from_base() {
         .call(json!({"type": "worktree_add", "path": "w1", "branch": "work/one", "base": "origin/main"}))
         .await;
     assert_eq!(r["created"], true, "{r}");
-    let expect = f.ws.canonicalize().unwrap().join("w1");
+    let expect = crate::paths::simplify(f.ws.canonicalize().unwrap()).join("w1");
     assert_eq!(r["path"], expect.to_str().unwrap());
     assert_eq!(
         sh_git(&expect, &["rev-parse", "--abbrev-ref", "HEAD"]),
         "work/one"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn worktree_add_hands_git_a_plain_path() {
+    let f = fx(json!({}), None).await;
+    let r = f
+        .call(json!({"type": "worktree_add", "path": "w1", "branch": "work/two", "base": "origin/main"}))
+        .await;
+    assert_eq!(r["created"], true, "{r}");
+    let p = r["path"].as_str().unwrap();
+    assert!(!p.starts_with(r"\\?\") && !p.starts_with("//?/"), "{p}");
+    assert!(f.ws.join("w1").join(".git").exists());
+    let list = sh_git(&f.repo, &["worktree", "list"]);
+    assert!(list.contains("w1"), "{list}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
