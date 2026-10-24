@@ -180,3 +180,75 @@ fn readme_repo_yaml_example_parses() {
     assert_eq!(cfg.review.approvals, 1);
     assert_eq!(cfg.review.approvers, vec!["alice".to_string()]);
 }
+
+#[test]
+fn readme_not_yet_no_longer_lists_the_pack_cli_and_mcp() {
+    let text = readme();
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("Not yet: signatures"))
+        .expect("README must keep its `Not yet` line for the pack verbs");
+    assert!(
+        !line.contains("CLI, MCP"),
+        "the pack CLI and MCP surfaces are built, so `Not yet` must not list them"
+    );
+    assert!(
+        line.contains("the web UI surface for these verbs"),
+        "`Not yet` must still list the web UI surface"
+    );
+}
+
+#[test]
+fn readme_describes_the_pack_surfaces() {
+    let text = readme();
+    assert!(
+        text.contains("fantastic_team packs"),
+        "README must name the CLI"
+    );
+    assert!(
+        text.contains("`pack_listing`"),
+        "README must name the listing agent"
+    );
+    assert!(
+        text.contains("without a final newline"),
+        "README must say packed files lose their final newline"
+    );
+    assert!(
+        text.contains("exits non-zero when it carries an `error`"),
+        "README must say the CLI exit code reflects a verb error"
+    );
+}
+
+#[test]
+fn ai_readme_section_8_names_the_pack_cli() {
+    let text = fs::read_to_string(root().join("docs/ai-readme.md")).expect("ai-readme");
+    let section = text
+        .split("## 8. Pack evals")
+        .nth(1)
+        .expect("ai-readme has a section 8 for pack evals");
+    assert!(
+        !section.contains("not a CLI subcommand"),
+        "section 8 must not say the verbs have no CLI"
+    );
+    assert!(
+        section.contains("fantastic_team packs eval"),
+        "section 8 names the CLI form"
+    );
+    assert!(
+        section.contains("`pack_listing`"),
+        "section 8 names the agent ids"
+    );
+}
+
+#[test]
+fn docs_say_which_workers_the_pack_agent_can_reach() {
+    let readme =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+    let ai = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/ai-readme.md"
+    ))
+    .unwrap();
+    assert!(readme.contains("`groups:`") && readme.contains("`callable_by`"));
+    assert!(ai.contains("`groups:`") && ai.contains("`callable_by`"));
+}
