@@ -24,8 +24,12 @@ first start only.
   or kind and the last status. The expansion is held in the page and
   remembered in this browser per worker; it is not stored on the server.
 - A click on a worker or a subagent opens that agent as a full-screen chat.
-  The chat targets that agent alone. Inline agent views are not in this
-  slice (see Remaining).
+  The chat targets that agent alone and streams it live: it loads the
+  history (the newest rows, oldest first), sends a message (shown at once as
+  pending, then as sent; an error is shown on the error line and the message
+  is removed), stops the turn, and draws the answer's text parts as they
+  stream, until `done` re-enables Send. Back leaves the chat and unwatches
+  it. Inline agent views are not in this slice (see Remaining).
 - Back returns to the sidebar, restoring its scroll position and which
   workers were expanded.
 - On a phone (430px wide and under) the sidebar stacks above the content.
@@ -46,6 +50,14 @@ team gets `load` {tasks, done_last_hour} in the reply, not drawn yet.
 The page talks to the dispatcher through fantastic's html connector
 (`fantastic.send('dispatcher', …)`), with the `sidebar`, `open` and `control` verbs. Without
 that connection it says so on one line instead of failing.
+
+The chat talks to the agent itself, with the verbs and events fantastic's chat
+cell uses: `history`, `send {text, client_id}`, `stop`, and `watch` for the
+part events (`part_start`, `part_delta`, `part_end`, `part_abort`) and `done`
+of this page's client. Only text parts are drawn. The page's agent
+(`dispatcher_view`) may use those five verbs on each worker of a group and on
+their subagents: `tree::grant_chat` writes both ends (the view's `can_call`, the
+agent's `callable_by`) at each start, and no `*` is granted.
 
 ## Build locally
 
@@ -93,11 +105,23 @@ and `crates/team/tests/app_packaging.rs` guard against committed signing data.
 Not in this slice:
 
 - Sidebar, what is left (#122): inline agent views inside a chat (TBD per the
-  issue, out of scope); a real streaming chat UI inside the full-screen pane
-  (the pane only names the target agent's chat cell today); status text such as
-  `2m` and PR numbers on the rows, from live data; the dispatcher overview
-  footer row; per-worker expander persistence across restarts on the server
-  side (today it is per browser).
+  issue, out of scope); status text such as `2m` and PR numbers on the rows,
+  from live data; the dispatcher overview footer row; per-worker expander
+  persistence across restarts on the server side (today it is per browser).
+- Chat, what is left (#37): the TS chat cell's features not ported: tool
+  blocks, inquiry buttons, context stats, attachments, reasoning blocks (not
+  drawn), and the `status` verb (a turn still streaming when the chat is
+  reopened is not replayed). Grants reach only the workers in `team.yaml`
+  groups and their subagents, as of the start; an agent made later is granted at
+  the next start. No real browser check of the chat, and no live-canvas test.
+  The stream handler is checked by hand, not in CI: with node, load the
+  functions `el`, `bubble`, `scrollChat`, `ownEvent`, `finishTurn` and
+  `onChatEvent` from `crates/team/web/dispatcher.html` into a `vm` context with
+  a stub `document`, feed a `part_start`, two `part_delta`s and a `part_end`
+  for this client, and check that the text is drawn once.
+- Row status, what is left (#37): `2m` comes from `Row.minutes`, which is
+  already in the board data and is not drawn yet; PR numbers need the board to
+  expose them.
 - The Tauri window crate, behind a `tauri` feature, built like
   `aisixteen/fantastic` `src/app`: tauri 2.12.1, opening the window on the
   launcher's `web_url`.

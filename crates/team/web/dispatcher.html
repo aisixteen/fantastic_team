@@ -29,6 +29,15 @@
   .controls { display: inline-flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
   .controls button { font: inherit; font-size: 0.9em; min-height: 32px; min-width: 52px; padding: 4px 10px; }
   .cell { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
+  .cell.chat { display: flex; flex-direction: column; height: calc(100vh - 120px); min-height: 320px; margin: 0; box-sizing: border-box; }
+  .transcript { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 4px 0; }
+  .msg { margin: 6px 0; padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user { background: #e0e7ff; margin-left: 24px; }
+  .msg.assistant { background: #f3f4f6; margin-right: 24px; }
+  .msg.not-sent { opacity: 0.5; text-decoration: line-through; }
+  .composer { display: flex; gap: 6px; flex: none; padding-top: 6px; border-top: 1px solid #ddd; }
+  .composer input { flex: 1; min-width: 0; font: inherit; padding: 6px 8px; }
+  .composer button { font: inherit; min-height: 32px; padding: 4px 10px; }
   @media (max-width: 430px) {
     #layout { flex-direction: column; gap: 8px; }
     #sidebar { width: 100%; }
@@ -54,7 +63,13 @@
 // under its title; a group with a driver shows its AI's summary instead.
 // `control {node, action, confirm?}` starts, pauses or stops a worker. A stop
 // asks first (the reply's question); a refusal from the team is shown as an error.
-// Kernel values go in as text only (textContent), never as markup.
+// The full-screen chat streams the target agent itself, with the same verbs and
+// events as fantastic's chat cell: `history` (paged, the newest rows drawn),
+// `send {text, client_id}`, `stop`, and `watch` for the parts of this page's
+// client (part_start, part_delta, part_end, part_abort) and `done`. Only text
+// parts are drawn; reasoning and tool calls are not. Back, or a new open, drops
+// the watch and the drafts. Kernel values and streamed text go in as text only
+// (textContent), never as markup.
 const expanded = new Set();   // workers whose subagents are shown
 const seen = new Set();       // workers already checked against the remembered state
 const stack = [];             // levels left behind: { scrollY, expanded }
@@ -83,6 +98,14 @@ function ask(payload) {
     return Promise.reject(new Error('no connection to the team: fantastic is not loaded'));
   }
   return Promise.resolve(fantastic.send('dispatcher', payload));
+}
+
+// The same request to any agent the page may reach (a worker or a subagent for the chat).
+function askNode(id, payload) {
+  if (typeof fantastic === 'undefined' || !fantastic || typeof fantastic.send !== 'function') {
+    return Promise.reject(new Error('no connection to the team: fantastic is not loaded'));
+  }
+  return Promise.resolve(fantastic.send(id, payload));
 }
 
 function el(tag, cls, text) {
@@ -223,23 +246,207 @@ function toggleWorker(worker) {
   loadSidebar();
 }
 
-// The full-screen chat for one agent: the pane replaces the sidebar, and its one
-// box is the agent's chat cell from the reply.
+// The chat's identity on the stream: one per page, so a part is drawn only for
+// the turns this page sent (the agent's other clients are read as history).
+const chatClient = 'team_' + Math.random().toString(36).slice(2, 10);
+const HISTORY_KEEP = 300;   // the newest history rows drawn
+const HISTORY_PAGES = 20;   // pages followed when loading them
+let chat = null;            // the open chat: { node, transcript, input, send, stop, drafts, off, busy }
+
+function bubble(role, text) {
+  return el('div', 'msg ' + role, text == null ? '' : text);
+}
+
+function scrollChat(c) {
+  c.transcript.scrollTop = c.transcript.scrollHeight;
+}
+
+// The full-screen chat for one agent: the pane replaces the sidebar, and its
+// box holds the agent's chat cell label, the transcript and the composer. A new
+// open drops any chat still open first, so its stream is never drawn twice.
 function showChat(reply, node) {
+  dropChat();
   const pane = document.getElementById('pane');
   pane.textContent = '';
   const cell = reply.cell || {};
-  const box = el('div', 'cell');
+  const box = el('div', 'cell chat');
   box.appendChild(el('strong', '', cell.label || 'Chat'));
   box.appendChild(el('span', '', ' ' + (cell.kind || 'chat') + ' → ' + (cell.target || node)));
+  const transcript = el('div', 'transcript');
+  transcript.setAttribute('aria-live', 'polite');
+  box.appendChild(transcript);
+  const form = el('form', 'composer');
+  const input = el('input', '');
+  input.type = 'text';
+  input.placeholder = 'Message ' + node;
+  input.setAttribute('aria-label', 'Message');
+  input.autocomplete = 'off';
+  const send = el('button', '', 'Send');
+  send.type = 'submit';
+  const stop = el('button', '', 'Stop');
+  stop.type = 'button';
+  form.appendChild(input);
+  form.appendChild(send);
+  form.appendChild(stop);
+  box.appendChild(form);
   pane.appendChild(box);
   pane.hidden = false;
   document.getElementById('sidebar').hidden = true;
   document.getElementById('title').textContent = node;
   window.scrollTo(0, 0);
+  const c = { node: node, transcript: transcript, input: input, send: send, stop: stop, drafts: new Map(), off: null, busy: false };
+  chat = c;
+  form.addEventListener('submit', function (e) { e.preventDefault(); sendChat(); });
+  stop.addEventListener('click', stopChat);
+  // Watch first, so no part that starts while the history loads is missed.
+  c.off = watchNode(c);
+  loadHistory(c);
+}
+
+// Leave the chat: unwatch, and forget its drafts. Safe when no chat is open.
+function dropChat() {
+  const c = chat;
+  if (!c) return;
+  chat = null;
+  if (typeof c.off === 'function') {
+    try { c.off(); } catch (e) { /* the watch is gone already */ }
+  }
+  c.drafts.clear();
+}
+
+function watchNode(c) {
+  if (typeof fantastic === 'undefined' || !fantastic || typeof fantastic.watch !== 'function') {
+    showError('no connection to the team: fantastic is not loaded');
+    return null;
+  }
+  return fantastic.watch(c.node, function (ev) { if (chat === c) onChatEvent(c, ev); });
+}
+
+// The rows of a chat are read page by page, oldest first; the newest are drawn
+// above anything that streamed in while they loaded. Notice rows are the agent's
+// own turns to its model, not chat, and are left out.
+async function loadHistory(c) {
+  let rows = [];
+  let args = { type: 'history' };
+  try {
+    for (let page = 0; page < HISTORY_PAGES; page++) {
+      const r = await askNode(c.node, args);
+      if (chat !== c) return;
+      if (!r || r.error) {
+        showError(r && r.error ? String(r.error) : 'the history was not answered');
+        break;
+      }
+      rows = rows.concat(Array.isArray(r.rows) ? r.rows : []);
+      if (rows.length > HISTORY_KEEP) rows = rows.slice(rows.length - HISTORY_KEEP);
+      if (typeof r.next !== 'number') break;
+      args = { type: 'history', after: r.next };
+    }
+  } catch (err) {
+    if (chat === c) showError(String(err && err.message ? err.message : err));
+    return;
+  }
+  if (chat !== c) return;
+  const frag = document.createDocumentFragment();
+  rows.forEach(function (m) {
+    if (!m || m.kind === 'notice') return;
+    frag.appendChild(bubble(m.role === 'user' ? 'user' : 'assistant', m.head));
+  });
+  c.transcript.prepend(frag);
+  scrollChat(c);
+}
+
+// A part or a done belongs to this page's turn: the same client, and the agent
+// it came from when it names one.
+function ownEvent(c, ev) {
+  return ev.client_id === chatClient && (!ev.source || ev.source === c.node);
+}
+
+// The stream: one draft per stream_id. A delta only grows its draft; the part's
+// end settles it; an abort marks it as not sent. `done` ends the turn and
+// re-enables Send.
+function onChatEvent(c, ev) {
+  if (!ev || typeof ev !== 'object') return;
+  if (ev.type === 'done') {
+    if ((!ev.client_id || ev.client_id === chatClient) && (!ev.source || ev.source === c.node)) finishTurn(c);
+    return;
+  }
+  if (!ownEvent(c, ev)) return;
+  const id = String(ev.stream_id);
+  if (ev.type === 'part_start') {
+    if (ev.kind !== 'text') return;
+    const node = bubble('assistant', '');
+    c.transcript.appendChild(node);
+    c.drafts.set(id, { el: node, text: '' });
+    scrollChat(c);
+  } else if (ev.type === 'part_delta') {
+    const d = c.drafts.get(id);
+    if (!d) return;
+    d.text += ev.text == null ? '' : String(ev.text);
+    d.el.textContent = d.text;
+    scrollChat(c);
+  } else if (ev.type === 'part_end') {
+    const d = c.drafts.get(id);
+    if (!d) return;
+    c.drafts.delete(id);
+    if (ev.ok === false) d.el.classList.add('not-sent');
+  } else if (ev.type === 'part_abort') {
+    const d = c.drafts.get(id);
+    if (!d) return;
+    c.drafts.delete(id);
+    d.el.classList.add('not-sent');
+  }
+}
+
+function finishTurn(c) {
+  c.busy = false;
+  c.send.disabled = false;
+}
+
+// Send a turn. The user's line is shown at once, marked pending; an error reply
+// or a rejected call removes it and says why in the error line. It is never shown
+// as sent when it was not.
+async function sendChat() {
+  const c = chat;
+  if (!c || c.busy) return;
+  const text = c.input.value.trim();
+  if (!text) return;
+  c.input.value = '';
+  c.busy = true;
+  c.send.disabled = true;
+  const line = bubble('user', text);
+  line.classList.add('pending');
+  c.transcript.appendChild(line);
+  scrollChat(c);
+  let reply;
+  try {
+    reply = await askNode(c.node, { type: 'send', text: text, client_id: chatClient });
+  } catch (err) {
+    reply = { error: String(err && err.message ? err.message : err) };
+  }
+  if (chat !== c) return;
+  if (!reply || reply.error) {
+    line.remove();
+    finishTurn(c);
+    const why = reply && reply.error ? String(reply.error) : 'the message was not sent';
+    showError(reply && reply.hint ? why + ' — ' + String(reply.hint) : why);
+    return;
+  }
+  line.classList.remove('pending');
+}
+
+async function stopChat() {
+  const c = chat;
+  if (!c) return;
+  try {
+    const r = await askNode(c.node, { type: 'stop' });
+    if (r && r.error) showError(String(r.error));
+  } catch (err) {
+    showError(String(err && err.message ? err.message : err));
+  }
 }
 
 function hideChat() {
+  dropChat();
   const pane = document.getElementById('pane');
   pane.textContent = '';
   pane.hidden = true;
