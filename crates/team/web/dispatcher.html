@@ -12,6 +12,7 @@
   #sidebar { width: 280px; flex: none; }
   #pane { flex: 1; min-width: 0; }
   .group-title { font-weight: 600; margin: 12px 0 4px; color: #374151; }
+  .group-load { font-size: 12px; color: #6b7280; margin: 0 0 4px; }
   .item { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
   .item:hover { background: #f3f4f6; }
   .worker { font-size: 1em; }
@@ -46,7 +47,9 @@
 // expanded), then its subagents (kind subagent, with tool and status) only when
 // that worker is expanded. `open {node}` for a worker or a subagent answers a
 // full-screen chat (view chat, target the node). Back returns to the sidebar,
-// restoring its scroll and the expanded workers the level had.
+// restoring its scroll and the expanded workers the level had. A group with no
+// AI driver also carries `load` {busy, idle, stalled}, shown as a plain line
+// under its title; a group with a driver shows its AI's summary instead.
 // Kernel values go in as text only (textContent), never as markup.
 const expanded = new Set();   // workers whose subagents are shown
 const seen = new Set();       // workers already checked against the remembered state
@@ -157,6 +160,10 @@ function renderSidebar(reply) {
   });
   groups.forEach(function (g) {
     nav.appendChild(el('div', 'group-title', 'Group: ' + g.id));
+    if (g.load) {
+      nav.appendChild(el('div', 'group-load',
+        'busy ' + g.load.busy + ' · idle ' + g.load.idle + ' · stalled ' + g.load.stalled));
+    }
     (g.items || []).forEach(function (it) { nav.appendChild(itemRow(it)); });
   });
   loose.forEach(function (it) { nav.appendChild(itemRow(it)); });

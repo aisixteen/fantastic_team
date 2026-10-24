@@ -130,6 +130,21 @@ scripts/remote-stop.sh gpu       # asks first; drains (SIGTERM); --now kills
 
 A team is run by **the lead**: an AI agent configured in `team.yaml` that works from a directive. It spawns worker agents when there is work, gives each a task, checks on them, and deletes workers when the queue is empty. Its model, directive and templates come from config; no provider or model is named in the code.
 
+## Load and progress
+
+The cadencer's `status` carries the team's load as plain counts: workers busy,
+idle and stalled (per group and in all), tasks held, in review, done, blocked
+and queued, the number done in the last hour, and the tokens the drivers have
+spent. The code gives only these numbers. It has no mode, no total and no bar.
+The group's driver AI reads them in its digest, one plain `load:` line, and
+decides what to show: progress against a fixed list, or load alone when work
+keeps arriving. With no AI in a group, the raw numbers are all that is shown.
+Tasks waiting on CI are not counted (that needs a GitHub poll). Lanes in use are
+not reported: the pinned fantastic does not expose them. Tokens come from the
+`reflect` usage of each group driver (workers are not counted); the first beat
+after a restart counts the driver's lifetime total once, and a counter that
+drops (a restarted driver) counts from zero again.
+
 ## Any model, any mix
 
 Workers are fantastic AI agents: Anthropic models over the API with your own key, or local models (vLLM, llama.cpp) on your own GPU.
