@@ -1019,13 +1019,15 @@ mod tests {
     }
 
     /// The text of one top-level JS function: from its header to the closing
-    /// brace at column zero.
-    fn js_fn(name: &str) -> &'static str {
-        let start = HTML
+    /// brace at column zero. Line endings are normalised first: a Windows
+    /// checkout has CRLF in the embedded page.
+    fn js_fn(name: &str) -> String {
+        let html = HTML.replace("\r\n", "\n");
+        let start = html
             .find(&format!("function {name}("))
             .unwrap_or_else(|| panic!("no function {name}"));
-        let end = HTML[start..].find("\n}\n").expect("closing brace") + start;
-        &HTML[start..end]
+        let end = html[start..].find("\n}\n").expect("closing brace") + start;
+        html[start..end].to_string()
     }
 
     #[test]
