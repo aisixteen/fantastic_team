@@ -848,3 +848,179 @@ async fn missing_credentials_name_the_ref() {
         "{r}"
     );
 }
+
+/// The `Authorization` header of every request the mock got on `p`, in order.
+async fn auth_headers_to(gh: &MockServer, p: &str) -> Vec<String> {
+    requests_to(gh, p)
+        .await
+        .iter()
+        .filter_map(|r| {
+            r.headers
+                .get("authorization")
+                .and_then(|h| h.to_str().ok())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// The bodies of the PATCH requests the mock got on `p`, in order.
+async fn patch_bodies_to(gh: &MockServer, p: &str) -> Vec<Value> {
+    requests_to(gh, p)
+        .await
+        .iter()
+        .filter(|r| r.method.as_str() == "PATCH")
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_create_posts_as_the_app_and_adds_to_board() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    Mock::given(method("POST"))
+        .and(path("/repos/acme/widgets/issues"))
+        .and(body_json(json!({"title": "T", "body": "B"})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "number": 7, "html_url": "https://x/7", "node_id": "I_x"
+        })))
+        .mount(&f.gh)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"addProjectV2ItemById": {"item": {"id": "PVTI_1"}}}
+        })))
+        .mount(&f.gh)
+        .await;
+    let r = f
+        .call(json!({
+            "type": "issue_create", "repo": "acme/widgets",
+            "title": "T", "body": "B", "project": "PVT_1"
+        }))
+        .await;
+    assert_eq!(r["number"], 7, "{r}");
+    assert_eq!(r["added_to_board"], true, "{r}");
+    assert_eq!(r["url"], "https://x/7", "{r}");
+    let want = format!("Bearer {}", token());
+    assert_eq!(
+        auth_headers_to(&f.gh, "/repos/acme/widgets/issues").await,
+        vec![want]
+    );
+    let gql = requests_to(&f.gh, "/graphql").await;
+    assert_eq!(gql.len(), 1);
+    let sent: Value = serde_json::from_slice(&gql[0].body).unwrap();
+    assert_eq!(sent["variables"]["project"], "PVT_1", "{sent}");
+    assert_eq!(sent["variables"]["content"], "I_x", "{sent}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_close_then_reopen_round_trips() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"number": 3, "labels": []})))
+        .mount(&f.gh)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/widgets/issues/3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"number": 3})))
+        .mount(&f.gh)
+        .await;
+    let closed = f
+        .call(
+            json!({"type": "issue_state", "repo": "acme/widgets", "number": 3, "state": "closed"}),
+        )
+        .await;
+    assert_eq!(closed["state"], "closed", "{closed}");
+    let opened = f
+        .call(json!({"type": "issue_state", "repo": "acme/widgets", "number": 3, "state": "open"}))
+        .await;
+    assert_eq!(opened["state"], "open", "{opened}");
+    assert_eq!(
+        patch_bodies_to(&f.gh, "/repos/acme/widgets/issues/3").await,
+        vec![json!({"state": "closed"}), json!({"state": "open"})]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_an_epic_is_refused_unless_maintainer() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/47"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "number": 47, "labels": [{"name": "epic"}]
+        })))
+        .mount(&f.gh)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/repos/acme/widgets/issues/47"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"number": 47})))
+        .mount(&f.gh)
+        .await;
+    for sender in [None, Some("lead")] {
+        let mut p =
+            json!({"type": "issue_state", "repo": "acme/widgets", "number": 47, "state": "closed"});
+        if let Some(s) = sender {
+            p["sender"] = json!(s);
+        }
+        let r = f.call(p).await;
+        assert!(r["error"].as_str().unwrap_or("").contains("epic"), "{r}");
+    }
+    assert!(patch_bodies_to(&f.gh, "/repos/acme/widgets/issues/47")
+        .await
+        .is_empty());
+    let ok = f
+        .call(
+            json!({"type": "issue_state", "repo": "acme/widgets", "number": 47,
+                     "state": "closed", "sender": "maintainer"}),
+        )
+        .await;
+    assert_eq!(ok["state"], "closed", "{ok}");
+    let reopened = f
+        .call(json!({"type": "issue_state", "repo": "acme/widgets", "number": 47, "state": "open"}))
+        .await;
+    assert_eq!(reopened["state"], "open", "{reopened}");
+    assert_eq!(
+        patch_bodies_to(&f.gh, "/repos/acme/widgets/issues/47").await,
+        vec![json!({"state": "closed"}), json!({"state": "open"})]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_create_and_state_refuse_repo_outside_allowlist() {
+    let f = fx(json!({})).await;
+    for p in [
+        json!({"type": "issue_create", "repo": "evil/other", "title": "T", "body": "B"}),
+        json!({"type": "issue_state", "repo": "evil/other", "number": 1, "state": "closed"}),
+    ] {
+        let r = f.call(p).await;
+        assert_eq!(r["reason"], "bad_arg", "{r}");
+        assert!(
+            r["error"]
+                .as_str()
+                .unwrap()
+                .contains("not in this connector's repos"),
+            "{r}"
+        );
+    }
+    assert!(f.gh.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_state_rejects_other_state_values() {
+    let f = fx(json!({})).await;
+    let r = f
+        .call(json!({"type": "issue_state", "repo": "acme/widgets", "number": 1, "state": "all"}))
+        .await;
+    assert_eq!(r["reason"], "bad_arg", "{r}");
+    assert!(
+        r["error"]
+            .as_str()
+            .unwrap()
+            .contains("`state` must be open or closed"),
+        "{r}"
+    );
+    assert!(f.gh.received_requests().await.unwrap().is_empty());
+}
