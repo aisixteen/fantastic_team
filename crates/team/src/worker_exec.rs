@@ -65,14 +65,21 @@ pub const NO_SSH: &str =
 /// mentions `credential.helper`, or reaches `api.github.com`.
 pub const WORKER_ALLOWED: &str = r#"(?!.*(?:(?:^|[\s/'"`;&|(])(?:gh|glab|hub)(?:$|[\s'"`;&|)])|\bgit(?:\s+(?:-[Cc]\s+\S+|--?[\w.-]+(?:=\S*)?))*\s+(?:push|credential|remote\s+set-url)\b|credential\.helper|api\.github\.com)).*"#;
 
+/// Join a `/`-separated relative constant one component at a time, so the
+/// result has the OS's separators (a single `join` of "a/b" keeps a mixed
+/// `\\`-and-`/` path on Windows).
+fn join_parts(base: &Path, rel: &str) -> PathBuf {
+    rel.split('/').fold(base.to_path_buf(), |p, c| p.join(c))
+}
+
 /// The worker's HOME inside the team folder.
 pub fn sandbox_home(team_dir: &Path) -> PathBuf {
-    team_dir.join(SANDBOX_HOME)
+    join_parts(team_dir, SANDBOX_HOME)
 }
 
 /// The folder a worker's commands run in, inside the team folder.
 pub fn work_dir(team_dir: &Path) -> PathBuf {
-    team_dir.join(WORK_DIR)
+    join_parts(team_dir, WORK_DIR)
 }
 
 /// True for a name that must not reach a worker's environment: a listed forge
@@ -164,10 +171,13 @@ mod tests {
     fn the_record_points_home_into_the_team() {
         let dir = tempfile::TempDir::new().unwrap();
         let rec = worker_exec_record(dir.path());
-        let home = sandbox_home(dir.path()).to_string_lossy().into_owned();
+        let home = sandbox_home(dir.path());
         let env = &rec["env"];
-        assert_eq!(env["HOME"], json!(home));
-        assert_eq!(env["XDG_CONFIG_HOME"], json!(format!("{home}/.config")));
+        assert_eq!(env["HOME"], json!(home.to_string_lossy()));
+        assert_eq!(
+            env["XDG_CONFIG_HOME"],
+            json!(home.join(".config").to_string_lossy())
+        );
         assert_eq!(env["GIT_CONFIG_NOSYSTEM"], json!("1"));
         assert_eq!(env["GIT_TERMINAL_PROMPT"], json!("0"));
         assert_eq!(
@@ -175,6 +185,19 @@ mod tests {
             json!(work_dir(dir.path()).to_string_lossy().into_owned())
         );
         assert_eq!(rec["handler_module"], json!("exec_bridge.tools"));
+    }
+
+    #[test]
+    fn sandbox_home_has_no_mixed_separators() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let home = sandbox_home(dir.path());
+        assert!(
+            home.ends_with(Path::new("sandbox").join("home")),
+            "{home:?}"
+        );
+        if cfg!(windows) {
+            assert!(!home.to_string_lossy().contains('/'), "{home:?}");
+        }
     }
 
     #[test]

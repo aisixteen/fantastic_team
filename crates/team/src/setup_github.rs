@@ -79,16 +79,14 @@ fn esc(s: &str) -> String {
 
 /// A random state string for the callback check (hex, 128 bits).
 pub fn new_state() -> String {
+    if let Ok(s) = crate::peer_envelope::random_hex16() {
+        return s;
+    }
     let mut b = [0u8; 16];
-    let read = std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut b))
-        .is_ok();
-    if !read {
-        for (i, chunk) in b.chunks_mut(8).enumerate() {
-            let mut h = RandomState::new().build_hasher();
-            h.write_usize(i);
-            chunk.copy_from_slice(&h.finish().to_le_bytes()[..chunk.len()]);
-        }
+    for (i, chunk) in b.chunks_mut(8).enumerate() {
+        let mut h = RandomState::new().build_hasher();
+        h.write_usize(i);
+        chunk.copy_from_slice(&h.finish().to_le_bytes()[..chunk.len()]);
     }
     b.iter().map(|x| format!("{x:02x}")).collect()
 }

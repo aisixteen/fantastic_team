@@ -74,6 +74,21 @@ pub fn install_dir(into: &Path, name: &str, version: &str) -> PathBuf {
     into.join(format!("{name}-{version}"))
 }
 
+/// The key of an installed pack's directory, as a string: `<into>/<name>-<version>`.
+/// Built with `/` by hand, not from a `PathBuf`: the key is sent to the peer
+/// file verbs and echoed back as `path`, so it is a portable `/` path like every
+/// other path in this module, never an OS-rendered one (`\\` on Windows).
+fn install_dest(into: &str, name: &str, version: &str) -> String {
+    let dir = format!("{name}-{version}");
+    if into.is_empty() {
+        dir
+    } else if into.ends_with('/') {
+        format!("{into}{dir}")
+    } else {
+        format!("{into}/{dir}")
+    }
+}
+
 /// A name or version that is safe as one path segment and one manifest line:
 /// letters, digits, `.`, `_`, `-`, `+`; never empty, never `..`.
 pub fn valid_part(s: &str) -> bool {
@@ -264,8 +279,7 @@ pub async fn install<P: Peers>(p: &P, pack: &str, into: &str) -> Value {
     if !valid_part(&name) || !valid_part(&version) {
         return err("pack name or version is not a safe path segment");
     }
-    let dest = install_dir(Path::new(into), &name, &version);
-    let dest_s = dest.to_string_lossy().to_string();
+    let dest_s = install_dest(into, &name, &version);
     if exists(p, &dest_s).await {
         return err("version already installed");
     }
@@ -490,6 +504,23 @@ mod tests {
         assert!(f.get("templates/w-1.0/worker.json").is_some());
         let targets = f.targets.lock().unwrap();
         assert!(targets.iter().all(|t| t == "files"), "{targets:?}");
+    }
+
+    #[tokio::test]
+    async fn install_reports_the_path_with_forward_slashes() {
+        let f = worker();
+        pack(&f, "w", "pack").await;
+        let r = install(&f, "pack", "templates").await;
+        assert_eq!(r["path"], "templates/w-1.0", "{r}");
+    }
+
+    #[test]
+    fn install_dest_joins_with_one_slash() {
+        assert_eq!(install_dest("templates/", "w", "1.0"), "templates/w-1.0");
+        assert_eq!(install_dest("templates", "w", "1.0"), "templates/w-1.0");
+        assert_eq!(install_dest("a/b", "w", "1.0"), "a/b/w-1.0");
+        assert_eq!(install_dest("", "w", "1.0"), "w-1.0");
+        assert_eq!(install_dest("/", "w", "1.0"), "/w-1.0");
     }
 
     #[tokio::test]
