@@ -8,7 +8,11 @@ on:
   workflow_dispatch:
     inputs:
       e2e:
-        description: "Full run: release builds and the model-free e2e (a finished milestone or a release)"
+        description: "Full run: release builds, the reproducible-build check and the model-free e2e (a finished milestone or a release)"
+        type: boolean
+        default: false
+      strict:
+        description: "With e2e: fail the repro job when the two builds differ (off until fantastic's canvas zip is deterministic)"
         type: boolean
         default: false
 
@@ -35,9 +39,17 @@ jobs:
       RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # the toolchain is the pin in rust-toolchain.toml; rustup installs it (#137)
+      - name: toolchain (rust-toolchain.toml)
+        run: |
+          pin=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "pinned: $pin"
+          rustup show
+          # guard: the runner's rustc must be the pin (rustup reads rust-toolchain.toml)
+          case "$(rustc -V)" in
+            "rustc $pin "*) ;;
+            *) echo "::error::rustc is $(rustc -V), not the pin $pin"; exit 1 ;;
+          esac
       - uses: mozilla-actions/sccache-action@v0.0.9
       # fantastic's canvas page builds esbuild from pinned source with Go, and packs with zip
       - uses: actions/setup-go@v6
@@ -67,6 +79,15 @@ jobs:
         run: |
           sh tests/new_task.sh
           sh tests/remote_scripts.sh
+          sh tests/build_github.sh
+          sh tests/repro_scripts.sh
+      # the GitHub build is the general tree plus patches/github-exec.patch (#136)
+      - name: github patch applies
+        if: runner.os != 'Windows'
+        run: sh scripts/build-github.sh --check
+      - name: github build tests
+        if: runner.os != 'Windows'
+        run: sh scripts/build-github.sh --test
 
   build:
     name: build (${{ matrix.os }})
@@ -81,7 +102,16 @@ jobs:
       RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: toolchain (rust-toolchain.toml)
+        run: |
+          pin=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "pinned: $pin"
+          rustup show
+          # guard: the runner's rustc must be the pin (rustup reads rust-toolchain.toml)
+          case "$(rustc -V)" in
+            "rustc $pin "*) ;;
+            *) echo "::error::rustc is $(rustc -V), not the pin $pin"; exit 1 ;;
+          esac
       - uses: mozilla-actions/sccache-action@v0.0.9
       # fantastic's canvas page builds esbuild from pinned source with Go, and packs with zip
       - uses: actions/setup-go@v6
@@ -98,12 +128,96 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
-      - name: release build
-        run: cargo build --release -p fantastic-team
+      - name: release build (general)
+        run: sh scripts/build.sh
+      - name: release build (github)
+        if: runner.os != 'Windows'
+        run: sh scripts/build-github.sh
       - uses: actions/upload-artifact@v4
         with:
           name: fantastic_team-${{ matrix.os }}
           path: target/release/fantastic_team${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: runner.os != 'Windows'
+        with:
+          name: fantastic_team-github-${{ matrix.os }}
+          path: target/github/release/fantastic_team-github
+          if-no-files-found: error
+
+  # Reproducible builds (#137): two builds of the same commit, in two folders and two target
+  # dirs, must give the same SHA256SUMS. Runs with e2e. The canvas zip is not yet deterministic
+  # (docs/install.md, Reproducible builds), so a difference only fails the job when strict is on.
+  repro:
+    name: repro (${{ matrix.os }})
+    if: inputs.e2e == true
+    needs: units
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      STRICT: ${{ inputs.strict }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain (rust-toolchain.toml)
+        run: |
+          pin=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "pinned: $pin"
+          rustup show
+          # guard: the runner's rustc must be the pin (rustup reads rust-toolchain.toml)
+          case "$(rustc -V)" in
+            "rustc $pin "*) ;;
+            *) echo "::error::rustc is $(rustc -V), not the pin $pin"; exit 1 ;;
+          esac
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.4"
+          cache: false
+      - name: two trees at the same commit, made at different times
+        run: |
+          set -eu
+          HEAD_SHA=$(git rev-parse HEAD)
+          mkdir -p "$RUNNER_TEMP/a" "$RUNNER_TEMP/b"
+          git worktree add --detach "$RUNNER_TEMP/a/src" "$HEAD_SHA"
+          sleep 2
+          git worktree add --detach "$RUNNER_TEMP/b/src" "$HEAD_SHA"
+      - name: build twice (general and github, two target dirs each)
+        run: |
+          set -eu
+          for side in a b; do
+            cd "$RUNNER_TEMP/$side/src"
+            CARGO_TARGET_DIR="$RUNNER_TEMP/$side/target" sh scripts/build.sh | tee "$RUNNER_TEMP/$side/build.log"
+            CARGO_TARGET_DIR="$RUNNER_TEMP/$side/target-github" sh scripts/build-github.sh | tee -a "$RUNNER_TEMP/$side/build.log"
+          done
+      - name: checksum both sets and compare
+        run: |
+          set -eu
+          for side in a b; do
+            OUT="$RUNNER_TEMP/out-$side"
+            mkdir -p "$OUT"
+            sed -n 's/^built: //p' "$RUNNER_TEMP/$side/build.log" | while IFS= read -r built; do
+              cp "$built" "$OUT/"
+            done
+            (cd "$RUNNER_TEMP/$side/src" && sh scripts/checksums.sh "$OUT")
+          done
+          if diff -u "$RUNNER_TEMP/out-a/SHA256SUMS" "$RUNNER_TEMP/out-b/SHA256SUMS"; then
+            echo "reproducible: both builds give the same SHA256SUMS"
+          elif [ "$STRICT" = "true" ]; then
+            echo "::error::the two builds differ (strict is on)"
+            exit 1
+          else
+            echo "::warning::the two builds differ; strict is off, so the job passes (docs/install.md, Reproducible builds)"
+          fi
+      - name: upload the checksums (unsigned)
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-checksums-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/out-a/SHA256SUMS
+            ${{ runner.temp }}/out-a/MD5SUMS
+            ${{ runner.temp }}/out-a/RELEASE-INFO.txt
           if-no-files-found: error
 
   e2e:
@@ -121,7 +235,23 @@ jobs:
         with:
           name: fantastic_team-${{ matrix.os }}
           path: bin
+      - uses: actions/download-artifact@v4
+        if: runner.os != 'Windows'
+        with:
+          name: fantastic_team-github-${{ matrix.os }}
+          path: bin-github
       - name: model-free e2e on the built binary
         run: |
           chmod +x bin/fantastic_team || true
           sh tests/e2e.sh bin/fantastic_team${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: model-free e2e on the github binary
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x bin-github/fantastic_team-github
+          sh tests/e2e.sh bin-github/fantastic_team-github
+      - name: scripted e2e tests, general build
+        if: runner.os != 'Windows'
+        run: python3 e2e/run.py --only-free --build general --bin bin/fantastic_team
+      - name: scripted e2e tests, github build
+        if: runner.os != 'Windows'
+        run: python3 e2e/run.py --only-free --build github --bin bin-github/fantastic_team-github

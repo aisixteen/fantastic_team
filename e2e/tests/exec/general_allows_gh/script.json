@@ -1,0 +1,5 @@
+[
+  {"calls": [{"target": "worker_exec", "type": "run", "args": {"command": "gh", "args": ["--version"], "wait_s": 30}}]},
+  {"calls": [{"target": "worker_exec", "type": "run", "args": {"command": "sh", "args": ["-c", "echo reached-the-shell; gh auth token; true"], "wait_s": 30}}]},
+  {"calls": [{"name": "done"}]}
+]

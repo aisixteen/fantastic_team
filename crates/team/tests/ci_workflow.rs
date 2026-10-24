@@ -208,3 +208,94 @@ fn ci_e2e_runs_the_driver_on_built_binaries() {
         "tests/e2e.sh missing"
     );
 }
+
+#[test]
+fn ci_builds_and_tests_both_builds() {
+    let doc = doc();
+    let root = repo_root();
+    assert!(root.join("patches").join("github-exec.patch").is_file());
+    for script in ["build.sh", "build-github.sh"] {
+        assert!(root.join("scripts").join(script).is_file(), "{script}");
+    }
+    assert!(root.join("tests").join("build_github.sh").is_file());
+    let units = run_text(job(&doc, "units"));
+    assert!(
+        units.contains("scripts/build-github.sh --check"),
+        "units lack the patch check"
+    );
+    assert!(
+        units.contains("scripts/build-github.sh --test"),
+        "units lack the github tests"
+    );
+    assert!(
+        units.contains("tests/build_github.sh"),
+        "units lack the build script test"
+    );
+    let build = run_text(job(&doc, "build"));
+    assert!(
+        build.contains("scripts/build-github.sh"),
+        "build job lacks the github build"
+    );
+    let text = raw();
+    assert!(text.contains("name: fantastic_team-${{ matrix.os }}"));
+    assert!(text.contains("name: fantastic_team-github-${{ matrix.os }}"));
+    let e2e = run_text(job(&doc, "e2e"));
+    assert!(
+        e2e.contains("--build general") && e2e.contains("--build github"),
+        "{e2e}"
+    );
+}
+
+#[test]
+fn repro_job_builds_twice_in_different_dirs_and_has_no_signing() {
+    let doc = doc();
+    let repro = job(&doc, "repro");
+    assert!(
+        if_text(repro).contains("inputs.e2e"),
+        "repro job must be gated on inputs.e2e"
+    );
+    assert_eq!(needs(repro), vec!["units".to_string()], "repro needs units");
+    let text = run_text(repro);
+    for want in ["scripts/build.sh", "scripts/build-github.sh", "SHA256SUMS"] {
+        assert!(text.contains(want), "repro steps lack `{want}`");
+    }
+    assert!(
+        text.contains("RUNNER_TEMP") && text.contains("CARGO_TARGET_DIR"),
+        "repro must build in two directories with two target dirs"
+    );
+    // Signing stays on the maintainer's laptop: nothing in the job reaches for secrets or a signer.
+    let whole = serde_yaml::to_string(repro).expect("repro job serializes");
+    for banned in ["secrets.", "gpg", "codesign", "notarytool"] {
+        assert!(
+            !whole.to_lowercase().contains(banned),
+            "repro job mentions {banned}"
+        );
+    }
+    assert!(
+        !raw().contains("@stable"),
+        "ci.yml must take the toolchain from rust-toolchain.toml, not @stable"
+    );
+    assert!(
+        run_text(job(&doc, "units")).contains("tests/repro_scripts.sh"),
+        "units shell tests must run tests/repro_scripts.sh"
+    );
+    let inputs = key(
+        key(triggers(&doc), "workflow_dispatch").expect("workflow_dispatch"),
+        "inputs",
+    )
+    .expect("inputs");
+    let strict = key(inputs, "strict").expect("input `strict` exists");
+    assert_eq!(key(strict, "type").and_then(Value::as_str), Some("boolean"));
+    assert_eq!(key(strict, "default"), Some(&Value::Bool(false)));
+
+    let pin = std::fs::read_to_string(repo_root().join("rust-toolchain.toml"))
+        .expect("rust-toolchain.toml exists");
+    assert!(pin.contains("channel = \"1."), "toolchain pin: {pin}");
+    // Every job that builds or tests guards that rustc is the pin, not whatever the runner has.
+    for name in ["units", "build", "repro"] {
+        assert!(
+            run_text(job(&doc, name)).contains("rustc -V"),
+            "job `{name}` lacks the rustc -V guard against the pin"
+        );
+    }
+}

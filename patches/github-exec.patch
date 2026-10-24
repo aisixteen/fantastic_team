@@ -1,0 +1,211 @@
+The GitHub build of Fantastic Team (Team GitHub).
+
+The general build gives workers stock exec: any command line is allowed. This
+patch narrows the build for GitHub work. Workers cannot reach forge CLIs (gh,
+glab, hub), git push, git credential, git remote set-url, any credential.helper
+setting or api.github.com. Every GitHub action goes through the github connector,
+as the app, so no credential ever reaches a worker.
+
+It also names the build: the app is "AISixteen Fantastic Team GitHub" (identifier
+com.aisixteen.team.github) and its launcher starts the fantastic_team-github
+binary that scripts/build-github.sh produces.
+
+Apply from the repo root with: git apply patches/github-exec.patch
+scripts/build-github.sh does that on a copy of the tree and builds it.
+
+diff --git a/app/tauri.conf.json b/app/tauri.conf.json
+index afc3800..a226be0 100644
+--- a/app/tauri.conf.json
++++ b/app/tauri.conf.json
+@@ -1,11 +1,11 @@
+ {
+   "$schema": "https://schema.tauri.app/config/2",
+-  "productName": "Fantastic Team",
+-  "identifier": "com.aisixteen.team",
++  "productName": "AISixteen Fantastic Team GitHub",
++  "identifier": "com.aisixteen.team.github",
+   "build": { "frontendDist": "http://127.0.0.1:8765" },
+   "app": {
+     "windows": [
+-      { "title": "Fantastic Team", "width": 1280, "height": 800, "url": "http://127.0.0.1:8765" }
++      { "title": "AISixteen Fantastic Team GitHub", "width": 1280, "height": 800, "url": "http://127.0.0.1:8765" }
+     ],
+     "withGlobalTauri": false,
+     "security": { "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:8765 ws://127.0.0.1:8765; style-src 'self'" }
+diff --git a/crates/team/src/worker_exec.rs b/crates/team/src/worker_exec.rs
+index 28c1f8a..5c8aef1 100644
+--- a/crates/team/src/worker_exec.rs
++++ b/crates/team/src/worker_exec.rs
+@@ -2,11 +2,14 @@
+ //!
+ //! A worker runs its commands through a fantastic `exec_bridge.tools` agent
+ //! built from [`worker_exec_record`]. Its HOME is a sandbox folder inside the
+-//! team with no credentials in it, and its environment is a fixed list of names;
+-//! no token, key or SSH agent is among them, so a push from a worker fails.
++//! team with no credentials in it; its environment is a fixed list of names,
++//! and no token, key or SSH agent is among them; its `allowed` pattern refuses
++//! forge CLIs (`gh`, `glab`, `hub`), `git push`, `git credential`, `git remote
++//! set-url`, any `credential.helper` setting and `api.github.com`.
+ //!
+-//! This is the general build: its `allowed` pattern is any command line. The
+-//! GitHub build (`patches/github-exec.patch`) narrows it to refuse forge CLIs.
++//! The forge-CLI refusal is a clear, early error, NOT a wall: a shell can spell
++//! any command in many ways. The boundary is that no credential is reachable
++//! through the worker's environment or HOME, so a push from a worker fails.
+ //!
+ //! This is NOT an OS sandbox. The worker runs as the user, so files the user
+ //! can read (`~/.ssh` keys, the login keychain) stay readable to a worker that
+@@ -56,9 +59,11 @@ pub const CREDENTIAL_FILES: &[&str] = &[
+ pub const NO_SSH: &str =
+     "ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes";
+ 
+-/// The one `allowed` pattern: any command line. The exec bridge refuses every
+-/// command when `allowed` is empty, so the general build names the match-all.
+-pub const WORKER_ALLOWED: &str = ".*";
++/// The one `allowed` pattern: any command line EXCEPT one that names a forge CLI
++/// (`gh`, `glab`, `hub` as a word), runs `git push`, `git credential` or
++/// `git remote set-url` (options between `git` and the subcommand included),
++/// mentions `credential.helper`, or reaches `api.github.com`.
++pub const WORKER_ALLOWED: &str = r#"(?!.*(?:(?:^|[\s/'"`;&|(])(?:gh|glab|hub)(?:$|[\s'"`;&|)])|\bgit(?:\s+(?:-[Cc]\s+\S+|--?[\w.-]+(?:=\S*)?))*\s+(?:push|credential|remote\s+set-url)\b|credential\.helper|api\.github\.com)).*"#;
+ 
+ /// Join a `/`-separated relative constant one component at a time, so the
+ /// result has the OS's separators (a single `join` of "a/b" keeps a mixed
+@@ -245,24 +250,55 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn stock_record_passes_exec_validation_and_refuses_nothing() {
++    fn forge_commands_are_refused_by_the_allowlist() {
+         let dir = tempfile::TempDir::new().unwrap();
+         let rec = worker_exec_record(dir.path());
+-        assert!(fantastic_exec_bridge::ExecBridgeBundle
+-            .validate_meta(rec.as_object().unwrap(), &Map::new())
+-            .is_none());
+         for a in [
+             &["gh", "--version"][..],
+-            &["git", "push"],
++            &["/opt/homebrew/bin/gh", "pr", "list"],
+             &["glab", "mr", "list"],
+-            &["curl", "-s", "https://api.github.com/user"],
++            &["hub", "pull-request"],
++            &["git", "push"],
++            &["git", "push", "origin", "main"],
++            &["git", "-C", "/tmp/x", "push"],
++            &["git", "--git-dir=/x/.git", "push"],
++            &[
++                "git",
++                "remote",
++                "set-url",
++                "origin",
++                "https://example.test/r.git",
++            ],
++            &["git", "-c", "credential.helper=store", "fetch"],
++            &["git", "credential", "fill"],
++            &["sh", "-c", "git push origin main"],
++            &["sh", "-c", "cd x && git push"],
+             &["sh", "-c", "gh auth token"],
++            &["sh", "-c", "ls; gh repo list"],
++            &["bash", "-lc", "echo hi\ngit push"],
++            &["curl", "-s", "https://api.github.com/user"],
++        ] {
++            assert!(refused(&rec, a), "should be refused: {a:?}");
++        }
++    }
++
++    #[test]
++    fn ordinary_commands_are_allowed() {
++        let dir = tempfile::TempDir::new().unwrap();
++        let rec = worker_exec_record(dir.path());
++        for a in [
++            &["sh", "-c", "echo $HOME; env"][..],
+             &["git", "status"],
++            &["git", "commit", "-m", "push the fix"],
++            &["git", "-C", "/x", "status"],
++            &["git", "log", "--oneline"],
++            &["git", "pull"],
++            &["cargo", "test", "-p", "fantastic-team"],
++            &["echo", "github"],
++            &["grep", "-rn", "ghost", "."],
++            &["python3", "-c", "print(1)"],
+         ] {
+-            assert!(
+-                !refused(&rec, a),
+-                "the general build refuses nothing: {a:?}"
+-            );
++            assert!(!refused(&rec, a), "should be allowed: {a:?}");
+         }
+     }
+ }
+diff --git a/crates/team/tests/app_packaging.rs b/crates/team/tests/app_packaging.rs
+index 60c0c87..2a74cd1 100644
+--- a/crates/team/tests/app_packaging.rs
++++ b/crates/team/tests/app_packaging.rs
+@@ -18,8 +18,8 @@ fn load_conf() -> serde_json::Value {
+ #[test]
+ fn tauri_conf_parses_and_names_the_team_app() {
+     let conf = load_conf();
+-    assert_eq!(conf["productName"], "Fantastic Team");
+-    assert_eq!(conf["identifier"], "com.aisixteen.team");
++    assert_eq!(conf["productName"], "AISixteen Fantastic Team GitHub");
++    assert_eq!(conf["identifier"], "com.aisixteen.team.github");
+ }
+ 
+ #[test]
+diff --git a/crates/team/tests/worker_exec.rs b/crates/team/tests/worker_exec.rs
+index d8267b3..5eae25c 100644
+--- a/crates/team/tests/worker_exec.rs
++++ b/crates/team/tests/worker_exec.rs
+@@ -293,21 +293,28 @@ async fn a_push_from_a_worker_sends_no_credentials() {
+ }
+ 
+ #[tokio::test(flavor = "multi_thread")]
+-async fn gh_version_is_not_refused_in_the_general_build() {
++async fn forge_commands_are_refused_before_they_run() {
+     let planted = plant();
+     let _ = planted;
+     let team = TempDir::new().unwrap();
+-    let kernel = boot(team.path(), "worker_exec_open", None).await;
+-    // gh may not be installed: only the allowlist gate is asserted.
+-    let reply = run(&kernel, "worker_exec_open", "gh", &["--version"]).await;
+-    assert_ne!(reply["reason"], json!("unauthorized"), "{reply}");
+-    assert!(
+-        !reply["error"]
+-            .as_str()
+-            .unwrap_or("")
+-            .contains("command not allowed"),
+-        "{reply}"
+-    );
++    let kernel = boot(team.path(), "worker_exec_gate", None).await;
++    let cases: [(&str, &[&str]); 3] = [
++        ("gh", &["--version"]),
++        ("git", &["push", "origin", "HEAD"]),
++        ("sh", &["-c", "gh auth token"]),
++    ];
++    for (command, args) in cases {
++        let reply = run(&kernel, "worker_exec_gate", command, args).await;
++        assert_eq!(reply["reason"], json!("unauthorized"), "{reply}");
++        assert!(
++            reply["error"]
++                .as_str()
++                .unwrap_or("")
++                .contains("command not allowed"),
++            "{reply}"
++        );
++        assert!(reply.get("job_id").is_none(), "{reply}");
++    }
+     down(kernel, team.path()).await;
+ }
+ 
+diff --git a/crates/team_app/src/lib.rs b/crates/team_app/src/lib.rs
+index 11ef3bc..9066288 100644
+--- a/crates/team_app/src/lib.rs
++++ b/crates/team_app/src/lib.rs
+@@ -10,7 +10,7 @@ use tokio::net::TcpStream;
+ use tokio::process::{Child, Command};
+ 
+ /// The headless binary name (`[[bin]] name` in crates/team/Cargo.toml).
+-pub const HEADLESS_BINARY: &str = "fantastic_team";
++pub const HEADLESS_BINARY: &str = "fantastic_team-github";
+ 
+ /// The loopback port the packaged window loads (`app/tauri.conf.json`).
+ pub const DEFAULT_PORT: u16 = 8765;

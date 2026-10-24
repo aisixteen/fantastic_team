@@ -2,14 +2,11 @@
 //!
 //! A worker runs its commands through a fantastic `exec_bridge.tools` agent
 //! built from [`worker_exec_record`]. Its HOME is a sandbox folder inside the
-//! team with no credentials in it; its environment is a fixed list of names,
-//! and no token, key or SSH agent is among them; its `allowed` pattern refuses
-//! forge CLIs (`gh`, `glab`, `hub`), `git push`, `git credential`, `git remote
-//! set-url`, any `credential.helper` setting and `api.github.com`.
+//! team with no credentials in it, and its environment is a fixed list of names;
+//! no token, key or SSH agent is among them, so a push from a worker fails.
 //!
-//! The forge-CLI refusal is a clear, early error, NOT a wall: a shell can spell
-//! any command in many ways. The boundary is that no credential is reachable
-//! through the worker's environment or HOME, so a push from a worker fails.
+//! This is the general build: its `allowed` pattern is any command line. The
+//! GitHub build (`patches/github-exec.patch`) narrows it to refuse forge CLIs.
 //!
 //! This is NOT an OS sandbox. The worker runs as the user, so files the user
 //! can read (`~/.ssh` keys, the login keychain) stay readable to a worker that
@@ -59,11 +56,9 @@ pub const CREDENTIAL_FILES: &[&str] = &[
 pub const NO_SSH: &str =
     "ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes";
 
-/// The one `allowed` pattern: any command line EXCEPT one that names a forge CLI
-/// (`gh`, `glab`, `hub` as a word), runs `git push`, `git credential` or
-/// `git remote set-url` (options between `git` and the subcommand included),
-/// mentions `credential.helper`, or reaches `api.github.com`.
-pub const WORKER_ALLOWED: &str = r#"(?!.*(?:(?:^|[\s/'"`;&|(])(?:gh|glab|hub)(?:$|[\s'"`;&|)])|\bgit(?:\s+(?:-[Cc]\s+\S+|--?[\w.-]+(?:=\S*)?))*\s+(?:push|credential|remote\s+set-url)\b|credential\.helper|api\.github\.com)).*"#;
+/// The one `allowed` pattern: any command line. The exec bridge refuses every
+/// command when `allowed` is empty, so the general build names the match-all.
+pub const WORKER_ALLOWED: &str = ".*";
 
 /// Join a `/`-separated relative constant one component at a time, so the
 /// result has the OS's separators (a single `join` of "a/b" keeps a mixed
@@ -250,55 +245,24 @@ mod tests {
     }
 
     #[test]
-    fn forge_commands_are_refused_by_the_allowlist() {
+    fn stock_record_passes_exec_validation_and_refuses_nothing() {
         let dir = tempfile::TempDir::new().unwrap();
         let rec = worker_exec_record(dir.path());
+        assert!(fantastic_exec_bridge::ExecBridgeBundle
+            .validate_meta(rec.as_object().unwrap(), &Map::new())
+            .is_none());
         for a in [
             &["gh", "--version"][..],
-            &["/opt/homebrew/bin/gh", "pr", "list"],
-            &["glab", "mr", "list"],
-            &["hub", "pull-request"],
             &["git", "push"],
-            &["git", "push", "origin", "main"],
-            &["git", "-C", "/tmp/x", "push"],
-            &["git", "--git-dir=/x/.git", "push"],
-            &[
-                "git",
-                "remote",
-                "set-url",
-                "origin",
-                "https://example.test/r.git",
-            ],
-            &["git", "-c", "credential.helper=store", "fetch"],
-            &["git", "credential", "fill"],
-            &["sh", "-c", "git push origin main"],
-            &["sh", "-c", "cd x && git push"],
-            &["sh", "-c", "gh auth token"],
-            &["sh", "-c", "ls; gh repo list"],
-            &["bash", "-lc", "echo hi\ngit push"],
+            &["glab", "mr", "list"],
             &["curl", "-s", "https://api.github.com/user"],
-        ] {
-            assert!(refused(&rec, a), "should be refused: {a:?}");
-        }
-    }
-
-    #[test]
-    fn ordinary_commands_are_allowed() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let rec = worker_exec_record(dir.path());
-        for a in [
-            &["sh", "-c", "echo $HOME; env"][..],
+            &["sh", "-c", "gh auth token"],
             &["git", "status"],
-            &["git", "commit", "-m", "push the fix"],
-            &["git", "-C", "/x", "status"],
-            &["git", "log", "--oneline"],
-            &["git", "pull"],
-            &["cargo", "test", "-p", "fantastic-team"],
-            &["echo", "github"],
-            &["grep", "-rn", "ghost", "."],
-            &["python3", "-c", "print(1)"],
         ] {
-            assert!(!refused(&rec, a), "should be allowed: {a:?}");
+            assert!(
+                !refused(&rec, a),
+                "the general build refuses nothing: {a:?}"
+            );
         }
     }
 }
