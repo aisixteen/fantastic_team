@@ -81,6 +81,7 @@ jobs:
           sh tests/remote_scripts.sh
           sh tests/build_github.sh
           sh tests/repro_scripts.sh
+          sh tests/readme_media.sh
       # the GitHub build is the general tree plus patches/github-exec.patch (#136)
       - name: github patch applies
         if: runner.os != 'Windows'

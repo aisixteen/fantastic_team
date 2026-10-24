@@ -4,6 +4,12 @@ Program: `fantastic_team`. The long install guide is docs/install.md.
 
 **Unattended team work on [fantastic](https://github.com/aisixteen/fantastic).** You queue tasks; a team of AI workers takes them one by one, does the work on its own, and hands back finished results for you to review. You come back to done work, not to a chat.
 
+**How a team works (1 min):**
+
+[![How a team works](media/how_it_works-preview.gif)](media/how_it_works.mp4)
+
+▶ [full video (1 min)](media/how_it_works.mp4)
+
 It is not only for code. A task is any piece of work that can be described exactly and checked: code, documentation, research, triage, data, review, translation or ports.
 
 ## Install

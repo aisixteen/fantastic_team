@@ -31,3 +31,15 @@ Final 1080p60 mp4:
 ```
 manim -qh --format mp4 -o how_it_works.mp4 how_it_works.py HowItWorks
 ```
+
+## Preview for the README
+
+GitHub does not play a video stored in the repo, so the README shows an animated preview instead: `how_it_works-preview.gif`, 960 px wide, 8 frames a second, looping, under 8 MB. It links to `how_it_works.mp4` for the full video.
+
+After each re-render of the mp4 (#126), regenerate the preview:
+
+```
+sh media/render-preview.sh
+```
+
+It needs ffmpeg (on PATH, or at /opt/homebrew/bin/ffmpeg) and fails if the result is over the 8 MB cap. `sh tests/readme_media.sh` checks that the README links the preview and the mp4, that both files exist, that the preview is animated, 960 px wide and under the cap, and that the script still reproduces it.
