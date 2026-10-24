@@ -166,7 +166,9 @@ pub fn check(env: &Envelope) -> Result<(), String> {
         .flatten()
     {
         if let Some(shape) = secret_shape(s) {
-            return Err(format!("refused: a message id holds a {shape}; no value is echoed"));
+            return Err(format!(
+                "refused: a message id holds a {shape}; no value is echoed"
+            ));
         }
     }
     Ok(())
@@ -326,7 +328,13 @@ mod tests {
 
     #[test]
     fn credential_names_that_contain_key_words_are_refused() {
-        for name in ["api_key", "github_token", "access_token", "x-api-key", "client_secret"] {
+        for name in [
+            "api_key",
+            "github_token",
+            "access_token",
+            "x-api-key",
+            "client_secret",
+        ] {
             let e = env(Kind::Task, serde_json::json!({ name: "ok-value" }));
             let err = check(&e).unwrap_err();
             assert!(err.contains("credential field"), "{name}: {err}");
