@@ -1,6 +1,6 @@
 # Notes for fantastic: what the canvas zip needs to be reproducible
 
-Team's builds (#137) are reproducible except for one input: the canvas zip that `fantastic-canvas-page` embeds in the binary. Its packer lives in the fantastic dependency, and Team does not patch dependencies. These are the changes fantastic has to make. Found while reading `src/lib/ts/scripts/pack.sh` and `src/tui/web/canvas/scripts/pack.sh` at fantastic commit `e7ede96` (the commit in `Cargo.lock`).
+Team's builds (#137) are reproducible except for one input: the canvas zip that `fantastic-canvas-page` embeds in the binary. Its packer lives in the fantastic dependency, and Team does not patch dependencies. These are the changes fantastic has to make. Found while reading `src/lib/ts/scripts/pack.sh` and `src/tui/web/canvas/scripts/pack.sh` at fantastic commit `717765e` (the commit in `Cargo.lock`).
 
 ## 1. Stamp the staged files with SOURCE_DATE_EPOCH before zipping
 
@@ -27,6 +27,19 @@ Not verified. The esbuild call is `"$ESBUILD" "$ENTRY" --bundle ... --sourcemap 
 ## Team side
 
 Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from two builds. Until steps 1 to 3 land, that comparison differs; the job warns, and fails only with `-f strict=true`. When fantastic lands them, bump the fantastic commit in `Cargo.lock` (`scripts/update-fantastic.sh`) and turn `strict` on for the release run.
+
+## What Team gets from the bump
+
+`Cargo.lock` now pins fantastic `717765e` (aisixteen/fantastic main, 24 commits past `e7ede96`). Only the fantastic crates moved; the build, tests, clippy and shell checks pass with no Team code change. Features the bump brings to Team:
+
+- Inline agent views in a chat: `embed {id}` and `unembed {id}` plus chat cards, so a lead's chat can hold worker views as live cards (fantastic#339, #340).
+- File and folder view agents over the file bridge, for the canvas and the CLI (fantastic#336).
+- The file tree as the canvas's own fixed, collapsible sidebar, not zoomed (fantastic#338).
+- Atomic grant edits: `callable_by` and `can_call` change under one lock (fantastic#324).
+- Secret marks: a store on a connected kernel is recorded as secret by the calling kernel, for credential-store calls (fantastic#326).
+- Exec-bridge refuses mail to a sealed leg, so refused mail never reaches the leg's program (fantastic#335, #350).
+
+Not relevant to Team: the headless container image (fantastic#337) and the Python ports (the `#170` series and the Python ai-core, file-bridge and backend fixes).
 
 ## Pack registry and listing
 
