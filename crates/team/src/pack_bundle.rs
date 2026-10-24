@@ -162,8 +162,33 @@ fn text_of(reply: &Value) -> Option<String> {
     )
 }
 
+/// Read a whole text file through the file bridge. The bridge answers with
+/// pages of `lines` (200 a page, `eof` on the last), so the pages are read in
+/// turn and joined with newlines. The file's last newline is not kept by the
+/// bridge, which is why `pack` writes its files without one.
 pub(crate) async fn read<P: Peers>(p: &P, path: &str) -> Option<String> {
-    text_of(&p.ask("files", json!({"type": "read", "path": path})).await)
+    let mut text = String::new();
+    let mut offset = 0u64;
+    loop {
+        let r = p
+            .ask(
+                "files",
+                json!({"type": "read", "path": path, "offset": offset}),
+            )
+            .await;
+        let page = text_of(&r)?;
+        let Some(lines) = r.get("lines").and_then(Value::as_array) else {
+            return Some(page);
+        };
+        if offset > 0 {
+            text.push('\n');
+        }
+        text.push_str(&page);
+        offset += lines.len() as u64;
+        if r.get("eof").and_then(Value::as_bool).unwrap_or(true) || lines.is_empty() {
+            return Some(text);
+        }
+    }
 }
 
 async fn write<P: Peers>(p: &P, path: &str, bytes: &str) -> bool {
@@ -367,6 +392,11 @@ pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
                 gathered.push((rel, text));
             }
         }
+    }
+    // The bridge does not return a file's last newline, so none is packed: what
+    // `install` reads back is then exactly what was hashed here.
+    for (_, t) in gathered.iter_mut() {
+        *t = t.trim_end_matches('\n').to_string();
     }
     let bytes: Vec<(String, Vec<u8>)> = gathered
         .iter()

@@ -299,17 +299,53 @@ pub fn show_view(
     Ok(out)
 }
 
+/// Read a whole text file through the file bridge. The bridge answers a read
+/// with a page of `lines` (`{n, text}`, `eof`), not a `content` string, so the
+/// pages are read in turn and joined with newlines. The last newline of the
+/// file is not kept, which a JSON index does not need. A `content` reply is
+/// taken as it is. An error reply is returned as the `Err`.
+async fn read_text(peers: &dyn Peers, store: &str, path: &str) -> Result<String, Value> {
+    let mut text = String::new();
+    let mut offset = 0u64;
+    loop {
+        let r = peers
+            .ask(
+                store,
+                json!({"type": "read", "path": path, "offset": offset}),
+            )
+            .await;
+        if r.get("error").is_some() {
+            return Err(r);
+        }
+        if let Some(c) = r.get("content").and_then(Value::as_str) {
+            return Ok(c.to_string());
+        }
+        let Some(lines) = r.get("lines").and_then(Value::as_array) else {
+            return Err(r);
+        };
+        for (i, l) in lines.iter().enumerate() {
+            if offset > 0 || i > 0 {
+                text.push('\n');
+            }
+            text.push_str(l.get("text").and_then(Value::as_str).unwrap_or(""));
+        }
+        offset += lines.len() as u64;
+        let eof = r.get("eof").and_then(Value::as_bool).unwrap_or(true);
+        if eof || lines.is_empty() {
+            return Ok(text);
+        }
+    }
+}
+
 /// Read the index and the installed packs through the file bridge. A signed
 /// index (`entries`) is verified against `cfg.trusted_keys`; an unsigned one
 /// (`packs`) is read as is. A missing or unreadable templates listing means
 /// nothing is installed.
 pub async fn load(peers: &dyn Peers, cfg: &ListingCfg) -> Result<Loaded, String> {
-    let index_r = peers
-        .ask(&cfg.store, json!({"type": "read", "path": cfg.index_path}))
-        .await;
-    let text = index_r["content"]
-        .as_str()
-        .ok_or_else(|| format!("index: {index_r}"))?;
+    let text = read_text(peers, &cfg.store, &cfg.index_path)
+        .await
+        .map_err(|r| format!("index: {r}"))?;
+    let text = text.as_str();
     let root: Value = serde_json::from_str(text).map_err(|e| format!("index is not json: {e}"))?;
     let (entries, signed, skipped): (Vec<Entry>, _, _) = if root.get("entries").is_some() {
         let index = pack_registry::Index::parse(text, &cfg.trusted_keys)?;

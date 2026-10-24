@@ -180,3 +180,42 @@ fn readme_repo_yaml_example_parses() {
     assert_eq!(cfg.review.approvals, 1);
     assert_eq!(cfg.review.approvers, vec!["alice".to_string()]);
 }
+
+#[test]
+fn readme_not_yet_no_longer_lists_the_pack_cli_and_mcp() {
+    let text = readme();
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("Not yet: signatures"))
+        .expect("README must keep its `Not yet` line for the pack verbs");
+    assert!(
+        !line.contains("CLI, MCP"),
+        "the pack CLI and MCP surfaces are built, so `Not yet` must not list them"
+    );
+    assert!(
+        line.contains("the web UI surface for these verbs"),
+        "`Not yet` must still list the web UI surface"
+    );
+}
+
+#[test]
+fn readme_describes_the_pack_surfaces() {
+    let text = readme();
+    assert!(text.contains("fantastic_team packs"), "README must name the CLI");
+    assert!(text.contains("`pack_listing`"), "README must name the listing agent");
+}
+
+#[test]
+fn ai_readme_section_8_names_the_pack_cli() {
+    let text = fs::read_to_string(root().join("docs/ai-readme.md")).expect("ai-readme");
+    let section = text
+        .split("## 8. Pack evals")
+        .nth(1)
+        .expect("ai-readme has a section 8 for pack evals");
+    assert!(
+        !section.contains("not a CLI subcommand"),
+        "section 8 must not say the verbs have no CLI"
+    );
+    assert!(section.contains("fantastic_team packs eval"), "section 8 names the CLI form");
+    assert!(section.contains("`pack_listing`"), "section 8 names the agent ids");
+}
