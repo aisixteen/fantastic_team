@@ -32,6 +32,8 @@ serde_yaml = "0.9"
 regex = "1"
 hmac = "0.12"
 sha2 = "0.10"
+ed25519-dalek = "2"
+hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 getrandom = "0.2"
 
