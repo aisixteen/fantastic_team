@@ -1,12 +1,16 @@
 //! A pack's measured record (#41): success rate and cost per task. The record
-//! is local and unsigned until a signer exists. This module does local
-//! aggregation, the canonical signing payload, the JSON form and the opt-in
-//! gate. It signs and publishes nothing.
+//! is local; a shift that holds a key can sign it (`sign_record`) and anyone can
+//! check it (`verify_record`). This module does local aggregation (from eval
+//! runs or from the shifts' outcomes on the board), the canonical signing
+//! payload, signing and verifying, the JSON form and the opt-in gate. It
+//! publishes nothing.
 
 use std::collections::BTreeMap;
 
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde_json::{json, Value};
 
+use crate::board::{Board, Status, Task};
 use crate::pack_eval::EvalSummary;
 
 /// One task's outcome, as the measuring shift saw it.
@@ -54,6 +58,41 @@ pub fn outcomes_from_eval(pack_hash: &str, s: &EvalSummary) -> Vec<TaskOutcome> 
             elapsed_s: r.elapsed.as_secs_f64(),
         })
         .collect()
+}
+
+/// One outcome per task on the board that is Done or Failed and was claimed by
+/// one of `workers`. `succeeded` is Done. `cost` is None: an agent's cost on the
+/// board is cumulative, not per task. `elapsed_s` is 0.0: the board keeps no
+/// task start time. Other statuses and other workers are ignored. Pure.
+pub fn outcomes_from_board(pack_hash: &str, workers: &[String], board: &Board) -> Vec<TaskOutcome> {
+    board
+        .tasks
+        .values()
+        .filter(|t| matches!(t.status, Status::Done | Status::Failed))
+        .filter(|t| t.claimers.iter().any(|c| workers.contains(c)))
+        .map(|t| TaskOutcome {
+            pack_hash: pack_hash.to_string(),
+            succeeded: t.status == Status::Done,
+            cost: None,
+            elapsed_s: 0.0,
+        })
+        .collect()
+}
+
+/// The tasks of a board `board` verb reply (`{"tasks": {status: [task]}}`) as a
+/// `Board` holding just those tasks. Entries that do not parse are skipped.
+pub fn board_from_snapshot(snapshot: &Value) -> Board {
+    let mut board = Board::default();
+    if let Some(groups) = snapshot.get("tasks").and_then(Value::as_object) {
+        for list in groups.values().filter_map(Value::as_array) {
+            for t in list {
+                if let Ok(task) = serde_json::from_value::<Task>(t.clone()) {
+                    board.tasks.insert(task.id.clone(), task);
+                }
+            }
+        }
+    }
+    board
 }
 
 /// Aggregate the outcomes that belong to `pack_hash` into a record. Outcomes
@@ -115,15 +154,68 @@ pub fn record_json(rec: &MeasuredRecord) -> Value {
     })
 }
 
-/// The local, unsigned record of one eval run.
+/// A record from its JSON form with the `signature` string added (the shape the
+/// index holds). None when a field is missing or has the wrong type.
+pub fn record_from_json(v: &Value) -> Option<MeasuredRecord> {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+    Some(MeasuredRecord {
+        pack_hash: text("pack_hash")?,
+        tasks: v.get("tasks")?.as_u64()?,
+        successes: v.get("successes")?.as_u64()?,
+        success_rate: v.get("success_rate")?.as_f64()?,
+        cost_per_task: match v.get("cost_per_task") {
+            None | Some(Value::Null) => None,
+            Some(c) => Some(c.as_f64()?),
+        },
+        measured_by: text("measured_by")?,
+        signature: text("signature"),
+    })
+}
+
+/// The local record of one eval run (unsigned until [`sign_record`]).
 pub fn measured_from_eval(pack_hash: &str, s: &EvalSummary, measured_by: &str) -> MeasuredRecord {
     aggregate(pack_hash, &outcomes_from_eval(pack_hash, s), measured_by)
+}
+
+/// Sign a record: `measured_by` becomes the hex public key of `key` (so the
+/// shift that measured is the verifying key), then `signature` is the hex
+/// ed25519 signature over [`signing_payload`]. Pure.
+pub fn sign_record(key: &SigningKey, mut rec: MeasuredRecord) -> MeasuredRecord {
+    rec.measured_by = hex::encode(key.verifying_key().to_bytes());
+    rec.signature = Some(hex::encode(key.sign(&signing_payload(&rec)).to_bytes()));
+    rec
+}
+
+/// Check a record's signature against the key in its `measured_by`. Errors are
+/// `unsigned`, `bad key` or `bad signature`; they never echo any key material.
+pub fn verify_record(rec: &MeasuredRecord) -> Result<(), String> {
+    let sig_hex = rec.signature.as_deref().ok_or("unsigned")?;
+    let key_bytes: [u8; 32] = hex::decode(&rec.measured_by)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or("bad key")?;
+    let key = VerifyingKey::from_bytes(&key_bytes).map_err(|_| "bad key")?;
+    let sig_bytes: [u8; 64] = hex::decode(sig_hex)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+        .ok_or("bad signature")?;
+    key.verify_strict(&signing_payload(rec), &Signature::from_bytes(&sig_bytes))
+        .map_err(|_| "bad signature".to_string())
 }
 
 /// The record if it may be published: only when the owner opted in AND the
 /// record is signed. Otherwise None.
 pub fn publishable(rec: &MeasuredRecord, opt_in: bool) -> Option<MeasuredRecord> {
     if opt_in && rec.signature.is_some() {
+        Some(rec.clone())
+    } else {
+        None
+    }
+}
+
+/// The record if the owner opted in AND its signature verifies. Otherwise None.
+pub fn publishable_verified(rec: &MeasuredRecord, opt_in: bool) -> Option<MeasuredRecord> {
+    if opt_in && verify_record(rec).is_ok() {
         Some(rec.clone())
     } else {
         None
@@ -334,5 +426,144 @@ mod tests {
         assert_eq!(rec.cost_per_task, Some(2.0));
         assert!(rec.signature.is_none());
         assert_eq!(rec, aggregate("p", &outcomes_from_eval("p", &s), "team-a"));
+    }
+
+    fn key(seed: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn signed() -> MeasuredRecord {
+        let outs = vec![outcome("p", true, Some(1.0)), outcome("p", false, None)];
+        sign_record(&key(1), aggregate("p", &outs, ""))
+    }
+
+    #[test]
+    fn signed_record_verifies() {
+        let rec = signed();
+        assert!(rec.signature.is_some());
+        assert_eq!(
+            rec.measured_by,
+            hex::encode(key(1).verifying_key().to_bytes())
+        );
+        assert_eq!(verify_record(&rec), Ok(()));
+    }
+
+    #[test]
+    fn a_changed_field_fails_verification() {
+        let ok = signed();
+        let mut cases: Vec<MeasuredRecord> = Vec::new();
+        let mut r = ok.clone();
+        r.tasks += 1;
+        cases.push(r);
+        let mut r = ok.clone();
+        r.successes += 1;
+        cases.push(r);
+        let mut r = ok.clone();
+        r.success_rate = 1.0;
+        cases.push(r);
+        let mut r = ok.clone();
+        r.cost_per_task = Some(9.0);
+        cases.push(r);
+        let mut r = ok.clone();
+        r.pack_hash = "q".into();
+        cases.push(r);
+        for r in cases {
+            assert_eq!(verify_record(&r), Err("bad signature".to_string()), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn a_different_signer_key_fails() {
+        let mut rec = signed();
+        rec.measured_by = hex::encode(key(2).verifying_key().to_bytes());
+        assert!(verify_record(&rec).is_err());
+        rec.measured_by = "nothex".into();
+        assert_eq!(verify_record(&rec), Err("bad key".to_string()));
+    }
+
+    #[test]
+    fn an_unsigned_record_does_not_verify() {
+        let rec = aggregate("p", &[outcome("p", true, None)], "x");
+        assert_eq!(verify_record(&rec), Err("unsigned".to_string()));
+    }
+
+    fn board_with(tasks: &[(&str, Status, &[&str])]) -> Board {
+        let mut b = Board::default();
+        for (id, status, claimers) in tasks {
+            b.tasks.insert(
+                id.to_string(),
+                Task {
+                    id: id.to_string(),
+                    status: *status,
+                    claimers: claimers.iter().map(|c| c.to_string()).collect(),
+                    ..Task::default()
+                },
+            );
+        }
+        b
+    }
+
+    fn shift_board() -> Board {
+        board_with(&[
+            ("o/r#1", Status::Done, &["w1"]),
+            ("o/r#2", Status::Failed, &["w1", "other"]),
+            ("o/r#3", Status::Pending, &["w1"]),
+            ("o/r#4", Status::InWork, &["w1"]),
+            ("o/r#5", Status::Done, &["foreign"]),
+        ])
+    }
+
+    #[test]
+    fn outcomes_from_board_counts_done_and_failed_for_the_workers() {
+        let outs = outcomes_from_board("p", &["w1".to_string()], &shift_board());
+        assert_eq!(outs.len(), 2);
+        assert_eq!(outs.iter().filter(|o| o.succeeded).count(), 1);
+        assert!(outs.iter().all(|o| o.cost.is_none() && o.elapsed_s == 0.0));
+        assert!(outs.iter().all(|o| o.pack_hash == "p"));
+    }
+
+    #[test]
+    fn aggregate_over_shift_outcomes_gives_rate() {
+        let outs = outcomes_from_board("p", &["w1".to_string()], &shift_board());
+        let rec = aggregate("p", &outs, "");
+        assert_eq!((rec.tasks, rec.successes), (2, 1));
+        assert_eq!(rec.success_rate, 0.5);
+    }
+
+    #[test]
+    fn board_from_snapshot_reads_tasks_of_every_status() {
+        let b = shift_board();
+        let back = board_from_snapshot(&b.snapshot());
+        assert_eq!(back.tasks, b.tasks);
+    }
+
+    #[test]
+    fn record_from_json_round_trips_a_signed_record() {
+        let rec = signed();
+        let mut v = record_json(&rec);
+        v["signature"] = json!(rec.signature.clone().unwrap());
+        let back = record_from_json(&v).unwrap();
+        assert_eq!(back, rec);
+        assert_eq!(verify_record(&back), Ok(()));
+        assert!(record_from_json(&json!({"tasks": 1})).is_none());
+    }
+
+    #[test]
+    fn publishable_verified_requires_opt_in_and_a_valid_signature() {
+        let rec = signed();
+        assert!(publishable_verified(&rec, false).is_none());
+        let mut unsigned = rec.clone();
+        unsigned.signature = None;
+        assert!(publishable_verified(&unsigned, true).is_none());
+        let mut tampered = rec.clone();
+        tampered.tasks = 99;
+        assert!(publishable_verified(&tampered, true).is_none());
+        let mut fake = rec.clone();
+        fake.signature = Some("sig".into());
+        assert!(
+            publishable_verified(&fake, true).is_none(),
+            "publishable() would accept"
+        );
+        assert_eq!(publishable_verified(&rec, true), Some(rec));
     }
 }

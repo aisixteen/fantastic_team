@@ -806,6 +806,22 @@ mod tests {
     }
 
     #[test]
+    fn html_shows_pack_pass_rate_time_cost_and_verdict() {
+        assert!(HTML.contains("askNode('pack'"));
+        assert!(HTML.contains("type: 'install'"));
+        assert!(HTML.contains("evals.pass_rate"));
+        assert!(HTML.contains("ev.pass_rate"));
+        assert!(HTML.contains("ev.total_time_s"));
+        assert!(HTML.contains("ev.total_cost"));
+        assert!(HTML.contains("'n/a'"));
+        assert!(HTML.contains("enable.allowed"));
+        assert!(HTML.contains("enable.reason"));
+        assert!(HTML.contains("Pack install"));
+        assert!(HTML.contains("textContent"));
+        assert!(!HTML.contains("innerHTML"));
+    }
+
+    #[test]
     fn html_sidebar_has_expander_back_and_remembers_state() {
         // The sidebar request, the subagent style, the expander label.
         assert!(HTML.contains("type: 'sidebar'"));
