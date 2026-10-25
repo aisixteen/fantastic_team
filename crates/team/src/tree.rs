@@ -1118,6 +1118,124 @@ mod tests {
         bootstrap::shutdown(dir.path()).unwrap();
     }
 
+    /// The applied team with one packed worker `w` (one eval, id `a`) and a
+    /// callable member `w1`: what the MCP `send` and `reflect` legs reach.
+    async fn applied_pack_with_one_eval() -> (tempfile::TempDir, Arc<Kernel>) {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("w/evals")).unwrap();
+        std::fs::write(
+            dir.path().join("w/worker.json"),
+            r#"{"name":"w","version":"1.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("w/evals/a.yaml"),
+            "- id: a\n  task: good\n  check: {contains: ok}\n",
+        )
+        .unwrap();
+        let cfg = parse(&with_groups_and_board()).unwrap();
+        let tree = plan(&cfg, dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        let made = kernel
+            .send(vec![Item::new(
+                DEFAULT_ROOT_ID,
+                json!({"type": "create_agent", "parent_id": "lead", "id": "w1",
+                       "handler_module": "ram_store.tools",
+                       "callable_by": {"$self": "*", "$parent": "*", "pack": "*"}}),
+            )])
+            .await;
+        assert!(made[0].result.get("error").is_none(), "{}", made[0].result);
+        let packed = kernel
+            .send(vec![Item::new(
+                PACK_ID,
+                json!({"type": "pack", "worker": "w", "out": "pack"}),
+            )])
+            .await;
+        assert!(
+            packed[0].result.get("error").is_none(),
+            "{}",
+            packed[0].result
+        );
+        (dir, kernel)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mcp_docs_of_the_pack_agent_lists_eval_with_its_args() {
+        let (dir, kernel) = applied_pack_with_one_eval().await;
+        // The pack agent has no `reflect` verb of its own, so the MCP reach of its
+        // verb docs is the kernel `docs` verb (an MCP `send` to `kernel`); its
+        // reply lists them under `verbs`.
+        let outs = kernel
+            .send(vec![Item::new(
+                "kernel",
+                json!({"type": "docs", "of": PACK_ID, "tier": "detailed"}),
+            )])
+            .await;
+        let reply = &outs[0].result;
+        assert!(reply.get("error").is_none(), "{reply}");
+        let docs = &reply["verbs"];
+        for verb in ["pack", "install", "eval"] {
+            assert!(docs.get(verb).is_some(), "{verb} not listed: {reply}");
+        }
+        let eval = docs["eval"].as_str().unwrap();
+        assert!(eval.contains("eval {pack, worker, timeout_s?"), "{eval}");
+        assert!(eval.contains("pass rate"), "{eval}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mcp_send_eval_reply_has_the_documented_shape() {
+        let (dir, kernel) = applied_pack_with_one_eval().await;
+        // The item the MCP `send` tool builds from {target, payload}.
+        let outs = kernel
+            .send(vec![Item::new(
+                PACK_ID,
+                json!({"type": "eval", "pack": "pack", "worker": "w1", "timeout_s": 5}),
+            )])
+            .await;
+        let r = &outs[0].result;
+        assert!(r.get("error").is_none(), "{r}");
+        for key in ["pass_rate", "passed", "total", "total_time_s", "total_cost"] {
+            assert!(r.get(key).is_some(), "{key} missing: {r}");
+        }
+        for key in ["pass_rate", "passed", "total", "total_time_s"] {
+            assert!(r[key].is_number(), "{key}: {r}");
+        }
+        assert_eq!(r["total"], 1, "{r}");
+        let per = r["per_eval"].as_array().expect("per_eval array");
+        assert_eq!(per.len(), 1, "{r}");
+        assert_eq!(per[0]["id"], "a", "{r}");
+        for key in ["passed", "reason", "elapsed_s", "cost"] {
+            assert!(per[0].get(key).is_some(), "per_eval.{key} missing: {r}");
+        }
+        assert!(r["text"].as_str().unwrap().contains("pass rate"), "{r}");
+        let m = &r["measured"];
+        assert!(m.is_object(), "{r}");
+        for key in [
+            "pack_hash",
+            "tasks",
+            "successes",
+            "success_rate",
+            "cost_per_task",
+            "measured_by",
+        ] {
+            assert!(m.get(key).is_some(), "measured.{key} missing: {r}");
+        }
+        assert_eq!(m["signed"], false, "{r}");
+        // The verb-level error reaches the MCP caller through the same path.
+        let bad = kernel
+            .send(vec![Item::new(
+                PACK_ID,
+                json!({"type": "eval", "pack": "pack", "worker": "", "timeout_s": 5}),
+            )])
+            .await;
+        assert!(bad[0].result["error"].is_string(), "{}", bad[0].result);
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
     #[test]
     fn pack_may_call_user() {
         let cfg = parse(&sample_yaml()).unwrap();
