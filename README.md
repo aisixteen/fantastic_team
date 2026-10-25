@@ -14,7 +14,7 @@ It is not only for code. A task is any piece of work that can be described exact
 
 ## Install
 
-You need `git`, a Rust toolchain with `cargo`, and Linux or macOS (verified on Linux only). `gh` is optional.
+You need `git`, a Rust toolchain with `cargo`, and Linux or macOS. `gh` is optional. CI unit-tests on Linux, macOS and Windows; the run was verified on Linux only (docs/install.md).
 
 ```
 git clone https://github.com/aisixteen/fantastic_team
@@ -22,6 +22,8 @@ cd fantastic_team
 sh scripts/build.sh
 ./target/release/fantastic_team --help
 ```
+
+The script ends with two lines: `sha256: <hash>  <name>` and `built: <path>`. The `built:` path is a versioned copy, `target/release/fantastic_team-<version>-<target>`, with the same bytes as the plain binary. `scripts/build-github.sh` prints the same two lines for `fantastic_team-github-<version>-<target>`.
 
 There are two builds. The **general** build (Team, the default) gives workers stock exec. The **GitHub** build (Team GitHub) applies [patches/github-exec.patch](patches/github-exec.patch) to a copy of the tree, so workers cannot reach forge CLIs, `git push` or credentials: `sh scripts/build-github.sh` makes `target/github/release/fantastic_team-github`. The github connector is in both builds.
 
@@ -81,11 +83,27 @@ review:
 
 Every key is optional. An empty file gives the defaults: the label `team-ready`, any path, and one approval from any reviewer.
 
+Two more keys in the team's `team.yaml` are optional. `groups` names the worker groups the dispatcher shows: each has an AI `driver` (an agent id; absent means the group has no AI) and its `members`. `board` names the repos the board caches, through a GitHub connector of the same file:
+
+```yaml
+groups:
+  build:
+    driver: lead
+    members: [worker_1, worker_2]
+board:
+  repos: [aisixteen/fantastic_team]
+  github: git
+```
+
+`examples/team.yaml` is a complete team config with both keys in place (commented out), and `templates/` holds example directive files to start from.
+
+**Register the GitHub App.** The GitHub connector needs an app you own. `fantastic_team setup github --name NAME [--org ORG]` runs the manifest flow: a local page posts the app's manifest to GitHub, GitHub redirects back, and the code is exchanged once for the app id and private key. The key goes to the credential store and is never written to a file or printed; only the app id is written to the config. `--org` creates the app under an organization. docs/install.md, step 3, lists the permissions and the by-hand steps as a fallback.
+
 ## Lanes
 
 A lane is one worker template a team may start. Lanes differ in model, price, and the tools granted to them. Run several lanes at once, mix models, and compare them on the same tasks.
 
-Tasks are exact: each says what to read, what to produce, and how to check it. The dispatcher gives the next task to the free worker with the fewest tasks first. A worker that stops early is pushed on; one that goes off the rails is stopped and its task marked failed, with the reason.
+Tasks are exact: each says what to read, what to produce, and how to check it. The lead gives each worker its task. The cadencer's digest to a group's AI driver marks a worker that holds a task and stops making progress as `STALLED`, with the idle time.
 
 ## Run
 
@@ -97,7 +115,11 @@ Tasks are exact: each says what to read, what to produce, and how to check it. T
 
 `--port` and `--tui` are the only surfaces and are not combined. Ctrl-C to stop.
 
-The build packs fantastic's canvas page with a pinned esbuild. With no vendored binary it compiles esbuild itself, which needs Go 1.21 or newer on PATH.
+The first agent's instructions come from `--instructions "<text>"` or `--instructions-file <path>` (not both), and from counts: `--workers <n>` starts n workers; `--leads <m> --per-lead <k>` starts m leads, each with k workers (`--workers` and `--leads` are not combined). Given text comes first. With no instruction flag the team starts with no first message. `--resend-instructions` sends the first agent its instructions again when it already exists.
+
+`fantastic_team ai-readme` prints [docs/ai-readme.md](docs/ai-readme.md), the same guide for AI agents, and exits. `mcp`, `send` and `readme` as the first word run fantastic's own commands in this directory.
+
+The build packs fantastic's canvas page with a pinned esbuild. With no vendored binary it compiles esbuild itself, which needs Go on PATH. CI installs Go 1.23.4 (`setup-go` in `.github/workflows/ci.yml`).
 
 ## Run it on another machine
 
@@ -123,8 +145,13 @@ scripts/remote-stop.sh gpu       # asks first; drains (SIGTERM); --now kills
 - **Cost and time per task.** Each task records its worker, model, time, tokens and cost, computed from the template's prices. Compare lanes on what a task really costs.
 - **The board** (`team_board.tools`): the shared picture of the work — open issues with their queue state (pending, in work, done, failed) and the agents. Verb `board`.
 - **The worker view** (`team_worker_view.tools`): one canvas per worker, with its task, files, output and chat.
+- **The dispatcher** (`team_dispatcher.tools`): the home screen of the web UI and the app. Workers by group, each with its state, current task, time and cost, and what is waiting for you.
 - **The web UI** with `--port`, or the terminal UI with `--tui`.
 - **Logs** through `scripts/remote-logs.sh` when the team runs remotely.
+
+## The app
+
+`crates/team_app` builds `fantastic_team_app`, a launcher that starts the headless binary on port 8765 and waits until its web UI answers. `app/tauri.conf.json` is the packaging for a desktop window (macOS, Windows, Linux); the window loads the web UI on `127.0.0.1` only. The window is not built yet. The dispatcher is the home screen: each worker row has Start, Pause and Stop buttons, and Stop asks first. The GitHub build is the same app with the GitHub patch applied. Build steps, controls and the signing notes are in [app/README.md](app/README.md).
 
 ## Security model
 
@@ -132,7 +159,7 @@ scripts/remote-stop.sh gpu       # asks first; drains (SIGTERM); --now kills
 - Workers run commands through an exec agent the team configures (`crates/team/src/worker_exec.rs`): HOME is a sandbox folder in the team (no forge login, no git credential helper, no SSH keys), the environment is a fixed list of names (no token, no key, no SSH agent), and forge CLIs (`gh`, `glab`, `hub`, `git push`) are refused before they start. That refusal is an early, clear error, not a wall. It is not an OS sandbox: a worker runs as your user, so run the team as a separate user or in a container to keep it away from files your user can read (`~/.ssh`, the login keychain).
 - Workers hold no credentials. Delivering (pushing a branch, opening a pull request, posting a comment) goes through a connector that owns the credentials and the rules.
 - Delivery agents enforce the rules themselves: no pushes to the default branch, no force-pushes, pull requests as drafts, an allowlist of repositories.
-- You review and merge. The team merges only PRs you approved on their current head (`app-merge`).
+- You review and merge. The team does not merge: its GitHub directive says never merge (`templates/code-github.md`), and docs/install.md step 6 says merging stays human.
 
 ## The lead
 
@@ -175,6 +202,25 @@ A worker pack is a folder: `pack.yaml` (the manifest: name, version, author, lic
 
 Not yet: signatures, enforcing the enable verdict (no pack verb creates or enables a worker yet, so the gate is advisory only), the measured record (built from eval results, signed and published only through `publishable`), enforcing bindings at enable time (a running worker taking `bindings.json`, and checking that a bound agent exists and meets the port's window and tools), and the web UI surface for these verbs (a pack browser panel), fetching pack files from a registry over the network, `publish`, and `trusted_keys` in `team.yaml`.
 
+## Tests and CI
+
+Unit tests: `cargo test --workspace`. Also `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, `sh scripts/check-secrets.sh .`, and the shell tests `sh tests/new_task.sh`, `sh tests/remote_scripts.sh`. None of them needs a network or a key.
+
+End to end (e2e/README.md) has three tiers:
+
+| costs | what answers | status |
+| --- | --- | --- |
+| `free` | a scripted model (`backends/scripted.py`) and a fake forge (`helpers/forge.py`) | built |
+| `turns` | a real model through the `anthropic` plug, run by hand, needs `ANTHROPIC_API_KEY` or `E2E_ANTHROPIC_KEY` | built |
+| `gpu` | a local-model plug on the GPU box | not built |
+
+- `python3 e2e/run.py --only-free`: every free test. No network, no key; it builds the binary with cargo.
+- `python3 e2e/run.py --build github --bin PATH`: the tests for the GitHub build.
+- `python3 e2e/run.py --only-turns`: the turns tests, with a real model, by hand. Without a key they are skipped. Never in CI.
+- `sh tests/e2e.sh BIN`: the model-free e2e on one built binary.
+
+CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh workflow run ci.yml` runs the unit tests on Linux, macOS and Windows. `gh workflow run ci.yml -f e2e=true` is the full run (release builds, the reproducible-build check and the model-free e2e), for a finished milestone or a release.
+
 ## What is in this repo
 
 | Part | What it is |
@@ -187,6 +233,10 @@ Not yet: signatures, enforcing the enable verdict (no pack verb creates or enabl
 | `team_board.tools` | Board: the shared picture of the work. Verbs `pull`, `board`, `task`, `report`, `agent`, `ask`, `audit`. It never assigns. |
 | `team_worker_view.tools` | Worker view: one vertical canvas per worker. |
 | `team_webhook.tools` | Optional webhook receiver (off unless enabled). |
+| `team_dispatcher.tools` | The dispatcher: the home screen. It reads and asks; Start, Pause and Stop are its only controls. |
+| cadencer | Sends each group's AI driver a digest of its workers, and reports the load counts in `status`. |
+| `team_pack.tools` | Worker packs: verbs `pack`, `install` and `eval`. See Worker packs. |
+| `team_app` | The launcher `fantastic_team_app` for the desktop app. See The app. |
 | `team.yaml` | The lead, the worker templates, the connectors and their directives, the queue. |
 
 ## Updating fantastic

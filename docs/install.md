@@ -6,11 +6,11 @@ This guide installs `fantastic_team` from source. It covers what is in the repo 
 
 - There are **no releases yet**. Build from source. Releases are tracked in #15 and #251.
 - `fantastic` (the kernel) is a **git dependency** on branch `main` (see `Cargo.toml`). `Cargo.lock` pins the commit. There is no separate `fantastic_shift` binary in this repo.
-- The GitHub App manifest flow is **not in the repo**. You register the app by hand (step 3).
+- The GitHub App is registered with `fantastic_team setup github --name NAME [--org ORG]` (step 3). The by-hand steps there are the fallback.
 
 ## 1. Prerequisites
 
-- Linux or macOS. Verified on Linux only; macOS: not yet verified.
+- Linux or macOS. CI unit-tests on Linux, macOS and Windows; the run was verified on Linux only.
 - `git` and a Rust toolchain with `cargo`.
 - `gh` (optional; the general build lets a worker run it, the GitHub build refuses it).
 
@@ -52,17 +52,20 @@ Both builds are reproducible in intent (#137): the same commit gives the same by
 
 ## 3. Register the GitHub App
 
-Only needed for the GitHub side (pull requests, issue comments, labels, reading the task queue). Register your own app; the manifest flow is not in this repo.
+Only needed for the GitHub side (pull requests, issue comments, labels, reading the task queue). Register your own app with:
 
-Give the app these permissions:
+    ./target/release/fantastic_team setup github --name NAME [--org ORG]
+
+It opens a local page that posts the app's manifest to GitHub, receives the redirect, and stores the app id and private key in the credential store. The key is never written to a file or printed. `--org` creates the app under an organization. The setup asks for exactly these permissions:
 
 - Contents: read and write
 - Pull requests: read and write
 - Issues: read and write
 - Checks: read
 - Metadata: read
+- Actions: read
 
-Then store its `app_id` and its PEM `private_key` under one ref in fantastic's credential store, bound to `api_url` (default `https://api.github.com`). The key stays in the store. Never write it in a file, a config, or a doc.
+By hand instead, store its `app_id` and its PEM `private_key` under one ref in fantastic's credential store, bound to `api_url` (default `https://api.github.com`). The key stays in the store. Never write it in a file, a config, or a doc.
 
 ## 4. Models and keys
 
