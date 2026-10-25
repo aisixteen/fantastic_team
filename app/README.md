@@ -75,8 +75,20 @@ headless `fantastic_team` binary for you and waits until its web UI answers:
   `localhost` or `[::1]` and starts nothing.
 
 Ctrl-C stops the child. If the child exits before its web UI answers, the
-launcher prints the exit status and exits with code 1. The window itself is
-not built yet (see Remaining below).
+launcher prints the exit status and exits with code 1.
+
+**The window.** `cargo run -p fantastic-team-app --features tauri -- <flags>`
+builds the launcher with the Tauri window (tauri 2.12.1, tauri-build 2.7.1,
+built like `aisixteen/fantastic` `src/app`; needs Rust 1.90 or newer and, on
+Linux, the webkit2gtk 4.1 and gtk3 dev packages). The flags are the same.
+After the web UI answers, one window ("Fantastic Team", 1280x800) opens on the
+launcher's `web_url` (the started port, or the `--attach` URL); it never opens
+a URL that is not plain http on loopback. Closing the window stops the child;
+a child that exits first ends the app with code 1. The build step reads
+`app/tauri.conf.json` and writes its capability schemas to
+`crates/team_app/gen/` (ignored by git). The `tauri` feature is off by
+default: the plain build and `cargo test --workspace` stay tauri-free, and
+the window spec (URL, title, size) is tested there without Tauri.
 
 Build the packaged app from the repository root with the Tauri CLI:
 
@@ -125,11 +137,14 @@ Not in this slice:
 - Row status, what is left (#37): `2m` comes from `Row.minutes`, which is
   already in the board data and is not drawn yet; PR numbers need the board to
   expose them.
-- The Tauri window crate, behind a `tauri` feature, built like
-  `aisixteen/fantastic` `src/app`: tauri 2.12.1, opening the window on the
-  launcher's `web_url`.
-- In-process home kernel through `TeamHandle` once #87 merges (today the
-  launcher runs the headless binary as a child process).
+- In-process home kernel through `TeamHandle` (#87 merged): `TeamHandle::start`
+  refuses `TeamOptions.port` ("serving a port from a handle is not wired
+  yet"); serving the web UI from a handle needs fantastic-tui's web serve API,
+  so the window still talks to the headless binary run as a child process.
+- No window run in CI (it needs a display and webkit), and CI does not build
+  with `--features tauri`; `cargo check --features tauri` compiles, but the
+  window has not been run yet (unverified). App end-to-end test per platform
+  still open (below).
 - Dispatcher, what is left (#29, #36): teams on other machines through the
   relay (#47, #49); connections and waiting-for-you panels from real data;
   start, pause and stop for a group or the whole team (the page controls one

@@ -3,3 +3,4 @@
 *.pem
 .env
 .cargo/config.toml
+/crates/team_app/gen/
