@@ -22,8 +22,10 @@ pub mod pack_hosted;
 pub mod pack_listing;
 pub mod pack_manifest;
 pub mod pack_page;
+pub mod pack_panel;
 pub mod pack_record;
 pub mod pack_scan;
+pub mod page;
 pub mod peer_envelope;
 pub mod peer_transport;
 pub mod peers;
@@ -98,6 +100,13 @@ pub fn registry() -> BundleRegistry {
         fantastic_user::HANDLER_MODULE,
         fantastic_user::UserBundle::default(),
     );
+    // The web host, its socket leg and the dispatcher page, for a handle that serves a port.
+    reg.register(fantastic_web::HANDLER_MODULE, fantastic_web::WebBundle);
+    reg.register(
+        fantastic_web_ws::HANDLER_MODULE,
+        fantastic_web_ws::WebWsBundle,
+    );
+    reg.register(page::HANDLER_MODULE, page::PageBundle);
     register_team(&mut reg);
     reg
 }
@@ -107,7 +116,7 @@ pub fn registry() -> BundleRegistry {
 pub const AI_README: &str = include_str!("../../../docs/ai-readme.md");
 
 /// Usage text, printed on `--help` and on bad arguments.
-pub const USAGE: &str = "usage: fantastic_team [--dir PATH] [--port N | --tui]\n  no surface flag: fully headless (no port, no terminal UI)\n  --port N: serve the web UI on 127.0.0.1:N\n  --tui: the terminal UI (needs a terminal)\n  (`mcp`, `send` and `readme` as the first word run fantastic's own commands)\n  (`packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)\n  packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]";
+pub const USAGE: &str = "usage: fantastic_team [--dir PATH] [--port N | --tui]\n  no surface flag: fully headless (no port, no terminal UI)\n  --port N: serve the web UI on 127.0.0.1:N\n  --tui: the terminal UI (needs a terminal)\n  (`mcp`, `send` and `readme` as the first word run fantastic's own commands)\n  (`packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)\n  (`packs install` run from a terminal asks for the agent id of each port first; an empty answer skips it)\n  packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]";
 
 /// The first words that are fantastic's own commands, passed through untouched.
 const PASSTHROUGH: &[&str] = &["mcp", "send", "readme"];

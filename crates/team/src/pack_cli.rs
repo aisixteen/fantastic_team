@@ -3,10 +3,17 @@
 //! through fantastic's own `send` command, so it needs a kernel running in the
 //! directory (the same as `fantastic_team send`). The CLI adds no verb and no
 //! record field: it maps the flags onto the payloads the bundles already read.
+//!
+//! `install` run from a terminal with no `bindings` in its payload asks, before
+//! the first send, for the agent id of each of the pack's ports (an empty answer
+//! skips one) and sends the answers as `bindings`. The prompt comes first because
+//! a second install of the same version is refused. Without a terminal nothing is
+//! asked and the payload goes as it is.
 
 use std::collections::BTreeMap;
+use std::io::{BufRead, Write};
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::tree::{PACK_ID, PACK_LISTING_ID};
 use crate::USAGE;
@@ -271,6 +278,47 @@ pub fn reply_error(stdout: &str) -> Option<String> {
     })
 }
 
+/// The port keys of the `pack.yaml` text, in order, each once. Empty when the
+/// text does not parse (the install then reports the error itself).
+pub fn unbound_port_keys(pack_yaml: &str) -> Vec<String> {
+    let Ok(manifest) = crate::pack_manifest::Manifest::parse(pack_yaml) else {
+        return Vec::new();
+    };
+    let Ok(ports) = manifest.port_list() else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    ports
+        .iter()
+        .map(crate::pack_bundle::port_key)
+        .filter(|k| seen.insert(k.clone()))
+        .collect()
+}
+
+/// Ask for one agent id per port key: a prompt line on `out`, one line read from
+/// `input`. An empty answer skips the key; the end of input stops asking.
+pub fn prompt_bindings<R: BufRead, W: Write>(
+    keys: &[String],
+    input: &mut R,
+    out: &mut W,
+) -> Map<String, Value> {
+    let mut bound = Map::new();
+    for key in keys {
+        let _ = write!(out, "bind {key} to agent id (empty to skip): ");
+        let _ = out.flush();
+        let mut line = String::new();
+        match input.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let answer = line.trim();
+        if !answer.is_empty() {
+            bound.insert(key.clone(), json!(answer));
+        }
+    }
+    bound
+}
+
 /// Run `packs` from the command line: the verb goes to its agent through
 /// fantastic's `send`, which needs the team's kernel running in this directory.
 /// `send` exits the process itself and exits 0 whenever the item completed, so
@@ -279,7 +327,8 @@ pub fn reply_error(stdout: &str) -> Option<String> {
 /// the caller turns into a non-zero exit.
 pub fn run_cli(args: &[String]) -> Result<(), String> {
     use std::io::Write as _;
-    let (agent, payload) = parse(args)?;
+    let (agent, mut payload) = parse(args)?;
+    ask_for_bindings(&mut payload);
     let item = json!({"target": agent, "payload": payload}).to_string();
     let exe = std::env::current_exe().map_err(|e| format!("packs: no executable path: {e}"))?;
     let out = std::process::Command::new(exe)
@@ -290,13 +339,45 @@ pub fn run_cli(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("packs: could not run send: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let _ = write!(std::io::stdout(), "{stdout}");
-    if let Some(e) = reply_error(&stdout) {
+    outcome(&stdout, out.status.success(), &out.status.to_string())
+}
+
+/// What a finished `send` means: a verb-level `error` in its row is an Err, then
+/// a failed `send` is. A report that merely says `enable.allowed: false` is not
+/// an error (the row is printed as it came).
+fn outcome(stdout: &str, send_ok: bool, status: &str) -> Result<(), String> {
+    if let Some(e) = reply_error(stdout) {
         return Err(format!("packs: {e}"));
     }
-    if !out.status.success() {
-        return Err(format!("packs: send failed ({})", out.status));
+    if !send_ok {
+        return Err(format!("packs: send failed ({status})"));
     }
     Ok(())
+}
+
+/// For `install` from a terminal with no `bindings`: read the pack's `pack.yaml`
+/// (relative to the directory, where the kernel runs), ask for each port and put
+/// the answers in `payload["bindings"]`. Does nothing otherwise.
+fn ask_for_bindings(payload: &mut Value) {
+    use std::io::IsTerminal as _;
+    if payload["type"] != "install" || payload.get("bindings").is_some() {
+        return;
+    }
+    if !std::io::stdin().is_terminal() {
+        return;
+    }
+    let Some(pack) = payload["pack"].as_str() else {
+        return;
+    };
+    let Ok(yaml) = std::fs::read_to_string(std::path::Path::new(pack).join("pack.yaml")) else {
+        return;
+    };
+    let keys = unbound_port_keys(&yaml);
+    let stdin = std::io::stdin();
+    let bound = prompt_bindings(&keys, &mut stdin.lock(), &mut std::io::stderr());
+    if !bound.is_empty() {
+        payload["bindings"] = Value::Object(bound);
+    }
 }
 
 #[cfg(test)]
@@ -577,5 +658,93 @@ mod tests {
         ] {
             assert!(parse(&args).is_err(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn install_and_eval_flags_map_timeout_and_worker() {
+        for (verb, extra) in [("install", ["--into", "t"]), ("eval", ["--pack", "p"])] {
+            let mut args = vec![verb, "--pack", "p", "--worker", "w", "--timeout-s", "30"];
+            if verb == "install" {
+                args.extend(extra);
+            } else {
+                args.truncate(7);
+            }
+            let (agent, payload) = parse(&v(&args)).unwrap();
+            assert_eq!(agent, PACK_ID);
+            assert_eq!(payload["type"], verb);
+            assert_eq!(payload["worker"], "w");
+            assert_eq!(payload["timeout_s"], json!(30));
+            args[6] = "soon";
+            let e = parse(&v(&args)).unwrap_err();
+            assert!(e.contains("whole number") && e.contains("usage:"), "{e}");
+        }
+    }
+
+    #[test]
+    fn reply_error_ignores_a_blocked_enable_verdict_but_not_the_enable_refused_error() {
+        let blocked = r#"{"status":"completed","result":{"pass_rate":0.5,"enable":{"allowed":false,"reason":"low"}}}"#;
+        assert_eq!(reply_error(blocked), None);
+        assert_eq!(outcome(blocked, true, "ok"), Ok(()));
+        let refused = r#"{"status":"completed","result":{"enable":{"allowed":false},"error":"enable refused: pass rate 50% is below the required 100%"}}"#;
+        assert_eq!(
+            reply_error(refused).as_deref(),
+            Some("enable refused: pass rate 50% is below the required 100%")
+        );
+        assert!(outcome(refused, true, "ok")
+            .unwrap_err()
+            .contains("enable refused"));
+    }
+
+    #[test]
+    fn eval_reply_with_pass_rate_time_cost_is_printed_unchanged() {
+        let row = r#"{"pid":1,"status":"completed","result":{"pass_rate":1.0,"total_time_s":2.5,"total_cost":null,"text":"pass rate 100%"}}"#;
+        assert_eq!(outcome(row, true, "ok"), Ok(()));
+        assert!(outcome(row, false, "exit status: 1")
+            .unwrap_err()
+            .contains("send failed"));
+    }
+
+    fn keys(k: &[&str]) -> Vec<String> {
+        v(k)
+    }
+
+    #[test]
+    fn prompt_asks_once_per_unbound_port_and_returns_answers() {
+        let mut out = Vec::new();
+        let mut input = "llm-1\ngh-1\n".as_bytes();
+        let m = prompt_bindings(&keys(&["model", "connector:github"]), &mut input, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.matches("bind ").count(), 2, "{text}");
+        assert_eq!(
+            Value::Object(m),
+            json!({"model": "llm-1", "connector:github": "gh-1"})
+        );
+    }
+
+    #[test]
+    fn prompt_skips_empty_answers() {
+        let mut out = Vec::new();
+        let mut input = "\ngh-1\n".as_bytes();
+        let m = prompt_bindings(&keys(&["model", "connector:github"]), &mut input, &mut out);
+        assert_eq!(Value::Object(m), json!({"connector:github": "gh-1"}));
+    }
+
+    #[test]
+    fn prompt_stops_at_eof_without_panic() {
+        let mut out = Vec::new();
+        let mut input = "".as_bytes();
+        let m = prompt_bindings(&keys(&["model", "connector:github"]), &mut input, &mut out);
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn unbound_port_keys_lists_each_port_key_once() {
+        let yaml = "name: p\nversion: 0.1.0\nauthor: a\nlicense: MIT\nprice: free\ncontent_hash: abc\nports:\n  - \"@model window=200k\"\n  - \"@model tools\"\n  - \"@connector:github\"\nfiles: []\n";
+        assert_eq!(unbound_port_keys(yaml), vec!["model", "connector:github"]);
+    }
+
+    #[test]
+    fn unbound_port_keys_of_garbage_is_empty() {
+        assert!(unbound_port_keys("{{ not yaml").is_empty());
     }
 }

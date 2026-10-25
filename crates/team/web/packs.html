@@ -1,0 +1,329 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Packs</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .bar input { font: inherit; padding: 4px 8px; flex: 1; min-width: 0; }
+  button { font: inherit; min-height: 32px; padding: 4px 10px; }
+  #layout { display: flex; gap: 16px; align-items: flex-start; margin-top: 8px; }
+  #list { width: 280px; flex: none; }
+  #detail { flex: 1; min-width: 0; }
+  .item { padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+  .item:hover { background: #f3f4f6; }
+  .item.sel { background: #e0e7ff; }
+  .name { font-weight: 600; }
+  .muted { color: #6b7280; font-size: 0.9em; }
+  .error { color: #b91c1c; }
+  .ok { color: #15803d; }
+  .warn { color: #b45309; }
+  .cell { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
+  .cell h3 { margin: 0 0 6px; font-size: 1em; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
+  .row label { min-width: 150px; }
+  .row input { font: inherit; padding: 4px 8px; flex: 1; min-width: 0; }
+  ul { margin: 4px 0; padding-left: 20px; }
+  @media (max-width: 430px) {
+    #layout { flex-direction: column; gap: 8px; }
+    #list { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="bar">
+  <h2 style="margin:0">Packs</h2>
+  <input id="query" type="search" placeholder="search packs" aria-label="Search packs">
+  <button id="search" type="button">Search</button>
+</div>
+<div id="error" class="error"></div>
+<div id="layout">
+  <nav id="list" aria-label="Packs"></nav>
+  <section id="detail"></section>
+</div>
+<script>
+// Contract: `pack_listing {type: 'list', query?}` answers {packs: [{name,
+// version, summary, price, installed, revoked}]}. `pack_listing {type: 'show',
+// name, version?}` answers the permission preview: ports, grants, price,
+// evals_count, measured, installed, revoked and install_decision {allow, reason?}.
+// `pack {type: 'install', pack, into, parent_id, bindings, approve?}` without
+// approve answers the permission preview under `approval` and creates nothing;
+// the Install button asks first (window.confirm), then sends the same payload
+// with approve true. A port with no agent bound is refused at enable time, so
+// there is one input per unbound port. `pack {type: 'eval', pack, worker}`
+// answers the pass rate. The page invents no verb. Every kernel value goes in as
+// text only (textContent), never as markup.
+let current = null;          // the show reply of the selected pack
+let unboundKeys = [];        // the port keys still asking for an agent id
+const typed = {};            // what was typed per port key
+
+function ask(id, payload) {
+  if (typeof fantastic === 'undefined' || !fantastic || typeof fantastic.send !== 'function') {
+    return Promise.reject(new Error('no connection to the team: fantastic is not loaded'));
+  }
+  return Promise.resolve(fantastic.send(id, payload));
+}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = String(text);
+  return n;
+}
+
+function setError(msg) {
+  document.getElementById('error').textContent = msg || '';
+}
+
+function errorOf(r) {
+  if (r && r.error) return typeof r.error === 'string' ? r.error : JSON.stringify(r.error);
+  return '';
+}
+
+function field(id) {
+  const n = document.getElementById(id);
+  return n ? n.value.trim() : '';
+}
+
+// The binding key of a port string: @model, @connector:<name>, @exec:sandboxed.
+function portKey(port) {
+  const word = String(port || '').trim().split(/\s+/)[0] || '';
+  const bare = word.charAt(0) === '@' ? word.slice(1) : word;
+  return bare;
+}
+
+function keysOf(ports) {
+  const seen = new Set();
+  const out = [];
+  (Array.isArray(ports) ? ports : []).forEach(function (p) {
+    const k = portKey(p);
+    if (k && !seen.has(k)) { seen.add(k); out.push(k); }
+  });
+  return out;
+}
+
+function percent(v) {
+  return typeof v === 'number' && isFinite(v) ? Math.round(v * 100) + '%' : '?';
+}
+
+function drawList(r) {
+  const box = document.getElementById('list');
+  box.textContent = '';
+  const packs = r && Array.isArray(r.packs) ? r.packs : [];
+  if (!packs.length) box.appendChild(el('p', 'muted', 'No packs.'));
+  packs.forEach(function (p) {
+    const row = el('div', 'item');
+    row.appendChild(el('span', 'name', p.name));
+    row.appendChild(el('span', 'muted', ' ' + (p.version || '')));
+    if (p.installed) row.appendChild(el('span', 'ok', ' installed'));
+    if (p.revoked) row.appendChild(el('span', 'error', ' revoked'));
+    row.appendChild(el('div', 'muted', p.summary || ''));
+    row.addEventListener('click', function () { showPack(p.name, p.version); });
+    box.appendChild(row);
+  });
+}
+
+function loadList() {
+  setError('');
+  return ask('pack_listing', { type: 'list', query: field('query') }).then(function (r) {
+    setError(errorOf(r));
+    drawList(r);
+  }).catch(function (e) { setError(e.message); });
+}
+
+function showPack(name, version) {
+  setError('');
+  const payload = { type: 'show', name: name };
+  if (version) payload.version = version;
+  return ask('pack_listing', payload).then(function (r) {
+    setError(errorOf(r));
+    if (errorOf(r)) return;
+    current = r;
+    unboundKeys = keysOf(r.ports);
+    drawDetail(r);
+  }).catch(function (e) { setError(e.message); });
+}
+
+function drawDetail(r) {
+  const box = document.getElementById('detail');
+  box.textContent = '';
+  const head = el('div', 'cell');
+  head.appendChild(el('h3', null, r.name + ' ' + (r.version || '')));
+  head.appendChild(el('div', 'muted', r.summary || ''));
+  head.appendChild(el('div', null, 'Price: ' + (r.price == null ? 'free' : r.price)));
+  const flags = [];
+  if (r.installed) flags.push('installed');
+  if (r.revoked) flags.push('revoked');
+  if (flags.length) head.appendChild(el('div', r.revoked ? 'error' : 'ok', flags.join(', ')));
+  const d = r.install_decision || {};
+  head.appendChild(el('div', d.allow ? 'ok' : 'error',
+    d.allow ? 'Install allowed.' : 'Install blocked: ' + (d.reason || 'refused')));
+  box.appendChild(head);
+
+  const perms = el('div', 'cell');
+  perms.appendChild(el('h3', null, 'This pack asks for'));
+  perms.appendChild(el('div', 'muted', 'Ports (an agent of yours fills each one)'));
+  const ports = el('ul');
+  (Array.isArray(r.ports) ? r.ports : []).forEach(function (p) { ports.appendChild(el('li', null, p)); });
+  perms.appendChild(ports);
+  perms.appendChild(el('div', 'muted', 'Grants (what it may call)'));
+  const grants = el('ul');
+  (Array.isArray(r.grants) ? r.grants : []).forEach(function (g) { grants.appendChild(el('li', null, g)); });
+  perms.appendChild(grants);
+  if (typeof r.evals_count === 'number') perms.appendChild(el('div', null, 'Evals: ' + r.evals_count));
+  const m = r.measured;
+  if (m && typeof m === 'object') {
+    perms.appendChild(el('div', null, 'Measured: ' + percent(m.success_rate) + ' of ' + (m.tasks == null ? '?' : m.tasks) +
+      ' tasks, cost per task ' + (m.cost_per_task == null ? '?' : m.cost_per_task)));
+  }
+  box.appendChild(perms);
+
+  const form = el('div', 'cell');
+  form.appendChild(el('h3', null, 'Install'));
+  [['f-pack', 'Pack folder', 'packs/' + r.name], ['f-into', 'Install into', 'templates'],
+   ['f-parent', 'Build under agent', ''], ['f-worker', 'Eval against worker', '']].forEach(function (f) {
+    const row = el('div', 'row');
+    const label = el('label', null, f[1]);
+    label.setAttribute('for', f[0]);
+    const input = el('input');
+    input.id = f[0];
+    input.value = f[2];
+    row.appendChild(label);
+    row.appendChild(input);
+    form.appendChild(row);
+  });
+  const binds = el('div');
+  binds.id = 'bindings';
+  form.appendChild(binds);
+  const buttons = el('div', 'row');
+  [['preview', 'Preview', previewInstall], ['install', 'Install', runInstall], ['eval', 'Eval', runEval]].forEach(function (b) {
+    const btn = el('button', null, b[1]);
+    btn.type = 'button';
+    btn.id = b[0];
+    btn.addEventListener('click', b[2]);
+    buttons.appendChild(btn);
+  });
+  form.appendChild(buttons);
+  box.appendChild(form);
+  const out = el('div');
+  out.id = 'result';
+  box.appendChild(out);
+  renderBindings(unboundKeys);
+}
+
+// One input per unbound port key; what was typed stays when the list is redrawn.
+function renderBindings(keys) {
+  const box = document.getElementById('bindings');
+  if (!box) return;
+  box.textContent = '';
+  unboundKeys = Array.isArray(keys) ? keys : [];
+  unboundKeys.forEach(function (key) {
+    const row = el('div', 'row');
+    const label = el('label', null, 'Bind ' + key + ' to agent');
+    label.setAttribute('for', 'bind-' + key);
+    const input = el('input');
+    input.id = 'bind-' + key;
+    input.value = typed[key] || '';
+    input.placeholder = 'agent id';
+    input.addEventListener('input', function () { typed[key] = input.value.trim(); });
+    row.appendChild(label);
+    row.appendChild(input);
+    box.appendChild(row);
+  });
+}
+
+function collectBindings() {
+  const out = {};
+  Object.keys(typed).forEach(function (k) { if (typed[k]) out[k] = typed[k]; });
+  return out;
+}
+
+function installPayload(approve) {
+  const payload = { type: 'install', pack: field('f-pack'), into: field('f-into'), bindings: collectBindings() };
+  const parent = field('f-parent');
+  if (parent) payload.parent_id = parent;
+  const worker = field('f-worker');
+  if (worker) payload.worker = worker;
+  if (approve) payload.approve = true;
+  return payload;
+}
+
+function result() {
+  const box = document.getElementById('result');
+  if (box) box.textContent = '';
+  return box;
+}
+
+function renderPreview(r) {
+  const box = result();
+  if (!box) return;
+  const cell = el('div', 'cell');
+  cell.appendChild(el('h3', null, r.installed_as === 'worker' ? 'Installed and enabled' : 'Preview'));
+  if (r.path) cell.appendChild(el('div', 'muted', 'Template at ' + r.path));
+  const a = r.approval;
+  if (a && typeof a === 'object') {
+    Object.keys(a).forEach(function (k) {
+      const v = a[k];
+      cell.appendChild(el('div', null, k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : v)));
+    });
+  }
+  if (r.ids) cell.appendChild(el('div', 'ok', 'Created: ' + JSON.stringify(r.ids)));
+  const unbound = r.bindings && Array.isArray(r.bindings.unbound) ? r.bindings.unbound : [];
+  if (unbound.length) {
+    cell.appendChild(el('div', 'warn', 'Unbound ports: ' + unbound.join(', ')));
+    for (const key of unbound) {
+      cell.appendChild(el('div', 'muted', 'Fill ' + key + ' above before installing.'));
+    }
+  }
+  if (r.enable) {
+    cell.appendChild(el('div', r.enable.allowed ? 'ok' : 'error', 'Evals: ' + (r.enable.reason || '')));
+  }
+  box.appendChild(cell);
+  renderBindings(unbound);
+}
+
+function previewInstall() {
+  setError('');
+  return ask('pack', installPayload(false)).then(function (r) {
+    setError(errorOf(r));
+    renderPreview(r || {});
+  }).catch(function (e) { setError(e.message); });
+}
+
+function runInstall() {
+  setError('');
+  const parent = field('f-parent');
+  if (!parent) { setError('Name the agent to build the worker under.'); return Promise.resolve(); }
+  if (!window.confirm('Install ' + field('f-pack') + ' and create its agents under ' + parent + '?')) {
+    return Promise.resolve();
+  }
+  return ask('pack', installPayload(true)).then(function (r) {
+    setError(errorOf(r));
+    renderPreview(r || {});
+  }).catch(function (e) { setError(e.message); });
+}
+
+function runEval() {
+  setError('');
+  const worker = field('f-worker');
+  if (!worker) { setError('Name the worker to eval.'); return Promise.resolve(); }
+  return ask('pack', { type: 'eval', pack: field('f-pack'), worker: worker }).then(function (r) {
+    setError(errorOf(r));
+    const box = result();
+    if (!box || errorOf(r)) return;
+    const cell = el('div', 'cell');
+    cell.appendChild(el('h3', null, 'Eval'));
+    cell.appendChild(el('div', null, 'Pass rate ' + percent(r.pass_rate) + ' (' + r.passed + ' of ' + r.total + ')'));
+    if (r.text) cell.appendChild(el('div', 'muted', r.text));
+    box.appendChild(cell);
+  }).catch(function (e) { setError(e.message); });
+}
+
+document.getElementById('search').addEventListener('click', loadList);
+document.getElementById('query').addEventListener('keydown', function (e) { if (e.key === 'Enter') loadList(); });
+loadList();
+</script>
+</body>
+</html>

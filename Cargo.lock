@@ -1582,6 +1582,8 @@ dependencies = [
  "fantastic-team-secrets-guard",
  "fantastic-tui",
  "fantastic-user",
+ "fantastic-web",
+ "fantastic-web-ws",
  "getrandom 0.2.17",
  "hex",
  "hmac",

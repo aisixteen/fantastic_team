@@ -74,6 +74,11 @@ queue:
 #   build:
 #     driver: lead
 #     members: [worker_1, worker_2]
+#     # Optional, per group; unset keys follow the default (60 s, 300 s, quiet, on):
+#     cadence: 600        # seconds between digests (at least the timer's beat)
+#     stall_after: 900    # seconds a member holding a task may sit still
+#     quiet: true         # send only changes (plus a heartbeat, see README)
+#     enabled: true       # false: this group gets no digest
 # Optional. The board caches these repos (owner/name) through a connector above.
 # board:
 #   repos: [aisixteen/fantastic_team]

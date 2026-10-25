@@ -66,6 +66,18 @@ pub struct GroupCfg {
     /// The worker ids in the group.
     #[serde(default)]
     pub members: Vec<String>,
+    /// Seconds between the cadencer's digests for this group. Unset: the default.
+    #[serde(default)]
+    pub cadence: Option<u64>,
+    /// Seconds a member holding a task may sit still before it is flagged. Unset: the default.
+    #[serde(default)]
+    pub stall_after: Option<u64>,
+    /// Quiet mode for this group: send only changes. Unset: the default.
+    #[serde(default)]
+    pub quiet: Option<bool>,
+    /// Whether the cadencer digests this group at all. Unset: the default (on).
+    #[serde(default)]
+    pub enabled: Option<bool>,
 }
 
 /// The board section: what it caches and through which connector.
@@ -292,6 +304,16 @@ pub fn validate(cfg: &TeamConfig) -> Result<(), String> {
         if grp.members.iter().any(|m| m.trim().is_empty()) {
             return Err(format!("group `{g}`: a member id is empty"));
         }
+        if grp.cadence == Some(0) {
+            return Err(format!(
+                "group `{g}`: cadence must be a whole number of seconds >= 1"
+            ));
+        }
+        if grp.stall_after == Some(0) {
+            return Err(format!(
+                "group `{g}`: stall_after must be a whole number of seconds >= 1"
+            ));
+        }
     }
     if let Some(b) = &cfg.board {
         if !cfg.connectors.contains_key(&b.github) {
@@ -320,6 +342,32 @@ pub fn validate(cfg: &TeamConfig) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The cadencer settings the groups set in `team.yaml`: group name → the keys
+/// that group sets (`cadence`, `stall_after`, `quiet`, `enabled`). Unset keys
+/// are left out, and a group that sets none is left out: it follows the default.
+pub fn group_settings(cfg: &TeamConfig) -> Value {
+    let mut out = Map::new();
+    for (g, grp) in &cfg.groups {
+        let mut m = Map::new();
+        if let Some(v) = grp.cadence {
+            m.insert("cadence".into(), json!(v));
+        }
+        if let Some(v) = grp.stall_after {
+            m.insert("stall_after".into(), json!(v));
+        }
+        if let Some(v) = grp.quiet {
+            m.insert("quiet".into(), json!(v));
+        }
+        if let Some(v) = grp.enabled {
+            m.insert("enabled".into(), json!(v));
+        }
+        if !m.is_empty() {
+            out.insert(g.clone(), Value::Object(m));
+        }
+    }
+    Value::Object(out)
 }
 
 /// The memory store id for an agent.
@@ -448,6 +496,50 @@ mod tests {
         assert_eq!(cfg.connectors["git"].record["remote"], json!("origin"));
         assert_eq!(cfg.queue.id, "queue");
         assert_eq!(cfg.credentials.as_ref().unwrap().backend, "env");
+    }
+
+    #[test]
+    fn group_cadencer_settings_parse() {
+        let y = format!("{MIN}groups:\n  g:\n    members: [a]\n    cadence: 600\n    stall_after: 900\n    quiet: false\n    enabled: false\n");
+        let cfg = parse(&y).unwrap();
+        let g = &cfg.groups["g"];
+        assert_eq!(g.cadence, Some(600));
+        assert_eq!(g.stall_after, Some(900));
+        assert_eq!(g.quiet, Some(false));
+        assert_eq!(g.enabled, Some(false));
+        assert_eq!(
+            group_settings(&cfg),
+            json!({"g": {"cadence": 600, "stall_after": 900, "quiet": false, "enabled": false}})
+        );
+    }
+
+    #[test]
+    fn group_cadencer_settings_default_to_none() {
+        let cfg = parse(&format!("{MIN}groups:\n  g:\n    members: [a]\n")).unwrap();
+        let g = &cfg.groups["g"];
+        assert_eq!(
+            (g.cadence, g.stall_after, g.quiet, g.enabled),
+            (None, None, None, None)
+        );
+        assert_eq!(group_settings(&cfg), json!({}));
+    }
+
+    #[test]
+    fn group_cadencer_settings_reject_bad_values() {
+        let with = |kv: &str| format!("{MIN}groups:\n  g:\n    members: [a]\n    {kv}\n");
+        let e = parse(&with("cadence: 0")).unwrap_err();
+        assert_eq!(
+            e,
+            "group `g`: cadence must be a whole number of seconds >= 1"
+        );
+        let e = parse(&with("stall_after: 0")).unwrap_err();
+        assert_eq!(
+            e,
+            "group `g`: stall_after must be a whole number of seconds >= 1"
+        );
+        assert!(parse(&with("cadence: -5")).is_err());
+        assert!(parse(&with("cadence: x")).is_err());
+        assert!(parse(&with("quiet: 3")).is_err());
     }
 
     #[test]
