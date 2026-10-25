@@ -1,6 +1,6 @@
 # Notes for fantastic: what the canvas zip needs to be reproducible
 
-Team's builds (#137) are reproducible except for one input: the canvas zip that `fantastic-canvas-page` embeds in the binary. Its packer lives in the fantastic dependency, and Team does not patch dependencies. These are the changes fantastic has to make. Found while reading `src/lib/ts/scripts/pack.sh` and `src/tui/web/canvas/scripts/pack.sh` at fantastic commit `717765e` (the commit in `Cargo.lock`).
+Team's builds (#137) are reproducible except for one input: the canvas zip that `fantastic-canvas-page` embeds in the binary. Its packer lives in the fantastic dependency, and Team does not patch dependencies. These are the changes fantastic has to make. Found while reading `src/lib/ts/scripts/pack.sh` and `src/tui/web/canvas/scripts/pack.sh` at fantastic commit `717765e` (the commit `Cargo.lock` pinned at the time of that reading).
 
 ## 1. Stamp the staged files with SOURCE_DATE_EPOCH before zipping
 
@@ -30,8 +30,10 @@ Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from tw
 
 ## What Team gets from the bump
 
-`Cargo.lock` now pins fantastic `717765e` (aisixteen/fantastic main, 24 commits past `e7ede96`). Only the fantastic crates moved; the build, tests, clippy and shell checks pass with no Team code change. Features the bump brings to Team:
+`Cargo.lock` now pins fantastic `ef6f9a7` (aisixteen/fantastic main, 11 commits past `717765e`, which was 24 commits past `e7ede96`). Only the fantastic crates moved, plus the new transitive crates that `fantastic-system-agents` needs (`zbus` and its family, from the fantastic lock entries). The build and tests pass with no Team code change. Features the bump brings to Team:
 
+- Blueprints (fantastic#357, for #268 and #269 which stay open): `user.export_subtree {agent_id, path}` writes an agent and its subtree as a blueprint folder, with ports for references that point outside it (`@memory`, `@credentials`, `@exec`, `@files`, `@model`, `@connector:<id>`, `@path:<field>`). Key values and absolute paths are stripped, and a secrets scan runs before the rename. `user.import_subtree` installs it under any parent with fresh ids (one `_<k>` suffix), ports bound and granted back, and a preview until `approve: true`. It refuses unbound ports, key values, absolute paths, and code without `allow_code`. This is what worker packs (#40) need; Team does not use it yet.
+- Atomic writes survive a transient rename refusal: fantastic retries a refused atomic-write rename a bounded 8 times and removes the sibling tmp file on final failure (fantastic#352). This helps claim files.
 - Inline agent views in a chat: `embed {id}` and `unembed {id}` plus chat cards, so a lead's chat can hold worker views as live cards (fantastic#339, #340).
 - File and folder view agents over the file bridge, for the canvas and the CLI (fantastic#336).
 - The file tree as the canvas's own fixed, collapsible sidebar, not zoomed (fantastic#338).
@@ -39,7 +41,7 @@ Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from tw
 - Secret marks: a store on a connected kernel is recorded as secret by the calling kernel, for credential-store calls (fantastic#326).
 - Exec-bridge refuses mail to a sealed leg, so refused mail never reaches the leg's program (fantastic#335, #350).
 
-Not relevant to Team: the headless container image (fantastic#337) and the Python ports (the `#170` series and the Python ai-core, file-bridge and backend fixes).
+Not relevant to Team: the headless container image (fantastic#337), the Swift kernel retirement that keeps the Foundation Models bridge (fantastic#354, #359), the OS system agents and the audio agent (fantastic#355, #360), the Python ports (the `#170` series, fantastic#353 and #362), the `units_os` CI input (fantastic#356), the file agent follow-ups (fantastic#358) and the e2e model per role (fantastic#361).
 
 ## Pack registry and listing
 
