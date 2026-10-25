@@ -1,6 +1,7 @@
-//! A pack's measured record (#41): success rate and cost per task from real
-//! shifts, signed by the measuring shift. This module does local aggregation,
-//! the canonical signing payload and the opt-in gate. It publishes nothing.
+//! A pack's measured record (#41): success rate and cost per task. The record
+//! is local and unsigned until a signer exists. This module does local
+//! aggregation, the canonical signing payload, the JSON form and the opt-in
+//! gate. It signs and publishes nothing.
 
 use std::collections::BTreeMap;
 
@@ -97,6 +98,26 @@ pub fn signing_payload(rec: &MeasuredRecord) -> Vec<u8> {
     m.insert("cost_per_task", json!(rec.cost_per_task));
     m.insert("measured_by", json!(rec.measured_by));
     serde_json::to_vec(&m).unwrap_or_default()
+}
+
+/// The record as JSON: exactly the keys of [`signing_payload`] plus `signed`
+/// (whether a signature is set). It never carries the signature itself, a path,
+/// task text or a secret.
+pub fn record_json(rec: &MeasuredRecord) -> Value {
+    json!({
+        "pack_hash": rec.pack_hash,
+        "tasks": rec.tasks,
+        "successes": rec.successes,
+        "success_rate": rec.success_rate,
+        "cost_per_task": rec.cost_per_task,
+        "measured_by": rec.measured_by,
+        "signed": rec.signature.is_some(),
+    })
+}
+
+/// The local, unsigned record of one eval run.
+pub fn measured_from_eval(pack_hash: &str, s: &EvalSummary, measured_by: &str) -> MeasuredRecord {
+    aggregate(pack_hash, &outcomes_from_eval(pack_hash, s), measured_by)
 }
 
 /// The record if it may be published: only when the owner opted in AND the
@@ -246,5 +267,72 @@ mod tests {
                 "tasks",
             ]
         );
+    }
+
+    fn summary3() -> EvalSummary {
+        use crate::pack_eval::EvalResult;
+        use std::time::Duration;
+        let r = |id: &str, passed: bool, cost: Option<f64>| EvalResult {
+            id: id.to_string(),
+            passed,
+            reason: None,
+            elapsed: Duration::from_millis(10),
+            cost,
+        };
+        EvalSummary {
+            passed: 2,
+            total: 3,
+            pass_rate: 2.0 / 3.0,
+            total_time: Duration::from_millis(30),
+            total_cost: Some(4.0),
+            per_eval: vec![
+                r("a", true, Some(1.0)),
+                r("b", false, None),
+                r("c", true, Some(3.0)),
+            ],
+        }
+    }
+
+    #[test]
+    fn record_json_has_exactly_the_signed_fields_plus_signed_flag() {
+        let mut rec = aggregate("p", &[outcome("p", true, Some(0.5))], "team-a");
+        let v = record_json(&rec);
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "cost_per_task",
+                "measured_by",
+                "pack_hash",
+                "signed",
+                "success_rate",
+                "successes",
+                "tasks",
+            ]
+        );
+        assert_eq!(v["signed"], false);
+        assert_eq!(v["pack_hash"], "p");
+        assert_eq!(v["tasks"], 1);
+        assert_eq!(v["successes"], 1);
+        assert_eq!(v["success_rate"], 1.0);
+        assert_eq!(v["cost_per_task"], 0.5);
+        assert_eq!(v["measured_by"], "team-a");
+        rec.signature = Some("sig".to_string());
+        let v = record_json(&rec);
+        assert_eq!(v["signed"], true);
+        assert!(!v.to_string().contains("sig\""), "{v}");
+    }
+
+    #[test]
+    fn measured_from_eval_matches_aggregate_of_outcomes() {
+        let s = summary3();
+        let rec = measured_from_eval("p", &s, "team-a");
+        assert_eq!(rec.tasks, 3);
+        assert_eq!(rec.successes, 2);
+        assert!((rec.success_rate - 2.0 / 3.0).abs() < 1e-9);
+        assert_eq!(rec.cost_per_task, Some(2.0));
+        assert!(rec.signature.is_none());
+        assert_eq!(rec, aggregate("p", &outcomes_from_eval("p", &s), "team-a"));
     }
 }

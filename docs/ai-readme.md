@@ -19,7 +19,7 @@ Run it from the directory the team lives in, or pass `--dir PATH` (created if mi
 - `--dir PATH`: the team's directory.
 - `--instructions TEXT` or `--instructions-file PATH`: the first agent's instructions. Its flags `--workers N`, `--leads N`, `--per-lead N` say how many agents run and are put into those instructions.
 - `--resend-instructions`: send the first agent its instructions again, even if it already exists.
-- `fantastic_team packs list|show|updates|pack|install|eval --key value ...` sends a pack verb to the running team (attach-only, like `send`): `list [--query Q]`, `show --name N [--version V]`, `updates [--opt-in true|false]`, `pack --worker W --out DIR`, `install --pack DIR --into DIR [--worker W] [--timeout-s N]`, `eval --pack DIR --worker W [--timeout-s N]`.
+- `fantastic_team packs list|show|updates|publish|pack|install|eval --key value ...` sends a pack verb to the running team (attach-only, like `send`): `list [--query Q]`, `show --name N [--version V]`, `updates [--opt-in true|false]`, `publish --pack DIR --url HTTPS_URL --signing-key FILE`, `pack --worker W --out DIR`, `install --pack DIR --into DIR [--worker W] [--timeout-s N]`, `eval --pack DIR --worker W [--timeout-s N]`.
 - `fantastic_team mcp`, `fantastic_team send`, `fantastic_team readme` run fantastic's own commands in this directory (`readme` is fantastic's readme, not this file).
 
 When the team starts it reads `team.yaml` from its directory (if there is one) and creates the agent tree from it, then sends the instructions to the first agent.
