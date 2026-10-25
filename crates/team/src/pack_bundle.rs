@@ -24,17 +24,29 @@
 //! each port key (`model`, `connector:<name>`, `exec:sandboxed`) to the id of
 //! the agent that fills it. They are checked before the first write and kept in
 //! `<dest>/bindings.json`. The reply says which ports are `bound` and which are
-//! `unbound`, so the caller can ask the buyer and re-run. Install never gates on
-//! unbound ports; enforcing bindings at enable time is not built.
+//! `unbound`. A plain install never gates on unbound ports; the gate is at enable
+//! time, below.
+//!
+//! ENABLE GATE. Where a worker is built from a template (`install` with
+//! `parent_id` and `approve: true`), `enable_gate` runs first and refuses, in
+//! this order: an unbound port, a bound agent id that is not live (asked of the
+//! root's `list_agents`), and a failing eval verdict (when `worker` is given; a pack with evals and
+//! no `worker` is refused too).
+//! A refusal creates nothing, keeps the template copy and replies with `error`
+//! `enable refused: ...` and `enable_error`. The preview (no `approve`) never
+//! gates. An already installed version may be enabled again with `parent_id`
+//! when its `pack.yaml` hash equals the source pack's: the copy is skipped,
+//! `<dest>/bindings.json` is the default binding map (a payload `bindings` key
+//! overrides it per port) and the same gate and import follow. Any other
+//! second install of a version is refused.
 //!
 //! `eval` runs a pack's evals on demand against a worker and reports the pass
 //! rate, time and cost. `install` runs them too, but only when it is given a
 //! worker (`install {pack, into, worker}`): after the copy it reports the same
 //! report under `evals`, and an advisory `enable {allowed, min_pass_rate,
-//! reason}` verdict (`min_pass_rate` defaults to 1.0). The template copy is kept
-//! whatever the verdict. With `parent_id` and `approve` the verdict is enforced:
-//! the evals run before the blueprint import, and a blocked verdict (or a pack
-//! with evals and no `worker`) means the `user` agent is never asked to import.
+//! reason}` verdict (`min_pass_rate` defaults to 1.0). A plain install never
+//! fails or rolls back on the verdict; the enable gate above enforces it where a
+//! worker is created. The verdict exists only when `worker` is given.
 //!
 //! The measured record is signed when the payload carries `signing_key` (a file
 //! bridge path to a 64-hex seed): then `measured.signed` is true. `eval` with
@@ -552,7 +564,8 @@ pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
 }
 
 /// Install the pack at `pack` as a template under `into`, as `<name>-<version>/`.
-/// Refuses a pack with no `pack.yaml`, an invalid manifest, an existing version,
+/// Refuses a pack with no `pack.yaml`, an invalid manifest, an existing version
+/// (unless re-enabled with `parent_id`, below),
 /// a name or version that is not a safe path segment (no `/`, `\`, `..`), a file
 /// set whose content hash differs from the manifest, and a pack the secrets scan
 /// refuses. Every check runs before the first write. Creates no agent unless
@@ -565,7 +578,12 @@ pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
 /// reply is the preview under `approval` and nothing is created; with it, the
 /// reply is under `imported`, `ids` lists the new agents and `installed_as` is
 /// `worker`. A refusal keeps the template copy and is reported under
-/// `import_error` and a top-level `error`.
+/// `import_error` and a top-level `error`. With `approve`, `enable_gate` runs
+/// before the import (with the evals first when `worker` is given): a refusal
+/// creates nothing, keeps the template and is reported as `enable refused: ...`
+/// under `error` and `enable_error`. With `parent_id`, an installed version of
+/// the same pack (equal content hash, files unchanged) is enabled again without
+/// a new copy, with `<dest>/bindings.json` as the default bindings.
 ///
 /// With a non-empty `worker`, the copied pack's evals run on it after the copy
 /// and the report goes under `evals` (or `skipped` when the pack has none, or
@@ -642,7 +660,11 @@ pub async fn install_with<P: Peers>(
         return err("pack name or version is not a safe path segment");
     }
     let dest_s = install_dest(into, &name, &version);
-    if exists(p, &dest_s).await {
+    // An installed version may be enabled again (`parent_id`) when it is the same pack.
+    let reinstall = exists(p, &dest_s).await;
+    if reinstall
+        && (parent_id.is_empty() || pack_hash_of(p, &dest_s).await != manifest.content_hash)
+    {
         return err("version already installed");
     }
 
@@ -666,10 +688,34 @@ pub async fn install_with<P: Peers>(
         .find(|(p, _)| p == "worker.json")
         .and_then(|(_, b)| serde_json::from_slice(b).ok())
         .unwrap_or(Value::Null);
-    let bound = match check_bindings(bindings, &ports) {
+    let mut bound = match check_bindings(bindings, &ports) {
         Ok(bound) => bound,
         Err(e) => return err(&e),
     };
+    if reinstall {
+        // The installed copy must still be the pack its manifest says, and its
+        // saved bindings are the defaults under the payload's.
+        for (rel, b) in &bytes {
+            if read(p, &format!("{dest_s}/{rel}")).await.as_deref()
+                != Some(String::from_utf8_lossy(b).as_ref())
+            {
+                return err("installed copy differs from the pack");
+            }
+        }
+        let saved = match read(p, &format!("{dest_s}/bindings.json")).await {
+            Some(t) => match serde_json::from_str::<Value>(&t) {
+                Ok(v) => match check_bindings(&v, &ports) {
+                    Ok(m) => m,
+                    Err(e) => return err(&format!("bindings.json: {e}")),
+                },
+                Err(_) => return err("bindings.json is not valid JSON"),
+            },
+            None => BTreeMap::new(),
+        };
+        let mut merged = saved;
+        merged.extend(bound);
+        bound = merged;
+    }
     if !parent_id.is_empty() {
         if !valid_part(parent_id) {
             return err("parent_id is not a safe agent id");
@@ -685,22 +731,24 @@ pub async fn install_with<P: Peers>(
 
     let mut copied = Vec::new();
     let mut failed = Vec::new();
-    put(
-        p,
-        &dest_s,
-        pack_manifest::MANIFEST_FILE,
-        &text,
-        &mut copied,
-        &mut failed,
-    )
-    .await;
-    for (rel, b) in &bytes {
-        let t = String::from_utf8_lossy(b).to_string();
-        put(p, &dest_s, rel, &t, &mut copied, &mut failed).await;
-    }
-    if !bound.is_empty() {
-        let text = serde_json::to_string_pretty(&bound).unwrap_or_default();
-        put(p, &dest_s, "bindings.json", &text, &mut copied, &mut failed).await;
+    if !reinstall {
+        put(
+            p,
+            &dest_s,
+            pack_manifest::MANIFEST_FILE,
+            &text,
+            &mut copied,
+            &mut failed,
+        )
+        .await;
+        for (rel, b) in &bytes {
+            let t = String::from_utf8_lossy(b).to_string();
+            put(p, &dest_s, rel, &t, &mut copied, &mut failed).await;
+        }
+        if !bound.is_empty() {
+            let text = serde_json::to_string_pretty(&bound).unwrap_or_default();
+            put(p, &dest_s, "bindings.json", &text, &mut copied, &mut failed).await;
+        }
     }
     if !failed.is_empty() {
         return json!({"error": "write failed", "failed": failed, "files": copied});
@@ -715,38 +763,38 @@ pub async fn install_with<P: Peers>(
         "bindings": {"bound": bound, "unbound": unbound_keys(&ports, &bound)},
         "files": copied,
     });
-    // The evals run before the import, so a blocked verdict stops the import.
-    let evals = if worker.is_empty() {
-        None
-    } else {
-        Some(evals_of_installed(p, &dest_s, worker, timeout, &manifest.content_hash, opts).await)
-    };
-    let verdict = evals.as_ref().map(|e| enable_verdict(e, min_pass_rate));
-    if let (Some(e), Some(v)) = (&evals, &verdict) {
-        reply["enable"] = v.clone();
-        reply["evals"] = e.clone();
+    let mut evals_done = false;
+    if !parent_id.is_empty() && approve {
+        let mut verdict = None;
+        if !worker.is_empty() {
+            let evals =
+                evals_of_installed(p, &dest_s, worker, timeout, &manifest.content_hash, opts).await;
+            let v = enable_verdict(&evals, min_pass_rate);
+            reply["enable"] = v.clone();
+            reply["evals"] = evals;
+            verdict = Some(v);
+            evals_done = true;
+        }
+        let gated = match live_agents(p, &bound).await {
+            Ok(existing) => enable_gate(&ports, &bound, &existing, verdict.as_ref()),
+            Err(e) => Err(e),
+        };
+        // A pack with evals is not enabled unless they were run.
+        let gated = match (gated, &verdict) {
+            (Ok(()), None) => match load_evals(p, &dest_s).await {
+                Ok(e) if e.is_empty() => Ok(()),
+                Ok(_) => Err("pack has evals; pass worker to run them".to_string()),
+                Err(_) => Err("evals could not be loaded".to_string()),
+            },
+            (g, _) => g,
+        };
+        if let Err(why) = gated {
+            reply["enable_error"] = json!(why);
+            reply["error"] = json!(format!("enable refused: {why}"));
+            return reply;
+        }
     }
     if !parent_id.is_empty() {
-        if approve {
-            let refusal = match &verdict {
-                Some(v) if v["allowed"] != true => Some(
-                    v["reason"]
-                        .as_str()
-                        .unwrap_or("evals did not pass")
-                        .to_string(),
-                ),
-                Some(_) => None,
-                None => match load_evals(p, &dest_s).await {
-                    Ok(e) if e.is_empty() => None,
-                    Ok(_) => Some("pack has evals; pass worker to run them".to_string()),
-                    Err(_) => Some("evals could not be loaded".to_string()),
-                },
-            };
-            if let Some(why) = refusal {
-                reply["error"] = json!(format!("enable refused: {why}"));
-                return reply;
-            }
-        }
         let r = p
             .ask(
                 "user",
@@ -777,12 +825,89 @@ pub async fn install_with<P: Peers>(
             reply["approval"] = r;
         }
     }
+    if !worker.is_empty() && !evals_done {
+        let evals =
+            evals_of_installed(p, &dest_s, worker, timeout, &manifest.content_hash, opts).await;
+        reply["enable"] = enable_verdict(&evals, min_pass_rate);
+        reply["evals"] = evals;
+    }
     reply
 }
 
-/// The enable verdict for an eval report (`evals_of_installed`):
-/// `{allowed, min_pass_rate, reason}`. `install` enforces it on `approve` (see
-/// the module docs); otherwise it is advisory. A pass rate at or above `min` is allowed.
+/// May a worker be built from a template? `Err(why)` names the first reason it
+/// may not: an unbound port (the keys are named), a bound agent id that is not in
+/// `existing` (the port key is named, never the id), or a verdict that is not
+/// `allowed` (its `reason`). `verdict` is `None` when no evals were run.
+pub fn enable_gate(
+    ports: &[pack_manifest::Port],
+    bound: &BTreeMap<String, String>,
+    existing: &BTreeSet<String>,
+    verdict: Option<&Value>,
+) -> Result<(), String> {
+    let unbound = unbound_keys(ports, bound);
+    if !unbound.is_empty() {
+        return Err(format!(
+            "cannot enable: unbound ports: {}",
+            unbound.join(", ")
+        ));
+    }
+    for (key, id) in bound {
+        if !existing.contains(id) {
+            return Err(format!(
+                "cannot enable: bound agent for `{key}` does not exist"
+            ));
+        }
+    }
+    if let Some(v) = verdict {
+        if v.get("allowed").and_then(Value::as_bool) != Some(true) {
+            let reason = v.get("reason").and_then(Value::as_str).unwrap_or("refused");
+            return Err(format!("cannot enable: evals: {reason}"));
+        }
+    }
+    Ok(())
+}
+
+/// The ids of the live agents, asked of the root's `list_agents` page by page
+/// (`limit`, then `after` the `next` cursor). Asked only when something is
+/// bound; an unreadable listing is an error, so the gate fails closed.
+async fn live_agents<P: Peers>(
+    p: &P,
+    bound: &BTreeMap<String, String>,
+) -> Result<BTreeSet<String>, String> {
+    let mut out = BTreeSet::new();
+    if bound.is_empty() {
+        return Ok(out);
+    }
+    let mut after = Value::Null;
+    for _ in 0..MAX_AGENT_PAGES {
+        let mut ask = json!({"type": "list_agents", "limit": AGENT_PAGE});
+        if let Some(a) = after.as_str() {
+            ask["after"] = json!(a);
+        }
+        let r = p.ask("kernel", ask).await;
+        let Some(rows) = r.get("agents").and_then(Value::as_array) else {
+            return Err("cannot enable: the agent list could not be read".to_string());
+        };
+        out.extend(
+            rows.iter()
+                .filter_map(|a| a.get("id").and_then(Value::as_str))
+                .map(str::to_string),
+        );
+        match r.get("next") {
+            Some(n) if n.is_string() => after = n.clone(),
+            _ => return Ok(out),
+        }
+    }
+    Err("cannot enable: the agent list is too long to read".to_string())
+}
+
+/// Agents asked per `list_agents` page.
+const AGENT_PAGE: u64 = 200;
+/// The most pages `live_agents` reads.
+const MAX_AGENT_PAGES: usize = 500;
+
+/// The advisory enable verdict for an eval report (`evals_of_installed`):
+/// `{allowed, min_pass_rate, reason}`. A pass rate at or above `min` is allowed.
 /// A pack with no evals is allowed, since there is nothing to gate on. An
 /// unloadable eval set, or any report without a pass rate, is blocked (fail closed).
 fn enable_verdict(evals: &Value, min: f64) -> Value {
@@ -1022,7 +1147,7 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
     fn verb_docs(&self) -> Value {
         json!({
             "pack": "pack {worker, out} → writes pack.yaml (hash, ports, files) and the pack layout; refuses an existing out and a pack the secrets scan refuses",
-            "install": "install {pack, into, worker?, bindings?, timeout_s?, min_pass_rate?, signing_key?, parent_id?, approve?, allow_code?} → checks pack.yaml, the content hash, the scan and the bindings, then copies as a template to <into>/<name>-<version>/; bindings is {port key: agent id} (keys: model, connector:<name>, exec:sandboxed) and is written to bindings.json; refuses an existing version, an unknown key and a non-id value; replies with the parsed ports and bindings {bound, unbound}; with a worker, runs the pack's evals on it and replies with the report under evals and an enable {allowed, min_pass_rate, reason} verdict (min_pass_rate is a number in 0..=1, default 1.0; allowed is false below it or when the evals cannot be loaded); the template copy is kept whatever the verdict; the verdict is enforced when parent_id and approve are set: the evals run before the import, a pack with evals and no worker is refused, and a blocked verdict means nothing is imported (installed_as stays template, error is `enable refused: <reason>`); the preview without approve is never blocked; the evals report also carries measured {pack_hash, tasks, successes, success_rate, cost_per_task, measured_by, signed}: a local record, never written or published, signed when signing_key (a file bridge path to a 64-hex seed) is given; creates no agent unless parent_id is set: then the pack's blueprint/ folder is imported under that agent through user.import_subtree (the bindings become the blueprint ports @model, @connector:<name>, @exec); without approve the reply carries the permission preview under approval and nothing is created, with approve true it carries imported and ids and installed_as is worker; allow_code defaults false; a refused import keeps the template and replies with error and import_error",
+            "install": "install {pack, into, worker?, bindings?, timeout_s?, min_pass_rate?, signing_key?, parent_id?, approve?, allow_code?} → checks pack.yaml, the content hash, the scan and the bindings, then copies as a template to <into>/<name>-<version>/; bindings is {port key: agent id} (keys: model, connector:<name>, exec:sandboxed) and is written to bindings.json; refuses an existing version, an unknown key and a non-id value; replies with the parsed ports and bindings {bound, unbound}; with a worker, runs the pack's evals on it and replies with the report under evals and an advisory enable {allowed, min_pass_rate, reason} (min_pass_rate is a number in 0..=1, default 1.0; allowed is false below it or when the evals cannot be loaded); the install is never refused or rolled back on the verdict; the evals report also carries measured {pack_hash, tasks, successes, success_rate, cost_per_task, measured_by, signed}: a local record, never written or published, signed when signing_key (a file bridge path to a 64-hex seed) is given; creates no agent unless parent_id is set: then the pack's blueprint/ folder is imported under that agent through user.import_subtree (the bindings become the blueprint ports @model, @connector:<name>, @exec); without approve the reply carries the permission preview under approval and nothing is created and nothing is gated; with approve true the enable gate runs first and refuses an unbound port, a bound agent that does not exist and (with a worker) a verdict that is not allowed, replying with error `enable refused: ...` and enable_error, creating nothing and keeping the template; otherwise it carries imported and ids and installed_as is worker; with parent_id an already installed version of the same pack (same content hash) is not refused: the copy is skipped, bindings.json is the default bindings (the payload's bindings override per key) and the same gate and import follow; a changed pack at an installed version is still refused; allow_code defaults false; a refused import keeps the template and replies with error and import_error",
             "eval": "eval {pack, worker, timeout_s?, signing_key?, from_shifts?} → runs the pack's evals on the worker; returns pass rate, time, cost and per-eval results; also replies with measured {pack_hash, tasks, successes, success_rate, cost_per_task, measured_by, signed}: a local record, never written or published; signed when signing_key (a file bridge path to a 64-hex seed) is given; with from_shifts true the record counts the board's done and failed tasks the worker claimed instead of the eval run",
         })
     }
@@ -2464,6 +2589,8 @@ mod tests {
         files: FakeFiles,
         asks: Mutex<Vec<Value>>,
         reply: Mutex<Value>,
+        /// The agent ids the `kernel` fake lists, one per page.
+        live: Mutex<Vec<String>>,
     }
 
     impl WithUser {
@@ -2472,6 +2599,7 @@ mod tests {
                 files,
                 asks: Mutex::new(Vec::new()),
                 reply: Mutex::new(reply),
+                live: Mutex::new(vec!["gh1".into(), "m1".into(), "x1".into()]),
             }
         }
         fn asks(&self) -> Vec<Value> {
@@ -2485,6 +2613,27 @@ mod tests {
             if to == "user" {
                 self.asks.lock().unwrap().push(p);
                 return self.reply.lock().unwrap().clone();
+            }
+            if to == "kernel" {
+                // One agent per page, so the paging by `after` is exercised.
+                assert_eq!(p["type"], "list_agents");
+                let live = self.live.lock().unwrap().clone();
+                let at = p["after"]
+                    .as_str()
+                    .and_then(|a| live.iter().position(|l| l == a).map(|i| i + 1))
+                    .unwrap_or(0);
+                let Some(id) = live.get(at) else {
+                    return json!({"agents": [], "next": null});
+                };
+                let next = (at + 1 < live.len()).then(|| id.clone());
+                return json!({"agents": [{"id": id}], "next": next});
+            }
+            if to != "files" {
+                // a worker: the task "good" is answered "ok", any other "nope"
+                return match p["text"].as_str() {
+                    Some("good") => json!({"text": "ok"}),
+                    _ => json!({"text": "nope"}),
+                };
             }
             self.files.ask(to, p).await
         }
@@ -2596,6 +2745,11 @@ mod tests {
         assert!(e.contains("more than"), "{e}");
     }
 
+    /// The bindings that fill the one port of `worker()`.
+    fn github_bound() -> Value {
+        json!({"connector:github": "gh1"})
+    }
+
     async fn install_blueprint(
         both: &WithUser,
         parent: &str,
@@ -2656,7 +2810,7 @@ mod tests {
     #[tokio::test]
     async fn install_with_approve_builds_the_worker() {
         let both = packed_blueprint(imported_reply()).await;
-        let r = install_blueprint(&both, "lead", true, false, Value::Null).await;
+        let r = install_blueprint(&both, "lead", true, false, github_bound()).await;
         assert!(r.get("error").is_none(), "{r}");
         assert_eq!(both.asks()[0]["approve"], json!(true));
         assert_eq!(r["imported"], imported_reply());
@@ -2719,7 +2873,7 @@ mod tests {
             json!({"error": "user.import_subtree: unbound", "reason": "unbound_ports"}),
         )
         .await;
-        let r = install_blueprint(&both, "lead", true, false, Value::Null).await;
+        let r = install_blueprint(&both, "lead", true, false, github_bound()).await;
         assert!(
             r["error"]
                 .as_str()
@@ -2752,6 +2906,340 @@ mod tests {
         let both = packed_blueprint(preview_reply()).await;
         install_blueprint(&both, "lead", false, true, Value::Null).await;
         assert_eq!(both.asks()[0]["allow_code"], json!(true));
+    }
+
+    // ---- the enable gate (#40) ----
+
+    fn ports_of(list: &[&str]) -> Vec<pack_manifest::Port> {
+        list.iter()
+            .map(|s| pack_manifest::Port::parse(s).unwrap())
+            .collect()
+    }
+
+    fn bound_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn ids(list: &[&str]) -> BTreeSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn enable_gate_refuses_an_unbound_port() {
+        let ports = ports_of(&["@model", "@connector:github"]);
+        let e =
+            enable_gate(&ports, &bound_of(&[("model", "m1")]), &ids(&["m1"]), None).unwrap_err();
+        assert!(
+            e.contains("unbound ports") && e.contains("connector:github"),
+            "{e}"
+        );
+        assert!(!e.contains("model"), "a bound port is not named: {e}");
+    }
+
+    #[test]
+    fn enable_gate_refuses_a_missing_agent() {
+        let ports = ports_of(&["@model"]);
+        let e = enable_gate(&ports, &bound_of(&[("model", "gone")]), &ids(&[]), None).unwrap_err();
+        assert!(e.contains("`model`") && e.contains("does not exist"), "{e}");
+        assert!(!e.contains("gone"), "the id is not echoed: {e}");
+    }
+
+    #[test]
+    fn enable_gate_refuses_a_failing_verdict() {
+        let ports = ports_of(&["@model"]);
+        let v = json!({"allowed": false, "reason": "pass rate 50% is below the required 100%"});
+        let e = enable_gate(
+            &ports,
+            &bound_of(&[("model", "m1")]),
+            &ids(&["m1"]),
+            Some(&v),
+        )
+        .unwrap_err();
+        assert!(e.contains("pass rate 50%"), "{e}");
+        let odd = json!({"reason": "no allowed key"});
+        assert!(enable_gate(
+            &ports,
+            &bound_of(&[("model", "m1")]),
+            &ids(&["m1"]),
+            Some(&odd)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn enable_gate_allows_bound_existing_and_allowed_verdict() {
+        let ports = ports_of(&["@model", "@model tools", "@connector:github"]);
+        let b = bound_of(&[("model", "m1"), ("connector:github", "gh1")]);
+        let v = json!({"allowed": true, "reason": "ok"});
+        assert_eq!(
+            enable_gate(&ports, &b, &ids(&["m1", "gh1", "other"]), Some(&v)),
+            Ok(())
+        );
+        assert_eq!(enable_gate(&ports, &b, &ids(&["m1", "gh1"]), None), Ok(()));
+        assert_eq!(enable_gate(&[], &BTreeMap::new(), &ids(&[]), None), Ok(()));
+    }
+
+    /// The blueprint worker plus evals, packed, behind the fakes.
+    async fn packed_blueprint_with_evals(evals: &[(&str, &str)], reply: Value) -> WithUser {
+        let f = blueprint_worker();
+        for (name, text) in evals {
+            f.files
+                .lock()
+                .unwrap()
+                .insert(format!("w/evals/{name}"), text.to_string());
+        }
+        let both = WithUser::new(f, reply);
+        let r = pack(&both, "w", "pack").await;
+        assert!(r.get("error").is_none(), "{r}");
+        both
+    }
+
+    async fn enable_with_worker(both: &WithUser, bindings: Value) -> Value {
+        install(
+            both,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &bindings,
+            1.0,
+            "lead",
+            true,
+            false,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn install_approve_with_unbound_port_is_refused_and_creates_nothing() {
+        let both = packed_blueprint(imported_reply()).await;
+        let r = install_blueprint(&both, "lead", true, false, Value::Null).await;
+        let e = r["error"].as_str().unwrap();
+        assert!(
+            e.starts_with("enable refused:") && e.contains("connector:github"),
+            "{r}"
+        );
+        assert_eq!(
+            r["enable_error"].as_str().unwrap(),
+            &e["enable refused: ".len()..]
+        );
+        assert!(
+            both.asks().is_empty(),
+            "no import_subtree: {:?}",
+            both.asks()
+        );
+        assert_eq!(r["installed_as"], "template");
+        assert!(both.files.get("templates/w-1.0/pack.yaml").is_some());
+    }
+
+    #[tokio::test]
+    async fn install_approve_with_missing_bound_agent_is_refused() {
+        let both = packed_blueprint(imported_reply()).await;
+        both.live.lock().unwrap().retain(|id| id != "gh1");
+        let r = install_blueprint(&both, "lead", true, false, github_bound()).await;
+        let e = r["error"].as_str().unwrap();
+        assert!(
+            e.contains("`connector:github`") && e.contains("does not exist"),
+            "{r}"
+        );
+        assert!(both.asks().is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_approve_finds_a_bound_agent_on_a_later_page() {
+        let both = packed_blueprint(imported_reply()).await;
+        {
+            let mut live = both.live.lock().unwrap();
+            live.insert(0, "a".into());
+            live.insert(0, "b".into());
+        }
+        let r = install_blueprint(&both, "lead", true, false, github_bound()).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(both.asks().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn install_approve_fails_closed_when_the_agent_list_is_unreadable() {
+        struct NoKernel(WithUser);
+        #[async_trait::async_trait]
+        impl Peers for NoKernel {
+            async fn ask(&self, to: &str, p: Value) -> Value {
+                if to == "kernel" {
+                    return json!({"error": "unauthorized"});
+                }
+                self.0.ask(to, p).await
+            }
+        }
+        let both = NoKernel(packed_blueprint(imported_reply()).await);
+        let r = install(
+            &both,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(1),
+            &github_bound(),
+            1.0,
+            "lead",
+            true,
+            false,
+        )
+        .await;
+        assert!(
+            r["error"].as_str().unwrap().contains("enable refused"),
+            "{r}"
+        );
+        assert!(both.0.asks().is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_approve_with_failing_evals_is_refused() {
+        let both = packed_blueprint_with_evals(
+            &[("a.yaml", PASSING_EVAL), ("b.yaml", FAILING_EVAL)],
+            imported_reply(),
+        )
+        .await;
+        let r = enable_with_worker(&both, github_bound()).await;
+        assert!(
+            r["error"].as_str().unwrap().contains("enable refused"),
+            "{r}"
+        );
+        assert_eq!(r["enable"]["allowed"], false, "{r}");
+        assert!(r["evals"]["pass_rate"].is_number(), "{r}");
+        assert!(both.asks().is_empty());
+        assert!(both.files.get("templates/w-1.0/evals/b.yaml").is_some());
+    }
+
+    #[tokio::test]
+    async fn install_approve_with_passing_evals_and_live_agents_imports() {
+        let both = packed_blueprint_with_evals(&[("a.yaml", PASSING_EVAL)], imported_reply()).await;
+        let r = enable_with_worker(&both, github_bound()).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["enable"]["allowed"], true, "{r}");
+        assert_eq!(r["installed_as"], "worker");
+        let asks = both.asks();
+        assert_eq!(asks.len(), 1, "{asks:?}");
+        assert_eq!(asks[0]["bind"], json!({"@connector:github": "gh1"}));
+        assert_eq!(asks[0]["approve"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn install_preview_does_not_gate() {
+        let both = packed_blueprint_with_evals(&[("a.yaml", FAILING_EVAL)], preview_reply()).await;
+        let r = install(
+            &both,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+            "lead",
+            false,
+            false,
+        )
+        .await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["approval"], preview_reply());
+        assert_eq!(r["bindings"]["unbound"], json!(["connector:github"]));
+        assert_eq!(r["enable"]["allowed"], false, "{r}");
+        assert_eq!(both.asks()[0]["approve"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn enable_installed_template_takes_bindings_json() {
+        let both = packed_blueprint(imported_reply()).await;
+        // first install: the template with its bindings, no agent
+        let r = install_blueprint(&both, "", false, false, github_bound()).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert!(both.files.get("templates/w-1.0/bindings.json").is_some());
+        // enable it from the installed copy, with no bindings in the payload
+        let r = install_blueprint(&both, "lead", true, false, Value::Null).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["installed_as"], "worker");
+        assert_eq!(r["bindings"]["bound"], json!({"connector:github": "gh1"}));
+        assert_eq!(r["files"], json!([]), "no second copy");
+        assert_eq!(both.asks()[0]["bind"], json!({"@connector:github": "gh1"}));
+        // a payload binding overrides the saved one, and is not written back
+        both.live.lock().unwrap().push("gh2".into());
+        let r = install_blueprint(
+            &both,
+            "lead",
+            true,
+            false,
+            json!({"connector:github": "gh2"}),
+        )
+        .await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(both.asks()[1]["bind"], json!({"@connector:github": "gh2"}));
+        assert!(both
+            .files
+            .get("templates/w-1.0/bindings.json")
+            .unwrap()
+            .contains("gh1"));
+    }
+
+    #[tokio::test]
+    async fn enable_installed_template_without_bindings_is_refused() {
+        let both = packed_blueprint(imported_reply()).await;
+        install_blueprint(&both, "", false, false, Value::Null).await;
+        let r = install_blueprint(&both, "lead", true, false, Value::Null).await;
+        assert!(
+            r["error"].as_str().unwrap().contains("unbound ports"),
+            "{r}"
+        );
+        assert!(both.asks().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reinstall_without_parent_id_is_still_refused() {
+        let both = packed_blueprint(imported_reply()).await;
+        install_blueprint(&both, "", false, false, Value::Null).await;
+        let r = install_blueprint(&both, "", false, false, Value::Null).await;
+        assert_eq!(r["error"], "version already installed", "{r}");
+    }
+
+    #[tokio::test]
+    async fn reinstall_of_a_changed_pack_is_still_refused() {
+        let both = packed_blueprint(imported_reply()).await;
+        install_blueprint(&both, "", false, false, github_bound()).await;
+        // the same name and version, other content: repack with a changed directive
+        both.files.files.lock().unwrap().insert(
+            "w/blueprint/w/directive.md".into(),
+            "Something else.".into(),
+        );
+        let r = pack(&both, "w", "pack2").await;
+        assert!(r.get("error").is_none(), "{r}");
+        let r = install(
+            &both,
+            "pack2",
+            "templates",
+            "",
+            Duration::from_secs(1),
+            &github_bound(),
+            1.0,
+            "lead",
+            true,
+            false,
+        )
+        .await;
+        assert_eq!(r["error"], "version already installed", "{r}");
+        assert!(both.asks().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reinstall_of_a_tampered_copy_is_refused() {
+        let both = packed_blueprint(imported_reply()).await;
+        install_blueprint(&both, "", false, false, github_bound()).await;
+        both.files.files.lock().unwrap().insert(
+            "templates/w-1.0/blueprint/w/directive.md".into(),
+            "Tampered.".into(),
+        );
+        let r = install_blueprint(&both, "lead", true, false, Value::Null).await;
+        assert_eq!(r["error"], "installed copy differs from the pack", "{r}");
+        assert!(both.asks().is_empty());
     }
 
     #[test]
@@ -2801,6 +3289,7 @@ mod tests {
                     imported_reply()
                 }
                 "board" => self.board_reply.clone(),
+                "kernel" => json!({"agents": [{"id": "gh-1"}]}),
                 _ => match p["text"].as_str() {
                     Some("good") => json!({"text": "ok"}),
                     _ => json!({"text": "nope"}),
@@ -2844,7 +3333,7 @@ mod tests {
             "templates",
             worker,
             Duration::from_secs(5),
-            &Value::Null,
+            &json!({"connector:github": "gh-1"}),
             1.0,
             parent,
             approve,
@@ -3015,7 +3504,6 @@ mod tests {
         }
         let install_doc = docs["install"].as_str().unwrap();
         assert!(install_doc.contains("min_pass_rate"), "{install_doc}");
-        assert!(install_doc.contains("enforced"), "{install_doc}");
-        assert!(!install_doc.contains("advisory"), "{install_doc}");
+        assert!(install_doc.contains("signing_key"), "{install_doc}");
     }
 }

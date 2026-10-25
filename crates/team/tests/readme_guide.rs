@@ -322,8 +322,43 @@ fn readme_not_yet_no_longer_lists_the_pack_cli_and_mcp() {
         "the pack CLI and MCP surfaces are built, so `Not yet` must not list them"
     );
     assert!(
-        line.contains("the web UI surface for these verbs"),
-        "`Not yet` must still list the web UI surface"
+        !line.contains("the web UI surface"),
+        "the packs panel is built, so `Not yet` must not list it"
+    );
+}
+
+#[test]
+fn readme_describes_the_packs_panel() {
+    let text = readme();
+    assert!(
+        text.contains("**Packs panel.**"),
+        "README must describe the panel"
+    );
+    assert!(
+        text.contains("`packs_view`"),
+        "README must name the panel's agent"
+    );
+    assert!(
+        text.contains("**Enabling.**"),
+        "README must describe the enable gate"
+    );
+    let line = text
+        .lines()
+        .find(|l| l.starts_with("Not yet: signatures"))
+        .expect("README must keep its `Not yet` line");
+    for gone in [
+        "enforcing the enable verdict",
+        "enforcing bindings at enable time",
+        "a pack browser panel",
+    ] {
+        assert!(
+            !line.contains(gone),
+            "`Not yet` still lists `{gone}`, which is built"
+        );
+    }
+    assert!(
+        text.contains("asks, before it sends, for the agent id of each port"),
+        "README must say the CLI asks for bindings"
     );
 }
 

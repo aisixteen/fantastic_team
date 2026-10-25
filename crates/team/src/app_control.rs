@@ -9,7 +9,10 @@ use fantastic_kernel::{Item, Kernel, Status};
 use serde_json::{json, Value};
 
 use crate::cadencer::HANDLER_MODULE;
-use crate::start;
+use crate::{page, start, tree};
+
+/// The dispatcher verbs the web page's socket leg may call.
+const PAGE_VERBS: [&str; 4] = ["sidebar", "tree", "open", "control"];
 
 /// Where the team is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +32,9 @@ pub enum State {
 /// Options for [`TeamHandle::start`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TeamOptions {
-    /// A web UI port. Not wired into the handle yet; `None` is headless.
+    /// A web UI port on 127.0.0.1. `Some(p)`: the handle serves the dispatcher page
+    /// there (see [`TeamHandle::url`]) until it is stopped; a port that is taken is
+    /// an error and leaves nothing running. `None` is headless.
     pub port: Option<u16>,
 }
 
@@ -45,22 +50,39 @@ pub struct TeamHandle {
     state: State,
     /// Agents this handle paused, each with the message that undoes it.
     held: Vec<(String, Value)>,
+    /// The port the web UI is served on, while it is.
+    port: Option<u16>,
 }
 
 impl TeamHandle {
-    /// Boot the team in `workdir` and start it. Fails if `opts.port` is set,
-    /// because serving a port from a handle is not wired yet.
+    /// Boot the team in `workdir` and start it. With `opts.port` it also serves
+    /// the dispatcher page on that port; when that fails the kernel is shut down
+    /// and the directory lock released before the error is returned.
     pub async fn start(workdir: &Path, opts: TeamOptions) -> Result<TeamHandle, String> {
-        if opts.port.is_some() {
-            return Err("serving a port from a handle is not wired yet; start headless".into());
-        }
         let kernel = start(workdir).await.map_err(|e| e.to_string())?;
+        if let Some(port) = opts.port {
+            if let Err(e) = serve_web(&kernel, port).await {
+                drop_web(&kernel).await;
+                kernel.shutdown().await;
+                return match bootstrap::shutdown(workdir) {
+                    Ok(()) => Err(e),
+                    Err(r) => Err(format!("{e}; releasing the lock failed: {r}")),
+                };
+            }
+        }
         Ok(TeamHandle {
             dir: workdir.to_path_buf(),
             kernel: Some(kernel),
             state: State::Running,
             held: Vec::new(),
+            port: opts.port,
         })
+    }
+
+    /// Where the web UI is served, when the handle was started with a port.
+    pub fn url(&self) -> Option<String> {
+        self.port
+            .map(|p| format!("http://127.0.0.1:{p}{}", page::PAGE_PATH))
     }
 
     /// Hold the team's work. Every agent that answers `pause` is sent it, and
@@ -116,6 +138,10 @@ impl TeamHandle {
             return Ok(());
         }
         if let Some(kernel) = self.kernel.take() {
+            if self.port.take().is_some() {
+                // The host's record would otherwise bind the port at the next start.
+                drop_web(&kernel).await;
+            }
             kernel.shutdown().await;
         }
         self.held.clear();
@@ -233,6 +259,108 @@ impl Drop for TeamHandle {
                 let _ = bootstrap::shutdown(&dir);
             }
         }
+    }
+}
+
+/// Serve the dispatcher page on `127.0.0.1:port`: a `web` host under the root, the
+/// page agent and the socket leg under it, then boot the host (it mounts the
+/// children, then listens). A taken port makes the boot fail. Safe to repeat:
+/// what exists is kept, and the host's port is set.
+async fn serve_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
+    let live = |id: &str| {
+        kernel
+            .agents
+            .contains_key(&fantastic_kernel::AgentId::from(id))
+    };
+    // The host binds in a task of its own, so a taken port would only be logged.
+    if !live(page::WEB_ID) {
+        std::net::TcpListener::bind(("127.0.0.1", port))
+            .map_err(|e| format!("serving the web UI on port {port} failed: {e}"))?;
+    }
+    if live(page::WEB_ID) {
+        let upd = json!({"type": "update_agent", "id": page::WEB_ID, "port": port});
+        send_one(kernel, DEFAULT_ROOT_ID, upd).await?;
+    } else {
+        let rec = json!({"type": "create_agent", "id": page::WEB_ID, "parent_id": DEFAULT_ROOT_ID,
+            "handler_module": fantastic_web::HANDLER_MODULE, "port": port});
+        send_one(kernel, DEFAULT_ROOT_ID, rec).await?;
+    }
+    if !live(page::PAGE_ID) {
+        let rec = json!({"type": "create_agent", "id": page::PAGE_ID, "parent_id": page::WEB_ID,
+            "handler_module": page::HANDLER_MODULE,
+            "verbs": {"read_stream": page::READ_STREAM_DOC}});
+        send_one(kernel, DEFAULT_ROOT_ID, rec).await?;
+    }
+    if !live(page::WS_ID) {
+        // The leg is the page's one principal: it may call the dispatcher's page verbs
+        // and the chat verbs of the workers, nothing else.
+        let rec = json!({"type": "create_agent", "id": page::WS_ID, "parent_id": page::WEB_ID,
+            "handler_module": fantastic_web_ws::HANDLER_MODULE,
+            "ingress_rule": "allow_all_ingress"});
+        send_one(kernel, DEFAULT_ROOT_ID, rec).await?;
+    }
+    // `web` mounts the leg by asking it for its routes, and serves the page by
+    // reading `read_stream` as itself: both ends of both edges.
+    let web = fantastic_kernel::AgentId::from(page::WEB_ID);
+    for (served, verb) in [(page::WS_ID, "get_routes"), (page::PAGE_ID, "read_stream")] {
+        let verbs = json!([verb]);
+        kernel.edit_callable_by(&fantastic_kernel::AgentId::from(served), |cb| {
+            cb.insert(page::WEB_ID.into(), verbs.clone());
+            true
+        })?;
+        kernel.edit_can_call(&web, |cc| {
+            cc.insert(served.into(), verbs.clone());
+            true
+        })?;
+    }
+    let leg = fantastic_kernel::AgentId::from(page::WS_ID);
+    let dispatcher = fantastic_kernel::AgentId::from(tree::DISPATCHER_ID);
+    if live(tree::DISPATCHER_ID) {
+        let verbs = json!(PAGE_VERBS);
+        kernel.edit_can_call(&leg, |cc| {
+            cc.insert(tree::DISPATCHER_ID.into(), verbs.clone());
+            true
+        })?;
+        kernel.edit_callable_by(&dispatcher, |cb| {
+            cb.insert(page::WS_ID.into(), verbs.clone());
+            true
+        })?;
+        let workers: Vec<String> = kernel
+            .agents
+            .get(&dispatcher)
+            .and_then(|a| a.meta.read().ok().map(|m| m.get("groups").cloned()))
+            .flatten()
+            .and_then(|g| g.as_object().cloned())
+            .map(|g| {
+                g.values()
+                    .flat_map(|m| m.as_array().cloned().unwrap_or_default())
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        tree::grant_chat_to(kernel, &workers, page::WS_ID);
+    }
+    kernel.flush_records().await;
+    send_one(kernel, page::WEB_ID, json!({"type": "boot"}))
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("serving the web UI on port {port} failed: {e}"))
+}
+
+/// Remove the web host and its children (the page and the socket leg), so the
+/// port is closed and no record is left to bind it again. Best effort.
+async fn drop_web(kernel: &Arc<Kernel>) {
+    if kernel
+        .agents
+        .contains_key(&fantastic_kernel::AgentId::from(page::WEB_ID))
+    {
+        let _ = send_one(
+            kernel,
+            DEFAULT_ROOT_ID,
+            json!({"type": "delete_agent", "id": page::WEB_ID}),
+        )
+        .await;
+        kernel.flush_records().await;
     }
 }
 
@@ -456,5 +584,174 @@ mod tests {
         assert!(h.pause().await.is_err());
         h.stop().await.unwrap();
         assert_eq!(h.state(), State::Stopped);
+    }
+
+    /// A port that is free right now (bound, read, released).
+    fn free_port() -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    }
+
+    /// One HTTP/1.0 GET on 127.0.0.1:port; the whole response as text.
+    async fn http_get(port: u16, path: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut conn = None;
+        for _ in 0..50 {
+            match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                Ok(c) => {
+                    conn = Some(c);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(40)).await,
+            }
+        }
+        let mut c = conn.expect("the port never opened");
+        let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+        c.write_all(req.as_bytes()).await.unwrap();
+        let mut out = Vec::new();
+        c.read_to_end(&mut out).await.unwrap();
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    fn status_of(resp: &str) -> u16 {
+        assert!(resp.starts_with("HTTP/1."), "{resp}");
+        resp.split_whitespace().nth(1).unwrap().parse().unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_with_a_port_serves_the_web_ui() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let port = free_port();
+        let mut h = TeamHandle::start(dir.path(), TeamOptions { port: Some(port) })
+            .await
+            .unwrap();
+        assert_eq!(
+            h.url().unwrap(),
+            format!("http://127.0.0.1:{port}/team_page/file/index.html")
+        );
+        let resp = http_get(port, page::PAGE_PATH).await;
+        let status = status_of(&resp);
+        assert!(status == 200 || (300..400).contains(&status), "{resp}");
+        assert_eq!(status, 200, "{resp}");
+        assert!(
+            resp.contains("function renderSidebar("),
+            "the dispatcher page is served"
+        );
+        assert!(
+            resp.contains("window.fantastic = {"),
+            "with the socket shim"
+        );
+        // A file the page does not serve is a 404.
+        assert_eq!(
+            status_of(&http_get(port, "/team_page/file/other.txt").await),
+            404
+        );
+        h.stop().await.unwrap();
+        assert_eq!(h.state(), State::Stopped);
+        // Stopped: the port is closed and the host's record is gone.
+        assert!(tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err());
+        let mut again = TeamHandle::start(dir.path(), TeamOptions::default())
+            .await
+            .unwrap();
+        assert!(again.url().is_none());
+        assert!(!again
+            .kernel
+            .as_ref()
+            .unwrap()
+            .agents
+            .contains_key(&fantastic_kernel::AgentId::from(page::WEB_ID)));
+        again.stop().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_with_a_busy_port_fails_and_releases_the_lock() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = busy.local_addr().unwrap().port();
+        let err = TeamHandle::start(dir.path(), TeamOptions { port: Some(port) })
+            .await
+            .err()
+            .expect("a busy port is an error");
+        assert!(err.contains(&port.to_string()), "{err}");
+        // The lock is free again: a headless start works.
+        let mut h = TeamHandle::start(dir.path(), TeamOptions::default())
+            .await
+            .expect("the lock was released");
+        h.stop().await.unwrap();
+        drop(busy);
+    }
+
+    /// The page's socket leg reaches the dispatcher: a raw websocket handshake and one
+    /// `call` frame for `sidebar`, answered by a `reply` frame with the same id.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_page_socket_reaches_the_dispatcher() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::TempDir::new().unwrap();
+        let port = free_port();
+        // The dispatcher exists before the host is served, as after a first start.
+        let k = start(dir.path()).await.unwrap();
+        let mk = json!({"type": "create_agent", "id": "dispatcher", "parent_id": DEFAULT_ROOT_ID,
+            "handler_module": crate::dispatcher::HANDLER_MODULE, "groups": {}});
+        send_one(&k, DEFAULT_ROOT_ID, mk).await.unwrap();
+        serve_web(&k, port).await.unwrap();
+        let mut c = loop {
+            match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                Ok(c) => break c,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(40)).await,
+            }
+        };
+        let hs = format!(
+            "GET /team_ws/ws HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        );
+        c.write_all(hs.as_bytes()).await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut b = [0u8; 1];
+            c.read_exact(&mut b).await.unwrap();
+            head.push(b[0]);
+        }
+        assert!(
+            String::from_utf8_lossy(&head).starts_with("HTTP/1.1 101"),
+            "{}",
+            String::from_utf8_lossy(&head)
+        );
+        let msg = json!({"type": "call", "target": "dispatcher", "payload": {"type": "sidebar"}, "id": "p1"}).to_string();
+        assert!(msg.len() < 126);
+        let mut frame = vec![0x81, 0x80 | msg.len() as u8, 0, 0, 0, 0];
+        frame.extend_from_slice(msg.as_bytes());
+        c.write_all(&frame).await.unwrap();
+        // The leg also announces what it handles as `event` frames: read to the reply.
+        let reply = loop {
+            let mut h2 = [0u8; 2];
+            c.read_exact(&mut h2).await.unwrap();
+            let len = match h2[1] & 0x7f {
+                126 => {
+                    let mut l = [0u8; 2];
+                    c.read_exact(&mut l).await.unwrap();
+                    u16::from_be_bytes(l) as usize
+                }
+                127 => {
+                    let mut l = [0u8; 8];
+                    c.read_exact(&mut l).await.unwrap();
+                    u64::from_be_bytes(l) as usize
+                }
+                n => n as usize,
+            };
+            let mut body = vec![0u8; len];
+            c.read_exact(&mut body).await.unwrap();
+            let frame: Value = serde_json::from_slice(&body).unwrap();
+            if frame["type"] != "event" {
+                break frame;
+            }
+        };
+        assert_eq!(reply["type"], "reply", "{reply}");
+        assert_eq!(reply["id"], "p1");
+        assert!(reply["data"].get("error").is_none(), "{reply}");
+        assert_eq!(reply["data"]["groups"], json!([]), "{reply}");
+        drop_web(&k).await;
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
     }
 }
