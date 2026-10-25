@@ -439,6 +439,93 @@ pub(crate) fn refused_by_scan(report: &pack_scan::ScanReport) -> Value {
     json!({"error": "pack refused by scan", "findings": findings})
 }
 
+/// Check a downloaded pack, given as `(relative path, text)` and holding
+/// `pack.yaml`, against the hash the signed index pinned. Nothing is trusted
+/// until every check passes: the manifest must parse and validate, name its
+/// content hash as the pin, list files that are all present, hash to the pin
+/// when recomputed from the downloaded bytes, and pass the secrets scan. The
+/// error for a wrong pin says `hash`; for tampered file text `content hash
+/// mismatch`. Returns the manifest.
+pub fn verify_download(
+    files: &[(String, String)],
+    pinned_hash: &str,
+) -> Result<pack_manifest::Manifest, Value> {
+    let text = files
+        .iter()
+        .find(|(p, _)| p == pack_manifest::MANIFEST_FILE)
+        .map(|(_, t)| t)
+        .ok_or_else(|| err("download has no pack.yaml"))?;
+    let manifest =
+        pack_manifest::Manifest::parse(text).map_err(|e| err(&format!("pack.yaml: {e}")))?;
+    manifest.validate().map_err(|e| err(&e))?;
+    if !valid_part(&manifest.name) || !valid_part(&manifest.version) {
+        return Err(err("pack name or version is not a safe path segment"));
+    }
+    if pinned_hash.is_empty() || manifest.content_hash != pinned_hash {
+        return Err(err("download does not match the pinned hash"));
+    }
+    let mut bytes: Vec<(String, Vec<u8>)> = Vec::new();
+    for rel in &manifest.files {
+        match files.iter().find(|(p, _)| p == rel) {
+            Some((_, t)) => bytes.push((rel.clone(), t.clone().into_bytes())),
+            None => return Err(err(&format!("pack file missing: {rel}"))),
+        }
+    }
+    if pack_manifest::content_hash(&bytes) != pinned_hash {
+        return Err(err("content hash mismatch"));
+    }
+    let report = pack_scan::scan(&bytes);
+    if report.refused {
+        return Err(refused_by_scan(&report));
+    }
+    Ok(manifest)
+}
+
+/// Verify a downloaded pack (see [`verify_download`]) and only then write it
+/// under `stage_dir` through the `files` agent: `pack.yaml` and each listed
+/// file. Refuses an existing `stage_dir`. Nothing is written when a check
+/// fails. Replies `{staged, name, version, hash}`; the staged folder is then
+/// installed with the ordinary `install`, which checks the hash and the scan
+/// again.
+pub async fn stage_download<P: Peers>(
+    p: &P,
+    files: &[(String, String)],
+    pinned_hash: &str,
+    stage_dir: &str,
+) -> Value {
+    let manifest = match verify_download(files, pinned_hash) {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+    let stage = stage_dir.trim_end_matches('/');
+    if stage.is_empty() || stage.contains("..") {
+        return err("stage is not a safe folder");
+    }
+    if exists(p, stage).await {
+        return err("stage folder already exists");
+    }
+    let mut failed = Vec::new();
+    let names = std::iter::once(pack_manifest::MANIFEST_FILE.to_string())
+        .chain(manifest.files.iter().cloned());
+    for rel in names {
+        let Some((_, text)) = files.iter().find(|(p, _)| *p == rel) else {
+            continue;
+        };
+        if !write(p, &format!("{stage}/{rel}"), text).await {
+            failed.push(rel);
+        }
+    }
+    if !failed.is_empty() {
+        return json!({"error": "write failed", "failed": failed});
+    }
+    json!({
+        "staged": stage,
+        "name": manifest.name,
+        "version": manifest.version,
+        "hash": manifest.content_hash,
+    })
+}
+
 /// Pack the worker whose record is `<worker>/worker.json` into the directory `out`.
 /// Refuses any existing `out` (a directory with anything in it or empty), a worker
 /// with no name, a name or version that is not a safe path segment, and a pack the
@@ -3265,6 +3352,112 @@ mod tests {
         crate::register_team(&mut reg);
         let names: Vec<&str> = reg.catalog().map(|(n, _)| n).collect();
         assert!(names.contains(&HANDLER_MODULE));
+    }
+
+    /// The files of a packed worker as a download would carry them.
+    async fn packed_files() -> (Vec<(String, String)>, String) {
+        let f = worker();
+        pack(&f, "w", "pack").await;
+        let yaml = f.get("pack/pack.yaml").unwrap();
+        let m = pack_manifest::Manifest::parse(&yaml).unwrap();
+        let mut files = vec![("pack.yaml".to_string(), yaml)];
+        for rel in &m.files {
+            files.push((rel.clone(), f.get(&format!("pack/{rel}")).unwrap()));
+        }
+        (files, m.content_hash)
+    }
+
+    #[tokio::test]
+    async fn verify_download_accepts_the_pinned_files() {
+        let (files, hash) = packed_files().await;
+        let m = verify_download(&files, &hash).unwrap();
+        assert_eq!(m.name, "w");
+    }
+
+    #[tokio::test]
+    async fn verify_download_refuses_a_wrong_hash() {
+        let (files, _) = packed_files().await;
+        let e = verify_download(&files, &"0".repeat(64)).unwrap_err();
+        assert!(e["error"].as_str().unwrap().contains("hash"), "{e}");
+        assert!(verify_download(&files, "").is_err());
+    }
+
+    #[tokio::test]
+    async fn verify_download_refuses_a_tampered_file() {
+        let (mut files, hash) = packed_files().await;
+        let w = files.iter_mut().find(|(p, _)| p == "worker.json").unwrap();
+        w.1.push(' ');
+        let e = verify_download(&files, &hash).unwrap_err();
+        assert!(
+            e["error"]
+                .as_str()
+                .unwrap()
+                .contains("content hash mismatch"),
+            "{e}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_download_refuses_a_scan_failure() {
+        let f = FakeFiles::default();
+        let body = "{\"key\":\"sk-abcdefghijklmnopqrstuvwxyz0123456789\"}";
+        let hash = pack_manifest::content_hash(&[("worker.json".to_string(), body.into())]);
+        let yaml = format!(
+            "name: w\nversion: \"1.0\"\nauthor: a\nlicense: MIT\ncontent_hash: {hash}\nfiles:\n  - worker.json\n"
+        );
+        let files = vec![
+            ("pack.yaml".to_string(), yaml),
+            ("worker.json".to_string(), body.to_string()),
+        ];
+        let e = verify_download(&files, &hash).unwrap_err();
+        assert_eq!(e["error"], json!("pack refused by scan"), "{e}");
+        let r = stage_download(&f, &files, &hash, "stage").await;
+        assert!(r.get("error").is_some());
+        assert!(f.files.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stage_download_writes_nothing_on_a_wrong_hash() {
+        let (files, _) = packed_files().await;
+        let f = FakeFiles::default();
+        let r = stage_download(&f, &files, &"0".repeat(64), "stage").await;
+        assert!(r.get("error").is_some(), "{r}");
+        assert!(f.files.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stage_download_refuses_an_existing_stage_dir() {
+        let (files, hash) = packed_files().await;
+        let f = FakeFiles::with("stage/old.txt", "x");
+        let r = stage_download(&f, &files, &hash, "stage").await;
+        assert!(r["error"].as_str().unwrap().contains("exists"), "{r}");
+        assert!(f.get("stage/pack.yaml").is_none());
+    }
+
+    #[tokio::test]
+    async fn stage_then_install_round_trips() {
+        let (files, hash) = packed_files().await;
+        let f = FakeFiles::default();
+        let r = stage_download(&f, &files, &hash, "stage").await;
+        assert_eq!(r["staged"], json!("stage"), "{r}");
+        assert_eq!(r["hash"], json!(hash));
+        assert!(f.get("stage/pack.yaml").is_some());
+        assert!(f.get("stage/worker.json").is_some());
+        let i = install(
+            &f,
+            "stage",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+            "",
+            false,
+            false,
+        )
+        .await;
+        assert_eq!(i["installed_as"], "template", "{i}");
+        assert!(f.get("templates/w-1.0/worker.json").is_some());
     }
 
     // ---- signed records, enforced enable, shift outcomes (#41) ----

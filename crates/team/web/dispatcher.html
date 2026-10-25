@@ -26,9 +26,9 @@
   .state-failed { color: #b91c1c; }
   .state-done { color: #15803d; }
   .error { color: #b91c1c; }
-  #packs input { font: inherit; padding: 4px 6px; min-width: 0; }
-  #packs .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
-  #packs button { font: inherit; min-height: 32px; padding: 4px 10px; }
+  #packinstall input { font: inherit; padding: 4px 6px; min-width: 0; }
+  #packinstall .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+  #packinstall button { font: inherit; min-height: 32px; padding: 4px 10px; }
   #pack-result div { margin: 2px 0; overflow-wrap: anywhere; }
   .task { color: #6b7280; }
   .minutes, .pr { color: #6b7280; font-size: 0.9em; }
@@ -64,6 +64,17 @@
   .composer { display: flex; gap: 6px; flex: none; padding-top: 6px; border-top: 1px solid #ddd; }
   .composer input { flex: 1; min-width: 0; font: inherit; padding: 6px 8px; }
   .composer button { font: inherit; min-height: 32px; padding: 4px 10px; }
+  #packs { margin-top: 24px; border-top: 1px solid #e5e7eb; padding-top: 8px; }
+  #packs .cards { display: flex; flex-wrap: wrap; gap: 8px; }
+  #packs .card { border: 1px solid #ddd; border-radius: 6px; padding: 6px 10px; cursor: pointer; min-width: 160px; }
+  #packs .card.revoked { color: #b91c1c; }
+  #packs .detail { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin-top: 8px; }
+  #packs button { font: inherit; min-height: 32px; padding: 4px 10px; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #111; color: #eee; }
+    .item:hover { background: #222; }
+    #packs .card, #packs .detail, .cell { border-color: #444; }
+  }
   @media (max-width: 430px) {
     #layout { flex-direction: column; gap: 8px; }
     #sidebar { width: 100%; }
@@ -78,7 +89,16 @@
   <nav id="sidebar" aria-label="Workers and subagents"></nav>
   <section id="pane" hidden></section>
 </div>
-<section id="packs" class="cell" aria-label="Pack install">
+<section id="packs" aria-label="Packs">
+  <h2>Packs</h2>
+  <label><input type="checkbox" id="packs-optin"> Show updates and their permission changes</label>
+  <div id="packs-note" class="task"></div>
+  <div id="packs-warnings" class="error"></div>
+  <div id="packs-cards" class="cards"></div>
+  <div id="packs-detail" class="detail" hidden></div>
+  <div id="packs-updates"></div>
+</section>
+<section id="packinstall" class="cell" aria-label="Pack install">
   <h3>Pack install</h3>
   <div class="row">
     <input id="pack-pack" placeholder="pack" aria-label="pack">
@@ -947,7 +967,116 @@ document.getElementById('pack-install').addEventListener('click', installPack);
 document.getElementById('back').addEventListener('click', back);
 window.addEventListener('dispatcher:back', back);
 
+// Packs panel. It draws the `browser` view-model of the pack_listing agent
+// ({cards, selected?, opt_in, updates, warnings, note?}) and holds no logic of
+// its own: selecting a card or flipping the opt-in asks `browser` again, and
+// the buttons send the existing verbs (`show`, `updates`, `fetch` to
+// pack_listing; `install` and `eval` to pack). Values go in as text only.
+let packsSelected = null;
+
+function listLine(label, items) {
+  const p = el('p', '', label + ': ' + (items && items.length ? items.join(', ') : 'none'));
+  return p;
+}
+
+function packAction(agent, payload) {
+  askNode(agent, payload).then(function (r) {
+    document.getElementById('packs-note').textContent =
+      r && r.error ? String(r.error) : JSON.stringify(r).slice(0, 400);
+  }).catch(function (err) {
+    showError(String(err && err.message ? err.message : err));
+  });
+}
+
+function drawPacks(vm) {
+  document.getElementById('packs-note').textContent = vm.note || '';
+  document.getElementById('packs-warnings').textContent = (vm.warnings || []).join(' ');
+  document.getElementById('packs-optin').checked = !!vm.opt_in;
+  const cards = document.getElementById('packs-cards');
+  cards.textContent = '';
+  (vm.cards || []).forEach(function (c) {
+    const card = el('div', 'card' + (c.revoked ? ' revoked' : ''));
+    card.dataset.pack = c.name;
+    card.appendChild(el('strong', '', c.name + ' ' + c.version));
+    card.appendChild(el('div', '', c.summary || ''));
+    card.appendChild(el('div', 'task', (c.installed ? 'installed ' : '') + (c.revoked ? 'revoked' : '')));
+    cards.appendChild(card);
+  });
+  const detail = document.getElementById('packs-detail');
+  detail.textContent = '';
+  detail.hidden = !vm.selected;
+  if (vm.selected) {
+    const s = vm.selected;
+    const preview = s.permission_preview || {};
+    detail.appendChild(el('h3', '', s.name + ' ' + s.version));
+    detail.appendChild(listLine('Ports', preview.ports));
+    detail.appendChild(listLine('Permissions', preview.grants));
+    const decision = s.install_decision || {};
+    detail.appendChild(el('p', decision.allow ? '' : 'error',
+      decision.allow ? 'Install allowed' : 'Install refused: ' + (decision.reason || '')));
+    const show = el('button', '', 'Show');
+    show.type = 'button';
+    show.dataset.act = 'show';
+    const fetchBtn = el('button', '', 'Fetch');
+    fetchBtn.type = 'button';
+    fetchBtn.dataset.act = 'fetch';
+    const install = el('button', '', 'Install');
+    install.type = 'button';
+    install.dataset.act = 'install';
+    const evalBtn = el('button', '', 'Eval');
+    evalBtn.type = 'button';
+    evalBtn.dataset.act = 'eval';
+    [show, fetchBtn, install, evalBtn].forEach(function (b) { detail.appendChild(b); });
+  }
+  const ups = document.getElementById('packs-updates');
+  ups.textContent = '';
+  (vm.updates || []).forEach(function (u) {
+    const d = u.permission_diff || {};
+    ups.appendChild(el('p', '', u.name + ' ' + u.installed_version + ' to ' + u.new_version +
+      ' adds ports ' + ((d.added_ports || []).join(', ') || 'none') +
+      ', grants ' + ((d.added_grants || []).join(', ') || 'none') +
+      '; removes ports ' + ((d.removed_ports || []).join(', ') || 'none') +
+      ', grants ' + ((d.removed_grants || []).join(', ') || 'none')));
+  });
+}
+
+async function loadPacks() {
+  try {
+    const optIn = document.getElementById('packs-optin').checked;
+    const vm = await askNode('pack_listing', { type: 'browser', selected: packsSelected, opt_in: optIn });
+    if (vm && vm.error) { document.getElementById('packs-note').textContent = String(vm.error); return; }
+    drawPacks(vm || {});
+  } catch (err) {
+    document.getElementById('packs-note').textContent = String(err && err.message ? err.message : err);
+  }
+}
+
+document.getElementById('packs-optin').addEventListener('change', loadPacks);
+document.getElementById('packs-cards').addEventListener('click', function (e) {
+  const card = e.target && e.target.closest ? e.target.closest('[data-pack]') : null;
+  if (card) { packsSelected = card.dataset.pack; loadPacks(); }
+});
+document.getElementById('packs-detail').addEventListener('click', function (e) {
+  const b = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
+  if (!b || !packsSelected) return;
+  if (b.dataset.act === 'show') packAction('pack_listing', { type: 'show', name: packsSelected });
+  else if (b.dataset.act === 'fetch') {
+    const hash = window.prompt('Pinned hash of ' + packsSelected + ':');
+    const stage = hash ? window.prompt('Stage folder:') : null;
+    if (hash && stage) packAction('pack_listing', { type: 'fetch', name: packsSelected, hash: hash, stage: stage });
+  } else if (b.dataset.act === 'install') {
+    const pack = window.prompt('Pack folder to install:');
+    const into = pack ? window.prompt('Templates folder:') : null;
+    if (pack && into) packAction('pack', { type: 'install', pack: pack, into: into });
+  } else if (b.dataset.act === 'eval') {
+    const pack = window.prompt('Pack folder:');
+    const worker = pack ? window.prompt('Worker agent id:') : null;
+    if (pack && worker) packAction('pack', { type: 'eval', pack: pack, worker: worker });
+  }
+});
+
 loadSidebar();
+loadPacks();
 </script>
 </body>
 </html>

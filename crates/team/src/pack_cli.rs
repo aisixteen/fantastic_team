@@ -82,6 +82,68 @@ const VERBS: &[(&str, Verb)] = &[
         },
     ),
     (
+        "fetch",
+        Verb {
+            agent: PACK_LISTING_ID,
+            kind: "fetch",
+            flags: &[
+                ("name", Kind::Text),
+                ("hash", Kind::Text),
+                ("stage", Kind::Text),
+                ("version", Kind::Text),
+            ],
+            required: &["name", "hash", "stage"],
+        },
+    ),
+    (
+        "submit",
+        Verb {
+            agent: PACK_LISTING_ID,
+            kind: "submit",
+            flags: &[
+                ("pack", Kind::Text),
+                ("url", Kind::Text),
+                ("signing_key", Kind::Text),
+            ],
+            required: &["pack", "url", "signing_key"],
+        },
+    ),
+    (
+        "report",
+        Verb {
+            agent: PACK_LISTING_ID,
+            kind: "report",
+            flags: &[
+                ("name", Kind::Text),
+                ("version", Kind::Text),
+                ("reason", Kind::Text),
+            ],
+            required: &["name", "version", "reason"],
+        },
+    ),
+    (
+        "takedown",
+        Verb {
+            agent: PACK_LISTING_ID,
+            kind: "takedown",
+            flags: &[
+                ("name", Kind::Text),
+                ("version", Kind::Text),
+                ("signing_key", Kind::Text),
+            ],
+            required: &["name", "version", "signing_key"],
+        },
+    ),
+    (
+        "page",
+        Verb {
+            agent: PACK_LISTING_ID,
+            kind: "page",
+            flags: &[],
+            required: &[],
+        },
+    ),
+    (
         "pack",
         Verb {
             agent: PACK_ID,
@@ -130,7 +192,7 @@ pub fn parse(args: &[String]) -> Result<(String, Value), String> {
     let refuse = |why: String| format!("packs: {why}\n{USAGE}");
     let Some((verb_word, rest)) = args.split_first() else {
         return Err(refuse(
-            "a verb is needed: list, show, updates, publish, pack, install or eval".into(),
+            "a verb is needed: list, show, updates, publish, fetch, submit, report, takedown, page, pack, install or eval".into(),
         ));
     };
     let Some((_, verb)) = VERBS.iter().find(|(name, _)| *name == verb_word) else {
@@ -520,6 +582,81 @@ mod tests {
                 .err()
                 .unwrap_or_else(|| panic!("{case:?} must be refused"));
             assert!(e.contains("usage:"), "{case:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn parse_fetch_submit_report_takedown_map_flags() {
+        assert_eq!(
+            parse(&v(&["fetch", "--name", "n", "--hash", "h", "--stage", "s"])).unwrap(),
+            (
+                PACK_LISTING_ID.to_string(),
+                json!({"type": "fetch", "name": "n", "hash": "h", "stage": "s"})
+            )
+        );
+        assert_eq!(
+            parse(&v(&[
+                "submit",
+                "--pack",
+                "p",
+                "--url",
+                "https://x/y",
+                "--signing-key",
+                "k"
+            ]))
+            .unwrap(),
+            (
+                PACK_LISTING_ID.to_string(),
+                json!({"type": "submit", "pack": "p", "url": "https://x/y", "signing_key": "k"})
+            )
+        );
+        assert_eq!(
+            parse(&v(&[
+                "report",
+                "--name",
+                "n",
+                "--version",
+                "1.0",
+                "--reason",
+                "bad"
+            ]))
+            .unwrap(),
+            (
+                PACK_LISTING_ID.to_string(),
+                json!({"type": "report", "name": "n", "version": "1.0", "reason": "bad"})
+            )
+        );
+        assert_eq!(
+            parse(&v(&[
+                "takedown",
+                "--name",
+                "n",
+                "--version",
+                "1.0",
+                "--signing-key",
+                "k"
+            ]))
+            .unwrap(),
+            (
+                PACK_LISTING_ID.to_string(),
+                json!({"type": "takedown", "name": "n", "version": "1.0", "signing_key": "k"})
+            )
+        );
+        assert_eq!(
+            parse(&v(&["page"])).unwrap(),
+            (PACK_LISTING_ID.to_string(), json!({"type": "page"}))
+        );
+    }
+
+    #[test]
+    fn parse_new_verbs_require_their_flags() {
+        for args in [
+            v(&["fetch", "--name", "n", "--hash", "h"]),
+            v(&["submit", "--pack", "p", "--url", "u"]),
+            v(&["report", "--name", "n", "--version", "1"]),
+            v(&["takedown", "--name", "n", "--version", "1"]),
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
         }
     }
 
