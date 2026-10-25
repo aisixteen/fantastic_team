@@ -34,6 +34,9 @@ Output (verified on this box):
       no surface flag: fully headless (no port, no terminal UI)
       --port N: serve the web UI on 127.0.0.1:N
       --tui: the terminal UI (needs a terminal)
+      (`mcp`, `send` and `readme` as the first word run fantastic's own commands)
+      (`packs list|show|updates|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)
+      packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] | packs eval --pack DIR --worker W [--timeout-s N]
 
 There is no `--version` flag.
 
