@@ -17,7 +17,7 @@ It is **AGPL-3.0-or-later**.
 - Workers open **draft** PRs. The maintainer reviews and approves; the team merges only PRs
   approved on their current head.
 - CI is run by hand (#46): units by default, the e2e for a finished milestone or a release.
-  Run it with `gh workflow run ci.yml --ref <branch>` (add `-f e2e=true` for a full run).
+  Run it with `gh workflow run ci.yml --ref <branch>` (add `-f e2e=true` for a full run; add `-f units_os=linux` to run the units on Ubuntu only).
 
 ## Building
 
