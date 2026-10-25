@@ -36,6 +36,22 @@
   .msg.user { background: #e0e7ff; margin-left: 24px; }
   .msg.assistant { background: #f3f4f6; margin-right: 24px; }
   .msg.not-sent { opacity: 0.5; text-decoration: line-through; }
+  .msg.pending { opacity: 0.7; }
+  .msg.thinking { background: #faf5ff; color: #6b7280; font-size: 0.9em; margin-right: 24px; }
+  .msg.thinking summary { cursor: pointer; }
+  .tool-block { margin: 6px 24px 6px 0; padding: 4px 8px; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.9em; overflow-wrap: anywhere; }
+  .tool-block summary { cursor: pointer; }
+  .tool-block[data-state="done"] .tool-mark { color: #15803d; }
+  .tool-reply { white-space: pre-wrap; color: #374151; padding-top: 4px; }
+  .stats { margin-left: 8px; font-size: 12px; color: #6b7280; }
+  .inquiry { background: #fef3c7; margin-right: 24px; }
+  .inquiry .inq-controls { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; align-items: center; }
+  .inquiry .inq-controls label { display: inline-flex; gap: 4px; align-items: center; }
+  .inquiry button { font: inherit; min-height: 32px; padding: 4px 10px; }
+  .inquiry .inq-error { color: #b91c1c; margin-top: 4px; }
+  .chip { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 10px; background: #e5e7eb; font-size: 0.85em; }
+  .composer .chip { align-self: center; }
+  .minutes, .pr { color: #6b7280; font-size: 0.85em; }
   .composer { display: flex; gap: 6px; flex: none; padding-top: 6px; border-top: 1px solid #ddd; }
   .composer input { flex: 1; min-width: 0; font: inherit; padding: 6px 8px; }
   .composer button { font: inherit; min-height: 32px; padding: 4px 10px; }
@@ -67,10 +83,18 @@
 // The full-screen chat streams the target agent itself, with the same verbs and
 // events as fantastic's chat cell: `history` (paged, the newest rows drawn),
 // `send {text, client_id}`, `stop`, and `watch` for the parts of this page's
-// client (part_start, part_delta, part_end, part_abort) and `done`. Only text
-// parts are drawn; reasoning and tool calls are not. Back, or a new open, drops
-// the watch and the drafts. Kernel values and streamed text go in as text only
-// (textContent), never as markup.
+// client (part_start, part_delta, part_end, part_abort), `status` and `done`.
+// Text parts are bubbles; reasoning (`thinking`) parts are a collapsed block;
+// a `status` with phase tool_calling is one tool block per call_id (the head
+// verb(target), the reply once it has one); the done status carries the stats
+// line (tok/s, context). After a turn the `user` agent's `inquiries` for this
+// agent are drawn as cards with controls by kind (confirm, single, multi, text);
+// an answer is `answer_inquiry {re, answer}`. A chosen text file travels inside
+// the same `send` as text ("[attached: NAME]" and its content): no new field.
+// On open, `status {client_id}` rebuilds a turn still running. Back, or a new
+// open, drops the watch and the drafts. Kernel values and streamed text go in as
+// text only (textContent), never as markup. A worker row also shows the minutes
+// since its task last moved and the number of its pull request.
 const expanded = new Set();   // workers whose subagents are shown
 const seen = new Set();       // workers already checked against the remembered state
 const stack = [];             // levels left behind: { scrollY, expanded }
@@ -136,6 +160,8 @@ function workerRow(it) {
   row.appendChild(el('span', 'name', it.id));
   row.appendChild(el('span', stateClass(it.state), it.state));
   if (it.task) row.appendChild(el('span', 'task', it.task));
+  if (typeof it.minutes === 'number') row.appendChild(el('span', 'minutes', it.minutes + 'm'));
+  if (typeof it.pr === 'number') row.appendChild(el('span', 'pr', 'PR #' + it.pr));
   const controls = el('span', 'controls');
   ['start', 'pause', 'stop'].forEach(function (action) {
     const b = el('button', '', action.charAt(0).toUpperCase() + action.slice(1));
@@ -265,7 +291,9 @@ function toggleWorker(worker) {
 const chatClient = 'team_' + Math.random().toString(36).slice(2, 10);
 const HISTORY_KEEP = 300;   // the newest history rows drawn
 const HISTORY_PAGES = 20;   // pages followed when loading them
-let chat = null;            // the open chat: { node, transcript, input, send, stop, drafts, off, busy }
+const MAX_ATTACH = 200000; // the largest text file attached to a message, in bytes
+const INQUIRY_DELAY = 250;  // ms after a turn before the agent's open questions are read
+let chat = null;            // the open chat: { node, transcript, input, send, stop, drafts, tools, inquiries, attached, stats, off, busy }
 
 function bubble(role, text) {
   return el('div', 'msg ' + role, text == null ? '' : text);
@@ -286,6 +314,8 @@ function showChat(reply, node) {
   const box = el('div', 'cell chat');
   box.appendChild(el('strong', '', cell.label || 'Chat'));
   box.appendChild(el('span', '', ' ' + (cell.kind || 'chat') + ' → ' + (cell.target || node)));
+  const stats = el('span', 'stats');
+  box.appendChild(stats);
   const transcript = el('div', 'transcript');
   transcript.setAttribute('aria-live', 'polite');
   box.appendChild(transcript);
@@ -299,6 +329,18 @@ function showChat(reply, node) {
   send.type = 'submit';
   const stop = el('button', '', 'Stop');
   stop.type = 'button';
+  const attach = el('button', '', '\uD83D\uDCCE');
+  attach.type = 'button';
+  attach.title = 'Attach a text file';
+  attach.setAttribute('aria-label', 'Attach a text file');
+  const file = el('input', '');
+  file.type = 'file';
+  file.hidden = true;
+  const chip = el('span', 'chip');
+  chip.hidden = true;
+  form.appendChild(attach);
+  form.appendChild(file);
+  form.appendChild(chip);
   form.appendChild(input);
   form.appendChild(send);
   form.appendChild(stop);
@@ -308,13 +350,21 @@ function showChat(reply, node) {
   document.getElementById('sidebar').hidden = true;
   document.getElementById('title').textContent = node;
   window.scrollTo(0, 0);
-  const c = { node: node, transcript: transcript, input: input, send: send, stop: stop, drafts: new Map(), off: null, busy: false };
+  const c = {
+    node: node, transcript: transcript, input: input, send: send, stop: stop,
+    drafts: new Map(), tools: new Map(), inquiries: new Set(), attached: null,
+    stats: stats, chip: chip, file: file, timer: null, live: false,
+    off: null, busy: false
+  };
   chat = c;
   form.addEventListener('submit', function (e) { e.preventDefault(); sendChat(); });
   stop.addEventListener('click', stopChat);
+  attach.addEventListener('click', function () { file.click(); });
+  file.addEventListener('change', function () { chooseFile(c); });
   // Watch first, so no part that starts while the history loads is missed.
   c.off = watchNode(c);
-  loadHistory(c);
+  loadHistory(c).then(function () { return replayStatus(c); });
+  loadInquiries(c);
 }
 
 // Leave the chat: unwatch, and forget its drafts. Safe when no chat is open.
@@ -326,6 +376,11 @@ function dropChat() {
     try { c.off(); } catch (e) { /* the watch is gone already */ }
   }
   c.drafts.clear();
+  c.tools.clear();
+  c.inquiries.clear();
+  c.attached = null;
+  if (c.timer != null) clearTimeout(c.timer);
+  c.timer = null;
 }
 
 function watchNode(c) {
@@ -376,32 +431,52 @@ function ownEvent(c, ev) {
 }
 
 // The stream: one draft per stream_id. A delta only grows its draft; the part's
-// end settles it; an abort marks it as not sent. `done` ends the turn and
-// re-enables Send.
+// end settles it; an abort marks it as not sent. A `thinking` part is a collapsed
+// block, a `call` part is not drawn (the tool block of its status covers it).
+// `done` ends the turn, re-enables Send and looks for the agent's open questions.
 function onChatEvent(c, ev) {
   if (!ev || typeof ev !== 'object') return;
   if (ev.type === 'done') {
-    if ((!ev.client_id || ev.client_id === chatClient) && (!ev.source || ev.source === c.node)) finishTurn(c);
+    if ((!ev.client_id || ev.client_id === chatClient) && (!ev.source || ev.source === c.node)) {
+      finishTurn(c);
+      scheduleInquiries(c);
+    }
     return;
   }
   if (!ownEvent(c, ev)) return;
+  if (ev.type === 'status') { onStatus(c, ev); return; }
   const id = String(ev.stream_id);
   if (ev.type === 'part_start') {
-    if (ev.kind !== 'text') return;
-    const node = bubble('assistant', '');
-    c.transcript.appendChild(node);
-    c.drafts.set(id, { el: node, text: '' });
+    if (ev.kind === 'text') {
+      const node = bubble('assistant', '');
+      c.transcript.appendChild(node);
+      c.drafts.set(id, { el: node, target: node, text: '', kind: 'text' });
+    } else if (ev.kind === 'thinking') {
+      const box = el('details', 'msg thinking');
+      box.appendChild(el('summary', '', 'thinking'));
+      const body = el('div', 'thinking-body');
+      box.appendChild(body);
+      c.transcript.appendChild(box);
+      c.drafts.set(id, { el: box, target: body, text: '', kind: 'thinking', summary: box.children[0], t0: Date.now() });
+    } else {
+      return;
+    }
+    c.live = true;
     scrollChat(c);
   } else if (ev.type === 'part_delta') {
     const d = c.drafts.get(id);
     if (!d) return;
     d.text += ev.text == null ? '' : String(ev.text);
-    d.el.textContent = d.text;
+    d.target.textContent = d.text;
     scrollChat(c);
   } else if (ev.type === 'part_end') {
     const d = c.drafts.get(id);
     if (!d) return;
     c.drafts.delete(id);
+    if (d.kind === 'thinking') {
+      if (d.text.trim() === '') { d.el.remove(); return; }
+      d.summary.textContent = 'thought for ' + Math.max(0, Math.round((Date.now() - d.t0) / 1000)) + 's';
+    }
     if (ev.ok === false) d.el.classList.add('not-sent');
   } else if (ev.type === 'part_abort') {
     const d = c.drafts.get(id);
@@ -409,6 +484,241 @@ function onChatEvent(c, ev) {
     c.drafts.delete(id);
     d.el.classList.add('not-sent');
   }
+}
+
+// A status event: a tool call is one block; the done status carries the stats.
+function onStatus(c, ev) {
+  const d = ev.detail && typeof ev.detail === 'object' ? ev.detail : {};
+  if (ev.phase === 'tool_calling' && d.tool) {
+    c.live = true;
+    toolBlock(c, d.tool);
+  } else if (ev.phase === 'done') {
+    showStats(c, d);
+    scheduleInquiries(c);
+  }
+}
+
+function previewText(v) {
+  if (typeof v === 'string') return v;
+  try { return JSON.stringify(v); } catch (e) { return String(v); }
+}
+
+// One block per call_id: pending while the call runs, done once its reply preview
+// is there. The reply is text in a collapsed details body.
+function toolBlock(c, tool) {
+  if (!tool || typeof tool !== 'object') return null;
+  const key = tool.call_id != null ? String(tool.call_id) : null;
+  let b = key != null ? c.tools.get(key) : null;
+  if (!b) {
+    const box = el('details', 'tool-block');
+    const sum = el('summary', '');
+    const head = el('span', 'tool-head');
+    const mark = el('span', 'tool-mark');
+    sum.appendChild(head);
+    sum.appendChild(mark);
+    const reply = el('div', 'tool-reply');
+    box.appendChild(sum);
+    box.appendChild(reply);
+    c.transcript.appendChild(box);
+    b = { el: box, head: head, mark: mark, reply: reply };
+    if (key != null) c.tools.set(key, b);
+  }
+  b.head.textContent = String(tool.verb == null ? '' : tool.verb) + '(' + String(tool.target == null ? '' : tool.target) + ') ';
+  const done = tool.reply_preview != null;
+  b.el.dataset.state = done ? 'done' : 'pending';
+  b.mark.textContent = done ? '\u2713' : '\u2026';
+  if (done) b.reply.textContent = previewText(tool.reply_preview);
+  scrollChat(c);
+  return b;
+}
+
+function kfmt(n, est) {
+  const v = n >= 1000 ? Math.round(n / 1000) + 'k' : String(Math.round(n));
+  return (est ? '~' : '') + v;
+}
+
+// The stats line in the chat header, from the done status's detail: tokens per
+// second, and the prompt against the context window. `~` marks an estimate.
+function showStats(c, d) {
+  if (!c.stats || !d || typeof d !== 'object') return;
+  const parts = [];
+  if (typeof d.completion_tokens === 'number' && typeof d.gen_seconds === 'number' && d.gen_seconds > 0) {
+    parts.push((d.completion_tokens_estimated === true ? '~' : '') + Math.round(d.completion_tokens / d.gen_seconds) + ' tok/s');
+  }
+  if (typeof d.prompt_tokens === 'number' && typeof d.context_window === 'number') {
+    parts.push(kfmt(d.prompt_tokens, d.prompt_tokens_estimated === true) + ' / ' +
+      kfmt(d.context_window, d.context_window_estimated === true) + ' ctx');
+  }
+  if (parts.length) c.stats.textContent = parts.join(' \u00b7 ');
+}
+
+// The agent's open questions for the person, read once on open and after a turn
+// (debounced). Each unseen one is drawn once, as a card with its own controls.
+function scheduleInquiries(c) {
+  if (c.timer != null) clearTimeout(c.timer);
+  c.timer = setTimeout(function () { c.timer = null; loadInquiries(c); }, INQUIRY_DELAY);
+}
+
+async function loadInquiries(c) {
+  let r;
+  try {
+    r = await askNode('user', { type: 'inquiries', asker: c.node });
+  } catch (err) {
+    return;
+  }
+  if (chat !== c || !r || r.error || !Array.isArray(r.inquiries)) return;
+  r.inquiries.forEach(function (q) {
+    if (!q || q.re == null || c.inquiries.has(q.re)) return;
+    c.inquiries.add(q.re);
+    c.transcript.appendChild(inquiryCard(c, q));
+  });
+  scrollChat(c);
+}
+
+function optionOf(o) {
+  if (o && typeof o === 'object') {
+    const v = o.value != null ? o.value : o.label;
+    return { value: v, label: String(o.label != null ? o.label : v) };
+  }
+  return { value: o, label: String(o) };
+}
+
+function inquiryCard(c, q) {
+  const card = el('div', 'msg inquiry');
+  card.dataset.re = String(q.re);
+  card.appendChild(el('div', 'inq-text', q.text));
+  const controls = el('div', 'inq-controls');
+  const err = el('div', 'inq-error');
+  const widgets = [];
+  function lock(on) { widgets.forEach(function (w) { w.disabled = on; }); }
+  async function answer(value, label) {
+    lock(true);
+    err.textContent = '';
+    let r;
+    try {
+      r = await askNode('user', { type: 'answer_inquiry', re: q.re, answer: value });
+    } catch (e) {
+      r = { error: String(e && e.message ? e.message : e) };
+    }
+    if (!r || r.error) {
+      lock(false);
+      err.textContent = r && r.error ? String(r.error) : 'the answer was not sent';
+      return;
+    }
+    controls.remove();
+    err.textContent = '';
+    card.appendChild(el('div', 'inq-done', 'you answered: ' + label));
+  }
+  function button(label, onclick) {
+    const b = el('button', '', label);
+    b.type = 'button';
+    b.addEventListener('click', onclick);
+    widgets.push(b);
+    controls.appendChild(b);
+    return b;
+  }
+  const kind = String(q.kind || 'text');
+  const opts = Array.isArray(q.options) ? q.options.map(optionOf) : [];
+  if (kind === 'confirm') {
+    button('Yes', function () { answer(true, 'Yes'); });
+    button('No', function () { answer(false, 'No'); });
+  } else if (kind === 'single') {
+    opts.forEach(function (o) { button(o.label, function () { answer(o.value, o.label); }); });
+  } else if (kind === 'multi') {
+    const boxes = opts.map(function (o) {
+      const lab = el('label', '');
+      const cb = el('input', '');
+      cb.type = 'checkbox';
+      lab.appendChild(cb);
+      lab.appendChild(el('span', '', o.label));
+      widgets.push(cb);
+      controls.appendChild(lab);
+      return { cb: cb, o: o };
+    });
+    button('Answer', function () {
+      const picked = boxes.filter(function (x) { return x.cb.checked; }).map(function (x) { return x.o; });
+      answer(picked.map(function (o) { return o.value; }), picked.map(function (o) { return o.label; }).join(', '));
+    });
+  } else {
+    const input = el('input', '');
+    input.type = 'text';
+    input.setAttribute('aria-label', 'Answer');
+    widgets.push(input);
+    controls.appendChild(input);
+    button('Answer', function () { answer(input.value, input.value); });
+  }
+  card.appendChild(controls);
+  card.appendChild(err);
+  return card;
+}
+
+// A text file is chosen into the composer as a chip; it travels in the next send.
+function chooseFile(c) {
+  const f = c.file.files && c.file.files[0];
+  if (!f) return;
+  const reset = function () { try { c.file.value = ''; } catch (e) { /* the pick is kept in c.attached */ } };
+  if (typeof f.size === 'number' && f.size > MAX_ATTACH) {
+    showError('"' + f.name + '" is larger than ' + MAX_ATTACH + ' bytes: not attached');
+    reset();
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = function () {
+    if (chat !== c) return;
+    const text = String(reader.result == null ? '' : reader.result);
+    if (text.length > MAX_ATTACH || text.indexOf('\u0000') >= 0) {
+      showError('"' + f.name + '" is not a text file within ' + MAX_ATTACH + ' bytes: not attached');
+      return;
+    }
+    showError('');
+    c.attached = { name: String(f.name), content: text };
+    drawChip(c);
+  };
+  reader.onerror = function () { showError('"' + f.name + '" could not be read: not attached'); };
+  reader.readAsText(f);
+  reset();
+}
+
+function drawChip(c) {
+  c.chip.textContent = '';
+  c.chip.hidden = !c.attached;
+  if (!c.attached) return;
+  c.chip.appendChild(el('span', '', c.attached.name));
+  const x = el('button', '', '\u00d7');
+  x.type = 'button';
+  x.setAttribute('aria-label', 'Remove the attachment');
+  x.addEventListener('click', function () { c.attached = null; drawChip(c); });
+  c.chip.appendChild(x);
+}
+
+// A turn still running when the chat opens (or a page reload): the agent's own
+// `status` for this client rebuilds the question, the text so far, the last tool
+// call and the queued lines, and keeps Send off until the turn's done. Nothing is
+// drawn when the reply is an error or the turn is not this page's, or when the
+// stream already drew something.
+async function replayStatus(c) {
+  let r;
+  try {
+    r = await askNode(c.node, { type: 'status', client_id: chatClient });
+  } catch (err) {
+    return;
+  }
+  if (chat !== c || !r || r.error) return;
+  const cur = r.current;
+  if (cur && typeof cur === 'object' && cur.is_mine === true && !c.live) {
+    if (cur.text) c.transcript.appendChild(bubble('user', cur.text));
+    if (cur.text_so_far) c.transcript.appendChild(bubble('assistant', cur.text_so_far));
+    if (cur.last_tool) toolBlock(c, cur.last_tool);
+    c.busy = true;
+    c.send.disabled = true;
+  }
+  (Array.isArray(r.mine_pending) ? r.mine_pending : []).forEach(function (p) {
+    if (!p || !p.text) return;
+    const line = bubble('user', p.text);
+    line.classList.add('pending');
+    c.transcript.appendChild(line);
+  });
+  scrollChat(c);
 }
 
 function finishTurn(c) {
@@ -422,12 +732,17 @@ function finishTurn(c) {
 async function sendChat() {
   const c = chat;
   if (!c || c.busy) return;
-  const text = c.input.value.trim();
-  if (!text) return;
+  const typed = c.input.value.trim();
+  const att = c.attached;
+  if (!typed && !att) return;
   c.input.value = '';
+  c.attached = null;
+  drawChip(c);
   c.busy = true;
   c.send.disabled = true;
-  const line = bubble('user', text);
+  const text = att ? (typed ? typed + '\n\n' : '') + '[attached: ' + att.name + ']\n' + att.content : typed;
+  const line = bubble('user', typed);
+  if (att) line.appendChild(el('span', 'chip', att.name));
   line.classList.add('pending');
   c.transcript.appendChild(line);
   scrollChat(c);
