@@ -3,10 +3,17 @@
 //! through fantastic's own `send` command, so it needs a kernel running in the
 //! directory (the same as `fantastic_team send`). The CLI adds no verb and no
 //! record field: it maps the flags onto the payloads the bundles already read.
+//!
+//! `install` run from a terminal with no `bindings` in its payload asks, before
+//! the first send, for the agent id of each of the pack's ports (an empty answer
+//! skips one) and sends the answers as `bindings`. The prompt comes first because
+//! a second install of the same version is refused. Without a terminal nothing is
+//! asked and the payload goes as it is.
 
 use std::collections::BTreeMap;
+use std::io::{BufRead, Write};
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::tree::{PACK_ID, PACK_LISTING_ID};
 use crate::USAGE;
@@ -209,6 +216,47 @@ pub fn reply_error(stdout: &str) -> Option<String> {
     })
 }
 
+/// The port keys of the `pack.yaml` text, in order, each once. Empty when the
+/// text does not parse (the install then reports the error itself).
+pub fn unbound_port_keys(pack_yaml: &str) -> Vec<String> {
+    let Ok(manifest) = crate::pack_manifest::Manifest::parse(pack_yaml) else {
+        return Vec::new();
+    };
+    let Ok(ports) = manifest.port_list() else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    ports
+        .iter()
+        .map(crate::pack_bundle::port_key)
+        .filter(|k| seen.insert(k.clone()))
+        .collect()
+}
+
+/// Ask for one agent id per port key: a prompt line on `out`, one line read from
+/// `input`. An empty answer skips the key; the end of input stops asking.
+pub fn prompt_bindings<R: BufRead, W: Write>(
+    keys: &[String],
+    input: &mut R,
+    out: &mut W,
+) -> Map<String, Value> {
+    let mut bound = Map::new();
+    for key in keys {
+        let _ = write!(out, "bind {key} to agent id (empty to skip): ");
+        let _ = out.flush();
+        let mut line = String::new();
+        match input.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        let answer = line.trim();
+        if !answer.is_empty() {
+            bound.insert(key.clone(), json!(answer));
+        }
+    }
+    bound
+}
+
 /// Run `packs` from the command line: the verb goes to its agent through
 /// fantastic's `send`, which needs the team's kernel running in this directory.
 /// `send` exits the process itself and exits 0 whenever the item completed, so
@@ -217,7 +265,8 @@ pub fn reply_error(stdout: &str) -> Option<String> {
 /// the caller turns into a non-zero exit.
 pub fn run_cli(args: &[String]) -> Result<(), String> {
     use std::io::Write as _;
-    let (agent, payload) = parse(args)?;
+    let (agent, mut payload) = parse(args)?;
+    ask_for_bindings(&mut payload);
     let item = json!({"target": agent, "payload": payload}).to_string();
     let exe = std::env::current_exe().map_err(|e| format!("packs: no executable path: {e}"))?;
     let out = std::process::Command::new(exe)
@@ -235,6 +284,31 @@ pub fn run_cli(args: &[String]) -> Result<(), String> {
         return Err(format!("packs: send failed ({})", out.status));
     }
     Ok(())
+}
+
+/// For `install` from a terminal with no `bindings`: read the pack's `pack.yaml`
+/// (relative to the directory, where the kernel runs), ask for each port and put
+/// the answers in `payload["bindings"]`. Does nothing otherwise.
+fn ask_for_bindings(payload: &mut Value) {
+    use std::io::IsTerminal as _;
+    if payload["type"] != "install" || payload.get("bindings").is_some() {
+        return;
+    }
+    if !std::io::stdin().is_terminal() {
+        return;
+    }
+    let Some(pack) = payload["pack"].as_str() else {
+        return;
+    };
+    let Ok(yaml) = std::fs::read_to_string(std::path::Path::new(pack).join("pack.yaml")) else {
+        return;
+    };
+    let keys = unbound_port_keys(&yaml);
+    let stdin = std::io::stdin();
+    let bound = prompt_bindings(&keys, &mut stdin.lock(), &mut std::io::stderr());
+    if !bound.is_empty() {
+        payload["bindings"] = Value::Object(bound);
+    }
 }
 
 #[cfg(test)]
@@ -440,5 +514,49 @@ mod tests {
                 .unwrap_or_else(|| panic!("{case:?} must be refused"));
             assert!(e.contains("usage:"), "{case:?}: {e}");
         }
+    }
+
+    fn keys(k: &[&str]) -> Vec<String> {
+        v(k)
+    }
+
+    #[test]
+    fn prompt_asks_once_per_unbound_port_and_returns_answers() {
+        let mut out = Vec::new();
+        let mut input = "llm-1\ngh-1\n".as_bytes();
+        let m = prompt_bindings(&keys(&["model", "connector:github"]), &mut input, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.matches("bind ").count(), 2, "{text}");
+        assert_eq!(
+            Value::Object(m),
+            json!({"model": "llm-1", "connector:github": "gh-1"})
+        );
+    }
+
+    #[test]
+    fn prompt_skips_empty_answers() {
+        let mut out = Vec::new();
+        let mut input = "\ngh-1\n".as_bytes();
+        let m = prompt_bindings(&keys(&["model", "connector:github"]), &mut input, &mut out);
+        assert_eq!(Value::Object(m), json!({"connector:github": "gh-1"}));
+    }
+
+    #[test]
+    fn prompt_stops_at_eof_without_panic() {
+        let mut out = Vec::new();
+        let mut input = "".as_bytes();
+        let m = prompt_bindings(&keys(&["model", "connector:github"]), &mut input, &mut out);
+        assert!(m.is_empty());
+    }
+
+    #[test]
+    fn unbound_port_keys_lists_each_port_key_once() {
+        let yaml = "name: p\nversion: 0.1.0\nauthor: a\nlicense: MIT\nprice: free\ncontent_hash: abc\nports:\n  - \"@model window=200k\"\n  - \"@model tools\"\n  - \"@connector:github\"\nfiles: []\n";
+        assert_eq!(unbound_port_keys(yaml), vec!["model", "connector:github"]);
+    }
+
+    #[test]
+    fn unbound_port_keys_of_garbage_is_empty() {
+        assert!(unbound_port_keys("{{ not yaml").is_empty());
     }
 }

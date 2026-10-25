@@ -16,7 +16,9 @@ use fantastic_kernel::{Item, Kernel, Status};
 use serde_json::{json, Value};
 
 use crate::config::{self, TeamConfig};
-use crate::{board, cadencer, dispatcher, pack_bundle, pack_listing, worker_exec, worker_view};
+use crate::{
+    board, cadencer, dispatcher, pack_bundle, pack_listing, pack_panel, worker_exec, worker_view,
+};
 
 /// The dispatcher's agent id: the team's main view, created at start.
 pub const DISPATCHER_ID: &str = "dispatcher";
@@ -33,6 +35,8 @@ pub const CADENCER_ID: &str = "cadencer";
 pub const DISPATCHER_KERNEL_VERBS: [&str; 3] = ["create_agent", "update_agent", "delete_agent"];
 /// The page's agent: the dispatcher's html view on the canvas, made at the first start.
 pub const DISPATCHER_VIEW_ID: &str = "dispatcher_view";
+/// The pack browser panel's agent: an html view on the canvas, made at the first start.
+pub const PACKS_VIEW_ID: &str = pack_panel::VIEW_ID;
 /// The verbs the page uses on a worker or a subagent: its chat (`history`, `send`,
 /// `stop`, `status`) and its events (`watch`). Granted by [`grant_chat`]; never `*`.
 pub const CHAT_VERBS: [&str; 5] = ["history", "send", "stop", "status", "watch"];
@@ -213,6 +217,9 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     // `install --parent-id` builds a pack's blueprint through `user.import_subtree`;
     // the other end of this edge is the `user` agent's `callable_by`, below.
     pack_can_call.insert(USER_ID.into(), json!(PACK_USER_VERBS));
+    // Enabling a pack checks that its bound agents exist: the root's `list_agents`
+    // (the root's own `callable_by` is written by `grant_agent_listing`).
+    pack_can_call.insert(DEFAULT_ROOT_ID.into(), json!(PACK_ROOT_VERBS));
     for m in cfg.groups.values().flat_map(|g| g.members.iter()) {
         pack_can_call.insert(m.clone(), json!("*"));
     }
@@ -368,7 +375,8 @@ fn tool_plan(id: &str, parent: &str, mut rec: Value) -> Planned {
 /// replaces the tool default, so the dispatcher is named too.
 fn pack_plan(id: &str, parent: &str, rec: Value) -> Planned {
     let mut p = tool_plan(id, parent, rec);
-    p.record["callable_by"] = json!({"$self": "*", "$parent": "*", "dispatcher": "*"});
+    p.record["callable_by"] =
+        json!({"$self": "*", "$parent": "*", "dispatcher": "*", (PACKS_VIEW_ID): "*"});
     p
 }
 
@@ -450,6 +458,58 @@ async fn place_dispatcher(kernel: &Arc<Kernel>) {
     if let Some(o) = outs.pop() {
         if o.result.get("error").is_some() || !matches!(o.status, Status::Completed) {
             eprintln!("dispatcher not placed on `{CANVAS_ID}`: {}", o.result);
+        }
+    }
+}
+
+/// The one root (kernel) verb the pack agent may call: `list_agents`, to check
+/// that the agents a pack is bound to are live before it is enabled.
+pub const PACK_ROOT_VERBS: [&str; 1] = ["list_agents"];
+
+/// Put the pack browser panel on the canvas, like [`place_dispatcher`]: an
+/// `html.tools` view that may call the two pack agents. Best effort.
+async fn place_packs_panel(kernel: &Arc<Kernel>) {
+    let view = PACKS_VIEW_ID;
+    if exists(kernel, view) {
+        return;
+    }
+    let mut outs = kernel
+        .send(vec![Item::new(
+            DEFAULT_ROOT_ID,
+            json!({
+                "type": "create_agent",
+                "id": view,
+                "parent_id": CANVAS_ID,
+                "handler_module": "html.tools",
+                "html": pack_panel::HTML,
+                "can_call": { (PACK_ID): "*", (PACK_LISTING_ID): "*" },
+            }),
+        )])
+        .await;
+    if let Some(o) = outs.pop() {
+        if o.result.get("error").is_some() || !matches!(o.status, Status::Completed) {
+            eprintln!("packs panel not placed on `{CANVAS_ID}`: {}", o.result);
+        }
+    }
+}
+
+/// Let the pack agent call `list_agents` on the root: the root's end of the edge
+/// the pack's `can_call` names. An operator write made at each start, so it is
+/// idempotent; a refusal is reported, not fatal. True when the root now grants it.
+pub fn grant_agent_listing(kernel: &Arc<Kernel>) -> bool {
+    let root = fantastic_kernel::AgentId::from(DEFAULT_ROOT_ID);
+    let verbs = json!(PACK_ROOT_VERBS);
+    match kernel.edit_callable_by(&root, |cb| {
+        if cb.get(PACK_ID) == Some(&verbs) {
+            return false;
+        }
+        cb.insert(PACK_ID.into(), verbs.clone());
+        true
+    }) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("pack agent: root list_agents grant: {e}");
+            false
         }
     }
 }
@@ -595,7 +655,9 @@ pub fn run_at_start(
             let applied = apply(&kernel, &tree).await?;
             if applied.created.iter().any(|c| c == DISPATCHER_ID) {
                 place_dispatcher(&kernel).await;
+                place_packs_panel(&kernel).await;
             }
+            grant_agent_listing(&kernel);
             let workers: Vec<String> = cfg
                 .groups
                 .values()
@@ -825,11 +887,11 @@ mod tests {
         assert_eq!(pack.record["handler_module"], pack_bundle::HANDLER_MODULE);
         assert_eq!(
             pack.record["can_call"],
-            json!({"files": "*", "lead": "*", "user": ["import_subtree"]})
+            json!({"files": "*", "lead": "*", "user": ["import_subtree"], "kernel_state": ["list_agents"]})
         );
         assert_eq!(
             pack.record["callable_by"],
-            json!({"$self": "*", "$parent": "*", "dispatcher": "*"}),
+            json!({"$self": "*", "$parent": "*", "dispatcher": "*", "packs_view": "*"}),
         );
 
         let listing = find(PACK_LISTING_ID);
@@ -848,7 +910,7 @@ mod tests {
         );
         assert_eq!(
             listing.record["callable_by"],
-            json!({"$self": "*", "$parent": "*", "dispatcher": "*"}),
+            json!({"$self": "*", "$parent": "*", "dispatcher": "*", "packs_view": "*"}),
         );
     }
 
@@ -1217,6 +1279,98 @@ mod tests {
         assert!(!exists(&kernel, "dispatcher_view"));
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn pack_agent_can_list_agents_on_the_kernel() {
+        let cfg = parse(&sample_yaml()).unwrap();
+        let tree = plan(&cfg, Path::new("/team")).unwrap();
+        let pack = tree.iter().find(|p| p.id == PACK_ID).unwrap();
+        assert_eq!(
+            pack.record["can_call"][DEFAULT_ROOT_ID],
+            json!(["list_agents"])
+        );
+        // that verb only; the listing agent has no such edge
+        let listing = tree.iter().find(|p| p.id == PACK_LISTING_ID).unwrap();
+        assert!(listing.record["can_call"].get(DEFAULT_ROOT_ID).is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_agent_listing_opens_the_roots_end_once() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        let by = |kernel: &Arc<Kernel>| {
+            kernel
+                .agents
+                .get(&fantastic_kernel::AgentId::from(DEFAULT_ROOT_ID))
+                .map(|a| a.meta.read().unwrap()["callable_by"].clone())
+                .unwrap_or(Value::Null)
+        };
+        assert!(by(&kernel).get(PACK_ID).is_none());
+        assert!(grant_agent_listing(&kernel));
+        assert_eq!(by(&kernel)[PACK_ID], json!(["list_agents"]));
+        assert!(grant_agent_listing(&kernel), "idempotent");
+        assert_eq!(by(&kernel)[PACK_ID], json!(["list_agents"]));
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn place_packs_panel_puts_view_on_the_canvas() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        let canvas = json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
+        let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, canvas)]).await;
+        assert!(
+            matches!(outs[0].status, Status::Completed),
+            "{}",
+            outs[0].result
+        );
+        place_packs_panel(&kernel).await;
+        let view = kernel
+            .agents
+            .get(&fantastic_kernel::AgentId::from("packs_view"))
+            .expect("the packs view is on the canvas");
+        assert_eq!(view.handler_module.as_deref(), Some("html.tools"));
+        assert_eq!(
+            view.parent_id.as_ref().map(|p| p.0.as_str()),
+            Some(CANVAS_ID)
+        );
+        let meta = view.meta.read().unwrap().clone();
+        assert_eq!(meta["can_call"][PACK_ID], "*");
+        assert_eq!(meta["can_call"][PACK_LISTING_ID], "*");
+        assert_eq!(meta["html"], pack_panel::HTML);
+        drop(view);
+        // a second call leaves the one view
+        place_packs_panel(&kernel).await;
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn place_packs_panel_without_canvas_is_not_fatal() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        assert!(!exists(&kernel, CANVAS_ID));
+        place_packs_panel(&kernel).await;
+        assert!(!exists(&kernel, "packs_view"));
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn plan_pack_agents_name_the_packs_view() {
+        let cfg = parse(&sample_yaml()).unwrap();
+        let tree = plan(&cfg, Path::new("/team")).unwrap();
+        assert_eq!(PACKS_VIEW_ID, "packs_view");
+        for id in [PACK_ID, PACK_LISTING_ID] {
+            let a = tree.iter().find(|p| p.id == id).unwrap();
+            assert_eq!(a.record["callable_by"][PACKS_VIEW_ID], "*", "{id}");
+        }
     }
 
     #[test]
