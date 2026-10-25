@@ -196,6 +196,9 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     let mut pack_can_call = serde_json::Map::new();
     pack_can_call.insert(FILES_ID.into(), json!("*"));
     pack_can_call.insert(lead.clone(), json!("*"));
+    // `install --parent-id` builds a pack's blueprint through `user.import_subtree`;
+    // the other end of this edge is the `user` agent's `callable_by`, below.
+    pack_can_call.insert(USER_ID.into(), json!(PACK_USER_VERBS));
     for m in cfg.groups.values().flat_map(|g| g.members.iter()) {
         pack_can_call.insert(m.clone(), json!("*"));
     }
@@ -205,6 +208,15 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         &lead,
         json!({"handler_module": pack_bundle::HANDLER_MODULE, "can_call": pack_can_call}),
     ));
+    // The `user` agent: its `import_subtree` builds a pack's blueprint. Only the pack
+    // agent may call it, and only that verb.
+    let mut user = tool_plan(
+        USER_ID,
+        &lead,
+        json!({"handler_module": fantastic_user::HANDLER_MODULE}),
+    );
+    user.record["callable_by"] = json!({"$self": "*", "$parent": "*", (PACK_ID): PACK_USER_VERBS});
+    out.push(user);
     out.push(pack_plan(
         PACK_LISTING_ID,
         &lead,
@@ -390,6 +402,11 @@ async fn place_dispatcher(kernel: &Arc<Kernel>) {
     }
 }
 
+/// The `user` agent (`user.tools`): it holds the blueprint verbs.
+pub const USER_ID: &str = "user";
+/// The one `user` verb the pack agent may call (`install --parent-id`).
+pub const PACK_USER_VERBS: [&str; 1] = ["import_subtree"];
+
 /// Grant the page's agent the chat verbs on each worker in `workers` and on every
 /// agent whose parent is one of them (its subagents), on both ends: the view's
 /// `can_call` names the agent and the agent's `callable_by` names the view. An
@@ -536,6 +553,7 @@ mod tests {
                 "worker_files",
                 "files",
                 "pack",
+                "user",
                 "pack_listing",
                 "queue",
                 "git"
@@ -683,7 +701,10 @@ mod tests {
         let pack = find(PACK_ID);
         assert_eq!(pack.parent, "lead");
         assert_eq!(pack.record["handler_module"], pack_bundle::HANDLER_MODULE);
-        assert_eq!(pack.record["can_call"], json!({"files": "*", "lead": "*"}));
+        assert_eq!(
+            pack.record["can_call"],
+            json!({"files": "*", "lead": "*", "user": ["import_subtree"]})
+        );
         assert_eq!(
             pack.record["callable_by"],
             json!({"$self": "*", "$parent": "*", "dispatcher": "*"}),
@@ -766,6 +787,54 @@ mod tests {
         bootstrap::shutdown(dir.path()).unwrap();
     }
 
+    /// The whole path on a real kernel: pack a worker with a blueprint, install it with
+    /// `parent_id` (preview, then approve) and find the agent under the lead.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn applied_pack_install_builds_the_blueprint_worker() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("templates")).unwrap();
+        std::fs::create_dir_all(dir.path().join("w/blueprint")).unwrap();
+        std::fs::write(
+            dir.path().join("w/worker.json"),
+            r#"{"name":"w","version":"1.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("w/blueprint/blueprint.yaml"),
+            "agents:\n  - id: bpw\n    handler_module: ram_store.tools\n",
+        )
+        .unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        let send = |p: Value| {
+            let kernel = kernel.clone();
+            async move {
+                kernel
+                    .send(vec![Item::new(PACK_ID, p)])
+                    .await
+                    .remove(0)
+                    .result
+            }
+        };
+        let packed = send(json!({"type": "pack", "worker": "w", "out": "pack"})).await;
+        assert!(packed.get("error").is_none(), "{packed}");
+        let preview = send(
+            json!({"type": "install", "pack": "pack", "into": "templates", "parent_id": "lead"}),
+        )
+        .await;
+        assert!(preview.get("error").is_none(), "{preview}");
+        assert_eq!(preview["approval"]["approval_required"], true, "{preview}");
+        assert!(!exists(&kernel, "bpw_1"), "a preview creates nothing");
+        let built = send(json!({"type": "install", "pack": "pack", "into": "templates2", "parent_id": "lead", "approve": true})).await;
+        assert!(built.get("error").is_none(), "{built}");
+        assert_eq!(built["installed_as"], "worker", "{built}");
+        assert_eq!(built["ids"]["bpw"], "bpw_1", "{built}");
+        assert!(exists(&kernel, "bpw_1"));
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn applied_pack_eval_reaches_a_worker() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -824,6 +893,20 @@ mod tests {
     }
 
     #[test]
+    fn pack_may_call_user() {
+        let cfg = parse(&sample_yaml()).unwrap();
+        let tree = plan(&cfg, Path::new("/team")).unwrap();
+        let pack = tree.iter().find(|p| p.id == PACK_ID).unwrap();
+        assert_eq!(pack.record["can_call"]["user"], json!(["import_subtree"]));
+        let user = tree.iter().find(|p| p.id == USER_ID).unwrap();
+        assert_eq!(user.record["handler_module"], "user.tools");
+        assert_eq!(
+            user.record["callable_by"]["pack"],
+            json!(["import_subtree"])
+        );
+    }
+
+    #[test]
     fn plan_lets_pack_call_the_lead_and_group_members() {
         let cfg = parse(&with_groups_and_board()).unwrap();
         let tree = plan(&cfg, Path::new("/team")).unwrap();
@@ -832,6 +915,7 @@ mod tests {
         for id in ["files", "lead", "w1", "w2", "w3"] {
             assert_eq!(can.get(id), Some(&json!("*")), "pack cannot call {id}");
         }
+        assert_eq!(can.get("user"), Some(&json!(["import_subtree"])));
         let lead = tree.iter().find(|p| p.id == "lead").unwrap();
         assert_eq!(lead.record["callable_by"][PACK_ID], "*");
     }

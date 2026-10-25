@@ -29,6 +29,8 @@ enum Kind {
     Bool,
     /// A whole number of seconds.
     Seconds,
+    /// A switch: `--name` alone means true, and it takes no value.
+    Switch,
 }
 
 const VERBS: &[(&str, Verb)] = &[
@@ -91,6 +93,9 @@ const VERBS: &[(&str, Verb)] = &[
                 ("into", Kind::Text),
                 ("worker", Kind::Text),
                 ("timeout_s", Kind::Seconds),
+                ("parent_id", Kind::Text),
+                ("approve", Kind::Switch),
+                ("allow_code", Kind::Switch),
             ],
             required: &["pack", "into"],
         },
@@ -134,6 +139,14 @@ pub fn parse(args: &[String]) -> Result<(String, Value), String> {
         if !verb.flags.iter().any(|(k, _)| *k == key) {
             return Err(refuse(format!("unknown flag `--{name}` for `{verb_word}`")));
         }
+        let is_switch = verb
+            .flags
+            .iter()
+            .any(|(k, kind)| *k == key && *kind == Kind::Switch);
+        if is_switch {
+            given.insert(key, "true".to_string());
+            continue;
+        }
         let Some(value) = it.next() else {
             return Err(refuse(format!("`--{name}` needs a value")));
         };
@@ -157,6 +170,7 @@ pub fn parse(args: &[String]) -> Result<(String, Value), String> {
             .unwrap_or(Kind::Text);
         let value = match kind {
             Kind::Text => json!(raw),
+            Kind::Switch => json!(true),
             Kind::Bool => match raw.as_str() {
                 "true" => json!(true),
                 "false" => json!(false),
@@ -372,6 +386,30 @@ mod tests {
         let ok = r#"{"pid": 1, "status": "completed", "result": {"packs": []}}"#;
         assert_eq!(reply_error(ok), None);
         assert_eq!(reply_error("not json"), None);
+    }
+
+    #[test]
+    fn install_flags_parent_id_approve_allow_code() {
+        let base = [
+            "install",
+            "--pack",
+            "p",
+            "--into",
+            "templates",
+            "--parent-id",
+            "lead",
+        ];
+        let (agent, payload) = parse(&v(&[&base[..], &["--approve"]].concat())).unwrap();
+        assert_eq!(agent, PACK_ID);
+        assert_eq!(payload["parent_id"], "lead");
+        assert_eq!(payload["approve"], json!(true));
+        assert!(payload.get("allow_code").is_none());
+        let (_, payload) = parse(&v(&base)).unwrap();
+        assert!(payload.get("approve").is_none(), "{payload}");
+        let (_, payload) =
+            parse(&v(&[&base[..], &["--allow-code", "--approve"]].concat())).unwrap();
+        assert_eq!(payload["allow_code"], json!(true));
+        assert_eq!(payload["approve"], json!(true));
     }
 
     #[test]

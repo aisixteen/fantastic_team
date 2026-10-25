@@ -90,6 +90,11 @@ pub fn registry() -> BundleRegistry {
         fantastic_exec_bridge::HANDLER_MODULE,
         fantastic_exec_bridge::ExecBridgeBundle,
     );
+    // `user.tools`: the blueprint verbs (`import_subtree`) behind `packs install --parent-id`.
+    reg.register(
+        fantastic_user::HANDLER_MODULE,
+        fantastic_user::UserBundle::default(),
+    );
     register_team(&mut reg);
     reg
 }
@@ -99,7 +104,7 @@ pub fn registry() -> BundleRegistry {
 pub const AI_README: &str = include_str!("../../../docs/ai-readme.md");
 
 /// Usage text, printed on `--help` and on bad arguments.
-pub const USAGE: &str = "usage: fantastic_team [--dir PATH] [--port N | --tui]\n  no surface flag: fully headless (no port, no terminal UI)\n  --port N: serve the web UI on 127.0.0.1:N\n  --tui: the terminal UI (needs a terminal)\n  (`mcp`, `send` and `readme` as the first word run fantastic's own commands)\n  (`packs list|show|updates|publish|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)\n  packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] | packs eval --pack DIR --worker W [--timeout-s N]";
+pub const USAGE: &str = "usage: fantastic_team [--dir PATH] [--port N | --tui]\n  no surface flag: fully headless (no port, no terminal UI)\n  --port N: serve the web UI on 127.0.0.1:N\n  --tui: the terminal UI (needs a terminal)\n  (`mcp`, `send` and `readme` as the first word run fantastic's own commands)\n  (`packs list|show|updates|publish|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)\n  packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]";
 
 /// The first words that are fantastic's own commands, passed through untouched.
 const PASSTHROUGH: &[&str] = &["mcp", "send", "readme"];
