@@ -602,6 +602,12 @@ mod tests {
         });
     }
 
+    /// Serialises "write a script, then exec it" across tests. A fork in a
+    /// parallel test can inherit our still-open write fd and make the exec fail
+    /// with ETXTBSY ("Text file busy") until that child execs.
+    #[cfg(unix)]
+    static EXEC_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[cfg(unix)]
     fn fake_binary(dir: &std::path::Path, name: &str, body: &str) -> String {
         use std::os::unix::fs::PermissionsExt;
@@ -614,6 +620,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn launch_starts_child_and_returns_url_when_ready() {
+        let _exec = EXEC_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_binary(dir.path(), "fake", "exec sleep 30");
         let (listener, port) = bind_free().await;
@@ -630,6 +637,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn launch_reports_child_that_exits_early() {
+        let _exec = EXEC_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_binary(dir.path(), "fake", "exit 3");
         // Held, never served: no other test can take this port and answer 200.
@@ -648,6 +656,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn stop_kills_the_child_and_is_idempotent() {
+        let _exec = EXEC_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_binary(dir.path(), "fake", "exec sleep 30");
         let (listener, port) = bind_free().await;
