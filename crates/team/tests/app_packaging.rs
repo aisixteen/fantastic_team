@@ -118,3 +118,77 @@ fn csp_has_no_unsafe_inline_and_one_port() {
         "connect-src is not limited to the frontendDist port {port}: {csp}"
     );
 }
+
+fn team_app_file(rel: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("team_app")
+        .join(rel);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+#[test]
+fn tauri_feature_is_optional_and_pinned() {
+    let toml = team_app_file("Cargo.toml");
+    let features = toml
+        .split("[features]")
+        .nth(1)
+        .expect("team_app has a [features] table");
+    let features = features.split("\n[").next().unwrap_or_default();
+    assert!(
+        features
+            .lines()
+            .any(|l| l.trim_start().starts_with("tauri = [")),
+        "no `tauri = [` feature: {features}"
+    );
+    for line in toml
+        .lines()
+        .filter(|l| l.trim_start().starts_with("default ="))
+    {
+        assert!(
+            !line.contains("tauri"),
+            "tauri is a default feature: {line}"
+        );
+    }
+    let dep = toml
+        .lines()
+        .find(|l| l.trim_start().starts_with("tauri = {"))
+        .expect("a tauri dependency line");
+    assert!(
+        dep.contains("\"=2.12.1\""),
+        "tauri not pinned to =2.12.1: {dep}"
+    );
+    assert!(dep.contains("optional = true"), "tauri not optional: {dep}");
+    let build = toml
+        .lines()
+        .find(|l| l.trim_start().starts_with("tauri-build = {"))
+        .expect("a tauri-build dependency line");
+    assert!(
+        build.contains("\"=2.7.1\""),
+        "tauri-build not pinned to =2.7.1: {build}"
+    );
+    assert!(
+        build.contains("optional = true"),
+        "tauri-build not optional: {build}"
+    );
+}
+
+#[test]
+fn team_app_without_feature_has_no_tauri_code_path() {
+    let lib = team_app_file("src/lib.rs");
+    assert!(
+        !lib.contains("tauri::"),
+        "lib.rs names tauri:: outside a cfg"
+    );
+    for rel in ["src/main.rs", "src/window.rs"] {
+        let text = team_app_file(rel);
+        let marker = text
+            .find("#[cfg(feature = \"tauri\")]")
+            .unwrap_or_else(|| panic!("{rel} has no #[cfg(feature = \"tauri\")]"));
+        for word in ["tauri::", "tauri_build"] {
+            if let Some(i) = text.find(word) {
+                assert!(i > marker, "{rel} names {word} before the tauri cfg");
+            }
+        }
+    }
+}

@@ -248,6 +248,8 @@ impl Launched {
     }
 }
 
+pub mod window;
+
 #[cfg(test)]
 mod tests {
     use super::*;
