@@ -381,3 +381,61 @@ fn docs_say_which_workers_the_pack_agent_can_reach() {
     assert!(readme.contains("`groups:`") && readme.contains("`callable_by`"));
     assert!(ai.contains("`groups:`") && ai.contains("`callable_by`"));
 }
+
+/// The shell test scripts CI's units job runs: the `sh tests/*.sh` lines of ci.yml.
+fn ci_shell_tests() -> Vec<String> {
+    let ci = fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
+    ci.lines()
+        .map(|l| l.trim())
+        .filter(|l| l.starts_with("sh tests/") && l.ends_with(".sh"))
+        .map(|l| l["sh ".len()..].to_string())
+        .collect()
+}
+
+#[test]
+fn readme_lists_every_shell_test_ci_runs() {
+    let text = readme();
+    let tests = ci_shell_tests();
+    assert!(
+        tests.len() >= 4,
+        "ci.yml should run at least 4 shell tests, found {}: {tests:?}",
+        tests.len()
+    );
+    for path in &tests {
+        assert!(
+            text.contains(path.as_str()),
+            "README does not list `{path}`, which ci.yml runs"
+        );
+    }
+}
+
+#[test]
+fn readme_names_the_github_build_check_and_test_steps() {
+    let ci = fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
+    let text = readme();
+    for step in ["build-github.sh --check", "build-github.sh --test"] {
+        if ci.contains(step) {
+            assert!(
+                text.contains(step),
+                "ci.yml runs `{step}`, which the README does not name"
+            );
+        }
+    }
+}
+
+#[test]
+fn install_help_block_matches_usage() {
+    let install = fs::read_to_string(root().join("docs/install.md")).unwrap();
+    let lines: Vec<&str> = fantastic_team::USAGE
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert!(lines.len() >= 5, "USAGE should span several lines");
+    for line in lines {
+        assert!(
+            install.contains(line),
+            "docs/install.md help block lacks the USAGE line `{line}`"
+        );
+    }
+}
