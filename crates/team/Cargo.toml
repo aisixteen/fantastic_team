@@ -21,6 +21,7 @@ fantastic-bundle.workspace = true
 fantastic-core.workspace = true
 fantastic-file.workspace = true
 fantastic-ram-store.workspace = true
+fantastic-user.workspace = true
 fantastic-exec-bridge.workspace = true
 team-git-connector = { path = "../git_connector" }
 team-github-connector = { path = "../github_connector" }

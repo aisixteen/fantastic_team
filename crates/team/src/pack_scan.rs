@@ -26,7 +26,9 @@ const CODE_EXTS: &[&str] = &[
 ];
 
 fn is_directive_or_template(path: &str) -> bool {
-    path.starts_with("directives/") || path.starts_with("templates/")
+    path.starts_with("directives/")
+        || path.starts_with("templates/")
+        || (path.starts_with("blueprint/") && path.ends_with(".md"))
 }
 
 fn is_code(path: &str) -> bool {

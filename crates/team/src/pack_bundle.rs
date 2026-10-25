@@ -6,8 +6,19 @@
 //! worker record with bindings stripped), and `directives/`, `templates/`,
 //! `evals/`. `pack` runs the secrets scan (`pack_scan`) before it writes.
 //! `install` checks the manifest, the content hash and the scan before it
-//! copies the pack under the canvas templates dir as a TEMPLATE. It never
-//! creates an agent: every effect goes through the `files` agent.
+//! copies the pack under the canvas templates dir as a TEMPLATE. Without a
+//! `parent_id` it never creates an agent: every effect goes through the `files`
+//! agent.
+//!
+//! A pack may also carry a `blueprint/` folder (fantastic's blueprint format:
+//! `blueprint.yaml` plus `<agent id>/directive.md`), packed, hashed and scanned
+//! like the directives. `install {pack, into, parent_id, approve?, allow_code?}`
+//! then builds the worker through the `user` agent's `import_subtree` (#269) from
+//! the installed `<dest>/blueprint` folder: without `approve` the reply carries
+//! the permission preview under `approval` and nothing is created; with
+//! `approve: true` the agents are created under `parent_id` and the reply
+//! carries `imported` and `ids`. The pack's bindings become the blueprint's
+//! ports (`blueprint_bind`). `allow_code` is a pass-through and defaults false.
 //!
 //! `install {pack, into, bindings?}` also takes the buyer's bindings: a map from
 //! each port key (`model`, `connector:<name>`, `exec:sandboxed`) to the id of
@@ -73,6 +84,15 @@ fn is_binding_key(key: &str) -> bool {
 
 /// The directories a pack carries, besides the manifest and the record.
 const PACK_DIRS: &[&str] = &["directives", "templates", "evals"];
+
+/// The optional blueprint folder of a pack, and the file that marks it.
+const BLUEPRINT_DIR: &str = "blueprint";
+const BLUEPRINT_YAML: &str = "blueprint.yaml";
+
+/// The most files a packed blueprint folder may hold (fantastic's own cap).
+const MAX_BLUEPRINT_FILES: usize = 512;
+/// How deep a blueprint folder may nest.
+const MAX_BLUEPRINT_DEPTH: usize = 8;
 
 /// Remove binding and credential keys from a worker record, recursively.
 pub fn strip_bindings(record: &Value) -> Value {
@@ -229,6 +249,67 @@ async fn exists<P: Peers>(p: &P, path: &str) -> bool {
         .await
         .get("error")
         .is_none()
+}
+
+/// Every file under `<root>/<dir>` as `(path relative to dir, text)`, recursively.
+/// An entry that cannot be read as a file is listed as a folder. Refuses an
+/// unsafe entry name, more than `MAX_BLUEPRINT_FILES` files and nesting past
+/// `MAX_BLUEPRINT_DEPTH`.
+async fn gather_tree<P: Peers>(
+    p: &P,
+    root: &str,
+    dir: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut stack: Vec<(String, usize)> = vec![(String::new(), 0)];
+    while let Some((rel_dir, depth)) = stack.pop() {
+        let here = if rel_dir.is_empty() {
+            format!("{root}/{dir}")
+        } else {
+            format!("{root}/{dir}/{rel_dir}")
+        };
+        for entry in list(p, &here).await {
+            if entry.is_empty() || entry.contains(['/', '\\']) || entry.contains("..") {
+                return Err("blueprint has an unsafe file name".to_string());
+            }
+            let rel = if rel_dir.is_empty() {
+                entry.clone()
+            } else {
+                format!("{rel_dir}/{entry}")
+            };
+            if let Some(text) = read(p, &format!("{root}/{dir}/{rel}")).await {
+                if out.len() >= MAX_BLUEPRINT_FILES {
+                    return Err(format!(
+                        "blueprint holds more than {MAX_BLUEPRINT_FILES} files"
+                    ));
+                }
+                out.push((rel, text));
+            } else if depth < MAX_BLUEPRINT_DEPTH {
+                stack.push((rel, depth + 1));
+            } else {
+                return Err("blueprint is nested too deep".to_string());
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// The blueprint `bind` map for a pack's bindings: `model` is `@model`,
+/// `connector:<name>` is `@connector:<name>`, `exec:sandboxed` is `@exec`.
+pub fn blueprint_bind(bound: &BTreeMap<String, String>) -> Value {
+    let mut out = serde_json::Map::new();
+    for (key, id) in bound {
+        let port = if key == "model" {
+            "@model".to_string()
+        } else if key.starts_with("exec:") {
+            "@exec".to_string()
+        } else {
+            format!("@{key}")
+        };
+        out.insert(port, json!(id));
+    }
+    Value::Object(out)
 }
 
 /// Write `<root>/<rel>`; record it under `ok`, or under `failed` when the write fails.
@@ -394,6 +475,19 @@ pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
             }
         }
     }
+    if exists(p, &format!("{worker}/{BLUEPRINT_DIR}")).await {
+        match gather_tree(p, worker, BLUEPRINT_DIR).await {
+            Ok(files) => {
+                if !files.iter().any(|(r, _)| r == BLUEPRINT_YAML) {
+                    return err("blueprint has no blueprint.yaml");
+                }
+                for (rel, text) in files {
+                    gathered.push((format!("{BLUEPRINT_DIR}/{rel}"), text));
+                }
+            }
+            Err(e) => return err(&e),
+        }
+    }
     // The bridge does not return a file's last newline, so none is packed: what
     // `install` reads back is then exactly what was hashed here.
     for (_, t) in gathered.iter_mut() {
@@ -441,7 +535,17 @@ pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
 /// Refuses a pack with no `pack.yaml`, an invalid manifest, an existing version,
 /// a name or version that is not a safe path segment (no `/`, `\`, `..`), a file
 /// set whose content hash differs from the manifest, and a pack the secrets scan
-/// refuses. Every check runs before the first write. Creates no agent.
+/// refuses. Every check runs before the first write. Creates no agent unless
+/// `parent_id` is set.
+///
+/// With a non-empty `parent_id` the pack must carry `blueprint/blueprint.yaml`
+/// (else `pack has no blueprint to import`, before any write). After the copy,
+/// `user.import_subtree` is asked for `<dest>/blueprint` under `parent_id`, with
+/// the bindings as ports and `allow_code` passed through. Without `approve` the
+/// reply is the preview under `approval` and nothing is created; with it, the
+/// reply is under `imported`, `ids` lists the new agents and `installed_as` is
+/// `worker`. A refusal keeps the template copy and is reported under
+/// `import_error` and a top-level `error`.
 ///
 /// With a non-empty `worker`, the copied pack's evals run on it after the copy
 /// and the report goes under `evals` (or `skipped` when the pack has none, or
@@ -454,6 +558,7 @@ pub async fn pack<P: Peers>(p: &P, worker: &str, out: &str) -> Value {
 /// to `<dest>/bindings.json` (the installer's data, not hashed) and the reply
 /// carries `bindings: {bound, unbound}`. Unbound ports never fail the install:
 /// the caller asks the user and re-runs with the map.
+#[allow(clippy::too_many_arguments)]
 pub async fn install<P: Peers>(
     p: &P,
     pack: &str,
@@ -462,6 +567,9 @@ pub async fn install<P: Peers>(
     timeout: Duration,
     bindings: &Value,
     min_pass_rate: f64,
+    parent_id: &str,
+    approve: bool,
+    allow_code: bool,
 ) -> Value {
     let Some(text) = read(p, &format!("{pack}/{}", pack_manifest::MANIFEST_FILE)).await else {
         return err("pack has no pack.yaml");
@@ -510,6 +618,18 @@ pub async fn install<P: Peers>(
         Ok(bound) => bound,
         Err(e) => return err(&e),
     };
+    if !parent_id.is_empty() {
+        if !valid_part(parent_id) {
+            return err("parent_id is not a safe agent id");
+        }
+        if !manifest
+            .files
+            .iter()
+            .any(|f| f == &format!("{BLUEPRINT_DIR}/{BLUEPRINT_YAML}"))
+        {
+            return err("pack has no blueprint to import");
+        }
+    }
 
     let mut copied = Vec::new();
     let mut failed = Vec::new();
@@ -543,6 +663,37 @@ pub async fn install<P: Peers>(
         "bindings": {"bound": bound, "unbound": unbound_keys(&ports, &bound)},
         "files": copied,
     });
+    if !parent_id.is_empty() {
+        let r = p
+            .ask(
+                "user",
+                json!({
+                    "type": "import_subtree",
+                    "path": format!("{dest_s}/{BLUEPRINT_DIR}"),
+                    "parent_id": parent_id,
+                    "bind": blueprint_bind(&bound),
+                    "allow_code": allow_code,
+                    "approve": approve,
+                }),
+            )
+            .await;
+        if r.get("error").is_some() || r.get("reason").is_some() {
+            let why = r
+                .get("error")
+                .or_else(|| r.get("reason"))
+                .and_then(Value::as_str)
+                .unwrap_or("refused")
+                .to_string();
+            reply["import_error"] = r;
+            reply["error"] = json!(format!("blueprint import refused: {why}"));
+        } else if approve {
+            reply["installed_as"] = json!("worker");
+            reply["ids"] = r.get("ids").cloned().unwrap_or(json!({}));
+            reply["imported"] = r;
+        } else {
+            reply["approval"] = r;
+        }
+    }
     if !worker.is_empty() {
         let evals = evals_of_installed(p, &dest_s, worker, timeout, &manifest.content_hash).await;
         reply["enable"] = enable_verdict(&evals, min_pass_rate);
@@ -665,6 +816,26 @@ fn eval_report(s: &EvalSummary) -> Value {
 
 /// The `timeout_s` of a payload, as the `eval` and `install` verbs read it: a
 /// finite positive number of seconds, else [`DEFAULT_EVAL_TIMEOUT_S`], at most a day.
+/// The optional blueprint args of an `install` payload: `parent_id`, `approve`
+/// and `allow_code`. Only a JSON `true` counts for the two flags.
+fn install_args(payload: &Value) -> (String, bool, bool) {
+    let parent = payload
+        .get("parent_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    (
+        parent,
+        flag(payload, "approve"),
+        flag(payload, "allow_code"),
+    )
+}
+
+/// A payload flag: only a JSON `true` counts.
+fn flag(payload: &Value, key: &str) -> bool {
+    payload.get(key).and_then(Value::as_bool) == Some(true)
+}
+
 fn timeout_from(payload: &Value) -> Duration {
     let timeout = payload
         .get("timeout_s")
@@ -710,7 +881,7 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
     fn verb_docs(&self) -> Value {
         json!({
             "pack": "pack {worker, out} → writes pack.yaml (hash, ports, files) and the pack layout; refuses an existing out and a pack the secrets scan refuses",
-            "install": "install {pack, into, worker?, bindings?, timeout_s?, min_pass_rate?} → checks pack.yaml, the content hash, the scan and the bindings, then copies as a template to <into>/<name>-<version>/; bindings is {port key: agent id} (keys: model, connector:<name>, exec:sandboxed) and is written to bindings.json; refuses an existing version, an unknown key and a non-id value; replies with the parsed ports and bindings {bound, unbound}; with a worker, runs the pack's evals on it and replies with the report under evals and an advisory enable {allowed, min_pass_rate, reason} (min_pass_rate is a number in 0..=1, default 1.0; allowed is false below it or when the evals cannot be loaded); the install is never refused or rolled back on the verdict; the evals report also carries measured {pack_hash, tasks, successes, success_rate, cost_per_task, measured_by, signed:false}: a local, unsigned record, never written or published; creates no agent",
+            "install": "install {pack, into, worker?, bindings?, timeout_s?, min_pass_rate?, parent_id?, approve?, allow_code?} → checks pack.yaml, the content hash, the scan and the bindings, then copies as a template to <into>/<name>-<version>/; bindings is {port key: agent id} (keys: model, connector:<name>, exec:sandboxed) and is written to bindings.json; refuses an existing version, an unknown key and a non-id value; replies with the parsed ports and bindings {bound, unbound}; with a worker, runs the pack's evals on it and replies with the report under evals and an advisory enable {allowed, min_pass_rate, reason} (min_pass_rate is a number in 0..=1, default 1.0; allowed is false below it or when the evals cannot be loaded); the install is never refused or rolled back on the verdict; the evals report also carries measured {pack_hash, tasks, successes, success_rate, cost_per_task, measured_by, signed:false}: a local, unsigned record, never written or published; creates no agent unless parent_id is set: then the pack's blueprint/ folder is imported under that agent through user.import_subtree (the bindings become the blueprint ports @model, @connector:<name>, @exec); without approve the reply carries the permission preview under approval and nothing is created, with approve true it carries imported and ids and installed_as is worker; allow_code defaults false; a refused import keeps the template and replies with error and import_error",
             "eval": "eval {pack, worker, timeout_s?} → runs the pack's evals on the worker; returns pass rate, time, cost and per-eval results; also replies with measured {pack_hash, tasks, successes, success_rate, cost_per_task, measured_by, signed:false}: a local, unsigned record, never written or published",
         })
     }
@@ -738,6 +909,7 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
             "pack" => pack(&peers, &s("worker"), &s("out")).await,
             "install" => {
                 let bindings = payload.get("bindings").cloned().unwrap_or(Value::Null);
+                let (parent_id, approve, allow_code) = install_args(payload);
                 install(
                     &peers,
                     &s("pack"),
@@ -746,6 +918,9 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
                     timeout_from(payload),
                     &bindings,
                     min_pass_rate_from(payload).unwrap_or(1.0),
+                    &parent_id,
+                    approve,
+                    allow_code,
                 )
                 .await
             }
@@ -805,11 +980,13 @@ mod tests {
                 }
                 "list" => {
                     let prefix = format!("{path}/");
+                    // Direct files and the first segment of nested ones (a folder).
                     let entries: Vec<String> = files
                         .keys()
                         .filter_map(|k| k.strip_prefix(&prefix))
-                        .filter(|rest| !rest.contains('/'))
-                        .map(String::from)
+                        .map(|rest| rest.split('/').next().unwrap_or(rest).to_string())
+                        .collect::<BTreeSet<String>>()
+                        .into_iter()
                         .collect();
                     if files.keys().any(|k| k.starts_with(&prefix)) {
                         json!({"entries": entries})
@@ -896,6 +1073,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -919,6 +1099,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["path"], "templates/w-1.0", "{r}");
@@ -945,6 +1128,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         let r = install(
@@ -955,6 +1141,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert!(r.get("error").is_some(), "{r}");
@@ -1001,6 +1190,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert!(r.get("error").is_some(), "{r}");
@@ -1021,6 +1213,9 @@ mod tests {
                 Duration::from_secs(5),
                 &Value::Null,
                 1.0,
+                "",
+                false,
+                false,
             )
             .await;
             assert!(r.get("error").is_some(), "{v}: {r}");
@@ -1040,6 +1235,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert!(r.get("error").is_some(), "{r}");
@@ -1083,6 +1281,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["error"], "write failed", "{r}");
@@ -1189,6 +1390,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -1210,6 +1414,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["error"], "content hash mismatch", "{r}");
@@ -1252,6 +1459,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["error"], "pack refused by scan", "{r}");
@@ -1286,6 +1496,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(
@@ -1342,6 +1555,9 @@ mod tests {
             Duration::from_secs(5),
             &bindings,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert!(r.get("error").is_none(), "{r}");
@@ -1377,6 +1593,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert!(r.get("error").is_none(), "{r}");
@@ -1401,6 +1620,9 @@ mod tests {
             Duration::from_secs(5),
             &bindings,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert!(r.get("error").is_none(), "{r}");
@@ -1421,6 +1643,9 @@ mod tests {
             Duration::from_secs(5),
             &bindings,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert!(
@@ -1457,6 +1682,9 @@ mod tests {
                 Duration::from_secs(5),
                 &bindings,
                 1.0,
+                "",
+                false,
+                false,
             )
             .await;
             assert!(
@@ -1601,6 +1829,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -1630,6 +1861,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert!(r.get("evals").is_none(), "{r}");
@@ -1665,6 +1899,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -1683,6 +1920,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -1706,6 +1946,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["error"], "content hash mismatch", "{r}");
@@ -1768,6 +2011,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["enable"]["allowed"], true, "{r}");
@@ -1785,6 +2031,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -1804,6 +2053,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             0.5,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["enable"]["allowed"], true, "{r}");
@@ -1821,6 +2073,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["enable"]["allowed"], true, "{r}");
@@ -1835,6 +2090,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert_eq!(r["installed_as"], "template", "{r}");
@@ -1938,6 +2196,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         let e = &r["evals"];
@@ -1964,6 +2225,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert!(r.get("measured").is_none() && r["evals"].is_null(), "{r}");
@@ -1977,6 +2241,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert!(r["evals"].get("skipped").is_some(), "{r}");
@@ -1991,6 +2258,9 @@ mod tests {
             Duration::from_secs(5),
             &Value::Null,
             1.0,
+            "",
+            false,
+            false,
         )
         .await;
         assert!(r["evals"].get("error").is_some(), "{r}");
@@ -2019,6 +2289,320 @@ mod tests {
         assert!(!m.contains("SECRETMARK"), "{m}");
         assert!(!m.contains("pack/"), "{m}");
         assert!(!m.contains("evals"), "{m}");
+    }
+
+    // ---- blueprint packs and `install {parent_id}` (#40, #269) ----
+
+    /// The `files` fake plus a `user` peer that records every ask and returns `reply`.
+    struct WithUser {
+        files: FakeFiles,
+        asks: Mutex<Vec<Value>>,
+        reply: Mutex<Value>,
+    }
+
+    impl WithUser {
+        fn new(files: FakeFiles, reply: Value) -> Self {
+            Self {
+                files,
+                asks: Mutex::new(Vec::new()),
+                reply: Mutex::new(reply),
+            }
+        }
+        fn asks(&self) -> Vec<Value> {
+            self.asks.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Peers for WithUser {
+        async fn ask(&self, to: &str, p: Value) -> Value {
+            if to == "user" {
+                self.asks.lock().unwrap().push(p);
+                return self.reply.lock().unwrap().clone();
+            }
+            self.files.ask(to, p).await
+        }
+    }
+
+    fn preview_reply() -> Value {
+        json!({"approval_required": true, "agents": 1, "new_ids": {"w": "w_1"}, "ports": {}})
+    }
+
+    fn imported_reply() -> Value {
+        json!({"imported": 1, "ids": {"w": "w_1"}, "parent_id": "lead", "ports": {}})
+    }
+
+    /// A worker dir with a blueprint folder (`blueprint.yaml` and one directive).
+    fn blueprint_worker() -> FakeFiles {
+        let f = worker();
+        {
+            let mut m = f.files.lock().unwrap();
+            m.insert(
+                "w/blueprint/blueprint.yaml".into(),
+                "agents:\n  w: {}".into(),
+            );
+            m.insert(
+                "w/blueprint/w/directive.md".into(),
+                "Summarise issues.".into(),
+            );
+        }
+        f
+    }
+
+    /// A packed blueprint worker at `pack/`, behind a `user` fake that answers `reply`.
+    async fn packed_blueprint(reply: Value) -> WithUser {
+        let both = WithUser::new(blueprint_worker(), reply);
+        let r = pack(&both, "w", "pack").await;
+        assert!(r.get("error").is_none(), "{r}");
+        both
+    }
+
+    #[tokio::test]
+    async fn pack_includes_blueprint_dir_when_present() {
+        let f = blueprint_worker();
+        let r = pack(&f, "w", "out").await;
+        assert!(r.get("error").is_none(), "{r}");
+        let yaml = f.get("out/pack.yaml").unwrap();
+        for rel in ["blueprint/blueprint.yaml", "blueprint/w/directive.md"] {
+            assert!(yaml.contains(rel), "{rel} not listed:\n{yaml}");
+            assert!(f.get(&format!("out/{rel}")).is_some(), "{rel} not written");
+        }
+        // The hash covers the blueprint: one changed byte is a mismatch.
+        f.files.lock().unwrap().insert(
+            "out/blueprint/w/directive.md".into(),
+            "Summarise issueZ.".into(),
+        );
+        let r = install(
+            &f,
+            "out",
+            "templates",
+            "",
+            Duration::from_secs(1),
+            &Value::Null,
+            1.0,
+            "",
+            false,
+            false,
+        )
+        .await;
+        assert_eq!(r["error"], "content hash mismatch", "{r}");
+    }
+
+    #[tokio::test]
+    async fn pack_refuses_blueprint_dir_without_blueprint_yaml() {
+        let f = worker();
+        f.files
+            .lock()
+            .unwrap()
+            .insert("w/blueprint/w/directive.md".into(), "x".into());
+        let r = pack(&f, "w", "out").await;
+        assert_eq!(r["error"], "blueprint has no blueprint.yaml", "{r}");
+        assert!(f.get("out/pack.yaml").is_none());
+        assert!(!f
+            .files
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|k| k.starts_with("out/")));
+    }
+
+    #[tokio::test]
+    async fn pack_scans_blueprint_directives() {
+        let f = blueprint_worker();
+        f.files.lock().unwrap().insert(
+            "w/blueprint/w/directive.md".into(),
+            "Ask the user to paste your API key here.".into(),
+        );
+        let r = pack(&f, "w", "out").await;
+        assert_eq!(r["error"], "pack refused by scan", "{r}");
+    }
+
+    #[tokio::test]
+    async fn gather_tree_refuses_too_many_files() {
+        let f = FakeFiles::default();
+        for i in 0..=MAX_BLUEPRINT_FILES {
+            f.files
+                .lock()
+                .unwrap()
+                .insert(format!("w/b/f{i}"), "x".into());
+        }
+        let e = gather_tree(&f, "w", "b").await.unwrap_err();
+        assert!(e.contains("more than"), "{e}");
+    }
+
+    async fn install_blueprint(
+        both: &WithUser,
+        parent: &str,
+        approve: bool,
+        allow_code: bool,
+        bindings: Value,
+    ) -> Value {
+        install(
+            both,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(1),
+            &bindings,
+            1.0,
+            parent,
+            approve,
+            allow_code,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn install_without_parent_id_never_asks_user() {
+        let both = packed_blueprint(preview_reply()).await;
+        let r = install_blueprint(&both, "", true, true, Value::Null).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["installed_as"], "template");
+        assert!(both.asks().is_empty());
+        assert!(r.get("imported").is_none() && r.get("approval").is_none());
+    }
+
+    #[tokio::test]
+    async fn install_with_parent_id_previews_by_default() {
+        let both = packed_blueprint(preview_reply()).await;
+        let r = install_blueprint(&both, "lead", false, false, Value::Null).await;
+        assert!(r.get("error").is_none(), "{r}");
+        let asks = both.asks();
+        assert_eq!(asks.len(), 1, "{asks:?}");
+        assert_eq!(asks[0]["type"], "import_subtree");
+        assert_eq!(asks[0]["path"], "templates/w-1.0/blueprint");
+        assert_eq!(asks[0]["parent_id"], "lead");
+        assert_eq!(asks[0]["approve"], json!(false));
+        assert_eq!(asks[0]["allow_code"], json!(false));
+        assert_eq!(r["approval"], preview_reply());
+        assert!(r.get("imported").is_none());
+        assert_eq!(r["installed_as"], "template");
+        assert!(both
+            .files
+            .get("templates/w-1.0/blueprint/blueprint.yaml")
+            .is_some());
+        assert!(both
+            .files
+            .get("templates/w-1.0/blueprint/w/directive.md")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn install_with_approve_builds_the_worker() {
+        let both = packed_blueprint(imported_reply()).await;
+        let r = install_blueprint(&both, "lead", true, false, Value::Null).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(both.asks()[0]["approve"], json!(true));
+        assert_eq!(r["imported"], imported_reply());
+        assert_eq!(r["ids"], json!({"w": "w_1"}));
+        assert_eq!(r["installed_as"], "worker");
+        assert!(r.get("approval").is_none());
+    }
+
+    #[test]
+    fn blueprint_bind_maps_keys() {
+        let m = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<BTreeMap<String, String>>()
+        };
+        assert_eq!(blueprint_bind(&BTreeMap::new()), json!({}));
+        assert_eq!(
+            blueprint_bind(&m(&[("model", "m1")])),
+            json!({"@model": "m1"})
+        );
+        assert_eq!(
+            blueprint_bind(&m(&[("connector:github", "gh1")])),
+            json!({"@connector:github": "gh1"})
+        );
+        assert_eq!(
+            blueprint_bind(&m(&[("exec:sandboxed", "x1")])),
+            json!({"@exec": "x1"})
+        );
+    }
+
+    /// A blueprint pack that declares all three port kinds.
+    async fn packed_three_ports() -> WithUser {
+        let f = blueprint_worker();
+        f.files.lock().unwrap().insert(
+            "w/worker.json".into(),
+            r#"{"name":"w","version":"1.0","ports":["@model","@connector:github","@exec:sandboxed"]}"#.into(),
+        );
+        let both = WithUser::new(f, preview_reply());
+        let r = pack(&both, "w", "pack").await;
+        assert!(r.get("error").is_none(), "{r}");
+        both
+    }
+
+    #[tokio::test]
+    async fn install_passes_bindings_as_blueprint_ports() {
+        let both = packed_three_ports().await;
+        let b = json!({"model": "m1", "connector:github": "gh1", "exec:sandboxed": "x1"});
+        let r = install_blueprint(&both, "lead", false, false, b).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(
+            both.asks()[0]["bind"],
+            json!({"@model": "m1", "@connector:github": "gh1", "@exec": "x1"})
+        );
+    }
+
+    #[tokio::test]
+    async fn install_surfaces_import_refusal() {
+        let both = packed_blueprint(
+            json!({"error": "user.import_subtree: unbound", "reason": "unbound_ports"}),
+        )
+        .await;
+        let r = install_blueprint(&both, "lead", true, false, Value::Null).await;
+        assert!(
+            r["error"]
+                .as_str()
+                .unwrap()
+                .contains("blueprint import refused"),
+            "{r}"
+        );
+        assert_eq!(r["import_error"]["reason"], "unbound_ports");
+        assert_eq!(r["installed_as"], "template");
+        assert!(both.files.get("templates/w-1.0/pack.yaml").is_some());
+    }
+
+    #[tokio::test]
+    async fn install_with_parent_id_but_no_blueprint_is_refused_before_writes() {
+        let both = WithUser::new(worker(), preview_reply());
+        let r = pack(&both, "w", "pack").await;
+        assert!(r.get("error").is_none(), "{r}");
+        let before = both.files.files.lock().unwrap().len();
+        let r = install_blueprint(&both, "lead", true, false, Value::Null).await;
+        assert_eq!(r["error"], "pack has no blueprint to import", "{r}");
+        assert_eq!(both.files.files.lock().unwrap().len(), before);
+        assert!(both.asks().is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_never_sets_allow_code_true_by_default() {
+        let both = packed_blueprint(preview_reply()).await;
+        install_blueprint(&both, "lead", false, false, Value::Null).await;
+        assert_eq!(both.asks()[0]["allow_code"], json!(false));
+        let both = packed_blueprint(preview_reply()).await;
+        install_blueprint(&both, "lead", false, true, Value::Null).await;
+        assert_eq!(both.asks()[0]["allow_code"], json!(true));
+    }
+
+    #[test]
+    fn flag_reads_only_a_json_true() {
+        let p = json!({"a": true, "b": "true", "c": false});
+        assert!(flag(&p, "a"));
+        assert!(!flag(&p, "b") && !flag(&p, "c") && !flag(&p, "d"));
+    }
+
+    #[test]
+    fn verb_install_reads_parent_id_approve_allow_code() {
+        let p =
+            json!({"type": "install", "parent_id": "lead", "approve": true, "allow_code": true});
+        assert_eq!(install_args(&p), ("lead".to_string(), true, true));
+        let p = json!({"type": "install", "approve": "true", "parent_id": 3});
+        assert_eq!(install_args(&p), (String::new(), false, false));
+        assert_eq!(install_args(&json!({})), (String::new(), false, false));
     }
 
     #[test]
