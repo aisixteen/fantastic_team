@@ -30,8 +30,18 @@ first start only.
   history (the newest rows, oldest first), sends a message (shown at once as
   pending, then as sent; an error is shown on the error line and the message
   is removed), stops the turn, and draws the answer's text parts as they
-  stream, until `done` re-enables Send. Back leaves the chat and unwatches
-  it. Inline agent views are not in this slice (see Remaining).
+  stream, until `done` re-enables Send. It also draws reasoning (`thinking`)
+  parts as a collapsed "thought for Ns" block, one tool block per call
+  (`status` tool_calling: `verb(target)`, pending, then the reply), a stats
+  line in the header (tok/s, prompt against the context window, `~` for an
+  estimate), and the `user` agent's open `inquiries` for that agent as cards
+  (Yes/No, one button per option, checkboxes, or a text box; the answer is
+  `answer_inquiry`). A paperclip attaches a text file (up to 200000 bytes) that
+  travels as text inside the same `send` (`[attached: NAME]` and the content; no
+  new field). On open, `status` rebuilds a turn still running. Back leaves the
+  chat and unwatches it. Inline agent views are not in this slice (see Remaining).
+- A worker row also shows the minutes since its task last moved (`2m`) and the
+  number of its pull request (`PR #12`), when known.
 - Back returns to the sidebar, restoring its scroll position and which
   workers were expanded.
 - On a phone (430px wide and under) the sidebar stacks above the content.
@@ -80,7 +90,8 @@ part events (`part_start`, `part_delta`, `part_end`, `part_abort`) and `done`
 of this page's client. Only text parts are drawn. The page's agent
 (`dispatcher_view`) may use those five verbs on each worker of a group and on
 their subagents: `tree::grant_chat` writes both ends (the view's `can_call`, the
-agent's `callable_by`) at each start, and no `*` is granted.
+agent's `callable_by`) at each start, and no `*` is granted. The same view may
+call `inquiries` and `answer_inquiry` on the `user` agent (`tree::grant_inquiries`).
 
 ## Build locally
 
@@ -93,7 +104,19 @@ headless `fantastic_team` binary for you and waits until its web UI answers:
 - `--binary <path>` runs a specific headless binary instead of one on `PATH`.
 - `--dir <path>` passes `--dir` to the headless binary.
 - `--attach <url>` attaches to a web UI already running on `127.0.0.1`,
-  `localhost` or `[::1]` and starts nothing.
+  `localhost` or `[::1]` and starts nothing. A URL with user info, a query or a
+  fragment is refused (the error does not repeat it).
+- `--tunnel HOST[:REMOTE_PORT]` (remote port 8765 by default) attaches to a team
+  on another machine over your own `ssh -N -o ExitOnForwardFailure=yes -L
+  127.0.0.1:<free>:127.0.0.1:<remote> HOST`. HOST is `[A-Za-z0-9._@-]+` and
+  never starts with `-`. `--ssh <path>` names another ssh program. The keys stay
+  in your ssh-agent: the app passes no key and never sees one. Stopping the app
+  stops the tunnel.
+- `--setup-github NAME [--org ORG]` runs `fantastic_team setup github --name NAME
+  [--org ORG]` (NAME and ORG are `[A-Za-z0-9-]{1,39}`; nothing else is passed),
+  forwards its output and shows the setup page it prints: in the window with
+  `--features tauri`, else as a URL on the terminal. The app key never passes
+  through the app; the flow stores it in the credential agent.
 
 Ctrl-C stops the child. If the child exits before its web UI answers, the
 launcher prints the exit status and exits with code 1.
@@ -140,24 +163,26 @@ and `crates/team/tests/app_packaging.rs` guard against committed signing data.
 Not in this slice:
 
 - Sidebar, what is left (#122): inline agent views inside a chat (TBD per the
-  issue, out of scope); per-worker expander persistence across restarts on the
-  server side (today it is per browser).
-- Chat, what is left (#37): the TS chat cell's features not ported: tool
-  blocks, inquiry buttons, context stats, attachments, reasoning blocks (not
-  drawn), and the `status` verb (a turn still streaming when the chat is
-  reopened is not replayed). Grants reach only the workers in `team.yaml`
-  groups and their subagents, as of the start; an agent made later is granted at
-  the next start. No real browser check of the chat, and no live-canvas test.
-  The stream handler is checked in CI with node (`dispatcher_page_chat_stream_draws_text_once`;
-  it is skipped on a machine without node, and fails when `CI` is set).
+  issue, out of scope); per-worker expander
+  persistence across restarts on the server side (today it is per browser).
+- Chat, what is left (#37): an attachment is a text file only (no images or
+  binary). A turn replayed from `status` shows the text so far as one bubble and
+  the rest of that part's stream is not drawn until the next part. Grants reach
+  only the workers in `team.yaml` groups and their subagents, as of the start; an
+  agent made later is granted at the next start. No real browser check of the
+  chat, and no live-canvas test. The stream, tool, reasoning, stats, inquiry,
+  attachment and replay handlers are run in CI by `cargo test -p fantastic-team`
+  against a stub DOM (needs node; `crates/team/tests/js/chat_harness.js`).
+- Row status: the row carries `minutes` and `pr` from the board snapshot (the
+  claimed task, else the worker's newest done task with a link).
 - In-process home kernel through `TeamHandle` (#87 merged): `TeamHandle::start`
   with `TeamOptions.port` serves the dispatcher page on `127.0.0.1:<port>`
   (`TeamHandle::url()` names it: `/team_page/file/index.html`, since the host
   serves no `/`). The window still talks to the headless binary run as a child
   process; the host's record is removed at `stop`.
-- No window run in CI (it needs a display and webkit), and CI does not build
-  with `--features tauri`; `cargo check --features tauri` compiles, but the
-  window has not been run yet (unverified). App end-to-end test per platform
+- No window run in CI (it needs a display and webkit). CI builds the app with
+  `--features tauri` (the `tauri` job); the window has not been run yet
+  (unverified). App end-to-end test per platform
   still open (below).
 - Dispatcher, what is left (#29, #36): teams on other machines through the
   relay (#47, #49); connections and waiting-for-you panels from real data;
@@ -168,8 +193,8 @@ Not in this slice:
   canvas; the in-process kernel (#87); a real browser check of the page; a
   test that runs the team start with a live canvas page (the place step is
   covered only with a stand-in canvas).
-- GitHub app setup UI (#30).
-- Remote attach through a tunnel (#21).
+- GitHub app setup UI (#30): `--setup-github` opens the existing flow's page; the
+  flow itself is unchanged.
 - Mobile.
 - Signing and notarization stay on the maintainer's laptop.
 - App end-to-end test (launch, window, quit) on each desktop platform.

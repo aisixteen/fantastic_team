@@ -33,18 +33,10 @@ pub struct Row {
     pub task: Option<String>,
     /// Minutes since the last change, when it is known.
     pub minutes: Option<u64>,
+    /// The number of the pull request of its task, when the task has a link.
+    pub pr: Option<u64>,
     /// Its cost so far.
     pub cost: f64,
-    /// The number of the pull request it is on or last opened, when it has one.
-    pub pr: Option<u64>,
-}
-
-/// The pull request number at the end of a link or reference: the digits after
-/// the last `/` or `#` (`https://github.com/o/r/pull/9`, `o/r#9`). `None` when
-/// the tail is not a number.
-pub fn pr_number(url: &str) -> Option<u64> {
-    let t = url.trim().trim_end_matches('/');
-    t.rsplit(['/', '#']).next().and_then(|d| d.parse().ok())
 }
 
 /// One connection of a team: its name and whether it is set. Never its value.
@@ -74,6 +66,22 @@ pub fn state_label(task_status: &str, minutes: Option<u64>, limit: u64) -> Strin
     }
 }
 
+/// The pull request number in a task's `pr` link: the digits after `/pull/`, or
+/// after a trailing `#` (`owner/repo#7`). None for anything else.
+pub fn pr_number(link: &str) -> Option<u64> {
+    let link = link.trim().trim_end_matches('/');
+    let digits = |rest: &str| -> Option<u64> {
+        let d: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        d.parse().ok()
+    };
+    if let Some(i) = link.rfind("/pull/") {
+        return digits(&link[i + 6..]);
+    }
+    let i = link.rfind('#')?;
+    let rest = &link[i + 1..];
+    (!rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())).then(|| digits(rest))?
+}
+
 /// Build the row for one worker from the board's snapshot.
 pub fn row_of(worker: &str, board: &Value, now: u64, limit: u64) -> Row {
     let agent = &board["agents"][worker];
@@ -82,6 +90,7 @@ pub fn row_of(worker: &str, board: &Value, now: u64, limit: u64) -> Row {
     let mut task = None;
     let mut status = "pending";
     let mut updated = 0u64;
+    let mut pr = None;
     if let Some(tasks) = board["tasks"]["in_work"].as_array() {
         for t in tasks {
             let claimed = t["claimers"]
@@ -91,41 +100,34 @@ pub fn row_of(worker: &str, board: &Value, now: u64, limit: u64) -> Row {
                 task = t["id"].as_str().map(str::to_string);
                 status = "in_work";
                 updated = t["updated"].as_u64().unwrap_or(0);
+                pr = t["pr"].as_str().and_then(pr_number);
                 break;
             }
         }
     }
-    let minutes = (updated > 0).then(|| now.saturating_sub(updated) / 60);
-    let claims = |t: &Value| {
-        t["claimers"]
-            .as_array()
-            .is_some_and(|c| c.iter().any(|x| x.as_str() == Some(worker)))
-    };
-    // The PR of the task in hand, else of the claimer's most recently updated done task.
-    let mut pr = board["tasks"]["in_work"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|t| claims(t) && t["id"].as_str().map(str::to_string) == task)
-        .and_then(|t| t["pr"].as_str())
-        .and_then(pr_number);
-    if pr.is_none() {
-        pr = board["tasks"]["done"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|t| claims(t) && t["pr"].as_str().and_then(pr_number).is_some())
-            .max_by_key(|t| t["updated"].as_u64().unwrap_or(0))
-            .and_then(|t| t["pr"].as_str())
-            .and_then(pr_number);
+    if pr.is_none() && status != "in_work" {
+        // No task in work: the newest done task it claimed that has a pull request.
+        let mut newest = 0u64;
+        for t in board["tasks"]["done"].as_array().into_iter().flatten() {
+            let mine = t["claimers"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|x| x.as_str() == Some(worker)));
+            let n = t["pr"].as_str().and_then(pr_number);
+            let at = t["updated"].as_u64().unwrap_or(0);
+            if mine && n.is_some() && (pr.is_none() || at >= newest) {
+                pr = n;
+                newest = at;
+            }
+        }
     }
+    let minutes = (updated > 0).then(|| now.saturating_sub(updated) / 60);
     Row {
         id: worker.into(),
         state: state_label(status, minutes, limit),
         task,
         minutes,
-        cost,
         pr,
+        cost,
     }
 }
 
@@ -925,6 +927,54 @@ mod tests {
         assert_eq!(pr_number("https://github.com/o/r/pull/"), None);
         assert_eq!(pr_number("not a pr"), None);
         assert_eq!(pr_number(""), None);
+    }
+
+    #[test]
+    fn row_of_carries_minutes_into_sidebar_item() {
+        let b = json!({
+            "tasks": {"in_work": [{"id": "r#1", "claimers": ["w1"], "updated": 1000}], "done": []},
+            "agents": {"w1": {"cost": 0.0}}
+        });
+        let r = row_of("w1", &b, 1120, 30);
+        assert_eq!(r.minutes, Some(2));
+        let items = worker_items(&r, &BTreeMap::new(), &BTreeSet::new());
+        assert_eq!(items[0]["minutes"], json!(2));
+        let idle = row_of("w2", &b, 1120, 30);
+        let items = worker_items(&idle, &BTreeMap::new(), &BTreeSet::new());
+        assert!(items[0]["minutes"].is_null());
+        assert!(items[0]["pr"].is_null());
+    }
+
+    #[test]
+    fn row_of_exposes_pr_number_from_claimed_task_link() {
+        let b = json!({
+            "tasks": {
+                "in_work": [{"id": "r#1", "claimers": ["w1"], "updated": 5, "pr": "https://github.com/o/r/pull/12"}],
+                "done": [
+                    {"id": "r#2", "claimers": ["w2"], "updated": 1, "pr": "https://github.com/o/r/pull/3"},
+                    {"id": "r#3", "claimers": ["w2"], "updated": 9, "pr": "https://github.com/o/r/pull/8"},
+                    {"id": "r#4", "claimers": ["w2"], "updated": 4, "pr": "https://github.com/o/r/pull/5"},
+                    {"id": "r#5", "claimers": ["w4"], "updated": 20, "pr": "https://github.com/o/r/pull/99"},
+                    {"id": "r#6", "claimers": ["w3"], "updated": 20}
+                ]
+            },
+            "agents": {}
+        });
+        assert_eq!(row_of("w1", &b, 100, 30).pr, Some(12));
+        assert_eq!(row_of("w2", &b, 100, 30).pr, Some(8));
+        assert_eq!(row_of("w3", &b, 100, 30).pr, None);
+        let nolink = json!({"tasks": {"in_work": [{"id": "r#1", "claimers": ["w1"], "updated": 5}], "done": []}});
+        assert_eq!(row_of("w1", &nolink, 100, 30).pr, None);
+    }
+
+    #[test]
+    fn pr_number_parses_links_and_refs() {
+        assert_eq!(pr_number("https://github.com/o/r/pull/9"), Some(9));
+        assert_eq!(pr_number("https://github.com/o/r/pull/9/"), Some(9));
+        assert_eq!(pr_number("o/r#7"), Some(7));
+        assert_eq!(pr_number("junk"), None);
+        assert_eq!(pr_number(""), None);
+        assert_eq!(pr_number("o/r#"), None);
     }
 
     #[test]
@@ -1945,87 +1995,212 @@ mod tests {
         bootstrap::shutdown(dir.path()).unwrap();
     }
 
-    /// Run `script` under node; `None` when node is not installed.
-    fn run_node(script: &str) -> Option<std::process::Output> {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("chat_stream.js");
-        std::fs::write(&path, script).unwrap();
-        match std::process::Command::new("node").arg(&path).output() {
-            Ok(o) => Some(o),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => panic!("running node: {e}"),
-        }
+    // ---- the page's chat surface, run in node against a stub DOM ----
+
+    /// Run one scenario of `tests/js/chat_harness.js` on the page. None (and a
+    /// notice) when node is missing; with `CI` set a missing node is a failure.
+    fn run_node(scenario: &str) -> Option<Value> {
+        let root = env!("CARGO_MANIFEST_DIR");
+        let out = match std::process::Command::new("node")
+            .arg(format!("{root}/tests/js/chat_harness.js"))
+            .arg(format!("{root}/web/dispatcher.html"))
+            .arg(scenario)
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "node is required in CI: {e}"
+                );
+                eprintln!("skipped `{scenario}`: node is not installed ({e})");
+                return None;
+            }
+        };
+        assert!(
+            out.status.success(),
+            "scenario {scenario} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Some(serde_json::from_slice(&out.stdout).expect("the harness prints JSON"))
     }
 
     #[test]
-    fn dispatcher_page_chat_stream_draws_text_once() {
-        let funcs: String = [
-            "el",
-            "bubble",
-            "scrollChat",
-            "ownEvent",
-            "finishTurn",
-            "onChatEvent",
-        ]
-        .iter()
-        .map(|n| format!("{}\n}}\n", js_fn(n)))
-        .collect();
-        let html = HTML.replace("\r\n", "\n");
-        let client = html
-            .lines()
-            .find(|l| l.starts_with("const chatClient"))
-            .expect("chatClient")
-            .to_string();
-        let script = format!(
-            r#"'use strict';
-const vm = require('vm');
-const assert = require('assert');
-function mkEl(tag) {{
-  const kids = [];
-  const classes = new Set();
-  return {{
-    tag, textContent: '', className: '', children: kids, scrollTop: 0, scrollHeight: 100,
-    classList: {{ add: (c) => classes.add(c), contains: (c) => classes.has(c) }},
-    appendChild(c) {{ kids.push(c); return c; }},
-  }};
-}}
-const ctx = {{ document: {{ createElement: mkEl }} }};
-vm.createContext(ctx);
-vm.runInContext({code}, ctx);
-const transcript = mkEl('div');
-const c = {{ node: 'w1', transcript, drafts: new Map(), busy: true, send: {{ disabled: true }} }};
-const own = (ev) => Object.assign({{ client_id: vm.runInContext('chatClient', ctx), source: 'w1', stream_id: 's1' }}, ev);
-vm.runInContext('globalThis.__f = onChatEvent', ctx);
-const f = ctx.__f;
-f(c, own({{ type: 'part_start', kind: 'text' }}));
-f(c, own({{ type: 'part_delta', text: 'hello' }}));
-f(c, own({{ type: 'part_delta', text: ' world' }}));
-f(c, own({{ type: 'part_end', ok: true }}));
-// Another client's stream is not drawn.
-f(c, {{ type: 'part_start', kind: 'text', client_id: 'someone_else', stream_id: 's2' }});
-assert.strictEqual(transcript.children.length, 1);
-assert.strictEqual(transcript.children[0].textContent, 'hello world');
-assert.strictEqual(c.drafts.size, 0);
-f(c, own({{ type: 'done' }}));
-assert.strictEqual(c.busy, false);
-assert.strictEqual(c.send.disabled, false);
-"#,
-            code = serde_json::to_string(&format!("{client}\n{funcs}")).unwrap()
+    fn chat_stream_draws_text_once() {
+        let Some(v) = run_node("text_once") else {
+            return;
+        };
+        assert_eq!(v["msgs"], json!([{"cls": "msg assistant", "text": "ab"}]));
+    }
+
+    #[test]
+    fn chat_draws_tool_block_from_status() {
+        let Some(v) = run_node("tool_block") else {
+            return;
+        };
+        assert_eq!(v["first"].as_array().unwrap().len(), 1);
+        assert!(v["first"][0]["text"].as_str().unwrap().contains("git(g)"));
+        assert_eq!(v["first"][0]["state"], "pending");
+        assert_eq!(
+            v["second"].as_array().unwrap().len(),
+            1,
+            "one block per call_id"
         );
-        match run_node(&script) {
-            Some(out) => assert!(
-                out.status.success(),
-                "node failed: {}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            ),
-            None => {
-                assert!(
-                    std::env::var_os("CI").is_none(),
-                    "node is not installed, and the stream check must run in CI"
-                );
-                eprintln!("skipped: node is not installed");
-            }
+        assert_eq!(v["second"][0]["state"], "done");
+        assert!(v["second"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("all fine"));
+        assert_eq!(v["third"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn chat_draws_inquiry_buttons_and_sends_answer() {
+        let Some(v) = run_node("inquiries") else {
+            return;
+        };
+        assert_eq!(v["onOpen"], 1, "read once on open");
+        assert_eq!(v["beforeTimer"], 1, "a done is debounced");
+        assert_eq!(v["asked"][1], json!({"type": "inquiries", "asker": "w1"}));
+        assert_eq!(v["labels5"], json!(["Yes", "No"]));
+        assert_eq!(v["labels6"], json!(["alpha", "beta", "gamma"]));
+        assert_eq!(v["disabledWhileSending"], json!([true, true]));
+        assert_eq!(v["afterError"]["disabled"], json!([false, false]));
+        assert!(v["afterError"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("no open inquiry"));
+        assert_eq!(v["afterOk"], "Proceed?you answered: Yes");
+        assert_eq!(
+            v["answers"][1],
+            json!({"id": "user", "payload": {"type": "answer_inquiry", "re": 5, "answer": true}})
+        );
+        assert_eq!(v["cards"], 2, "the same re is not drawn twice");
+        assert_eq!(
+            v["singleAnswer"],
+            json!({"type": "answer_inquiry", "re": 6, "answer": "beta"})
+        );
+        let k = run_node("inquiry_kinds").unwrap();
+        assert_eq!(k["answers"][0]["answer"], json!(["a", "c"]));
+        assert_eq!(k["answers"][1]["answer"], "Ada");
+    }
+
+    #[test]
+    fn chat_draws_context_stats() {
+        let Some(v) = run_node("stats") else { return };
+        assert_eq!(v["plain"], "25 tok/s \u{b7} 12k / 32k ctx");
+        assert!(v["estimated"].as_str().unwrap().contains("~12k"));
+    }
+
+    #[test]
+    fn chat_sends_attachment_as_text() {
+        let Some(v) = run_node("attach") else { return };
+        assert_eq!(v["hasFileInput"], true);
+        assert_eq!(v["chip"], "a.txt\u{d7}");
+        assert_eq!(v["keys"], json!(["client_id", "text", "type"]));
+        let text = v["text"].as_str().unwrap();
+        assert!(
+            text.contains("see") && text.contains("[attached: a.txt]") && text.contains("hello")
+        );
+        assert_eq!(
+            v["bubble"], "seea.txt",
+            "the bubble holds the typed text and the name only"
+        );
+        assert_eq!(v["chipAfter"], "");
+        assert_eq!(v["alone"], "[attached: b.txt]\nyo");
+        assert_eq!(v["sendsAfterBig"], 0);
+        assert!(v["bigError"]
+            .as_str()
+            .unwrap()
+            .contains("larger than 200000"));
+        assert_eq!(v["bigChip"], "");
+        assert!(v["bigAttached"].is_null());
+        assert!(v["readError"]
+            .as_str()
+            .unwrap()
+            .contains("could not be read"));
+        assert!(v["badAttached"].is_null());
+    }
+
+    #[test]
+    fn chat_draws_reasoning_block() {
+        let Some(v) = run_node("reasoning") else {
+            return;
+        };
+        let blocks = v["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2, "the empty thought is removed");
+        assert_eq!(blocks[0]["body"], "let me think");
+        assert!(blocks[0]["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with("thought for"));
+        assert!(blocks[1]["cls"].as_str().unwrap().contains("not-sent"));
+        assert_eq!(v["assistant"], 0, "no text bubble for a thought or a call");
+        assert_eq!(v["total"], 2);
+    }
+
+    #[test]
+    fn chat_status_replays_a_running_turn() {
+        let Some(v) = run_node("status_replay") else {
+            return;
+        };
+        let m = &v["mine"];
+        assert_eq!(m["statusCall"][0]["type"], "status");
+        assert!(m["statusCall"][0]["client_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("team_"));
+        let msgs = m["msgs"].as_array().unwrap();
+        assert_eq!(msgs[0], json!({"cls": "msg user", "text": "q"}));
+        assert_eq!(msgs[1], json!({"cls": "msg assistant", "text": "par"}));
+        assert_eq!(m["tools"], 1);
+        assert!(msgs[2]["text"].as_str().unwrap().contains("git(g)"));
+        assert!(msgs[2]["text"].as_str().unwrap().contains("ok"));
+        assert_eq!(msgs[3]["text"], "next one");
+        assert_eq!(m["disabled"], true);
+        assert_eq!(m["disabledAfterDone"], false);
+        for k in ["notMine", "none"] {
+            assert_eq!(v[k]["msgs"], json!([]), "{k}");
+            assert_eq!(v[k]["disabled"], false, "{k}");
         }
+        let e = run_node("status_error").unwrap();
+        assert_eq!(e["msgs"], json!([]));
+        assert_eq!(e["disabled"], false);
+    }
+
+    #[test]
+    fn page_mentions_new_chat_surface() {
+        for want in [
+            "type: 'status'",
+            "type: 'inquiries'",
+            "type: 'answer_inquiry'",
+            "kind === 'thinking'",
+        ] {
+            assert!(HTML.contains(want), "page lacks {want}");
+        }
+        assert!(
+            HTML.contains("type=\"file\"") || HTML.contains("file.type = 'file'"),
+            "page lacks a file input"
+        );
+        assert!(!HTML.contains("innerHTML"));
+    }
+
+    #[test]
+    fn row_text_shows_minutes() {
+        let Some(v) = run_node("rows") else { return };
+        assert!(v["full"]["text"].as_str().unwrap().contains("2m"));
+        assert_eq!(v["full"]["minutes"], "2m");
+        assert!(v["empty"]["minutes"].is_null());
+        assert!(!v["empty"]["text"].as_str().unwrap().contains("0m"));
+        assert_eq!(v["zero"]["minutes"], "0m");
+    }
+
+    #[test]
+    fn row_text_shows_pr_number() {
+        let Some(v) = run_node("rows") else { return };
+        assert!(v["full"]["text"].as_str().unwrap().contains("PR #12"));
+        assert!(v["empty"]["pr"].is_null());
+        assert!(!v["empty"]["text"].as_str().unwrap().contains("PR #"));
+        assert!(v["zero"]["pr"].is_null());
     }
 }

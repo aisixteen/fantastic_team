@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use fantastic_team_app::{launch, start_args, take_dir, target_from_args, Target};
+use fantastic_team_app::{
+    launch, start_args, start_setup, take_dir, target_from_args, Launched, Target,
+};
 
 /// How long the headless binary gets to answer 200 before we give up.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,6 +39,26 @@ fn parse_args() -> (Option<PathBuf>, Target) {
     (dir, target)
 }
 
+/// Bring the target up: the headless binary, a tunnel, an attach, or the GitHub
+/// setup flow (whose page URL the child prints).
+async fn bring_up(dir: Option<PathBuf>, target: &Target) -> Result<Launched, String> {
+    match target {
+        Target::Setup { binary, name, org } => {
+            start_setup(binary, name, org.as_deref(), READY_TIMEOUT).await
+        }
+        _ => launch(target, dir.as_deref(), READY_TIMEOUT).await,
+    }
+}
+
+/// A setup child that ends normally has finished its flow: that is success.
+fn ended(target: &Target, status: std::io::Result<std::process::ExitStatus>) -> ! {
+    if matches!(target, Target::Setup { .. }) && status.as_ref().is_ok_and(|s| s.success()) {
+        println!("fantastic-team-app: setup finished");
+        std::process::exit(0);
+    }
+    fail(&format!("headless exited: {status:?}"));
+}
+
 #[cfg(not(feature = "tauri"))]
 #[tokio::main]
 async fn main() {
@@ -47,7 +69,7 @@ async fn main() {
 /// Without the window: print the URL and wait for Ctrl-C.
 #[cfg(not(feature = "tauri"))]
 async fn serve_and_wait(dir: Option<PathBuf>, target: Target) {
-    let mut launched = match launch(&target, dir.as_deref(), READY_TIMEOUT).await {
+    let mut launched = match bring_up(dir, &target).await {
         Ok(l) => l,
         Err(e) => fail(&e),
     };
@@ -56,7 +78,7 @@ async fn serve_and_wait(dir: Option<PathBuf>, target: Target) {
         _ = tokio::signal::ctrl_c() => {}
         status = launched.exited() => {
             let _ = launched.stop().await;
-            fail(&format!("headless exited: {status:?}"));
+            ended(&target, status);
         }
     }
     if let Err(e) = launched.stop().await {
@@ -80,7 +102,7 @@ fn main() {
         Err(e) => fail(&format!("the runtime: {e}")),
     };
     tauri::async_runtime::set(rt.handle().clone());
-    let mut launched = match rt.block_on(launch(&target, dir.as_deref(), READY_TIMEOUT)) {
+    let mut launched = match rt.block_on(bring_up(dir, &target)) {
         Ok(l) => l,
         Err(e) => fail(&e),
     };
@@ -93,12 +115,13 @@ fn main() {
         }
     };
     let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<()>();
+    let ended_target = target.clone();
     let watcher = rt.spawn(async move {
         tokio::select! {
             _ = closed_rx => launched.stop().await,
             status = launched.exited() => {
                 let _ = launched.stop().await;
-                fail(&format!("headless exited: {status:?}"));
+                ended(&ended_target, status);
             }
         }
     });

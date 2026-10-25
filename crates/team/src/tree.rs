@@ -459,6 +459,44 @@ pub const USER_ID: &str = "user";
 /// The one `user` verb the pack agent may call (`install --parent-id`).
 pub const PACK_USER_VERBS: [&str; 1] = ["import_subtree"];
 
+/// The two `user` verbs the page uses for the chat's questions: the open
+/// `inquiries` of an asker and `answer_inquiry`. Granted by [`grant_inquiries`].
+pub const INQUIRY_VERBS: [&str; 2] = ["inquiries", "answer_inquiry"];
+
+/// Grant the page's agent the inquiry verbs on the `user` agent, on both ends like
+/// [`grant_chat`]: the view's `can_call` names `user` and `user`'s `callable_by`
+/// names the view. Idempotent; never `*`. Skipped when `user` or the view is not
+/// live. Returns true when a grant was written.
+pub fn grant_inquiries(kernel: &Arc<Kernel>) -> bool {
+    if !exists(kernel, DISPATCHER_VIEW_ID) || !exists(kernel, USER_ID) {
+        return false;
+    }
+    let verbs = json!(INQUIRY_VERBS);
+    let view = fantastic_kernel::AgentId::from(DISPATCHER_VIEW_ID);
+    let user = fantastic_kernel::AgentId::from(USER_ID);
+    let by_user = kernel.edit_callable_by(&user, |cb| {
+        if cb.get(DISPATCHER_VIEW_ID) == Some(&verbs) {
+            return false;
+        }
+        cb.insert(DISPATCHER_VIEW_ID.into(), verbs.clone());
+        true
+    });
+    let by_view = kernel.edit_can_call(&view, |cc| {
+        if cc.get(USER_ID) == Some(&verbs) {
+            return false;
+        }
+        cc.insert(USER_ID.into(), verbs.clone());
+        true
+    });
+    match (by_user, by_view) {
+        (Ok(a), Ok(b)) => a || b,
+        (Err(e), _) | (_, Err(e)) => {
+            eprintln!("dispatcher inquiries: `{USER_ID}`: {e}");
+            false
+        }
+    }
+}
+
 /// Grant the page's agent the chat verbs on each worker in `workers` and on every
 /// agent whose parent is one of them (its subagents), on both ends: the view's
 /// `can_call` names the agent and the agent's `callable_by` names the view. An
@@ -567,6 +605,7 @@ pub fn run_at_start(
             if let Err(e) = grant_agent_verbs(&kernel) {
                 eprintln!("{e}");
             }
+            grant_inquiries(&kernel);
             if let Some(text) = instructions {
                 if instructions_due(&applied, &cfg.first_agent.id, resend) {
                     deliver_instructions(&kernel, &cfg.first_agent.id, text).await?;
@@ -1240,6 +1279,43 @@ mod tests {
             grants("w1", "callable_by")[DISPATCHER_VIEW_ID],
             json!(CHAT_VERBS)
         );
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_inquiries_writes_both_ends_without_star() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        let canvas = json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
+        kernel.send(vec![Item::new(DEFAULT_ROOT_ID, canvas)]).await;
+        // no page agent yet: nothing is written
+        assert!(!exists(&kernel, DISPATCHER_VIEW_ID));
+        assert!(!grant_inquiries(&kernel));
+        place_dispatcher(&kernel).await;
+        assert!(
+            exists(&kernel, USER_ID),
+            "the team kernel has a `user` agent"
+        );
+        assert!(grant_inquiries(&kernel));
+        let grants = |id: &str, field: &str| {
+            kernel
+                .agents
+                .get(&fantastic_kernel::AgentId::from(id))
+                .map(|a| a.meta.read().unwrap()[field].clone())
+                .unwrap_or(Value::Null)
+        };
+        let want = json!(["inquiries", "answer_inquiry"]);
+        assert_eq!(grants(DISPATCHER_VIEW_ID, "can_call")[USER_ID], want);
+        assert_eq!(grants(USER_ID, "callable_by")[DISPATCHER_VIEW_ID], want);
+        assert!(!serde_json::to_string(&want).unwrap().contains('*'));
+        assert!(!grants(DISPATCHER_VIEW_ID, "can_call")
+            .as_object()
+            .unwrap()
+            .contains_key("*"));
+        assert!(!grant_inquiries(&kernel), "idempotent");
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
