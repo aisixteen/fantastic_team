@@ -161,6 +161,17 @@ A team is run by **the lead**: an AI agent configured in `team.yaml` that works 
 
 ## Load and progress
 
+**Quiet mode and the heartbeat.** In quiet mode a lead gets only what changed and
+every stall. So that a driver with idle members and queued work does not sleep, a
+quiet lead that got no digest for three beats in a row, while a direct member is
+idle (no task in hand) and tasks are queued, gets one line:
+`heartbeat: N idle, M queued`. A regular digest restarts the count. Each group in
+`team.yaml` may set `cadence`, `stall_after`, `quiet` and `enabled` (whole seconds,
+at least 1); an unset key follows the global setting, which `set` still changes
+live. A group `cadence` longer than the timer's beat skips beats until it is due; a
+shorter one is held to the beat. When `team.yaml` has a `board` section the plan
+creates the `cadencer` agent with these settings.
+
 The cadencer's `status` carries the team's load as plain counts: workers busy,
 idle and stalled (per group and in all), tasks held, in review, done, blocked
 and queued, the number done in the last hour, and the tokens the drivers have

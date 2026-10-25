@@ -7,6 +7,12 @@
 //! snapshot. The bundle returns the digests; delivering them into each lead's
 //! conversation is the caller's job. The bundle runs its own timer (when enabled)
 //! and beats with the last tree given by a `tick`.
+//!
+//! Quiet mode still sends a short heartbeat digest every `HEARTBEAT_EVERY` beats
+//! to a lead that has an idle member while work waits in the queue, so a driver
+//! never sleeps through queued work. Each group of `team.yaml` may set its own
+//! `cadence`, `stall_after`, `quiet` and `enabled`; an unset key follows the
+//! global setting (changed live by `set`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -62,6 +68,44 @@ impl Default for Settings {
             off: BTreeSet::new(),
         }
     }
+}
+
+/// What one group of `team.yaml` overrides, by the group's name (the lead's id).
+/// An unset key follows the global setting.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct GroupSettings {
+    pub(crate) cadence_s: Option<u64>,
+    pub(crate) stall_after_s: Option<u64>,
+    pub(crate) quiet: Option<bool>,
+    pub(crate) enabled: Option<bool>,
+}
+
+type Groups = BTreeMap<String, GroupSettings>;
+
+/// Beats between two heartbeat digests of a quiet lead with idle members and queued work.
+const HEARTBEAT_EVERY: u64 = 3;
+
+/// The settings that count for one lead: the group's override, else the global value.
+/// `enabled` is read apart (see [`group_disabled`]), since the global one is the timer's.
+fn effective(s: &Settings, groups: &Groups, lead: &str) -> Settings {
+    let mut e = s.clone();
+    if let Some(g) = groups.get(lead) {
+        if let Some(v) = g.stall_after_s {
+            e.stall_after_s = v;
+        }
+        if let Some(v) = g.quiet {
+            e.quiet = v;
+        }
+        if let Some(v) = g.cadence_s {
+            e.cadence_s = v;
+        }
+    }
+    e
+}
+
+/// True when the group switched the cadencer off for itself in `team.yaml`.
+fn group_disabled(groups: &Groups, lead: &str) -> bool {
+    groups.get(lead).and_then(|g| g.enabled) == Some(false)
 }
 
 /// One digest: who it goes to and its lines.
@@ -160,12 +204,38 @@ fn rollup_line(id: &str, group: &[&Node], s: &Settings) -> String {
 /// Build the digests for one tick. A line goes out when its branch changed
 /// since `prev`, or when a worker in it is stalled; in quiet mode nothing else
 /// does. A lead with no lines gets no digest.
+#[cfg(test)]
 pub(crate) fn build(tree: &[Node], prev: &[Node], s: &Settings) -> Vec<Digest> {
+    build_with(tree, prev, s, &Groups::new())
+        .into_iter()
+        .map(|(_, d)| d)
+        .collect()
+}
+
+/// Where a lead's digest goes: its driver, else the lead itself when it has an AI, else the board.
+fn target_of(lead: &Node) -> String {
+    if !lead.driver.is_empty() {
+        lead.driver.clone()
+    } else if lead.has_ai {
+        lead.id.clone()
+    } else {
+        BOARD.to_string()
+    }
+}
+
+/// [`build`] with the per-group settings; each digest comes with its lead's id.
+fn build_with(
+    tree: &[Node],
+    prev: &[Node],
+    global: &Settings,
+    groups: &Groups,
+) -> Vec<(String, Digest)> {
     let mut out = Vec::new();
     for lead in tree.iter().filter(|n| !children_of(tree, &n.id).is_empty()) {
-        if s.off.contains(&lead.id) {
+        if global.off.contains(&lead.id) || group_disabled(groups, &lead.id) {
             continue;
         }
+        let s = &effective(global, groups, &lead.id);
         let mut lines = Vec::new();
         for c in children_of(tree, &lead.id) {
             let mut group: Vec<&Node> = vec![c];
@@ -186,14 +256,60 @@ pub(crate) fn build(tree: &[Node], prev: &[Node], s: &Settings) -> Vec<Digest> {
         if lines.is_empty() {
             continue;
         }
-        let to = if !lead.driver.is_empty() {
-            lead.driver.clone()
-        } else if lead.has_ai {
-            lead.id.clone()
-        } else {
-            BOARD.to_string()
-        };
-        out.push(Digest { to, lines });
+        out.push((
+            lead.id.clone(),
+            Digest {
+                to: target_of(lead),
+                lines,
+            },
+        ));
+    }
+    out
+}
+
+/// The quiet-mode heartbeat. A quiet lead that got no digest this beat, has an
+/// idle member (no task in hand) and sees work queued counts a beat in
+/// `counters`; every `HEARTBEAT_EVERY`th such beat it gets one short line. The
+/// counter restarts when the lead got a regular digest or the condition fails.
+/// `got` holds this beat's digests with their lead; the new ones are returned.
+fn heartbeat(
+    tree: &[Node],
+    got: &[(String, Digest)],
+    load: &Value,
+    global: &Settings,
+    groups: &Groups,
+    counters: &mut BTreeMap<String, u64>,
+) -> Vec<(String, Digest)> {
+    let queued = load["tasks"]["queued"].as_u64().unwrap_or(0);
+    let mut out = Vec::new();
+    for lead in tree.iter().filter(|n| !children_of(tree, &n.id).is_empty()) {
+        let s = effective(global, groups, &lead.id);
+        let idle = children_of(tree, &lead.id)
+            .iter()
+            .filter(|c| c.state == "idle" && !holds_task(c))
+            .count();
+        let due = s.quiet
+            && !global.off.contains(&lead.id)
+            && !group_disabled(groups, &lead.id)
+            && !got.iter().any(|(l, _)| *l == lead.id)
+            && idle > 0
+            && queued > 0;
+        if !due {
+            counters.remove(&lead.id);
+            continue;
+        }
+        let c = counters.entry(lead.id.clone()).or_insert(0);
+        *c += 1;
+        if *c >= HEARTBEAT_EVERY {
+            *c = 0;
+            out.push((
+                lead.id.clone(),
+                Digest {
+                    to: target_of(lead),
+                    lines: vec![format!("heartbeat: {idle} idle, {queued} queued")],
+                },
+            ));
+        }
     }
     out
 }
@@ -247,6 +363,43 @@ fn apply_set(s: &mut Settings, p: &Value) {
     }
 }
 
+fn group_settings_json(groups: &Groups) -> Value {
+    let mut out = serde_json::Map::new();
+    for (g, v) in groups {
+        let mut m = serde_json::Map::new();
+        if let Some(x) = v.cadence_s {
+            m.insert("cadence".into(), json!(x));
+        }
+        if let Some(x) = v.stall_after_s {
+            m.insert("stall_after".into(), json!(x));
+        }
+        if let Some(x) = v.quiet {
+            m.insert("quiet".into(), json!(x));
+        }
+        if let Some(x) = v.enabled {
+            m.insert("enabled".into(), json!(x));
+        }
+        out.insert(g.clone(), Value::Object(m));
+    }
+    Value::Object(out)
+}
+
+fn groups_from_json(v: &Value) -> Groups {
+    let mut out = Groups::new();
+    for (g, o) in v.as_object().into_iter().flatten() {
+        out.insert(
+            g.clone(),
+            GroupSettings {
+                cadence_s: o.get("cadence").and_then(Value::as_u64),
+                stall_after_s: o.get("stall_after").and_then(Value::as_u64),
+                quiet: o.get("quiet").and_then(Value::as_bool),
+                enabled: o.get("enabled").and_then(Value::as_bool),
+            },
+        );
+    }
+    out
+}
+
 fn settings_json(s: &Settings) -> Value {
     json!({
         "enabled": s.enabled,
@@ -268,6 +421,10 @@ fn record_patch(inner: &Inner) -> serde_json::Map<String, Value> {
     if let Some(b) = &inner.board {
         m.insert("board".to_string(), json!(b));
     }
+    m.insert(
+        "group_settings".to_string(),
+        group_settings_json(&inner.groups),
+    );
     // `parent` is a reserved record key, so the cadencer's parent has its own.
     if let Some(p) = &inner.parent {
         m.insert("cadencer_parent".to_string(), json!(p));
@@ -285,6 +442,10 @@ fn load_from_record(inner: &mut Inner, meta: &serde_json::Map<String, Value>) ->
     }
     if let Some(p) = meta.get("cadencer_parent").and_then(|v| v.as_str()) {
         inner.parent = Some(p.to_string());
+        loaded = true;
+    }
+    if let Some(g) = meta.get("group_settings").filter(|v| v.is_object()) {
+        inner.groups = groups_from_json(g);
         loaded = true;
     }
     let mut settings = serde_json::Map::new();
@@ -322,6 +483,12 @@ struct Inner {
     meter: CostMeter,
     peers: Option<Arc<dyn Peers>>,
     board: Option<String>,
+    /// The groups' own settings from `team.yaml`, by group name.
+    groups: Groups,
+    /// Consecutive quiet beats with idle members and queued work, per lead.
+    quiet_beats: BTreeMap<String, u64>,
+    /// The clock second of each lead's last digest.
+    last_digest_s: BTreeMap<String, u64>,
     timer_cfg: Option<(bool, u64)>,
     /// The board's `load` object from the last read (`Null` when none came).
     load: Value,
@@ -350,7 +517,36 @@ fn timer_alive(inner: &Inner) -> bool {
 /// One beat: build digests from the stored tree, then remember it.
 fn beat(inner: &mut Inner) -> Vec<Digest> {
     let now = inner.clock();
-    let mut digests = build(&inner.tree, &inner.prev, &inner.settings);
+    // A group whose own cadence is longer than the timer's is skipped until it is due.
+    let mut s = inner.settings.clone();
+    let mut skipped = Vec::new();
+    for (lead, g) in &inner.groups {
+        let due = g.cadence_s.is_none_or(|c| {
+            c <= s.cadence_s
+                || inner
+                    .last_digest_s
+                    .get(lead)
+                    .is_none_or(|last| now.saturating_sub(*last) >= c)
+        });
+        if !due {
+            s.off.insert(lead.clone());
+            skipped.push(lead.clone());
+        }
+    }
+    let mut got = build_with(&inner.tree, &inner.prev, &s, &inner.groups);
+    let beats = heartbeat(
+        &inner.tree,
+        &got,
+        &inner.load,
+        &s,
+        &inner.groups,
+        &mut inner.quiet_beats,
+    );
+    got.extend(beats);
+    for (lead, _) in &got {
+        inner.last_digest_s.insert(lead.clone(), now);
+    }
+    let mut digests: Vec<Digest> = got.into_iter().map(|(_, d)| d).collect();
     // The driver's tokens: the change of the board's cumulative counter since
     // the last beat goes into the meter (the first beat counts from zero).
     if let Some(total) = inner.load["tokens_total"].as_u64() {
@@ -371,7 +567,26 @@ fn beat(inner: &mut Inner) -> Vec<Digest> {
             d.lines.push(line.clone());
         }
     }
-    inner.prev = inner.tree.clone();
+    // What a skipped group did not see stays "changed" for its next due beat.
+    let mut next_prev = inner.tree.clone();
+    for lead in &skipped {
+        let mut ids: Vec<String> = subtree(&inner.tree, lead)
+            .iter()
+            .map(|n| n.id.clone())
+            .collect();
+        ids.sort();
+        for id in ids {
+            match inner.prev.iter().find(|p| p.id == id) {
+                Some(old) => {
+                    if let Some(slot) = next_prev.iter_mut().find(|p| p.id == id) {
+                        *slot = old.clone();
+                    }
+                }
+                None => next_prev.retain(|p| p.id != id),
+            }
+        }
+    }
+    inner.prev = next_prev;
     inner.ticks += 1;
     inner.digests_sent += digests.len() as u64;
     inner.last_beat_s = Some(now);
@@ -1410,5 +1625,236 @@ mod tests {
             ["load: 5 queued, 12 done in the last hour"]
         );
         assert_eq!(status(&qb)["delivery_errors"], 0);
+    }
+
+    /// A lead `A` (driver `drv`) with two members; nothing counts as changed.
+    fn quiet_inner(states: [&str; 2], tasks: [&str; 2], queued: u64) -> Inner {
+        let mut a = n("A", None, true, "busy", 0);
+        a.driver = "drv".into();
+        let mut m1 = n("A1", Some("A"), true, states[0], 0);
+        m1.task = tasks[0].into();
+        let mut m2 = n("A2", Some("A"), true, states[1], 0);
+        m2.task = tasks[1].into();
+        let mut i = Inner::default();
+        i.tree = vec![a, m1, m2];
+        i.prev = i.tree.clone();
+        i.load = json!({"tasks": {"queued": queued}});
+        i
+    }
+
+    fn to_a(ds: &[Digest]) -> Vec<&Digest> {
+        ds.iter().filter(|d| d.to == "drv").collect()
+    }
+
+    #[test]
+    fn quiet_mode_still_sends_a_heartbeat_when_members_are_idle() {
+        let mut i = quiet_inner(["idle", "idle"], ["", ""], 4);
+        let sent: Vec<usize> = (1..=6).map(|_| to_a(&beat(&mut i)).len()).collect();
+        assert_eq!(sent, [0, 0, 1, 0, 0, 1]);
+        // Beat 7, 8, 9: the third one carries the line.
+        i.quiet_beats.clear();
+        for _ in 0..2 {
+            assert!(beat(&mut i).is_empty());
+        }
+        let ds = beat(&mut i);
+        let a = to_a(&ds);
+        assert_eq!(a.len(), 1);
+        assert!(a[0].lines[0].starts_with("heartbeat"), "{:?}", a[0].lines);
+        assert!(a[0].lines[0].contains("2 idle") && a[0].lines[0].contains("4 queued"));
+    }
+
+    #[test]
+    fn heartbeat_not_sent_without_queued_work() {
+        let mut i = quiet_inner(["idle", "idle"], ["", ""], 0);
+        for _ in 0..6 {
+            assert!(beat(&mut i).is_empty());
+        }
+    }
+
+    #[test]
+    fn heartbeat_not_sent_when_no_member_is_idle() {
+        let mut i = quiet_inner(["busy", "busy"], ["t", "t"], 4);
+        for _ in 0..6 {
+            assert!(beat(&mut i).is_empty());
+        }
+        // An idle member that still holds a task is not idle either.
+        let mut i = quiet_inner(["idle", "idle"], ["t", "t"], 4);
+        for _ in 0..6 {
+            assert!(beat(&mut i).is_empty());
+        }
+    }
+
+    #[test]
+    fn heartbeat_counter_resets_after_a_regular_digest() {
+        let mut i = quiet_inner(["idle", "idle"], ["", ""], 4);
+        assert!(beat(&mut i).is_empty());
+        assert!(beat(&mut i).is_empty());
+        // A change: the regular digest goes out, the counter restarts.
+        i.tree[1].state = "busy".into();
+        i.tree[1].task = "t".into();
+        let ds = beat(&mut i);
+        assert_eq!(to_a(&ds).len(), 1);
+        assert!(!ds[0].lines[0].starts_with("heartbeat"));
+        assert!(beat(&mut i).is_empty());
+        assert!(beat(&mut i).is_empty());
+        let ds = beat(&mut i);
+        assert_eq!(to_a(&ds).len(), 1);
+        assert!(ds[0].lines[0].starts_with("heartbeat"));
+    }
+
+    #[test]
+    fn heartbeat_skips_a_lead_switched_off() {
+        let mut i = quiet_inner(["idle", "idle"], ["", ""], 4);
+        i.settings.off.insert("A".into());
+        for _ in 0..6 {
+            assert!(beat(&mut i).is_empty());
+        }
+    }
+
+    #[test]
+    fn heartbeat_is_not_sent_when_quiet_is_off() {
+        let mut i = quiet_inner(["idle", "idle"], ["", ""], 4);
+        i.settings.quiet = false;
+        // Not quiet: every beat sends the full lines, and no line is a heartbeat.
+        for _ in 0..4 {
+            let ds = beat(&mut i);
+            assert!(ds.iter().all(|d| !d.lines[0].starts_with("heartbeat")));
+        }
+    }
+
+    #[test]
+    fn a_group_override_changes_stall_after_for_that_group_only() {
+        let mut t = vec![];
+        for (lead, w) in [("A", "A1"), ("B", "B1")] {
+            let mut l = n(lead, None, true, "busy", 0);
+            l.driver = format!("drv_{lead}");
+            t.push(l);
+            t.push(n(w, Some(lead), true, "busy", 400));
+        }
+        let groups: Groups = [(
+            "A".to_string(),
+            GroupSettings {
+                stall_after_s: Some(500),
+                ..GroupSettings::default()
+            },
+        )]
+        .into();
+        let ds = build_with(&t, &t, &Settings::default(), &groups);
+        // B uses the global 300 s and flags the stall; A waits for 500 s.
+        assert!(ds.iter().all(|(l, _)| l != "A"));
+        let b = ds.iter().find(|(l, _)| l == "B").expect("B digest");
+        assert!(b.1.lines[0].contains("STALLED"));
+    }
+
+    #[test]
+    fn a_group_with_enabled_false_gets_no_digest() {
+        let mut t = quiet_inner(["busy", "busy"], ["t", "t"], 0).tree;
+        t[1].state = "failed".into();
+        let groups: Groups = [(
+            "A".to_string(),
+            GroupSettings {
+                enabled: Some(false),
+                ..GroupSettings::default()
+            },
+        )]
+        .into();
+        assert!(build_with(&t, &[], &Settings::default(), &groups).is_empty());
+        assert_eq!(
+            build_with(&t, &[], &Settings::default(), &Groups::new()).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_group_quiet_false_overrides_the_global_quiet() {
+        let t = quiet_inner(["busy", "busy"], ["t", "t"], 0).tree;
+        let groups: Groups = [(
+            "A".to_string(),
+            GroupSettings {
+                quiet: Some(false),
+                ..GroupSettings::default()
+            },
+        )]
+        .into();
+        assert!(build_with(&t, &t, &Settings::default(), &Groups::new()).is_empty());
+        assert_eq!(build_with(&t, &t, &Settings::default(), &groups).len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_group_cadence_longer_than_the_beat_skips_beats() {
+        let mut i = quiet_inner(["busy", "busy"], ["t", "t"], 0);
+        i.groups.insert(
+            "A".into(),
+            GroupSettings {
+                cadence_s: Some(180),
+                ..GroupSettings::default()
+            },
+        );
+        i.prev = Vec::new();
+        assert_eq!(beat(&mut i).len(), 1, "the first digest goes out");
+        // Changes during the skipped beats are kept for the due beat.
+        i.tree[1].state = "failed".into();
+        tokio::time::advance(Duration::from_secs(60)).await;
+        assert!(beat(&mut i).is_empty(), "60 s after the last digest");
+        tokio::time::advance(Duration::from_secs(60)).await;
+        assert!(beat(&mut i).is_empty(), "120 s after the last digest");
+        tokio::time::advance(Duration::from_secs(60)).await;
+        let ds = beat(&mut i);
+        assert_eq!(ds.len(), 1, "180 s: due");
+        assert!(
+            ds[0].lines.iter().any(|l| l.contains("failed")),
+            "{:?}",
+            ds[0].lines
+        );
+    }
+
+    #[test]
+    fn group_settings_roundtrip_through_the_record() {
+        let mut a = Inner::default();
+        a.groups.insert(
+            "g".into(),
+            GroupSettings {
+                cadence_s: Some(600),
+                stall_after_s: Some(900),
+                quiet: Some(false),
+                enabled: Some(false),
+            },
+        );
+        a.groups.insert("h".into(), GroupSettings::default());
+        let patch = record_patch(&a);
+        assert_eq!(
+            patch["group_settings"]["g"],
+            json!({"cadence": 600, "stall_after": 900, "quiet": false, "enabled": false})
+        );
+        let mut b = Inner::default();
+        assert!(load_from_record(&mut b, &patch));
+        assert_eq!(b.groups, a.groups);
+    }
+
+    /// The live check the issue asks for: after a real beat (the board read, the
+    /// digest built and delivered to the driver) `status` shows the digest bytes and
+    /// the driver's tokens per hour. The fake `Peers` stands in for the driver, since
+    /// no stock agent of `registry()` answers `send` and `reflect` with a usage.
+    #[tokio::test(start_paused = true)]
+    async fn status_shows_digest_bytes_and_driver_tokens_per_hour_after_a_live_beat() {
+        let mut load = board_load(12, 17, false);
+        load["tokens_total"] = json!(1234);
+        let (driver, b) = beat_and_deliver(load, "ok").await;
+        let seen = driver.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        let st = status(&b);
+        assert_eq!(
+            st["digest_bytes_per_hour"].as_u64(),
+            Some(seen[0].len() as u64),
+            "{st}"
+        );
+        assert!(st["digest_bytes_per_hour"].as_u64().unwrap() > 0, "{st}");
+        assert_eq!(st["driver_tokens_per_hour"], 1234, "{st}");
+        // The same figures sit in the load object the dispatcher card reads.
+        assert_eq!(st["load"]["driver_tokens_per_hour"], 1234, "{st}");
+        assert_eq!(
+            st["load"]["digest_bytes_per_hour"], st["digest_bytes_per_hour"],
+            "{st}"
+        );
     }
 }
