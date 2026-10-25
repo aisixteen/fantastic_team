@@ -26,6 +26,10 @@
   .state-failed { color: #b91c1c; }
   .state-done { color: #15803d; }
   .error { color: #b91c1c; }
+  #packs input { font: inherit; padding: 4px 6px; min-width: 0; }
+  #packs .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+  #packs button { font: inherit; min-height: 32px; padding: 4px 10px; }
+  #pack-result div { margin: 2px 0; overflow-wrap: anywhere; }
   .task { color: #6b7280; }
   .minutes, .pr { color: #6b7280; font-size: 0.9em; }
   .team-waiting { font-size: 13px; font-weight: 600; margin: 12px 0 0; color: #374151; }
@@ -74,6 +78,16 @@
   <nav id="sidebar" aria-label="Workers and subagents"></nav>
   <section id="pane" hidden></section>
 </div>
+<section id="packs" class="cell" aria-label="Pack install">
+  <h3>Pack install</h3>
+  <div class="row">
+    <input id="pack-pack" placeholder="pack" aria-label="pack">
+    <input id="pack-into" placeholder="into" aria-label="into">
+    <input id="pack-worker" placeholder="worker" aria-label="worker">
+    <button id="pack-install" type="button">Install</button>
+  </div>
+  <div id="pack-result" aria-live="polite"></div>
+</section>
 <script>
 // Contract: `sidebar {expanded}` answers one flat list per group: each worker
 // (kind worker), then its subagents expander (kind subagents, with count and
@@ -890,6 +904,46 @@ document.getElementById('sidebar').addEventListener('click', function (e) {
   if (node) openNode(node.dataset.node);
 });
 
+// Pack install: `install {pack, into, worker}` on the pack agent. With a worker the
+// pack's evals run and the reply carries evals.pass_rate, evals.total_time_s,
+// evals.total_cost, evals.text, enable.allowed and enable.reason. All of it goes
+// in as text.
+function packLine(box, text) { box.appendChild(el('div', '', text)); }
+
+function showPackResult(r) {
+  const box = document.getElementById('pack-result');
+  box.textContent = '';
+  if (!r) { packLine(box, 'no reply'); return; }
+  if (r.error) packLine(box, String(r.error));
+  const ev = r.evals;
+  if (ev && typeof ev === 'object') {
+    if (ev.skipped) packLine(box, String(ev.skipped));
+    if (ev.error) packLine(box, String(ev.error));
+    if (typeof ev.pass_rate === 'number') {
+      packLine(box, 'Pass rate: ' + Math.round(ev.pass_rate * 100) + '%');
+      packLine(box, 'Time: ' + num(ev.total_time_s).toFixed(1) + ' s');
+      packLine(box, 'Cost: ' + (ev.total_cost == null ? 'n/a' : String(ev.total_cost)));
+    }
+    if (ev.text) packLine(box, String(ev.text));
+  }
+  if (r.enable && typeof r.enable === 'object') {
+    packLine(box, (r.enable.allowed ? 'Enable allowed: ' : 'Enable blocked: ') + String(r.enable.reason || ''));
+  }
+  if (r.path) packLine(box, 'Installed at ' + String(r.path));
+}
+
+async function installPack() {
+  const val = function (id) { return document.getElementById(id).value.trim(); };
+  const payload = { type: 'install', pack: val('pack-pack'), into: val('pack-into'), worker: val('pack-worker') };
+  if (!payload.worker) delete payload.worker;
+  try {
+    showPackResult(await askNode('pack', payload));
+  } catch (err) {
+    showError(String(err && err.message ? err.message : err));
+  }
+}
+
+document.getElementById('pack-install').addEventListener('click', installPack);
 document.getElementById('back').addEventListener('click', back);
 window.addEventListener('dispatcher:back', back);
 

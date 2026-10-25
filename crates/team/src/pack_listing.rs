@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 
 use crate::pack_bundle::{refused_by_scan, valid_part};
 use crate::pack_manifest::{self, MANIFEST_FILE};
+use crate::pack_record::{publishable_verified, record_from_json, verify_record, MeasuredRecord};
 use crate::pack_registry::{self, Decision};
 use crate::pack_scan;
 use crate::puller::{KernelPeers, Peers};
@@ -131,8 +132,9 @@ fn parse_entry(v: &Value) -> Option<Entry> {
 }
 
 /// A verified registry entry as a listing entry. Signed entries carry no
-/// summary, price, evals or measured record.
-fn from_signed(e: &pack_registry::Entry) -> Entry {
+/// summary, price or evals; `measured` is the entry's measured record when it
+/// verified (see [`verified_measured`]).
+fn from_signed(e: &pack_registry::Entry, measured: Option<Measured>) -> Entry {
     Entry {
         name: e.name.clone(),
         version: e.version.clone(),
@@ -140,11 +142,29 @@ fn from_signed(e: &pack_registry::Entry) -> Entry {
         ports: e.ports.clone(),
         grants: e.grants.clone(),
         evals_count: None,
-        measured: None,
+        measured,
         price: Value::Null,
         revoked: e.revoked,
         signed: Some(e.clone()),
     }
+}
+
+/// The measured record beside a verified signed entry in the raw index, only
+/// when it is a signed record for this entry's hash whose signature verifies.
+/// Any other `measured` value is dropped.
+fn verified_measured(raw_entries: &[Value], e: &pack_registry::Entry) -> Option<Measured> {
+    let raw = raw_entries
+        .iter()
+        .find(|r| r.get("signature").and_then(Value::as_str) == Some(e.signature.as_str()))?;
+    let rec = record_from_json(raw.get("measured")?)?;
+    if rec.pack_hash != e.hash || verify_record(&rec).is_err() {
+        return None;
+    }
+    Some(Measured {
+        tasks: Some(rec.tasks),
+        success_rate: Some(rec.success_rate),
+        cost_per_task: rec.cost_per_task,
+    })
 }
 
 /// Split an installed directory name `<name>-<version>` at the last `-` whose
@@ -350,7 +370,12 @@ pub async fn load(peers: &dyn Peers, cfg: &ListingCfg) -> Result<Loaded, String>
     let root: Value = serde_json::from_str(text).map_err(|e| format!("index is not json: {e}"))?;
     let (entries, signed, skipped): (Vec<Entry>, _, _) = if root.get("entries").is_some() {
         let index = pack_registry::Index::parse(text, &cfg.trusted_keys)?;
-        let entries = index.entries.iter().map(from_signed).collect();
+        let raw = root["entries"].as_array().cloned().unwrap_or_default();
+        let entries = index
+            .entries
+            .iter()
+            .map(|e| from_signed(e, verified_measured(&raw, e)))
+            .collect();
         let skipped = index.skipped.clone();
         (entries, Some(index), skipped)
     } else {
@@ -475,6 +500,12 @@ fn is_missing(reply: &Value) -> bool {
 /// has none. The key and its seed never appear in a reply. The signer need not
 /// be trusted here (trust is the reader's decision); the reply says
 /// `trusted: false` when `list` will skip the entry.
+///
+/// Optional `measured` (an eval reply's `measured` object, signature included)
+/// with `opt_in: true` also writes that record beside the entry, but only when
+/// its signature verifies and it is for this pack's hash. The reply says
+/// `measured_published` and, when false, `measured_reason`. The entry's own
+/// signature does not cover the record.
 pub async fn publish(peers: &dyn Peers, cfg: &ListingCfg, payload: &Value) -> Value {
     let err = |m: &str| json!({"error": m});
     let text_of = |k: &str| payload.get(k).and_then(Value::as_str).map(str::trim);
@@ -556,8 +587,15 @@ pub async fn publish(peers: &dyn Peers, cfg: &ListingCfg, payload: &Value) -> Va
     };
     let signer_key = entry.signer_key.clone();
     let hash = entry.hash.clone();
+    let (measured, measured_reason) = checked_measured(payload, &hash);
     let updated = match pack_registry::add_entry(current.as_deref(), entry) {
-        Ok(t) => t,
+        Ok(t) => match &measured {
+            Some(rec) => match attach_measured(&t, rec) {
+                Some(t) => t,
+                None => return err("index could not be updated"),
+            },
+            None => t,
+        },
         Err(e) => return err(&e),
     };
     let w = peers
@@ -581,7 +619,52 @@ pub async fn publish(peers: &dyn Peers, cfg: &ListingCfg, payload: &Value) -> Va
             "the signer is not in this listing's trusted_keys, so `list` skips the entry until it is"
         );
     }
+    reply["measured_published"] = json!(measured.is_some());
+    if measured.is_none() {
+        reply["measured_reason"] = json!(measured_reason);
+    }
     reply
+}
+
+/// The payload's measured record if it may be published with the entry for
+/// `hash`: the owner opted in, the record parses, its signature verifies and it
+/// is for this pack. Otherwise None and the reason.
+fn checked_measured(payload: &Value, hash: &str) -> (Option<MeasuredRecord>, &'static str) {
+    let Some(m) = payload.get("measured").filter(|m| !m.is_null()) else {
+        return (None, "no measured record given");
+    };
+    if payload.get("opt_in").and_then(Value::as_bool) != Some(true) {
+        return (None, "opt_in is not set");
+    }
+    let Some(rec) = record_from_json(m) else {
+        return (None, "measured record is malformed");
+    };
+    let Some(rec) = publishable_verified(&rec, true) else {
+        return (
+            None,
+            "measured record is unsigned or its signature does not verify",
+        );
+    };
+    if rec.pack_hash != hash {
+        return (None, "measured record is for another pack");
+    }
+    (Some(rec), "")
+}
+
+/// The index text with `rec` added to its last entry as `measured`.
+fn attach_measured(index: &str, rec: &MeasuredRecord) -> Option<String> {
+    let mut root: Value = serde_json::from_str(index).ok()?;
+    let last = root.get_mut("entries")?.as_array_mut()?.last_mut()?;
+    last["measured"] = json!({
+        "pack_hash": rec.pack_hash,
+        "tasks": rec.tasks,
+        "successes": rec.successes,
+        "success_rate": rec.success_rate,
+        "cost_per_task": rec.cost_per_task,
+        "measured_by": rec.measured_by,
+        "signature": rec.signature,
+    });
+    serde_json::to_string_pretty(&root).ok()
 }
 
 /// Add the `skipped` key to a reply when there is something skipped.
@@ -641,7 +724,7 @@ impl fantastic_kernel::bundle::Bundle for ListingBundle {
         json!({
             "list": "list {query?} → {packs: [{name, version, summary, price, installed, revoked}], skipped?}",
             "show": "show {name, version?} → {name, version, summary, ports, grants, evals_count?, measured?, price, installed, revoked, install_decision: {allow, reason?}, skipped?}",
-            "publish": "publish {pack, url, signing_key, grants?} → {published: {name, version, hash, signer_key}, trusted, note?}; checks the pack folder like an install (manifest, content hash, secrets scan), signs it with the 64-hex seed in the file bridge file `signing_key`, and appends it to the local index; `url` must be https; `grants` is the only source of the entry's grants; refuses an existing name+version or hash; the key never appears in a reply",
+            "publish": "publish {pack, url, signing_key, grants?, measured?, opt_in?} → {published: {name, version, hash, signer_key}, trusted, note?, measured_published, measured_reason?}; with opt_in true and a measured record (an eval reply's measured object, signed) it also writes the record beside the entry when its signature verifies and it is for this pack; checks the pack folder like an install (manifest, content hash, secrets scan), signs it with the 64-hex seed in the file bridge file `signing_key`, and appends it to the local index; `url` must be https; `grants` is the only source of the entry's grants; refuses an existing name+version or hash; the key never appears in a reply",
             "updates": "updates {opt_in?} → {updates: [{name, installed_version, new_version, new_hash, permission_diff: {added_ports, removed_ports, added_grants, removed_grants}}], warnings: [...], skipped?} (opt_in defaults false: no updates without it; installs nothing)",
         })
     }
@@ -1198,5 +1281,121 @@ mod tests {
         let mut reg = fantastic_kernel::BundleRegistry::new();
         crate::register_team(&mut reg);
         assert!(reg.get(HANDLER_MODULE).is_some());
+    }
+
+    // ---- the opt-in measured record (#41) ----
+
+    /// The hash `pack_fake` packs.
+    fn packed_hash(body: &str) -> String {
+        pack_manifest::content_hash(&[("worker.json".to_string(), body.into())])
+    }
+
+    /// A record for `hash` signed by `k`, in the shape an eval reply carries.
+    fn measured_for(k: &SigningKey, hash: &str) -> Value {
+        use crate::pack_record::{aggregate, record_json, sign_record, TaskOutcome};
+        let o = |succeeded| TaskOutcome {
+            pack_hash: hash.to_string(),
+            succeeded,
+            cost: Some(0.5),
+            elapsed_s: 1.0,
+        };
+        let rec = sign_record(k, aggregate(hash, &[o(true), o(false)], ""));
+        let mut v = record_json(&rec);
+        v["signature"] = json!(rec.signature);
+        v
+    }
+
+    fn with_measured_payload(m: Value, opt_in: bool) -> Value {
+        let mut p = publish_payload();
+        p["measured"] = m;
+        if opt_in {
+            p["opt_in"] = json!(true);
+        }
+        p
+    }
+
+    fn index_entry(f: &Fake) -> Value {
+        let t = f.index.lock().unwrap().clone().unwrap();
+        serde_json::from_str::<Value>(&t).unwrap()["entries"][0].clone()
+    }
+
+    #[tokio::test]
+    async fn publish_without_opt_in_leaves_the_measured_record_out() {
+        let body = "{\"name\":\"notes\"}";
+        let f = pack_fake(body, None);
+        let m = measured_for(&key(9), &packed_hash(body));
+        let r = publish(&f, &cfg_with(vec![]), &with_measured_payload(m, false)).await;
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["measured_published"], false, "{r}");
+        assert!(
+            r["measured_reason"].as_str().unwrap().contains("opt_in"),
+            "{r}"
+        );
+        assert!(index_entry(&f).get("measured").is_none());
+        let plain = pack_fake("{}", None);
+        let r = publish(&plain, &cfg_with(vec![]), &publish_payload()).await;
+        assert_eq!(r["measured_published"], false, "{r}");
+    }
+
+    #[tokio::test]
+    async fn publish_with_opt_in_and_a_valid_record_writes_it() {
+        let body = "{\"name\":\"notes\"}";
+        let f = pack_fake(body, None);
+        let m = measured_for(&key(9), &packed_hash(body));
+        let cfg = cfg_with(vec![pubhex(&signer())]);
+        let r = publish(&f, &cfg, &with_measured_payload(m, true)).await;
+        assert_eq!(r["measured_published"], true, "{r}");
+        assert!(!r.to_string().contains(&seed_hex()));
+        let e = index_entry(&f);
+        assert_eq!(e["measured"]["tasks"], 2);
+        assert_eq!(e["measured"]["success_rate"], 0.5);
+        assert_eq!(e["measured"]["measured_by"], pubhex(&key(9)));
+        // The entry signature does not cover the record: the entry still verifies.
+        let l = load(&f, &cfg).await.unwrap();
+        assert!(l.skipped.is_empty(), "{:?}", l.skipped);
+        assert_eq!(l.entries[0].measured.as_ref().unwrap().tasks, Some(2));
+    }
+
+    #[tokio::test]
+    async fn publish_refuses_a_tampered_or_mismatched_record() {
+        let body = "{\"name\":\"notes\"}";
+        let hash = packed_hash(body);
+        let mut tampered = measured_for(&key(9), &hash);
+        tampered["tasks"] = json!(99);
+        let mut unsigned = measured_for(&key(9), &hash);
+        unsigned.as_object_mut().unwrap().remove("signature");
+        let other_pack = measured_for(&key(9), "otherhash");
+        for (m, why) in [
+            (tampered, "signature"),
+            (unsigned, "signature"),
+            (other_pack, "another pack"),
+            (json!({"tasks": 1}), "malformed"),
+        ] {
+            let f = pack_fake(body, None);
+            let r = publish(&f, &cfg_with(vec![]), &with_measured_payload(m, true)).await;
+            assert!(r.get("error").is_none(), "the entry is still written: {r}");
+            assert_eq!(r["measured_published"], false, "{r}");
+            assert!(r["measured_reason"].as_str().unwrap().contains(why), "{r}");
+            assert!(index_entry(&f).get("measured").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_signed_entry_with_a_bad_measured_signature_shows_no_measured() {
+        let k = key(3);
+        let mut good = signed_entry(&k, "good", "1.0", "h1", &[], false);
+        good["measured"] = measured_for(&key(9), "h1");
+        let mut bad = signed_entry(&k, "bad", "1.0", "h2", &[], false);
+        let mut m = measured_for(&key(9), "h2");
+        m["success_rate"] = json!(1.0);
+        bad["measured"] = m;
+        let mut foreign = signed_entry(&k, "foreign", "1.0", "h3", &[], false);
+        foreign["measured"] = measured_for(&key(9), "not-h3");
+        let f = fake(Some(&signed_index(vec![good, bad, foreign])), &[], &[]);
+        let l = load(&f, &cfg_with(vec![pubhex(&k)])).await.unwrap();
+        let by = |n: &str| l.entries.iter().find(|e| e.name == n).unwrap();
+        assert!(by("good").measured.is_some());
+        assert!(by("bad").measured.is_none());
+        assert!(by("foreign").measured.is_none());
     }
 }

@@ -277,11 +277,18 @@ pub fn run_cli(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("packs: could not run send: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let _ = write!(std::io::stdout(), "{stdout}");
-    if let Some(e) = reply_error(&stdout) {
+    outcome(&stdout, out.status.success(), &out.status.to_string())
+}
+
+/// What a finished `send` means: a verb-level `error` in its row is an Err, then
+/// a failed `send` is. A report that merely says `enable.allowed: false` is not
+/// an error (the row is printed as it came).
+fn outcome(stdout: &str, send_ok: bool, status: &str) -> Result<(), String> {
+    if let Some(e) = reply_error(stdout) {
         return Err(format!("packs: {e}"));
     }
-    if !out.status.success() {
-        return Err(format!("packs: send failed ({})", out.status));
+    if !send_ok {
+        return Err(format!("packs: send failed ({status})"));
     }
     Ok(())
 }
@@ -514,6 +521,50 @@ mod tests {
                 .unwrap_or_else(|| panic!("{case:?} must be refused"));
             assert!(e.contains("usage:"), "{case:?}: {e}");
         }
+    }
+
+    #[test]
+    fn install_and_eval_flags_map_timeout_and_worker() {
+        for (verb, extra) in [("install", ["--into", "t"]), ("eval", ["--pack", "p"])] {
+            let mut args = vec![verb, "--pack", "p", "--worker", "w", "--timeout-s", "30"];
+            if verb == "install" {
+                args.extend(extra);
+            } else {
+                args.truncate(7);
+            }
+            let (agent, payload) = parse(&v(&args)).unwrap();
+            assert_eq!(agent, PACK_ID);
+            assert_eq!(payload["type"], verb);
+            assert_eq!(payload["worker"], "w");
+            assert_eq!(payload["timeout_s"], json!(30));
+            args[6] = "soon";
+            let e = parse(&v(&args)).unwrap_err();
+            assert!(e.contains("whole number") && e.contains("usage:"), "{e}");
+        }
+    }
+
+    #[test]
+    fn reply_error_ignores_a_blocked_enable_verdict_but_not_the_enable_refused_error() {
+        let blocked = r#"{"status":"completed","result":{"pass_rate":0.5,"enable":{"allowed":false,"reason":"low"}}}"#;
+        assert_eq!(reply_error(blocked), None);
+        assert_eq!(outcome(blocked, true, "ok"), Ok(()));
+        let refused = r#"{"status":"completed","result":{"enable":{"allowed":false},"error":"enable refused: pass rate 50% is below the required 100%"}}"#;
+        assert_eq!(
+            reply_error(refused).as_deref(),
+            Some("enable refused: pass rate 50% is below the required 100%")
+        );
+        assert!(outcome(refused, true, "ok")
+            .unwrap_err()
+            .contains("enable refused"));
+    }
+
+    #[test]
+    fn eval_reply_with_pass_rate_time_cost_is_printed_unchanged() {
+        let row = r#"{"pid":1,"status":"completed","result":{"pass_rate":1.0,"total_time_s":2.5,"total_cost":null,"text":"pass rate 100%"}}"#;
+        assert_eq!(outcome(row, true, "ok"), Ok(()));
+        assert!(outcome(row, false, "exit status: 1")
+            .unwrap_err()
+            .contains("send failed"));
     }
 
     fn keys(k: &[&str]) -> Vec<String> {

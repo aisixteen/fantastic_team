@@ -223,6 +223,11 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     for m in cfg.groups.values().flat_map(|g| g.members.iter()) {
         pack_can_call.insert(m.clone(), json!("*"));
     }
+    // `eval {from_shifts}` reads the board's tasks for the measured record: the one
+    // `board` verb, and only when the team has a board.
+    if cfg.board.is_some() {
+        pack_can_call.insert(BOARD_ID.into(), json!(PACK_BOARD_VERBS));
+    }
     out[0].record["callable_by"][PACK_ID] = json!("*");
     out.push(pack_plan(
         PACK_ID,
@@ -321,7 +326,7 @@ fn board_plan(cfg: &TeamConfig, b: &config::BoardCfg) -> Planned {
             "store": cfg.queue.id,
             "team_groups": team_groups(cfg),
             "can_call": can_call,
-            "callable_by": {"$self": "*", "$parent": "*", (DISPATCHER_ID): "*"},
+            "callable_by": {"$self": "*", "$parent": "*", (DISPATCHER_ID): "*", (PACK_ID): PACK_BOARD_VERBS},
         }),
     }
 }
@@ -518,6 +523,42 @@ pub fn grant_agent_listing(kernel: &Arc<Kernel>) -> bool {
 pub const USER_ID: &str = "user";
 /// The one `user` verb the pack agent may call (`install --parent-id`).
 pub const PACK_USER_VERBS: [&str; 1] = ["import_subtree"];
+/// The one `board` verb the pack agent may call (`eval {from_shifts}`).
+pub const PACK_BOARD_VERBS: [&str; 1] = ["board"];
+/// The one `pack` verb the dispatcher page may call (its Pack install panel).
+pub const PAGE_PACK_VERBS: [&str; 1] = ["install"];
+
+/// Grant the page's agent the `install` verb on the pack agent, on both ends (the
+/// view's `can_call` and the pack's `callable_by`). Idempotent. Returns whether
+/// both ends hold the grant; false when the view or the pack agent is not live.
+pub fn grant_pack_install(kernel: &Arc<Kernel>) -> bool {
+    if !exists(kernel, DISPATCHER_VIEW_ID) || !exists(kernel, PACK_ID) {
+        return false;
+    }
+    let verbs = json!(PAGE_PACK_VERBS);
+    let by_pack = kernel.edit_callable_by(&fantastic_kernel::AgentId::from(PACK_ID), |cb| {
+        if cb.get(DISPATCHER_VIEW_ID) == Some(&verbs) {
+            return false;
+        }
+        cb.insert(DISPATCHER_VIEW_ID.into(), verbs.clone());
+        true
+    });
+    let by_view =
+        kernel.edit_can_call(&fantastic_kernel::AgentId::from(DISPATCHER_VIEW_ID), |cc| {
+            if cc.get(PACK_ID) == Some(&verbs) {
+                return false;
+            }
+            cc.insert(PACK_ID.into(), verbs.clone());
+            true
+        });
+    match (by_pack, by_view) {
+        (Ok(_), Ok(_)) => true,
+        (Err(e), _) | (_, Err(e)) => {
+            eprintln!("dispatcher pack install: {e}");
+            false
+        }
+    }
+}
 
 /// The two `user` verbs the page uses for the chat's questions: the open
 /// `inquiries` of an asker and `answer_inquiry`. Granted by [`grant_inquiries`].
@@ -664,6 +705,7 @@ pub fn run_at_start(
                 .flat_map(|g| g.members.iter().cloned())
                 .collect();
             grant_chat(&kernel, &workers);
+            grant_pack_install(&kernel);
             if let Err(e) = grant_agent_verbs(&kernel) {
                 eprintln!("{e}");
             }
@@ -1149,6 +1191,22 @@ mod tests {
     }
 
     #[test]
+    fn pack_can_call_the_board_for_shift_outcomes() {
+        let tree = plan(
+            &parse(&with_groups_and_board()).unwrap(),
+            Path::new("/team"),
+        )
+        .unwrap();
+        let pack = tree.iter().find(|p| p.id == PACK_ID).unwrap();
+        assert_eq!(pack.record["can_call"]["board"], json!(["board"]));
+        let board = tree.iter().find(|p| p.id == "board").unwrap();
+        assert_eq!(board.record["callable_by"][PACK_ID], json!(["board"]));
+        let no_board = plan(&sample(), Path::new("/team")).unwrap();
+        let pack = no_board.iter().find(|p| p.id == PACK_ID).unwrap();
+        assert!(pack.record["can_call"].get("board").is_none());
+    }
+
+    #[test]
     fn plan_creates_a_cadencer_carrying_the_group_settings() {
         let y = sample_yaml()
             + "groups:\n  a:\n    driver: lead\n    members: [w1]\n    cadence: 600\n    quiet: false\n  b:\n    members: [w3]\nboard:\n  repos: [o/r]\n  github: git\n";
@@ -1432,6 +1490,40 @@ mod tests {
         assert_eq!(
             grants("w1", "callable_by")[DISPATCHER_VIEW_ID],
             json!(CHAT_VERBS)
+        );
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_page_may_call_install_on_the_pack_agent_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        assert!(!grant_pack_install(&kernel), "nothing live yet");
+        let tree = plan(&sample(), dir.path()).unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        for rec in [
+            json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"}),
+        ] {
+            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, rec)]).await;
+        }
+        place_dispatcher(&kernel).await;
+        assert!(grant_pack_install(&kernel));
+        assert!(grant_pack_install(&kernel), "idempotent");
+        let field = |id: &str, f: &str| {
+            kernel
+                .agents
+                .get(&fantastic_kernel::AgentId::from(id))
+                .map(|a| a.meta.read().unwrap()[f].clone())
+                .unwrap_or(Value::Null)
+        };
+        assert_eq!(
+            field(PACK_ID, "callable_by")[DISPATCHER_VIEW_ID],
+            json!(["install"])
+        );
+        assert_eq!(
+            field(DISPATCHER_VIEW_ID, "can_call")[PACK_ID],
+            json!(["install"])
         );
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
