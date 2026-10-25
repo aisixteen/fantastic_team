@@ -15,6 +15,13 @@ on:
         description: "With e2e: fail the repro job when the two builds differ (off until fantastic's canvas zip is deterministic)"
         type: boolean
         default: false
+      units_os:
+        description: "Units OS set: all (ubuntu, macOS, Windows; the default) or linux (ubuntu only). A full run (e2e) always runs all three."
+        type: choice
+        options:
+          - all
+          - linux
+        default: all
 
 permissions:
   contents: read
@@ -34,7 +41,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # units_os=all (default) and every full run: three OSes; units_os=linux: ubuntu only
+        os: ${{ fromJSON((inputs.units_os == 'all' || inputs.e2e == true) && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
     env:
       RUSTC_WRAPPER: sccache
     steps:
