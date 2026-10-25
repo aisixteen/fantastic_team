@@ -17,6 +17,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use crate::pack_bundle::{refused_by_scan, valid_part};
+use crate::pack_hosted;
 use crate::pack_manifest::{self, MANIFEST_FILE};
 use crate::pack_registry::{self, Decision};
 use crate::pack_scan;
@@ -72,6 +73,14 @@ pub struct ListingCfg {
     pub store: String,
     /// Hex ed25519 public keys whose signatures the index is trusted for.
     pub trusted_keys: Vec<String>,
+    /// The hosted registry: its https url serves the signed index (GET),
+    /// takes submissions (POST), `<url>/report` takes reports and takes the
+    /// re-signed index of a takedown. `None` means local only: nothing here
+    /// reaches the network.
+    pub registry_url: Option<String>,
+    /// Allow an http registry url. Never read from the record, so it is only
+    /// true in tests.
+    pub allow_insecure: bool,
 }
 
 /// What [`load`] read: the listing entries, the signed index when the index is
@@ -174,7 +183,7 @@ pub fn installed_packs(templates: &Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-fn is_installed(installed: &[(String, String)], name: &str) -> bool {
+pub(crate) fn is_installed(installed: &[(String, String)], name: &str) -> bool {
     installed.iter().any(|(n, _)| n == name)
 }
 
@@ -184,7 +193,7 @@ fn key(e: &Entry) -> Vec<u64> {
 
 /// The version a card or a show uses: the newest non-revoked one, or the
 /// newest revoked one when every version is revoked.
-fn newest<'a>(versions: &[&'a Entry]) -> Option<&'a Entry> {
+pub(crate) fn newest<'a>(versions: &[&'a Entry]) -> Option<&'a Entry> {
     let live = versions
         .iter()
         .copied()
@@ -338,15 +347,36 @@ async fn read_text(peers: &dyn Peers, store: &str, path: &str) -> Result<String,
     }
 }
 
-/// Read the index and the installed packs through the file bridge. A signed
-/// index (`entries`) is verified against `cfg.trusted_keys`; an unsigned one
-/// (`packs`) is read as is. A missing or unreadable templates listing means
-/// nothing is installed.
+/// Read the index and the installed packs. The index comes from the hosted
+/// registry when `cfg.registry_url` is set, else from the local file through
+/// the file bridge. A signed index (`entries`) is verified against
+/// `cfg.trusted_keys`; an unsigned one (`packs`) is read as is. A missing or
+/// unreadable templates listing means nothing is installed.
 pub async fn load(peers: &dyn Peers, cfg: &ListingCfg) -> Result<Loaded, String> {
-    let text = read_text(peers, &cfg.store, &cfg.index_path)
-        .await
-        .map_err(|r| format!("index: {r}"))?;
-    let text = text.as_str();
+    let text = match &cfg.registry_url {
+        Some(url) => pack_hosted::fetch_index_text(url, cfg.allow_insecure)
+            .await
+            .map_err(|e| format!("index: {e}"))?,
+        None => read_text(peers, &cfg.store, &cfg.index_path)
+            .await
+            .map_err(|r| format!("index: {r}"))?,
+    };
+    let templates = peers
+        .ask(
+            &cfg.store,
+            json!({"type": "list", "path": cfg.templates_dir}),
+        )
+        .await;
+    parse_loaded(&text, cfg, installed_packs(&templates))
+}
+
+/// Parse index text into what [`load`] returns, given the installed packs.
+/// Pure: no bridge, no network.
+pub fn parse_loaded(
+    text: &str,
+    cfg: &ListingCfg,
+    installed: Vec<(String, String)>,
+) -> Result<Loaded, String> {
     let root: Value = serde_json::from_str(text).map_err(|e| format!("index is not json: {e}"))?;
     let (entries, signed, skipped): (Vec<Entry>, _, _) = if root.get("entries").is_some() {
         let index = pack_registry::Index::parse(text, &cfg.trusted_keys)?;
@@ -356,16 +386,10 @@ pub async fn load(peers: &dyn Peers, cfg: &ListingCfg) -> Result<Loaded, String>
     } else {
         (parse_index(&root)?, None, Vec::new())
     };
-    let templates = peers
-        .ask(
-            &cfg.store,
-            json!({"type": "list", "path": cfg.templates_dir}),
-        )
-        .await;
     Ok(Loaded {
         entries,
         signed,
-        installed: installed_packs(&templates),
+        installed,
         skipped,
     })
 }
@@ -443,6 +467,16 @@ pub async fn updates_for(
     let Some(index) = &loaded.signed else {
         return (Vec::new(), Vec::new());
     };
+    let pinned = pins_for(peers, cfg, loaded).await;
+    updates_view(index, &pinned, opt_in)
+}
+
+/// Each installed `(name, version, pinned hash)` whose own `pack.yaml` pins one.
+pub async fn pins_for(
+    peers: &dyn Peers,
+    cfg: &ListingCfg,
+    loaded: &Loaded,
+) -> Vec<(String, String, String)> {
     let mut pinned = Vec::new();
     for (name, version) in &loaded.installed {
         if version.is_empty() {
@@ -452,7 +486,7 @@ pub async fn updates_for(
             pinned.push((name.clone(), version.clone(), hash));
         }
     }
-    updates_view(index, &pinned, opt_in)
+    pinned
 }
 
 /// Whether a bridge error reply says the file does not exist (a new index),
@@ -467,24 +501,25 @@ fn is_missing(reply: &Value) -> bool {
         .any(|m| e.contains(m))
 }
 
-/// Publish a packed pack to the LOCAL index: check it, sign it with the key in
-/// the file at `signing_key`, and append the signed entry to `cfg.index_path`.
-/// Payload: `{pack, url, signing_key, grants?}`. The pack must pass the same
-/// checks as an install (manifest, content hash, secrets scan) before anything
-/// is signed or written. Grants come only from the payload, since `pack.yaml`
-/// has none. The key and its seed never appear in a reply. The signer need not
-/// be trusted here (trust is the reader's decision); the reply says
-/// `trusted: false` when `list` will skip the entry.
-pub async fn publish(peers: &dyn Peers, cfg: &ListingCfg, payload: &Value) -> Value {
+/// The arguments `publish` and `submit` share: `pack`, `url`, `signing_key`
+/// and the optional `grants`.
+fn publish_args(
+    payload: &Value,
+    verb: &str,
+) -> Result<(String, String, String, Vec<String>), Value> {
     let err = |m: &str| json!({"error": m});
     let text_of = |k: &str| payload.get(k).and_then(Value::as_str).map(str::trim);
     let (Some(pack), Some(url), Some(key_path)) =
         (text_of("pack"), text_of("url"), text_of("signing_key"))
     else {
-        return err("publish needs `pack`, `url` and `signing_key`");
+        return Err(err(&format!(
+            "{verb} needs `pack`, `url` and `signing_key`"
+        )));
     };
     if pack.is_empty() || url.is_empty() || key_path.is_empty() {
-        return err("publish needs `pack`, `url` and `signing_key`");
+        return Err(err(&format!(
+            "{verb} needs `pack`, `url` and `signing_key`"
+        )));
     }
     let grants: Vec<String> = match payload.get("grants") {
         None | Some(Value::Null) => Vec::new(),
@@ -495,48 +530,88 @@ pub async fn publish(peers: &dyn Peers, cfg: &ListingCfg, payload: &Value) -> Va
                 .collect::<Option<Vec<_>>>()
             {
                 Some(g) => g,
-                None => return err("`grants` must be a list of strings"),
+                None => return Err(err("`grants` must be a list of strings")),
             }
         }
-        Some(_) => return err("`grants` must be a list of strings"),
+        Some(_) => return Err(err("`grants` must be a list of strings")),
     };
+    Ok((
+        pack.to_string(),
+        url.to_string(),
+        key_path.to_string(),
+        grants,
+    ))
+}
+
+/// A pack folder that passed the manifest and content-hash checks, with its
+/// scan report (not yet acted on).
+struct Reviewed {
+    manifest: pack_manifest::Manifest,
+    manifest_text: String,
+    bytes: Vec<(String, Vec<u8>)>,
+    report: pack_scan::ScanReport,
+}
+
+/// Read a pack folder through the bridge and check it like an install: the
+/// manifest, safe name and version, every listed file, the content hash. The
+/// scan runs and its report is returned; the caller decides what a finding
+/// means. An `Err` is the reply to send.
+async fn review_pack(peers: &dyn Peers, cfg: &ListingCfg, pack: &str) -> Result<Reviewed, Value> {
+    let err = |m: &str| json!({"error": m});
     let manifest_path = format!("{pack}/{MANIFEST_FILE}");
     let Ok(manifest_text) = read_text(peers, &cfg.store, &manifest_path).await else {
-        return err("pack has no pack.yaml");
+        return Err(err("pack has no pack.yaml"));
     };
     let manifest = match pack_manifest::Manifest::parse(&manifest_text) {
         Ok(m) => m,
-        Err(e) => return err(&format!("pack.yaml: {e}")),
+        Err(e) => return Err(err(&format!("pack.yaml: {e}"))),
     };
     if let Err(e) = manifest.validate() {
-        return err(&e);
+        return Err(err(&e));
     }
     if !valid_part(&manifest.name) || !valid_part(&manifest.version) {
-        return err("pack name or version is not a safe path segment");
+        return Err(err("pack name or version is not a safe path segment"));
     }
     let mut bytes: Vec<(String, Vec<u8>)> = Vec::new();
     for rel in &manifest.files {
         match read_text(peers, &cfg.store, &format!("{pack}/{rel}")).await {
             Ok(t) => bytes.push((rel.clone(), t.into_bytes())),
-            Err(_) => return err(&format!("pack file missing: {rel}")),
+            Err(_) => return Err(err(&format!("pack file missing: {rel}"))),
         }
     }
     if pack_manifest::content_hash(&bytes) != manifest.content_hash {
-        return err("content hash mismatch");
+        return Err(err("content hash mismatch"));
     }
     let report = pack_scan::scan(&bytes);
-    if report.refused {
-        return refused_by_scan(&report);
+    Ok(Reviewed {
+        manifest,
+        manifest_text,
+        bytes,
+        report,
+    })
+}
+
+/// Read and parse the signing key file. The error is fixed text.
+async fn read_key(
+    peers: &dyn Peers,
+    cfg: &ListingCfg,
+    key_path: &str,
+) -> Result<ed25519_dalek::SigningKey, Value> {
+    match read_text(peers, &cfg.store, key_path).await {
+        Ok(t) => pack_registry::signing_key_from_hex(&t).map_err(|e| json!({"error": e})),
+        Err(_) => Err(json!({"error": "signing key file could not be read"})),
     }
-    let key = match read_text(peers, &cfg.store, key_path).await {
-        Ok(t) => match pack_registry::signing_key_from_hex(&t) {
-            Ok(k) => k,
-            Err(e) => return err(&e),
-        },
-        Err(_) => return err("signing key file could not be read"),
-    };
-    let entry = pack_registry::sign_entry(
-        &key,
+}
+
+/// The signed entry for a reviewed pack.
+fn signed_entry_of(
+    key: &ed25519_dalek::SigningKey,
+    manifest: &pack_manifest::Manifest,
+    url: &str,
+    grants: Vec<String>,
+) -> pack_registry::Entry {
+    pack_registry::sign_entry(
+        key,
         pack_registry::Entry {
             name: manifest.name.clone(),
             version: manifest.version.clone(),
@@ -548,7 +623,38 @@ pub async fn publish(peers: &dyn Peers, cfg: &ListingCfg, payload: &Value) -> Va
             revoked: false,
             signature: String::new(),
         },
-    );
+    )
+}
+
+/// Publish a packed pack to the LOCAL index: check it, sign it with the key in
+/// the file at `signing_key`, and append the signed entry to `cfg.index_path`.
+/// Payload: `{pack, url, signing_key, grants?}`. The pack must pass the same
+/// checks as an install (manifest, content hash, secrets scan) before anything
+/// is signed or written. Grants come only from the payload, since `pack.yaml`
+/// has none. The key and its seed never appear in a reply. The signer need not
+/// be trusted here (trust is the reader's decision); the reply says
+/// `trusted: false` when `list` will skip the entry.
+pub async fn publish(peers: &dyn Peers, cfg: &ListingCfg, payload: &Value) -> Value {
+    let err = |m: &str| json!({"error": m});
+    let (pack, url, key_path, grants) = match publish_args(payload, "publish") {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let (pack, url, key_path) = (pack.as_str(), url.as_str(), key_path.as_str());
+    let Reviewed {
+        manifest, report, ..
+    } = match review_pack(peers, cfg, pack).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    if report.refused {
+        return refused_by_scan(&report);
+    }
+    let key = match read_key(peers, cfg, key_path).await {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+    let entry = signed_entry_of(&key, &manifest, url, grants);
     let current = match read_text(peers, &cfg.store, &cfg.index_path).await {
         Ok(t) => Some(t),
         Err(r) if is_missing(&r) => None,
@@ -584,6 +690,217 @@ pub async fn publish(peers: &dyn Peers, cfg: &ListingCfg, payload: &Value) -> Va
     reply
 }
 
+/// A required, trimmed, non-empty string from the payload.
+fn req<'a>(payload: &'a Value, k: &str) -> Option<&'a str> {
+    payload
+        .get(k)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+}
+
+/// Download a pack from the signed index into a staging folder, ready for
+/// `install`. Payload: `{name, hash, stage, version?}`. The entry is found by
+/// name and pinned hash in the SIGNED index; a revoked entry is refused; the
+/// downloaded files must match the pin and pass the scan before anything is
+/// written (`pack_bundle::stage_download`). It installs nothing.
+pub async fn fetch<P: Peers>(peers: &P, cfg: &ListingCfg, payload: &Value) -> Value {
+    let allow_insecure = cfg.allow_insecure;
+    fetch_via(peers, cfg, payload, |e| async move {
+        pack_hosted::download_pack_with(&e, allow_insecure, pack_hosted::MAX_PACK).await
+    })
+    .await
+}
+
+/// [`fetch`] with the download step given, so a test can serve the pack from a
+/// mock whose url is not https.
+async fn fetch_via<P, F, Fut>(peers: &P, cfg: &ListingCfg, payload: &Value, download: F) -> Value
+where
+    P: Peers,
+    F: FnOnce(pack_registry::Entry) -> Fut,
+    Fut: std::future::Future<Output = Result<pack_hosted::PackDoc, String>>,
+{
+    let err = |m: &str| json!({"error": m});
+    let (Some(name), Some(hash), Some(stage)) = (
+        req(payload, "name"),
+        req(payload, "hash"),
+        req(payload, "stage"),
+    ) else {
+        return err("fetch needs `name`, `hash` and `stage`");
+    };
+    let loaded = match load(peers, cfg).await {
+        Ok(l) => l,
+        Err(e) => return err(&e),
+    };
+    let Some(index) = &loaded.signed else {
+        return err("fetch needs a signed index");
+    };
+    let entry = match pack_registry::resolve(index, name, hash) {
+        Ok(e) => e,
+        Err(e) => return err(&e),
+    };
+    if let Some(v) = req(payload, "version") {
+        if v != entry.version {
+            return err(&format!(
+                "`{name}` at that hash is version {}, not {v}",
+                entry.version
+            ));
+        }
+    }
+    if let Decision::Refuse(reason) = pack_registry::install_decision(entry) {
+        return err(&format!("install refused: {reason}"));
+    }
+    let doc = match download(entry.clone()).await {
+        Ok(d) => d,
+        Err(e) => return err(&e),
+    };
+    let mut staged =
+        crate::pack_bundle::stage_download(peers, &doc.files, &entry.hash, stage).await;
+    if staged.get("error").is_none() {
+        staged["next"] = json!(format!(
+            "packs install --pack {stage} --into <templates dir>"
+        ));
+    }
+    staged
+}
+
+/// Submit a packed pack to the hosted registry. Payload: `{pack, url,
+/// signing_key, grants?}`. The pack goes through the same review as a publish,
+/// but a finding of any kind HOLDS it instead of listing it: the reply is
+/// `{listed: false, status: "held", findings: [{path, rule}]}` and nothing is
+/// sent. A clean pack is signed and POSTed with its files to `registry_url`.
+pub async fn submit(peers: &dyn Peers, cfg: &ListingCfg, payload: &Value) -> Value {
+    let err = |m: &str| json!({"error": m});
+    let Some(registry) = &cfg.registry_url else {
+        return err("no registry_url");
+    };
+    let (pack, url, key_path, grants) = match publish_args(payload, "submit") {
+        Ok(a) => a,
+        Err(e) => return e,
+    };
+    let reviewed = match review_pack(peers, cfg, &pack).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    if !reviewed.report.findings.is_empty() {
+        let findings: Vec<Value> = reviewed
+            .report
+            .findings
+            .iter()
+            .map(|f| json!({"path": f.path, "rule": f.rule}))
+            .collect();
+        return json!({"listed": false, "status": "held", "findings": findings});
+    }
+    let key = match read_key(peers, cfg, &key_path).await {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+    let entry = signed_entry_of(&key, &reviewed.manifest, &url, grants);
+    if let Err(e) = pack_registry::verify_entry(&entry, std::slice::from_ref(&entry.signer_key)) {
+        return err(&e);
+    }
+    let mut files = serde_json::Map::new();
+    files.insert(MANIFEST_FILE.to_string(), json!(reviewed.manifest_text));
+    for (rel, b) in &reviewed.bytes {
+        files.insert(rel.clone(), json!(String::from_utf8_lossy(b)));
+    }
+    let body = json!({"entry": pack_registry::entry_json(&entry), "files": files});
+    match pack_hosted::post_json(registry, &body, cfg.allow_insecure).await {
+        Ok(reply) => json!({
+            "listed": true,
+            "name": entry.name,
+            "version": entry.version,
+            "hash": entry.hash,
+            "signer_key": entry.signer_key,
+            "registry": reply,
+        }),
+        Err(e) => err(&format!("submit failed: {e}")),
+    }
+}
+
+/// Report a pack to the registry. Payload: `{name, version, reason}`; the
+/// reason is non-empty and at most 2000 characters. POSTs to
+/// `<registry_url>/report`.
+pub async fn report(cfg: &ListingCfg, payload: &Value) -> Value {
+    let err = |m: &str| json!({"error": m});
+    let Some(registry) = &cfg.registry_url else {
+        return err("no registry_url");
+    };
+    let (Some(name), Some(version), Some(reason)) = (
+        req(payload, "name"),
+        req(payload, "version"),
+        req(payload, "reason"),
+    ) else {
+        return err("report needs `name`, `version` and `reason`");
+    };
+    if !valid_part(name) || !valid_part(version) {
+        return err("name or version is not a safe path segment");
+    }
+    if reason.chars().count() > 2000 {
+        return err("reason is over 2000 characters");
+    }
+    let url = format!("{}/report", registry.trim_end_matches('/'));
+    let body = json!({"name": name, "version": version, "reason": reason});
+    match pack_hosted::post_json(&url, &body, cfg.allow_insecure).await {
+        Ok(_) => json!({"reported": true}),
+        Err(e) => err(&format!("report failed: {e}")),
+    }
+}
+
+/// Take a version down: revoke it in the LOCAL index (re-signed with the key
+/// in `signing_key`, so the flag is covered by the signature) and, when
+/// `registry_url` is set, POST the updated index there as
+/// `{takedown: {name, version}, index}` so the revocation reaches the hosted
+/// index. Payload: `{name, version, signing_key}`. The key never appears in a
+/// reply.
+pub async fn takedown(peers: &dyn Peers, cfg: &ListingCfg, payload: &Value) -> Value {
+    let err = |m: &str| json!({"error": m});
+    let (Some(name), Some(version), Some(key_path)) = (
+        req(payload, "name"),
+        req(payload, "version"),
+        req(payload, "signing_key"),
+    ) else {
+        return err("takedown needs `name`, `version` and `signing_key`");
+    };
+    if !valid_part(name) || !valid_part(version) {
+        return err("name or version is not a safe path segment");
+    }
+    let key = match read_key(peers, cfg, key_path).await {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+    let Ok(current) = read_text(peers, &cfg.store, &cfg.index_path).await else {
+        return err("index could not be read");
+    };
+    let updated = match pack_registry::revoke_entry(&current, name, version, &key) {
+        Ok(t) => t,
+        Err(e) => return err(&e),
+    };
+    let w = peers
+        .ask(
+            &cfg.store,
+            json!({"type": "write", "path": cfg.index_path, "bytes": updated}),
+        )
+        .await;
+    if w.get("error").is_some() {
+        return err("index could not be written");
+    }
+    let mut reply = json!({"revoked": {"name": name, "version": version}, "pushed": false});
+    if let Some(registry) = &cfg.registry_url {
+        let index: Value = serde_json::from_str(&updated).unwrap_or(Value::Null);
+        let body = json!({"takedown": {"name": name, "version": version}, "index": index});
+        match pack_hosted::post_json(registry, &body, cfg.allow_insecure).await {
+            Ok(_) => reply["pushed"] = json!(true),
+            Err(e) => {
+                reply["error"] = json!(format!(
+                    "revoked locally, but the registry push failed: {e}"
+                ));
+            }
+        }
+    }
+    reply
+}
+
 /// Add the `skipped` key to a reply when there is something skipped.
 fn with_skipped(mut reply: Value, skipped: &[String]) -> Value {
     if !skipped.is_empty() {
@@ -604,6 +921,11 @@ fn cfg_of(
         .get(id)
         .map(|e| e.meta.read().expect("meta").clone())
         .unwrap_or_default();
+    cfg_from_meta(&meta)
+}
+
+/// The listing's config from a record's fields.
+fn cfg_from_meta(meta: &serde_json::Map<String, Value>) -> Result<ListingCfg, String> {
     let get = |k: &str| {
         meta.get(k)
             .and_then(|v| v.as_str())
@@ -620,7 +942,14 @@ fn cfg_of(
             .ok_or_else(bad_keys)?,
         Some(_) => return Err(bad_keys()),
     };
+    let registry_url = match get("registry_url") {
+        None => None,
+        Some(u) if u.starts_with("https://") => Some(u),
+        Some(_) => return Err("team_packs: `registry_url` must be https".to_string()),
+    };
     Ok(ListingCfg {
+        registry_url,
+        allow_insecure: false,
         index_path: get("index_path").ok_or("team_packs: record needs `index_path`")?,
         templates_dir: get("templates_dir").ok_or("team_packs: record needs `templates_dir`")?,
         store: get("store").unwrap_or_else(|| "files".to_string()),
@@ -642,6 +971,12 @@ impl fantastic_kernel::bundle::Bundle for ListingBundle {
             "list": "list {query?} → {packs: [{name, version, summary, price, installed, revoked}], skipped?}",
             "show": "show {name, version?} → {name, version, summary, ports, grants, evals_count?, measured?, price, installed, revoked, install_decision: {allow, reason?}, skipped?}",
             "publish": "publish {pack, url, signing_key, grants?} → {published: {name, version, hash, signer_key}, trusted, note?}; checks the pack folder like an install (manifest, content hash, secrets scan), signs it with the 64-hex seed in the file bridge file `signing_key`, and appends it to the local index; `url` must be https; `grants` is the only source of the entry's grants; refuses an existing name+version or hash; the key never appears in a reply",
+            "fetch": "fetch {name, hash, stage, version?} → {staged, name, version, hash, next}; finds the entry by name and pinned hash in the SIGNED index, refuses a revoked one, downloads the pack from the entry's https url, checks the files against the pin and the secrets scan, and only then writes them under `stage` through the files agent; install the staged folder with `install`",
+            "submit": "submit {pack, url, signing_key, grants?} → {listed: true, name, version, hash, signer_key} | {listed: false, status: \"held\", findings: [{path, rule}]}; reviews the pack like publish, holds it on any scan finding, otherwise signs it and POSTs the entry and files to the record's `registry_url` (error `no registry_url` without one); the key never appears in a reply",
+            "report": "report {name, version, reason} → {reported: true}; POSTs the report (reason 1 to 2000 characters) to `<registry_url>/report`",
+            "takedown": "takedown {name, version, signing_key} → {revoked: {name, version}, pushed}; revokes the version in the local index (re-signed, so the flag is signed) and, with a `registry_url`, POSTs the updated index there; the key never appears in a reply",
+            "page": "page → {html}; a static, escaped HTML listing page: ports, grants, evals, measured record and price per pack",
+            "browser": "browser {selected?, opt_in?} → {cards, selected?, opt_in, updates, warnings, note?}; the view-model of the web pack browser (updates and their permission diff appear only with opt_in)",
             "updates": "updates {opt_in?} → {updates: [{name, installed_version, new_version, new_hash, permission_diff: {added_ports, removed_ports, added_grants, removed_grants}}], warnings: [...], skipped?} (opt_in defaults false: no updates without it; installs nothing)",
         })
     }
@@ -660,37 +995,62 @@ impl fantastic_kernel::bundle::Bundle for ListingBundle {
         let out = match cfg_of(kernel, agent_id) {
             Err(e) => json!({"error": e}),
             Ok(cfg) => match t {
-                "list" | "show" | "updates" => match load(&peers, &cfg).await {
-                    Err(e) => json!({"error": e}),
-                    Ok(loaded) => match t {
-                        "list" => {
-                            let query = payload.get("query").and_then(|v| v.as_str());
-                            let cards = list_view(&loaded.entries, &loaded.installed, query);
-                            with_skipped(json!({"packs": cards}), &loaded.skipped)
-                        }
-                        "show" => {
-                            let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                            let version = payload.get("version").and_then(|v| v.as_str());
-                            match show_view(&loaded.entries, &loaded.installed, name, version) {
-                                Ok(v) => with_skipped(v, &loaded.skipped),
-                                Err(e) => json!({"error": e}),
+                "list" | "show" | "updates" | "page" | "browser" => {
+                    match load(&peers, &cfg).await {
+                        Err(e) => json!({"error": e}),
+                        Ok(loaded) => match t {
+                            "list" => {
+                                let query = payload.get("query").and_then(|v| v.as_str());
+                                let cards = list_view(&loaded.entries, &loaded.installed, query);
+                                with_skipped(json!({"packs": cards}), &loaded.skipped)
                             }
-                        }
-                        _ => {
-                            let opt_in = payload
-                                .get("opt_in")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false);
-                            let (updates, warnings) =
-                                updates_for(&peers, &cfg, &loaded, opt_in).await;
-                            with_skipped(
-                                json!({"updates": updates, "warnings": warnings}),
-                                &loaded.skipped,
-                            )
-                        }
-                    },
-                },
+                            "show" => {
+                                let name =
+                                    payload.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                let version = payload.get("version").and_then(|v| v.as_str());
+                                match show_view(&loaded.entries, &loaded.installed, name, version) {
+                                    Ok(v) => with_skipped(v, &loaded.skipped),
+                                    Err(e) => json!({"error": e}),
+                                }
+                            }
+                            "page" => {
+                                json!({"html": crate::pack_page::render_listing(&loaded.entries, &loaded.installed)})
+                            }
+                            "browser" => {
+                                let opt_in = payload
+                                    .get("opt_in")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false);
+                                let selected = payload.get("selected").and_then(|v| v.as_str());
+                                let pins = pins_for(&peers, &cfg, &loaded).await;
+                                let vm = crate::pack_browser::browser_view(
+                                    &loaded, &pins, selected, opt_in,
+                                );
+                                with_skipped(
+                                    crate::pack_browser::browser_json(&vm),
+                                    &loaded.skipped,
+                                )
+                            }
+                            _ => {
+                                let opt_in = payload
+                                    .get("opt_in")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false);
+                                let (updates, warnings) =
+                                    updates_for(&peers, &cfg, &loaded, opt_in).await;
+                                with_skipped(
+                                    json!({"updates": updates, "warnings": warnings}),
+                                    &loaded.skipped,
+                                )
+                            }
+                        },
+                    }
+                }
                 "publish" => publish(&peers, &cfg, payload).await,
+                "fetch" => fetch(&peers, &cfg, payload).await,
+                "submit" => submit(&peers, &cfg, payload).await,
+                "report" => report(&cfg, payload).await,
+                "takedown" => takedown(&peers, &cfg, payload).await,
                 other => json!({"error": format!("team_packs: unknown type '{other}'")}),
             },
         };
@@ -742,7 +1102,8 @@ mod tests {
                     self.writes.lock().unwrap().push((path, bytes));
                     json!({"ok": true})
                 }
-                Some("list") => json!({"entries": self.installed}),
+                Some("list") if p["path"] == "templates" => json!({"entries": self.installed}),
+                Some("list") => json!({"error": "not found"}),
                 _ => json!({"error": "unknown"}),
             }
         }
@@ -760,6 +1121,8 @@ mod tests {
             templates_dir: "templates".into(),
             store: "files".into(),
             trusted_keys,
+            registry_url: None,
+            allow_insecure: false,
         }
     }
 
@@ -1198,5 +1561,296 @@ mod tests {
         let mut reg = fantastic_kernel::BundleRegistry::new();
         crate::register_team(&mut reg);
         assert!(reg.get(HANDLER_MODULE).is_some());
+    }
+
+    // ---- hosted registry: fetch, submit, report, takedown, page, browser ----
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn registry_cfg(server: &MockServer, trusted: Vec<String>) -> ListingCfg {
+        ListingCfg {
+            registry_url: Some(format!("{}/registry", server.uri())),
+            allow_insecure: true,
+            ..cfg_with(trusted)
+        }
+    }
+
+    async fn ok_server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"ok\":true}"))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    const BODY: &str = "{\"name\":\"notes\"}";
+    const SECRET_BODY: &str = "{\"k\":\"sk-abcdefghijklmnopqrstuvwxyz0123456789\"}";
+
+    #[tokio::test]
+    async fn review_holds_a_pack_with_scan_findings() {
+        let server = ok_server().await;
+        let f = pack_fake(SECRET_BODY, None);
+        let cfg = registry_cfg(&server, vec![]);
+        let r = submit(&f, &cfg, &publish_payload()).await;
+        assert_eq!(r["listed"], json!(false), "{r}");
+        assert_eq!(r["status"], json!("held"));
+        assert_eq!(r["findings"][0]["path"], json!("worker.json"));
+        assert!(!r.to_string().contains("sk-abcdef"));
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert!(f.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn review_lists_a_clean_pack() {
+        let server = ok_server().await;
+        let f = pack_fake(BODY, None);
+        let cfg = registry_cfg(&server, vec![pubhex(&signer())]);
+        let r = submit(&f, &cfg, &publish_payload()).await;
+        assert_eq!(r["listed"], json!(true), "{r}");
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1);
+        let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body["entry"]["name"], json!("notes"));
+        assert_eq!(body["entry"]["signature"].as_str().unwrap().len(), 128);
+        assert_eq!(body["files"]["worker.json"], json!(BODY));
+        assert!(body["files"]["pack.yaml"].is_string());
+        assert!(!body.to_string().contains(&seed_hex()));
+        assert!(f.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn submit_without_registry_url_is_an_error() {
+        let f = pack_fake(BODY, None);
+        let r = submit(&f, &cfg_with(vec![]), &publish_payload()).await;
+        assert_eq!(r["error"], json!("no registry_url"));
+    }
+
+    /// An index holding the published `notes` 1.0.0, signed by `signer()`.
+    async fn published_index() -> (Fake, String) {
+        let f = pack_fake(BODY, None);
+        let cfg = cfg_with(vec![pubhex(&signer())]);
+        let r = publish(&f, &cfg, &publish_payload()).await;
+        let hash = r["published"]["hash"].as_str().unwrap().to_string();
+        (f, hash)
+    }
+
+    #[tokio::test]
+    async fn takedown_revokes_locally_and_pushes_to_the_hosted_index() {
+        let server = ok_server().await;
+        let (f, _) = published_index().await;
+        let cfg = registry_cfg(&server, vec![pubhex(&signer())]);
+        let payload = json!({"name": "notes", "version": "1.0.0", "signing_key": "keys/k"});
+        let r = takedown(&f, &cfg, &payload).await;
+        assert_eq!(
+            r["revoked"],
+            json!({"name": "notes", "version": "1.0.0"}),
+            "{r}"
+        );
+        assert_eq!(r["pushed"], json!(true));
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1);
+        let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        let pushed =
+            pack_registry::Index::parse(&body["index"].to_string(), &[pubhex(&signer())]).unwrap();
+        assert!(pushed.entries[0].revoked);
+        let local = cfg_with(vec![pubhex(&signer())]);
+        let l = load(&f, &local).await.unwrap();
+        let v = show_view(&l.entries, &l.installed, "notes", None).unwrap();
+        assert_eq!(v["install_decision"]["allow"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn takedown_never_echoes_the_key() {
+        let (f, _) = published_index().await;
+        let cfg = cfg_with(vec![pubhex(&signer())]);
+        let ok = takedown(
+            &f,
+            &cfg,
+            &json!({"name": "notes", "version": "1.0.0", "signing_key": "keys/k"}),
+        )
+        .await;
+        assert!(ok.get("error").is_none(), "{ok}");
+        assert!(!ok.to_string().contains(&seed_hex()));
+        let bad = takedown(
+            &f,
+            &cfg,
+            &json!({"name": "notes", "version": "9.9.9", "signing_key": "keys/k"}),
+        )
+        .await;
+        assert!(bad.get("error").is_some());
+        assert!(!bad.to_string().contains(&seed_hex()));
+        let short = takedown(
+            &f,
+            &cfg,
+            &json!({"name": "notes", "version": "1.0.0", "signing_key": "keys/short"}),
+        )
+        .await;
+        assert!(!short.to_string().contains("abcdef0123"));
+    }
+
+    #[tokio::test]
+    async fn report_posts_name_version_and_reason() {
+        let server = ok_server().await;
+        let cfg = registry_cfg(&server, vec![]);
+        let r = report(
+            &cfg,
+            &json!({"name": "notes", "version": "1.0.0", "reason": "steals keys"}),
+        )
+        .await;
+        assert_eq!(r, json!({"reported": true}));
+        let reqs = server.received_requests().await.unwrap();
+        assert_eq!(reqs[0].url.path(), "/registry/report");
+        let body: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(
+            body,
+            json!({"name": "notes", "version": "1.0.0", "reason": "steals keys"})
+        );
+        let none = report(
+            &cfg_with(vec![]),
+            &json!({"name": "n", "version": "1", "reason": "r"}),
+        )
+        .await;
+        assert_eq!(none["error"], json!("no registry_url"));
+    }
+
+    #[tokio::test]
+    async fn report_refuses_an_empty_reason_or_unsafe_name() {
+        let server = ok_server().await;
+        let cfg = registry_cfg(&server, vec![]);
+        for p in [
+            json!({"name": "notes", "version": "1.0.0", "reason": "  "}),
+            json!({"name": "../x", "version": "1.0.0", "reason": "r"}),
+            json!({"name": "notes", "version": "1.0.0", "reason": "x".repeat(2001)}),
+            json!({"name": "notes", "version": "1.0.0"}),
+        ] {
+            assert!(report(&cfg, &p).await.get("error").is_some(), "{p}");
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// A pack served as a download document, and the index pinning it.
+    fn download_fixture(revoked: bool) -> (Fake, String, String) {
+        let pk = pack_fake(BODY, None);
+        let yaml = pk.files["pack/pack.yaml"].clone();
+        let hash = pack_manifest::Manifest::parse(&yaml).unwrap().content_hash;
+        let k = signer();
+        let index = signed_index(vec![signed_entry(
+            &k,
+            "notes",
+            "1.0.0",
+            &hash,
+            &[],
+            revoked,
+        )]);
+        let doc = json!({"files": {"pack.yaml": yaml, "worker.json": BODY}}).to_string();
+        (fake(Some(&index), &[], &[]), hash, doc)
+    }
+
+    async fn run_fetch(f: &Fake, doc: &str, hash: &str) -> Value {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/p.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(doc.to_string()))
+            .mount(&server)
+            .await;
+        let cfg = cfg_with(vec![pubhex(&signer())]);
+        let uri = format!("{}/p.json", server.uri());
+        let payload = json!({"name": "notes", "hash": hash, "stage": "stage"});
+        fetch_via(f, &cfg, &payload, |mut e| async move {
+            e.url = uri;
+            pack_hosted::download_pack_with(&e, true, pack_hosted::MAX_PACK).await
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn fetch_stages_a_pack_by_hash() {
+        let (f, hash, doc) = download_fixture(false);
+        let r = run_fetch(&f, &doc, &hash).await;
+        assert_eq!(r["staged"], json!("stage"), "{r}");
+        let w = f.writes.lock().unwrap();
+        let paths: Vec<&str> = w.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(paths.contains(&"stage/pack.yaml"), "{paths:?}");
+        assert!(paths.contains(&"stage/worker.json"), "{paths:?}");
+    }
+
+    #[tokio::test]
+    async fn fetch_refuses_a_revoked_entry() {
+        let (f, hash, doc) = download_fixture(true);
+        let r = run_fetch(&f, &doc, &hash).await;
+        assert!(r["error"].as_str().unwrap().contains("revoked"), "{r}");
+        assert!(f.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_refuses_a_hash_that_is_not_in_the_index() {
+        let (f, _, doc) = download_fixture(false);
+        let r = run_fetch(&f, &doc, &"0".repeat(64)).await;
+        assert!(r.get("error").is_some(), "{r}");
+        assert!(f.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_refuses_a_download_that_differs_from_the_pin() {
+        let (f, hash, _) = download_fixture(false);
+        let tampered = json!({"files": {"pack.yaml": f.index.lock().unwrap().clone().unwrap(), "worker.json": "x"}}).to_string();
+        let r = run_fetch(&f, &tampered, &hash).await;
+        assert!(r.get("error").is_some(), "{r}");
+        assert!(f.writes.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cfg_reads_registry_url_and_refuses_http() {
+        let rec = |url: Value| {
+            let mut m = serde_json::Map::new();
+            m.insert("index_path".into(), json!("i"));
+            m.insert("templates_dir".into(), json!("t"));
+            m.insert("registry_url".into(), url);
+            m
+        };
+        let ok = cfg_from_meta(&rec(json!("https://r.example/index.json"))).unwrap();
+        assert_eq!(
+            ok.registry_url.as_deref(),
+            Some("https://r.example/index.json")
+        );
+        assert!(!ok.allow_insecure);
+        assert!(cfg_from_meta(&rec(json!("http://r.example"))).is_err());
+        assert_eq!(cfg_from_meta(&rec(Value::Null)).unwrap().registry_url, None);
+    }
+
+    #[tokio::test]
+    async fn load_uses_the_hosted_index_when_registry_url_is_set() {
+        let server = MockServer::start().await;
+        let k = key(1);
+        let index = signed_index(vec![signed_entry(&k, "hosted", "1.0.0", "h1", &[], false)]);
+        Mock::given(method("GET"))
+            .and(path("/registry"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(index))
+            .mount(&server)
+            .await;
+        let cfg = registry_cfg(&server, vec![pubhex(&k)]);
+        let local = fake(Some(INDEX), &[], &[]);
+        let l = load(&local, &cfg).await.unwrap();
+        assert_eq!(l.entries.len(), 1);
+        assert_eq!(l.entries[0].name, "hosted");
+        assert!(local.reads.lock().unwrap().iter().all(|p| p != INDEX_PATH));
+    }
+
+    #[tokio::test]
+    async fn page_verb_html_comes_from_the_loaded_entries() {
+        let l = loaded(&["alpha"]).await;
+        let html = crate::pack_page::render_listing(&l.entries, &l.installed);
+        assert!(html.contains("alpha") && html.contains("zeta"));
+    }
+
+    #[test]
+    fn verb_docs_lists_fetch_submit_report_takedown_page_browser() {
+        use fantastic_kernel::bundle::Bundle;
+        let docs = ListingBundle.verb_docs();
+        for v in ["fetch", "submit", "report", "takedown", "page", "browser"] {
+            assert!(docs.get(v).is_some(), "{v}");
+        }
     }
 }

@@ -221,6 +221,35 @@ pub fn add_entry(index_json: Option<&str>, entry: Entry) -> Result<String, Strin
     serde_json::to_string_pretty(&root).map_err(|e| e.to_string())
 }
 
+/// Revoke one version in an index document: set `revoked` on the entry for
+/// `name` and `version` and sign it again with `key`, so the signature covers
+/// the flag. Other entries are kept as they are. An unknown name or version is
+/// an error. Returns the updated, pretty-printed document.
+pub fn revoke_entry(
+    index_json: &str,
+    name: &str,
+    version: &str,
+    key: &SigningKey,
+) -> Result<String, String> {
+    let mut root: Value = serde_json::from_str(index_json).map_err(|e| e.to_string())?;
+    let items = root
+        .get_mut("entries")
+        .and_then(Value::as_array_mut)
+        .ok_or("index must have an `entries` list")?;
+    let field = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+    let item = items
+        .iter_mut()
+        .find(|v| {
+            field(v, "name").as_deref() == Some(name)
+                && field(v, "version").as_deref() == Some(version)
+        })
+        .ok_or_else(|| format!("no entry for {name} {version}"))?;
+    let mut entry = parse_entry(item)?;
+    entry.revoked = true;
+    *item = entry_json(&sign_entry(key, entry));
+    serde_json::to_string_pretty(&root).map_err(|e| e.to_string())
+}
+
 fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
     hex::decode(s).map_err(|_| "key or signature is not hex".to_string())
 }
@@ -833,5 +862,47 @@ mod tests {
         let e = sign_entry(&key(7), unsigned("p", "1.0.0", "h"));
         assert!(add_entry(Some("{}"), e.clone()).is_err());
         assert!(add_entry(Some("not json"), e).is_err());
+    }
+
+    #[test]
+    fn revoke_entry_resigns_and_is_honoured() {
+        let k = key(1);
+        let idx = serde_json::to_string(&json!({"entries": [
+            signed(&k, notes("1.0.0", "h1", &[], &[])),
+            signed(&k, notes("1.1.0", "h2", &[], &[])),
+        ]}))
+        .unwrap();
+        let out = revoke_entry(&idx, "notes", "1.1.0", &k).unwrap();
+        let parsed = Index::parse(&out, &[pubhex(&k)]).unwrap();
+        assert!(parsed.skipped.is_empty(), "{:?}", parsed.skipped);
+        let e = resolve(&parsed, "notes", "h2").unwrap();
+        assert!(e.revoked);
+        assert!(matches!(install_decision(e), Decision::Refuse(_)));
+        assert!(!resolve(&parsed, "notes", "h1").unwrap().revoked);
+    }
+
+    #[test]
+    fn revoke_entry_unknown_version_is_an_error() {
+        let k = key(1);
+        let idx = serde_json::to_string(
+            &json!({"entries": [signed(&k, notes("1.0.0", "h1", &[], &[]))]}),
+        )
+        .unwrap();
+        assert!(revoke_entry(&idx, "notes", "9.9.9", &k).is_err());
+        assert!(revoke_entry(&idx, "other", "1.0.0", &k).is_err());
+        assert!(revoke_entry("{}", "notes", "1.0.0", &k).is_err());
+    }
+
+    #[test]
+    fn revoke_entry_with_untrusted_key_is_skipped_on_parse() {
+        let (k1, k2) = (key(1), key(2));
+        let idx = serde_json::to_string(
+            &json!({"entries": [signed(&k1, notes("1.0.0", "h1", &[], &[]))]}),
+        )
+        .unwrap();
+        let out = revoke_entry(&idx, "notes", "1.0.0", &k2).unwrap();
+        let parsed = Index::parse(&out, &[pubhex(&k1)]).unwrap();
+        assert!(parsed.entries.is_empty());
+        assert_eq!(parsed.skipped.len(), 1);
     }
 }
