@@ -4,6 +4,7 @@ description = "AISixteen Fantastic Team app: a thin window over the headless bin
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version = "1.90" # tauri 2.12.1 requires 1.90 (as aisixteen/fantastic src/app)
 publish = false
 
 [lib]
@@ -13,9 +14,17 @@ path = "src/lib.rs"
 name = "fantastic_team_app"
 path = "src/main.rs"
 
+[features]
+# The desktop window (Tauri). Off by default: the plain build and CI stay tauri-free.
+tauri = ["dep:tauri", "dep:tauri-build"]
+
 [dependencies]
 tokio.workspace = true
+tauri = { version = "=2.12.1", optional = true }
 
+[build-dependencies]
+tauri-build = { version = "=2.7.1", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
+serde_json.workspace = true

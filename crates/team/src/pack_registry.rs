@@ -8,7 +8,7 @@
 //! Entries with a missing, malformed, bad or untrusted signature are skipped
 //! and reported in `skipped`, so a tampered `revoked` flag is never honoured.
 
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -150,6 +150,75 @@ pub fn verify_entry(e: &Entry, trusted_keys: &[String]) -> Result<(), String> {
     let sig = Signature::from_bytes(&sig_bytes);
     key.verify_strict(&signing_payload(e), &sig)
         .map_err(|_| "bad signature".to_string())
+}
+
+/// Sign an entry: set `signer_key` to the public key of `key` (whatever the
+/// entry carried) and fill `signature` over the canonical payload. Pure.
+pub fn sign_entry(key: &SigningKey, mut unsigned: Entry) -> Entry {
+    unsigned.signer_key = hex::encode(key.verifying_key().to_bytes());
+    let sig = key.sign(&signing_payload(&unsigned));
+    unsigned.signature = hex::encode(sig.to_bytes());
+    unsigned
+}
+
+/// A signing key from its 64-hex seed text (surrounding whitespace is
+/// trimmed). The error is a fixed message and never echoes the input.
+pub fn signing_key_from_hex(text: &str) -> Result<SigningKey, String> {
+    let bad = || "signing key must be 64 hex characters".to_string();
+    let bytes = hex::decode(text.trim()).map_err(|_| bad())?;
+    let seed: [u8; 32] = bytes.try_into().map_err(|_| bad())?;
+    Ok(SigningKey::from_bytes(&seed))
+}
+
+/// An entry as the index holds it: every field, signature included.
+pub fn entry_json(e: &Entry) -> Value {
+    json!({
+        "name": e.name,
+        "version": e.version,
+        "hash": e.hash,
+        "signer_key": e.signer_key,
+        "url": e.url,
+        "ports": e.ports,
+        "grants": e.grants,
+        "revoked": e.revoked,
+        "signature": e.signature,
+    })
+}
+
+/// Append a signed entry to an index document (`None` or empty starts a new
+/// one) and return the pretty-printed JSON. Refuses a non-https url, a version
+/// that is not dotted numbers, an entry whose own signature does not verify
+/// against its own signer key, a duplicate (name, version) and a duplicate
+/// hash. Existing entries are kept as they are, including ones this build
+/// would skip.
+pub fn add_entry(index_json: Option<&str>, entry: Entry) -> Result<String, String> {
+    check_https(&entry.url)?;
+    parse_version(&entry.version)?;
+    verify_entry(&entry, std::slice::from_ref(&entry.signer_key))?;
+    let mut root: Value = match index_json.map(str::trim).filter(|t| !t.is_empty()) {
+        None => json!({"entries": []}),
+        Some(t) => serde_json::from_str(t).map_err(|e| e.to_string())?,
+    };
+    let items = root
+        .get_mut("entries")
+        .and_then(Value::as_array_mut)
+        .ok_or("index must have an `entries` list")?;
+    let field = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
+    for item in items.iter() {
+        if field(item, "name").as_deref() == Some(entry.name.as_str())
+            && field(item, "version").as_deref() == Some(entry.version.as_str())
+        {
+            return Err(format!(
+                "{} {} is already in the index",
+                entry.name, entry.version
+            ));
+        }
+        if field(item, "hash").as_deref() == Some(entry.hash.as_str()) {
+            return Err("an entry with this hash is already in the index".to_string());
+        }
+    }
+    items.push(entry_json(&entry));
+    serde_json::to_string_pretty(&root).map_err(|e| e.to_string())
 }
 
 fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
@@ -633,5 +702,136 @@ mod tests {
         assert_eq!(install_decision(e), Decision::Refuse("revoked".to_string()));
         assert_eq!(installed_warnings(&idx, &[("notes", "h2")]).len(), 1);
         assert!(update_candidate(&idx, ("notes", "h1"), true).is_none());
+    }
+
+    /// An unsigned entry for the publish tests.
+    fn unsigned(name: &str, version: &str, hash: &str) -> Entry {
+        Entry {
+            name: name.into(),
+            version: version.into(),
+            hash: hash.into(),
+            signer_key: "ignored".into(),
+            url: format!("https://example.org/{name}-{version}.tar"),
+            ports: vec!["@connector:github".into()],
+            grants: vec!["files.read".into()],
+            revoked: false,
+            signature: String::new(),
+        }
+    }
+
+    #[test]
+    fn sign_entry_verifies() {
+        let k = key(7);
+        let e = sign_entry(&k, unsigned("p", "1.0.0", "h"));
+        let trusted = vec![pubhex(&k)];
+        assert_eq!(verify_entry(&e, &trusted), Ok(()));
+        let mut t = e.clone();
+        t.hash = "other".into();
+        assert!(verify_entry(&t, &trusted).is_err());
+        let mut t = e;
+        t.revoked = true;
+        assert!(verify_entry(&t, &trusted).is_err());
+    }
+
+    #[test]
+    fn sign_entry_sets_signer_key() {
+        let k = key(7);
+        let e = sign_entry(&k, unsigned("p", "1.0.0", "h"));
+        assert_eq!(e.signer_key, pubhex(&k));
+    }
+
+    #[test]
+    fn signing_key_from_hex_accepts_64_hex_and_trims() {
+        let k = signing_key_from_hex(&format!("{}\n", "07".repeat(32))).unwrap();
+        assert_eq!(pubhex(&k), pubhex(&key(7)));
+    }
+
+    #[test]
+    fn signing_key_from_hex_rejects_bad_input_without_echo() {
+        for bad in [
+            "abcd1234",
+            "zz".repeat(32).as_str(),
+            "07".repeat(33).as_str(),
+        ] {
+            let e = signing_key_from_hex(bad).unwrap_err();
+            assert!(!e.contains(bad), "{e}");
+        }
+    }
+
+    #[test]
+    fn add_entry_creates_a_new_index() {
+        let k = key(7);
+        let e = sign_entry(&k, unsigned("p", "1.0.0", "h"));
+        let text = add_entry(None, e).unwrap();
+        let idx = Index::parse(&text, &[pubhex(&k)]).unwrap();
+        assert_eq!(idx.entries.len(), 1);
+        assert!(idx.skipped.is_empty());
+        assert!(add_entry(Some("  "), sign_entry(&k, unsigned("q", "1.0.0", "h2"))).is_ok());
+    }
+
+    #[test]
+    fn add_entry_appends_and_round_trips() {
+        let (k1, k2, trusted) = two();
+        let before = fixture(&k1, &k2);
+        let e = sign_entry(&k1, unsigned("other", "1.0.0", "hz"));
+        let text = add_entry(Some(&before), e.clone()).unwrap();
+        let idx = Index::parse(&text, &trusted).unwrap();
+        assert_eq!(idx.entries.len(), 5);
+        assert_eq!(idx.entries[4], e);
+        let old = Index::parse(&before, &trusted).unwrap();
+        assert_eq!(idx.entries[..4], old.entries[..]);
+    }
+
+    #[test]
+    fn add_entry_refuses_duplicate_name_version() {
+        let k = key(7);
+        let first = add_entry(None, sign_entry(&k, unsigned("p", "1.0.0", "h"))).unwrap();
+        let again = sign_entry(&k, unsigned("p", "1.0.0", "h2"));
+        assert!(add_entry(Some(&first), again).is_err());
+    }
+
+    #[test]
+    fn add_entry_refuses_duplicate_hash() {
+        let k = key(7);
+        let first = add_entry(None, sign_entry(&k, unsigned("p", "1.0.0", "h"))).unwrap();
+        assert!(add_entry(Some(&first), sign_entry(&k, unsigned("q", "1.0.0", "h"))).is_err());
+        assert!(add_entry(Some(&first), sign_entry(&k, unsigned("p", "1.1.0", "h"))).is_err());
+    }
+
+    #[test]
+    fn add_entry_refuses_non_https_and_bad_version() {
+        let k = key(7);
+        let mut e = unsigned("p", "1.0.0", "h");
+        e.url = "http://example.org/p.tar".into();
+        assert!(add_entry(None, sign_entry(&k, e)).is_err());
+        let e = unsigned("p", "1.2.0-rc1", "h");
+        assert!(add_entry(None, sign_entry(&k, e)).is_err());
+    }
+
+    #[test]
+    fn add_entry_refuses_a_bad_signature() {
+        let k = key(7);
+        let mut e = sign_entry(&k, unsigned("p", "1.0.0", "h"));
+        e.hash = "tampered".into();
+        assert!(add_entry(None, e).is_err());
+    }
+
+    #[test]
+    fn add_entry_keeps_unparseable_existing_entries() {
+        let k = key(7);
+        let doc = r#"{"entries":[{"name":"broken","version":"x"}]}"#;
+        let text = add_entry(Some(doc), sign_entry(&k, unsigned("p", "1.0.0", "h"))).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["entries"][0], json!({"name":"broken","version":"x"}));
+        let idx = Index::parse(&text, &[pubhex(&k)]).unwrap();
+        assert_eq!(idx.entries.len(), 1);
+        assert_eq!(idx.skipped.len(), 1);
+    }
+
+    #[test]
+    fn add_entry_rejects_an_index_without_entries() {
+        let e = sign_entry(&key(7), unsigned("p", "1.0.0", "h"));
+        assert!(add_entry(Some("{}"), e.clone()).is_err());
+        assert!(add_entry(Some("not json"), e).is_err());
     }
 }

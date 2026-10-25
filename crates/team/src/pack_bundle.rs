@@ -33,6 +33,7 @@ use serde_json::{json, Value};
 
 use crate::pack_eval::{load_evals, run_evals, summary_text, EvalSummary, PeersExecutor};
 use crate::pack_manifest;
+use crate::pack_record::{measured_from_eval, record_json};
 use crate::pack_scan;
 use crate::puller::{KernelPeers, Peers};
 
@@ -316,7 +317,7 @@ fn unbound_keys(ports: &[pack_manifest::Port], bound: &BTreeMap<String, String>)
 }
 
 /// The scan refusal reply: the findings with path, rule and line only.
-fn refused_by_scan(report: &pack_scan::ScanReport) -> Value {
+pub(crate) fn refused_by_scan(report: &pack_scan::ScanReport) -> Value {
     let findings: Vec<Value> = report
         .findings
         .iter()
@@ -543,7 +544,7 @@ pub async fn install<P: Peers>(
         "files": copied,
     });
     if !worker.is_empty() {
-        let evals = evals_of_installed(p, &dest_s, worker, timeout).await;
+        let evals = evals_of_installed(p, &dest_s, worker, timeout, &manifest.content_hash).await;
         reply["enable"] = enable_verdict(&evals, min_pass_rate);
         reply["evals"] = evals;
     }
@@ -600,7 +601,13 @@ fn min_pass_rate_from(payload: &Value) -> Option<f64> {
 /// The eval report of the pack installed at `dest`, run against `worker`.
 /// `{"skipped": ...}` when the pack has no evals, `{"error": ...}` when they
 /// cannot be loaded. Writes nothing.
-async fn evals_of_installed<P: Peers>(p: &P, dest: &str, worker: &str, timeout: Duration) -> Value {
+async fn evals_of_installed<P: Peers>(
+    p: &P,
+    dest: &str,
+    worker: &str,
+    timeout: Duration,
+    pack_hash: &str,
+) -> Value {
     let evals = match load_evals(p, dest).await {
         Ok(evals) => evals,
         Err(e) => return json!({"error": e}),
@@ -609,7 +616,30 @@ async fn evals_of_installed<P: Peers>(p: &P, dest: &str, worker: &str, timeout: 
         return json!({"skipped": "pack has no evals"});
     }
     let exec = PeersExecutor::new(p, worker);
-    eval_report(&run_evals(&evals, &exec, timeout).await)
+    let s = run_evals(&evals, &exec, timeout).await;
+    with_measured(eval_report(&s), &s, pack_hash, MEASURED_BY)
+}
+
+/// `measured_by` of a local record. The files bridge does not expose the
+/// team's `team_id`, so it is empty until a signer exists.
+const MEASURED_BY: &str = "";
+
+/// `report` plus `measured`: the local, unsigned measured record of this eval
+/// run (see `pack_record`). Nothing is written, signed or published.
+fn with_measured(mut report: Value, s: &EvalSummary, pack_hash: &str, measured_by: &str) -> Value {
+    report["measured"] = record_json(&measured_from_eval(pack_hash, s, measured_by));
+    report
+}
+
+/// The content hash of the pack at `dir`, from its `pack.yaml`; empty when the
+/// file is missing or does not parse.
+async fn pack_hash_of<P: Peers>(p: &P, dir: &str) -> String {
+    match read(p, &format!("{dir}/{}", pack_manifest::MANIFEST_FILE)).await {
+        Some(text) => pack_manifest::Manifest::parse(&text)
+            .map(|m| m.content_hash)
+            .unwrap_or_default(),
+        None => String::new(),
+    }
 }
 
 /// The JSON of an eval run: pass rate, passed and total, time and cost, the
@@ -664,7 +694,8 @@ pub async fn eval<P: Peers>(p: &P, pack: &str, worker: &str, timeout: Duration) 
     }
     let exec = PeersExecutor::new(p, worker);
     let s = run_evals(&evals, &exec, timeout).await;
-    eval_report(&s)
+    let hash = pack_hash_of(p, pack).await;
+    with_measured(eval_report(&s), &s, &hash, MEASURED_BY)
 }
 
 /// The `team_pack.tools` bundle: `pack`, `install` and `eval`.
@@ -679,8 +710,8 @@ impl fantastic_kernel::bundle::Bundle for PackBundle {
     fn verb_docs(&self) -> Value {
         json!({
             "pack": "pack {worker, out} → writes pack.yaml (hash, ports, files) and the pack layout; refuses an existing out and a pack the secrets scan refuses",
-            "install": "install {pack, into, worker?, bindings?, timeout_s?, min_pass_rate?} → checks pack.yaml, the content hash, the scan and the bindings, then copies as a template to <into>/<name>-<version>/; bindings is {port key: agent id} (keys: model, connector:<name>, exec:sandboxed) and is written to bindings.json; refuses an existing version, an unknown key and a non-id value; replies with the parsed ports and bindings {bound, unbound}; with a worker, runs the pack's evals on it and replies with the report under evals and an advisory enable {allowed, min_pass_rate, reason} (min_pass_rate is a number in 0..=1, default 1.0; allowed is false below it or when the evals cannot be loaded); the install is never refused or rolled back on the verdict; creates no agent",
-            "eval": "eval {pack, worker, timeout_s?} → runs the pack's evals on the worker; returns pass rate, time, cost and per-eval results; writes nothing",
+            "install": "install {pack, into, worker?, bindings?, timeout_s?, min_pass_rate?} → checks pack.yaml, the content hash, the scan and the bindings, then copies as a template to <into>/<name>-<version>/; bindings is {port key: agent id} (keys: model, connector:<name>, exec:sandboxed) and is written to bindings.json; refuses an existing version, an unknown key and a non-id value; replies with the parsed ports and bindings {bound, unbound}; with a worker, runs the pack's evals on it and replies with the report under evals and an advisory enable {allowed, min_pass_rate, reason} (min_pass_rate is a number in 0..=1, default 1.0; allowed is false below it or when the evals cannot be loaded); the install is never refused or rolled back on the verdict; the evals report also carries measured {pack_hash, tasks, successes, success_rate, cost_per_task, measured_by, signed:false}: a local, unsigned record, never written or published; creates no agent",
+            "eval": "eval {pack, worker, timeout_s?} → runs the pack's evals on the worker; returns pass rate, time, cost and per-eval results; also replies with measured {pack_hash, tasks, successes, success_rate, cost_per_task, measured_by, signed:false}: a local, unsigned record, never written or published",
         })
     }
 
@@ -1809,6 +1840,185 @@ mod tests {
         assert_eq!(r["installed_as"], "template", "{r}");
         assert_eq!(r["enable"]["allowed"], false, "{r}");
         assert_eq!(r["enable"]["reason"], "evals could not be loaded", "{r}");
+    }
+
+    /// Like `PackAndWorker`, but a task `costN` is answered "ok" with cost N,
+    /// any other task "ok" with no cost. Every write is recorded.
+    struct CostWorker {
+        files: FakeFiles,
+        writes: Mutex<usize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Peers for CostWorker {
+        async fn ask(&self, to: &str, p: Value) -> Value {
+            if to == "files" {
+                if p["type"] == "write" {
+                    *self.writes.lock().unwrap() += 1;
+                }
+                return self.files.ask(to, p).await;
+            }
+            let cost = p["text"]
+                .as_str()
+                .and_then(|t| t.strip_prefix("cost"))
+                .and_then(|n| n.parse::<f64>().ok());
+            match cost {
+                Some(c) => json!({"text": "ok", "cost": c}),
+                None => json!({"text": "ok"}),
+            }
+        }
+    }
+
+    fn eval_yaml(id: &str, task: &str, contains: &str) -> String {
+        format!("- id: {id}\n  task: {task}\n  check: {{contains: {contains}}}\n")
+    }
+
+    /// A pack at `pack/` with a `pack.yaml` carrying a hash, plus the evals.
+    fn cost_pack(evals: &[String]) -> CostWorker {
+        let f = FakeFiles::with("pack/manifest.yaml", "name: p\nversion: 1.0\n");
+        f.files.lock().unwrap().insert(
+            "pack/pack.yaml".into(),
+            "name: p\nversion: \"1.0\"\nauthor: a\nlicense: MIT\ncontent_hash: abc123\n".into(),
+        );
+        for (i, text) in evals.iter().enumerate() {
+            f.files
+                .lock()
+                .unwrap()
+                .insert(format!("pack/evals/e{i}.yaml"), text.clone());
+        }
+        CostWorker {
+            files: f,
+            writes: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn eval_reply_carries_a_local_unsigned_measured_record() {
+        let p = eval_pack(&[("a.yaml", PASSING_EVAL), ("b.yaml", FAILING_EVAL)]);
+        p.files.files.lock().unwrap().insert(
+            "pack/pack.yaml".into(),
+            "name: p\nversion: \"1.0\"\nauthor: a\nlicense: MIT\ncontent_hash: abc123\n".into(),
+        );
+        let r = eval(&p, "pack", "worker-1", Duration::from_secs(5)).await;
+        assert!(r.get("error").is_none(), "{r}");
+        let m = &r["measured"];
+        assert_eq!(m["tasks"], 2, "{r}");
+        assert_eq!(m["successes"], 1, "{r}");
+        assert_eq!(m["success_rate"], 0.5, "{r}");
+        assert_eq!(m["pack_hash"], "abc123", "{r}");
+        assert_eq!(m["signed"], false, "{r}");
+        assert!(m.get("signature").is_none(), "{r}");
+    }
+
+    #[tokio::test]
+    async fn eval_measured_cost_per_task_is_the_mean_of_reported_costs() {
+        let p = cost_pack(&[
+            eval_yaml("a", "cost1", "ok"),
+            eval_yaml("b", "cost3", "ok"),
+            eval_yaml("c", "free", "ok"),
+        ]);
+        let r = eval(&p, "pack", "worker-1", Duration::from_secs(5)).await;
+        assert_eq!(r["measured"]["tasks"], 3, "{r}");
+        assert_eq!(r["measured"]["cost_per_task"], 2.0, "{r}");
+
+        let p = cost_pack(&[eval_yaml("a", "free", "ok")]);
+        let r = eval(&p, "pack", "worker-1", Duration::from_secs(5)).await;
+        assert!(r["measured"]["cost_per_task"].is_null(), "{r}");
+        assert!(r["measured"].get("cost_per_task").is_some(), "{r}");
+    }
+
+    #[tokio::test]
+    async fn install_with_worker_carries_the_measured_record() {
+        let p = packed_with_evals(&[("a.yaml", PASSING_EVAL), ("b.yaml", FAILING_EVAL)]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        let e = &r["evals"];
+        let m = &e["measured"];
+        assert_eq!(m["tasks"], e["total"], "{r}");
+        assert_eq!(m["successes"], e["passed"], "{r}");
+        assert_eq!(m["success_rate"], e["pass_rate"], "{r}");
+        assert_eq!(m["signed"], false, "{r}");
+        let hash = pack_manifest::Manifest::parse(&p.files.get("pack/pack.yaml").unwrap())
+            .unwrap()
+            .content_hash;
+        assert!(!hash.is_empty());
+        assert_eq!(m["pack_hash"], hash.as_str(), "{r}");
+    }
+
+    #[tokio::test]
+    async fn install_without_worker_and_skipped_evals_have_no_measured() {
+        let p = packed_with_evals(&[("a.yaml", PASSING_EVAL)]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert!(r.get("measured").is_none() && r["evals"].is_null(), "{r}");
+
+        let p = packed_with_evals(&[]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert!(r["evals"].get("skipped").is_some(), "{r}");
+        assert!(r["evals"].get("measured").is_none(), "{r}");
+
+        let p = packed_with_evals(&[("a.yaml", "- id: [unclosed\n")]).await;
+        let r = install(
+            &p,
+            "pack",
+            "templates",
+            "worker-1",
+            Duration::from_secs(5),
+            &Value::Null,
+            1.0,
+        )
+        .await;
+        assert!(r["evals"].get("error").is_some(), "{r}");
+        assert!(r["evals"].get("measured").is_none(), "{r}");
+    }
+
+    #[tokio::test]
+    async fn eval_writes_no_measured_file() {
+        let p = cost_pack(&[eval_yaml("a", "cost1", "ok")]);
+        let before = p.files.files.lock().unwrap().clone();
+        let r = eval(&p, "pack", "worker-1", Duration::from_secs(5)).await;
+        assert!(r.get("measured").is_some(), "{r}");
+        assert_eq!(*p.writes.lock().unwrap(), 0, "eval must not write");
+        assert_eq!(*p.files.files.lock().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn measured_record_leaks_no_task_text_or_paths() {
+        let p = cost_pack(&[
+            eval_yaml("a", "SECRETMARK_task", "ok"),
+            eval_yaml("b", "other", "SECRETMARK_expected"),
+        ]);
+        let r = eval(&p, "pack", "worker-1", Duration::from_secs(5)).await;
+        let m = r["measured"].to_string();
+        assert!(r["measured"]["tasks"] == 2, "{r}");
+        assert!(!m.contains("SECRETMARK"), "{m}");
+        assert!(!m.contains("pack/"), "{m}");
+        assert!(!m.contains("evals"), "{m}");
     }
 
     #[test]
