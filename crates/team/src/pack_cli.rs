@@ -60,6 +60,19 @@ const VERBS: &[(&str, Verb)] = &[
         },
     ),
     (
+        "publish",
+        Verb {
+            agent: PACK_LISTING_ID,
+            kind: "publish",
+            flags: &[
+                ("pack", Kind::Text),
+                ("url", Kind::Text),
+                ("signing_key", Kind::Text),
+            ],
+            required: &["pack", "url", "signing_key"],
+        },
+    ),
+    (
         "pack",
         Verb {
             agent: PACK_ID,
@@ -105,7 +118,7 @@ pub fn parse(args: &[String]) -> Result<(String, Value), String> {
     let refuse = |why: String| format!("packs: {why}\n{USAGE}");
     let Some((verb_word, rest)) = args.split_first() else {
         return Err(refuse(
-            "a verb is needed: list, show, updates, pack, install or eval".into(),
+            "a verb is needed: list, show, updates, publish, pack, install or eval".into(),
         ));
     };
     let Some((_, verb)) = VERBS.iter().find(|(name, _)| *name == verb_word) else {
@@ -311,6 +324,43 @@ mod tests {
                 json!({"type": "eval", "pack": "pack", "worker": "w", "timeout_s": 5})
             )
         );
+    }
+
+    #[test]
+    fn parse_publish_maps_flags() {
+        assert_eq!(
+            parse(&v(&[
+                "publish",
+                "--pack",
+                "p",
+                "--url",
+                "https://x",
+                "--signing-key",
+                "k"
+            ]))
+            .unwrap(),
+            (
+                PACK_LISTING_ID.to_string(),
+                json!({"type": "publish", "pack": "p", "url": "https://x", "signing_key": "k"})
+            )
+        );
+    }
+
+    #[test]
+    fn parse_publish_requires_its_flags() {
+        let all = ["--pack", "p", "--url", "https://x", "--signing-key", "k"];
+        for skip in 0..3 {
+            let mut args = vec!["publish"];
+            for (i, pair) in all.chunks(2).enumerate() {
+                if i != skip {
+                    args.extend(pair);
+                }
+            }
+            let e = parse(&v(&args)).unwrap_err();
+            assert!(e.contains("needs") && e.contains("usage:"), "{e}");
+        }
+        let e = parse(&v(&[])).unwrap_err();
+        assert!(e.contains("publish"), "{e}");
     }
 
     #[test]

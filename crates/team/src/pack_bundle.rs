@@ -317,7 +317,7 @@ fn unbound_keys(ports: &[pack_manifest::Port], bound: &BTreeMap<String, String>)
 }
 
 /// The scan refusal reply: the findings with path, rule and line only.
-fn refused_by_scan(report: &pack_scan::ScanReport) -> Value {
+pub(crate) fn refused_by_scan(report: &pack_scan::ScanReport) -> Value {
     let findings: Vec<Value> = report
         .findings
         .iter()

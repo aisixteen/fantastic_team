@@ -16,9 +16,10 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::pack_bundle::valid_part;
+use crate::pack_bundle::{refused_by_scan, valid_part};
 use crate::pack_manifest::{self, MANIFEST_FILE};
 use crate::pack_registry::{self, Decision};
+use crate::pack_scan;
 use crate::puller::{KernelPeers, Peers};
 
 /// The bundle's handler module name.
@@ -454,6 +455,135 @@ pub async fn updates_for(
     updates_view(index, &pinned, opt_in)
 }
 
+/// Whether a bridge error reply says the file does not exist (a new index),
+/// as opposed to any other read failure, which must not start a new index.
+fn is_missing(reply: &Value) -> bool {
+    let e = reply
+        .get("error")
+        .map(|e| e.to_string().to_lowercase())
+        .unwrap_or_default();
+    ["not found", "no such file", "does not exist"]
+        .iter()
+        .any(|m| e.contains(m))
+}
+
+/// Publish a packed pack to the LOCAL index: check it, sign it with the key in
+/// the file at `signing_key`, and append the signed entry to `cfg.index_path`.
+/// Payload: `{pack, url, signing_key, grants?}`. The pack must pass the same
+/// checks as an install (manifest, content hash, secrets scan) before anything
+/// is signed or written. Grants come only from the payload, since `pack.yaml`
+/// has none. The key and its seed never appear in a reply. The signer need not
+/// be trusted here (trust is the reader's decision); the reply says
+/// `trusted: false` when `list` will skip the entry.
+pub async fn publish(peers: &dyn Peers, cfg: &ListingCfg, payload: &Value) -> Value {
+    let err = |m: &str| json!({"error": m});
+    let text_of = |k: &str| payload.get(k).and_then(Value::as_str).map(str::trim);
+    let (Some(pack), Some(url), Some(key_path)) =
+        (text_of("pack"), text_of("url"), text_of("signing_key"))
+    else {
+        return err("publish needs `pack`, `url` and `signing_key`");
+    };
+    if pack.is_empty() || url.is_empty() || key_path.is_empty() {
+        return err("publish needs `pack`, `url` and `signing_key`");
+    }
+    let grants: Vec<String> = match payload.get("grants") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => {
+            match a
+                .iter()
+                .map(|g| g.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()
+            {
+                Some(g) => g,
+                None => return err("`grants` must be a list of strings"),
+            }
+        }
+        Some(_) => return err("`grants` must be a list of strings"),
+    };
+    let manifest_path = format!("{pack}/{MANIFEST_FILE}");
+    let Ok(manifest_text) = read_text(peers, &cfg.store, &manifest_path).await else {
+        return err("pack has no pack.yaml");
+    };
+    let manifest = match pack_manifest::Manifest::parse(&manifest_text) {
+        Ok(m) => m,
+        Err(e) => return err(&format!("pack.yaml: {e}")),
+    };
+    if let Err(e) = manifest.validate() {
+        return err(&e);
+    }
+    if !valid_part(&manifest.name) || !valid_part(&manifest.version) {
+        return err("pack name or version is not a safe path segment");
+    }
+    let mut bytes: Vec<(String, Vec<u8>)> = Vec::new();
+    for rel in &manifest.files {
+        match read_text(peers, &cfg.store, &format!("{pack}/{rel}")).await {
+            Ok(t) => bytes.push((rel.clone(), t.into_bytes())),
+            Err(_) => return err(&format!("pack file missing: {rel}")),
+        }
+    }
+    if pack_manifest::content_hash(&bytes) != manifest.content_hash {
+        return err("content hash mismatch");
+    }
+    let report = pack_scan::scan(&bytes);
+    if report.refused {
+        return refused_by_scan(&report);
+    }
+    let key = match read_text(peers, &cfg.store, key_path).await {
+        Ok(t) => match pack_registry::signing_key_from_hex(&t) {
+            Ok(k) => k,
+            Err(e) => return err(&e),
+        },
+        Err(_) => return err("signing key file could not be read"),
+    };
+    let entry = pack_registry::sign_entry(
+        &key,
+        pack_registry::Entry {
+            name: manifest.name.clone(),
+            version: manifest.version.clone(),
+            hash: manifest.content_hash.clone(),
+            signer_key: String::new(),
+            url: url.to_string(),
+            ports: manifest.ports.clone(),
+            grants,
+            revoked: false,
+            signature: String::new(),
+        },
+    );
+    let current = match read_text(peers, &cfg.store, &cfg.index_path).await {
+        Ok(t) => Some(t),
+        Err(r) if is_missing(&r) => None,
+        Err(_) => return err("index could not be read"),
+    };
+    let signer_key = entry.signer_key.clone();
+    let hash = entry.hash.clone();
+    let updated = match pack_registry::add_entry(current.as_deref(), entry) {
+        Ok(t) => t,
+        Err(e) => return err(&e),
+    };
+    let w = peers
+        .ask(
+            &cfg.store,
+            json!({"type": "write", "path": cfg.index_path, "bytes": updated}),
+        )
+        .await;
+    if w.get("error").is_some() {
+        return err("index could not be written");
+    }
+    let trusted = cfg.trusted_keys.contains(&signer_key);
+    let mut reply = json!({"published": {
+        "name": manifest.name,
+        "version": manifest.version,
+        "hash": hash,
+        "signer_key": signer_key,
+    }, "trusted": trusted});
+    if !trusted {
+        reply["note"] = json!(
+            "the signer is not in this listing's trusted_keys, so `list` skips the entry until it is"
+        );
+    }
+    reply
+}
+
 /// Add the `skipped` key to a reply when there is something skipped.
 fn with_skipped(mut reply: Value, skipped: &[String]) -> Value {
     if !skipped.is_empty() {
@@ -511,6 +641,7 @@ impl fantastic_kernel::bundle::Bundle for ListingBundle {
         json!({
             "list": "list {query?} → {packs: [{name, version, summary, price, installed, revoked}], skipped?}",
             "show": "show {name, version?} → {name, version, summary, ports, grants, evals_count?, measured?, price, installed, revoked, install_decision: {allow, reason?}, skipped?}",
+            "publish": "publish {pack, url, signing_key, grants?} → {published: {name, version, hash, signer_key}, trusted, note?}; checks the pack folder like an install (manifest, content hash, secrets scan), signs it with the 64-hex seed in the file bridge file `signing_key`, and appends it to the local index; `url` must be https; `grants` is the only source of the entry's grants; refuses an existing name+version or hash; the key never appears in a reply",
             "updates": "updates {opt_in?} → {updates: [{name, installed_version, new_version, new_hash, permission_diff: {added_ports, removed_ports, added_grants, removed_grants}}], warnings: [...], skipped?} (opt_in defaults false: no updates without it; installs nothing)",
         })
     }
@@ -559,6 +690,7 @@ impl fantastic_kernel::bundle::Bundle for ListingBundle {
                         }
                     },
                 },
+                "publish" => publish(&peers, &cfg, payload).await,
                 other => json!({"error": format!("team_packs: unknown type '{other}'")}),
             },
         };
@@ -575,9 +707,13 @@ mod tests {
     const INDEX_PATH: &str = "packs/index.json";
 
     struct Fake {
-        index: Option<String>,
+        index: std::sync::Mutex<Option<String>>,
         installed: Vec<String>,
         files: BTreeMap<String, String>,
+        /// Every write the fake saw, as (path, bytes).
+        writes: std::sync::Mutex<Vec<(String, String)>>,
+        /// Every path read.
+        reads: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
@@ -586,8 +722,9 @@ mod tests {
             match p["type"].as_str() {
                 Some("read") => {
                     let path = p["path"].as_str().unwrap_or("");
+                    self.reads.lock().unwrap().push(path.to_string());
                     let text = if path == INDEX_PATH {
-                        self.index.clone()
+                        self.index.lock().unwrap().clone()
                     } else {
                         self.files.get(path).cloned()
                     };
@@ -595,6 +732,15 @@ mod tests {
                         Some(t) => json!({"content": t}),
                         None => json!({"error": "not found"}),
                     }
+                }
+                Some("write") => {
+                    let path = p["path"].as_str().unwrap_or("").to_string();
+                    let bytes = p["bytes"].as_str().unwrap_or("").to_string();
+                    if path == INDEX_PATH {
+                        *self.index.lock().unwrap() = Some(bytes.clone());
+                    }
+                    self.writes.lock().unwrap().push((path, bytes));
+                    json!({"ok": true})
                 }
                 Some("list") => json!({"entries": self.installed}),
                 _ => json!({"error": "unknown"}),
@@ -619,7 +765,9 @@ mod tests {
 
     fn fake(index: Option<&str>, installed: &[&str], files: &[(&str, &str)]) -> Fake {
         Fake {
-            index: index.map(str::to_string),
+            index: std::sync::Mutex::new(index.map(str::to_string)),
+            writes: Default::default(),
+            reads: Default::default(),
             installed: installed.iter().map(|s| s.to_string()).collect(),
             files: files
                 .iter()
@@ -882,6 +1030,167 @@ mod tests {
         );
         let ok = show_view(&l.entries, &l.installed, "notes", Some("1.0.0")).unwrap();
         assert_eq!(ok["install_decision"], json!({"allow": true}));
+    }
+
+    /// The 64-hex seed the publish tests sign with.
+    fn seed_hex() -> String {
+        "05".repeat(32)
+    }
+
+    /// A fake holding a packed pack at `pack/` (one worker.json with `body`),
+    /// a key file at `keys/k` and, when given, an index.
+    fn pack_fake(body: &str, index: Option<&str>) -> Fake {
+        let hash = pack_manifest::content_hash(&[("worker.json".to_string(), body.into())]);
+        let yaml = format!(
+            "name: notes\nversion: 1.0.0\nauthor: a\nlicense: MIT\ncontent_hash: {hash}\nports:\n  - \"@connector:github\"\nfiles:\n  - worker.json\n"
+        );
+        fake(
+            index,
+            &[],
+            &[
+                ("pack/pack.yaml", &yaml),
+                ("pack/worker.json", body),
+                ("keys/k", &format!("{}\n", seed_hex())),
+                ("keys/short", "abcdef0123"),
+            ],
+        )
+    }
+
+    fn publish_payload() -> Value {
+        json!({"pack": "pack", "url": "https://example.org/notes-1.0.0.tar", "signing_key": "keys/k"})
+    }
+
+    fn signer() -> SigningKey {
+        SigningKey::from_bytes(&[5u8; 32])
+    }
+
+    #[tokio::test]
+    async fn publish_signs_and_writes_the_index() {
+        let f = pack_fake("{\"name\":\"notes\"}", None);
+        let cfg = cfg_with(vec![pubhex(&signer())]);
+        let r = publish(&f, &cfg, &publish_payload()).await;
+        assert_eq!(r["published"]["name"], json!("notes"));
+        assert_eq!(r["published"]["version"], json!("1.0.0"));
+        assert_eq!(r["published"]["signer_key"], json!(pubhex(&signer())));
+        assert!(r["published"]["hash"].as_str().unwrap().len() == 64);
+        assert_eq!(r["trusted"], json!(true));
+        assert!(r.get("note").is_none());
+        let written = f.index.lock().unwrap().clone().unwrap();
+        let idx = pack_registry::Index::parse(&written, &cfg.trusted_keys).unwrap();
+        assert_eq!(idx.entries.len(), 1);
+        assert_eq!(idx.entries[0].ports, vec!["@connector:github".to_string()]);
+        let l = load(&f, &cfg).await.unwrap();
+        let cards = list_view(&l.entries, &l.installed, None);
+        assert_eq!(cards[0]["name"], json!("notes"));
+        assert_eq!(cards[0]["version"], json!("1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn publish_reply_never_contains_the_key() {
+        let f = pack_fake("{}", None);
+        let cfg = cfg_with(vec![]);
+        let ok = publish(&f, &cfg, &publish_payload()).await;
+        assert!(!ok.to_string().contains(&seed_hex()));
+        let mut bad = publish_payload();
+        bad["url"] = json!("http://example.org/x");
+        let e = publish(&f, &cfg, &bad).await;
+        assert!(e.get("error").is_some());
+        assert!(!e.to_string().contains(&seed_hex()));
+        let again = publish(&f, &cfg, &publish_payload()).await;
+        assert!(again.get("error").is_some());
+        assert!(!again.to_string().contains(&seed_hex()));
+    }
+
+    #[tokio::test]
+    async fn publish_refuses_a_hash_mismatch() {
+        let mut f = pack_fake("{}", None);
+        f.files
+            .insert("pack/worker.json".into(), "{\"x\":1}".into());
+        let r = publish(&f, &cfg_with(vec![]), &publish_payload()).await;
+        assert_eq!(r["error"], json!("content hash mismatch"));
+        assert!(f.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_refuses_a_scan_failure() {
+        let body = format!("token: {}{}", "AKIA", "0123456789ABCDEFGH");
+        let f = pack_fake(&body, None);
+        let r = publish(&f, &cfg_with(vec![]), &publish_payload()).await;
+        assert_eq!(r["error"], json!("pack refused by scan"));
+        assert!(f.writes.lock().unwrap().is_empty());
+        assert!(!f.reads.lock().unwrap().iter().any(|p| p == "keys/k"));
+    }
+
+    #[tokio::test]
+    async fn publish_refuses_an_existing_version() {
+        let f = pack_fake("{}", None);
+        let cfg = cfg_with(vec![pubhex(&signer())]);
+        assert!(publish(&f, &cfg, &publish_payload())
+            .await
+            .get("error")
+            .is_none());
+        let before = f.index.lock().unwrap().clone();
+        let r = publish(&f, &cfg, &publish_payload()).await;
+        assert!(r["error"].as_str().unwrap().contains("already"), "{r}");
+        assert_eq!(*f.index.lock().unwrap(), before);
+        assert_eq!(f.writes.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn publish_refuses_a_missing_or_bad_key_file() {
+        let f = pack_fake("{}", None);
+        for path in ["keys/none", "keys/short"] {
+            let mut p = publish_payload();
+            p["signing_key"] = json!(path);
+            let r = publish(&f, &cfg_with(vec![]), &p).await;
+            assert!(r.get("error").is_some(), "{path}: {r}");
+        }
+        assert!(f.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_refuses_a_non_https_url() {
+        let f = pack_fake("{}", None);
+        let mut p = publish_payload();
+        p["url"] = json!("http://example.org/x.tar");
+        let r = publish(&f, &cfg_with(vec![]), &p).await;
+        assert!(r.get("error").is_some());
+        assert!(f.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_warns_when_signer_untrusted() {
+        let f = pack_fake("{}", None);
+        let cfg = cfg_with(vec![]);
+        let r = publish(&f, &cfg, &publish_payload()).await;
+        assert_eq!(r["trusted"], json!(false));
+        assert!(r["note"].as_str().unwrap().contains("trusted_keys"));
+        let l = load(&f, &cfg).await.unwrap();
+        assert!(l.entries.is_empty());
+        assert_eq!(l.skipped.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn publish_uses_grants_from_the_payload() {
+        let f = pack_fake("{}", None);
+        let cfg = cfg_with(vec![pubhex(&signer())]);
+        let mut p = publish_payload();
+        p["grants"] = json!(["files.read"]);
+        assert!(publish(&f, &cfg, &p).await.get("error").is_none());
+        let l = load(&f, &cfg).await.unwrap();
+        let v = show_view(&l.entries, &l.installed, "notes", None).unwrap();
+        assert_eq!(v["grants"], json!(["files.read"]));
+        let f2 = pack_fake("{}", None);
+        let mut bad = publish_payload();
+        bad["grants"] = json!([1]);
+        assert!(publish(&f2, &cfg, &bad).await.get("error").is_some());
+        assert!(f2.writes.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn verb_docs_lists_publish() {
+        use fantastic_kernel::bundle::Bundle;
+        assert!(ListingBundle.verb_docs().get("publish").is_some());
     }
 
     #[test]
