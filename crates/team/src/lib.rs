@@ -22,6 +22,7 @@ pub mod pack_manifest;
 pub mod pack_panel;
 pub mod pack_record;
 pub mod pack_scan;
+pub mod page;
 pub mod peer_envelope;
 pub mod peer_transport;
 pub mod peers;
@@ -96,6 +97,13 @@ pub fn registry() -> BundleRegistry {
         fantastic_user::HANDLER_MODULE,
         fantastic_user::UserBundle::default(),
     );
+    // The web host, its socket leg and the dispatcher page, for a handle that serves a port.
+    reg.register(fantastic_web::HANDLER_MODULE, fantastic_web::WebBundle);
+    reg.register(
+        fantastic_web_ws::HANDLER_MODULE,
+        fantastic_web_ws::WebWsBundle,
+    );
+    reg.register(page::HANDLER_MODULE, page::PageBundle);
     register_team(&mut reg);
     reg
 }

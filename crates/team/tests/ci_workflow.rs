@@ -326,10 +326,33 @@ fn repro_job_builds_twice_in_different_dirs_and_has_no_signing() {
         .expect("rust-toolchain.toml exists");
     assert!(pin.contains("channel = \"1."), "toolchain pin: {pin}");
     // Every job that builds or tests guards that rustc is the pin, not whatever the runner has.
-    for name in ["units", "build", "repro"] {
+    for name in ["units", "build", "repro", "tauri"] {
         assert!(
             run_text(job(&doc, name)).contains("rustc -V"),
             "job `{name}` lacks the rustc -V guard against the pin"
         );
     }
+}
+
+#[test]
+fn ci_has_a_tauri_feature_build_job() {
+    let doc = doc();
+    let tauri = job(&doc, "tauri");
+    assert_eq!(needs(tauri), vec!["units".to_string()], "tauri needs units");
+    let text = run_text(tauri);
+    assert!(text.contains("--features tauri"), "tauri job: {text}");
+    assert!(text.contains("fantastic-team-app"), "tauri job: {text}");
+    assert!(text.contains("rustc -V"), "tauri job lacks the pin guard");
+    let os = |name: &str| {
+        key(
+            key(key(job(&doc, name), "strategy").unwrap(), "matrix").unwrap(),
+            "os",
+        )
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .expect("matrix os expression")
+    };
+    assert_eq!(os("tauri"), os("units"), "same os matrix as units");
+    let whole = serde_yaml::to_string(tauri).expect("serializes");
+    assert!(!whole.contains("secrets."), "tauri job must use no secrets");
 }

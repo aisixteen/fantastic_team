@@ -23,6 +23,8 @@ repository = "https://github.com/aisixteen/fantastic_team"
 #   3. local checkout: copy .cargo/config.toml.example to .cargo/config.toml (uncommitted).
 fantastic-tui = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-kernel = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
+fantastic-web = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
+fantastic-web-ws = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-bundle = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-exec-bridge = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 tokio = { version = "1", features = ["full"] }
