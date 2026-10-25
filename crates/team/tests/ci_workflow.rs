@@ -121,15 +121,49 @@ fn ci_workflow_has_e2e_boolean_input_default_false() {
 fn ci_units_cover_three_oses_and_four_checks() {
     let doc = doc();
     let units = job(&doc, "units");
-    let os: Vec<String> = key(
+    let expr = key(
         key(key(units, "strategy").unwrap(), "matrix").unwrap(),
         "os",
     )
-    .and_then(Value::as_sequence)
-    .expect("units matrix os is a list")
-    .iter()
-    .map(|v| v.as_str().unwrap_or_default().to_string())
-    .collect();
+    .and_then(Value::as_str)
+    .expect("units matrix os is a fromJSON expression");
+    assert!(expr.contains("fromJSON"), "units matrix os: {expr}");
+    // the JSON array literals in the expression: first is the all-OS branch, second is linux only
+    let mut lists: Vec<Vec<String>> = Vec::new();
+    let mut rest = expr;
+    while let Some(start) = rest.find("'[") {
+        let tail = &rest[start + 2..];
+        let end = tail.find("]'").expect("array literal closes");
+        lists.push(
+            tail[..end]
+                .split(',')
+                .map(|v| v.trim().trim_matches('"').to_string())
+                .collect(),
+        );
+        rest = &tail[end + 2..];
+    }
+    assert_eq!(lists.len(), 2, "two array literals in {expr}");
+    // default inputs (units_os=all) select the first literal; units_os=linux (e2e off) the second
+    let os = &lists[0];
+    let linux = &lists[1];
+    assert!(
+        expr.contains("inputs.units_os == 'all'"),
+        "default branch keys on units_os == 'all': {expr}"
+    );
+    assert_eq!(linux, &vec!["ubuntu-latest".to_string()]);
+    let units_os = key(
+        key(
+            key(triggers(&doc), "workflow_dispatch").expect("workflow_dispatch"),
+            "inputs",
+        )
+        .expect("workflow_dispatch has inputs"),
+        "units_os",
+    )
+    .expect("input `units_os` exists");
+    assert_eq!(
+        key(units_os, "default").and_then(Value::as_str),
+        Some("all")
+    );
     for want in ["ubuntu-latest", "macos-latest", "windows-latest"] {
         assert!(
             os.iter().any(|o| o == want),
