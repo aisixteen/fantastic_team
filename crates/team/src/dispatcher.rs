@@ -228,6 +228,7 @@ fn worker_items(
         "kind": "worker", "style": "worker", "id": r.id, "state": r.state,
         "task": r.task, "busy": r.state == "busy",
         "minutes": r.minutes, "pr": r.pr,
+        "stalled": r.state.starts_with("stalled"),
     })];
     out.push(json!({
         "kind": "subagents", "style": "subagent", "worker": r.id,
@@ -249,7 +250,10 @@ fn worker_items(
 /// `load` is the board's `load` object (`Null` when none came). A group with no
 /// AI driver gets its raw counts as `load` {busy, idle, stalled}; a group with
 /// a driver gets none, since its AI shows the summary. The team gets `load`
-/// {tasks, done_last_hour} when the board gave one.
+/// {tasks, done_last_hour} when the board gave one, plus the cadencer's
+/// `digest_bytes_per_hour` and `driver_tokens_per_hour` when `load` carries them,
+/// and `waiting` {prs, stalled}: the PRs waiting for approval and the stalled
+/// workers, the figures that need the person.
 pub fn sidebar(
     team: &str,
     groups: &BTreeMap<String, Vec<String>>,
@@ -287,9 +291,19 @@ pub fn sidebar(
     }
     let mut out = json!({"team": team, "groups": gs, "ungrouped": loose});
     if !load.is_null() {
-        out["load"] = json!({
+        let mut team_load = json!({
             "tasks": load["tasks"],
             "done_last_hour": load["done_last_hour"],
+        });
+        for k in ["digest_bytes_per_hour", "driver_tokens_per_hour"] {
+            if load.get(k).is_some_and(|v| !v.is_null()) {
+                team_load[k] = load[k].clone();
+            }
+        }
+        out["load"] = team_load;
+        out["waiting"] = json!({
+            "prs": load["tasks"]["in_review"].as_u64().unwrap_or(0),
+            "stalled": load["workers"]["stalled"].as_u64().unwrap_or(0),
         });
     }
     out
@@ -323,9 +337,13 @@ pub fn open_target(node: &str, kind: &str) -> Value {
 /// before anything is sent.
 pub const CONTROL_ACTIONS: [&str; 3] = ["start", "pause", "stop"];
 
-/// `stop` needs an explicit confirm; anything else is answered with a question.
+/// The actions on a worker or a group that the dispatcher carries out itself:
+/// hand a worker a task, add a worker to a group, remove a worker.
+pub const WORKER_ACTIONS: [&str; 3] = ["hand_task", "add_worker", "remove_worker"];
+
+/// `stop` and `remove_worker` need an explicit confirm; without it the answer is a question.
 pub fn control_reply(node: &str, action: &str, confirm: bool) -> Value {
-    if !CONTROL_ACTIONS.contains(&action) {
+    if !CONTROL_ACTIONS.contains(&action) && !WORKER_ACTIONS.contains(&action) {
         return json!({
             "error": format!("team_dispatcher: unknown control action '{action}'"),
             "sent": false,
@@ -340,7 +358,56 @@ pub fn control_reply(node: &str, action: &str, confirm: bool) -> Value {
             "sent": false,
         });
     }
+    if action == "remove_worker" && !confirm {
+        return json!({
+            "question": format!("Remove {node}? Send again with confirm: true."),
+            "sent": false,
+        });
+    }
     json!({"sent": true, "node": node, "action": action})
+}
+
+/// The groups with `id` added to `group`. An unknown group or an id already in
+/// any group is an error.
+pub fn groups_with(
+    groups: &BTreeMap<String, Vec<String>>,
+    group: &str,
+    id: &str,
+) -> Result<BTreeMap<String, Vec<String>>, String> {
+    if !groups.contains_key(group) {
+        return Err(format!("team_dispatcher: unknown group '{group}'"));
+    }
+    if groups.values().any(|m| m.iter().any(|x| x == id)) {
+        return Err(format!("team_dispatcher: '{id}' is already in a group"));
+    }
+    let mut out = groups.clone();
+    out.entry(group.to_string())
+        .or_default()
+        .push(id.to_string());
+    Ok(out)
+}
+
+/// The groups with `id` removed from every one.
+pub fn groups_without(
+    groups: &BTreeMap<String, Vec<String>>,
+    id: &str,
+) -> BTreeMap<String, Vec<String>> {
+    groups
+        .iter()
+        .map(|(g, m)| (g.clone(), m.iter().filter(|x| *x != id).cloned().collect()))
+        .collect()
+}
+
+/// The board's `team_groups` value with the members of each group replaced by
+/// `groups`; each group's driver is kept.
+fn team_groups_with(current: &Value, groups: &BTreeMap<String, Vec<String>>) -> Value {
+    let mut out = current.as_object().cloned().unwrap_or_default();
+    for (g, members) in groups {
+        let mut entry = out.get(g).cloned().unwrap_or_else(|| json!({"driver": ""}));
+        entry["members"] = json!(members);
+        out.insert(g.clone(), entry);
+    }
+    Value::Object(out)
 }
 
 /// What a node is: the team itself, one of its groups, or otherwise a worker.
@@ -458,6 +525,182 @@ fn groups_of(meta: &serde_json::Map<String, Value>) -> BTreeMap<String, Vec<Stri
     out
 }
 
+/// The reply to a `control` that was relayed to a node: its refusal or no reply
+/// is `sent: false` with the error; otherwise the node's reply rides along.
+fn relayed(reply: Value, node: &str, action: &str, peer: Value) -> Value {
+    let peer_error = if peer.is_null() {
+        Some(json!(format!("team_dispatcher: no reply from '{node}'")))
+    } else {
+        peer.get("error").filter(|e| !e.is_null()).cloned()
+    };
+    match peer_error {
+        Some(error) => json!({"sent": false, "node": node, "action": action, "error": error}),
+        None => {
+            let mut out = reply;
+            out["reply"] = peer;
+            out
+        }
+    }
+}
+
+fn refused(node: &str, action: &str, error: String) -> Value {
+    json!({"sent": false, "node": node, "action": action, "error": error})
+}
+
+/// The error text of a kernel reply, if it is a refusal.
+fn error_of(reply: &Value) -> Option<String> {
+    if reply.is_null() {
+        return Some("no reply".into());
+    }
+    reply.get("error").filter(|e| !e.is_null()).map(|e| {
+        e.as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| e.to_string())
+    })
+}
+
+/// Write the new membership to the dispatcher's own record and to the board's
+/// `team_groups`, through the kernel's `update_agent`. The board is skipped when
+/// it is not there.
+/// Where the groups are kept: the dispatcher's own record (`me`), the board's
+/// `team_groups` (when the board is live), and the groups as they stand.
+struct Membership<'a> {
+    me: &'a str,
+    board: &'a str,
+    board_groups: Option<&'a Value>,
+    groups: &'a BTreeMap<String, Vec<String>>,
+}
+
+async fn save_groups(
+    peers: &dyn Peers,
+    at: &Membership<'_>,
+    groups: &BTreeMap<String, Vec<String>>,
+) -> Result<(), String> {
+    let (me, board, board_groups) = (at.me, at.board, at.board_groups);
+    let root = fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
+    let r = peers
+        .ask(
+            root,
+            json!({"type": "update_agent", "id": me, "groups": groups}),
+        )
+        .await;
+    if let Some(e) = error_of(&r) {
+        return Err(format!("could not update the groups: {e}"));
+    }
+    let Some(current) = board_groups else {
+        return Ok(());
+    };
+    let tg = team_groups_with(current, groups);
+    let r = peers
+        .ask(
+            root,
+            json!({"type": "update_agent", "id": board, "team_groups": tg}),
+        )
+        .await;
+    match error_of(&r) {
+        Some(e) => Err(format!("could not update the board's groups: {e}")),
+        None => Ok(()),
+    }
+}
+
+/// `add_worker {node: group, id, template}`: create the worker and its memory
+/// from the template of `team.yaml` (in the working directory) and list it.
+async fn add_worker(
+    peers: &dyn Peers,
+    at: &Membership<'_>,
+    group: &str,
+    payload: &Value,
+    reply: Value,
+) -> Value {
+    let action = "add_worker";
+    let id = payload["id"].as_str().unwrap_or("").trim().to_string();
+    let template = payload["template"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if id.is_empty() || template.is_empty() {
+        return refused(
+            group,
+            action,
+            "team_dispatcher: add_worker needs id and template".into(),
+        );
+    }
+    let new_groups = match groups_with(at.groups, group, &id) {
+        Ok(g) => g,
+        Err(e) => return refused(group, action, e),
+    };
+    let cfg = match crate::config::load(std::path::Path::new(crate::config::FILE_NAME)) {
+        Ok(c) => c,
+        Err(e) => return refused(group, action, format!("team_dispatcher: team.yaml: {e}")),
+    };
+    let Some(tpl) = cfg.templates.get(&template) else {
+        let names: Vec<&str> = cfg.templates.keys().map(String::as_str).collect();
+        return refused(
+            group,
+            action,
+            format!(
+                "team_dispatcher: no template '{template}' in team.yaml (have: {})",
+                names.join(", ")
+            ),
+        );
+    };
+    let root = fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
+    let mem = crate::config::memory_record(&id);
+    if let Some(e) = error_of(&peers.ask(root, mem).await) {
+        return refused(
+            group,
+            action,
+            format!("could not create the memory of '{id}': {e}"),
+        );
+    }
+    let rec = crate::config::agent_record(tpl, &id);
+    if let Some(e) = error_of(&peers.ask(root, rec).await) {
+        let _ = peers
+            .ask(
+                root,
+                json!({"type": "delete_agent", "id": crate::config::memory_id(&id)}),
+            )
+            .await;
+        return refused(group, action, format!("could not create '{id}': {e}"));
+    }
+    if let Err(e) = save_groups(peers, at, &new_groups).await {
+        return refused(group, action, e);
+    }
+    let mut out = reply;
+    out["id"] = json!(id);
+    out
+}
+
+/// `remove_worker {node: worker}`: delete the worker and its memory, drop it from its group.
+async fn remove_worker(
+    peers: &dyn Peers,
+    at: &Membership<'_>,
+    worker: &str,
+    reply: Value,
+) -> Value {
+    let action = "remove_worker";
+    let root = fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
+    let r = peers
+        .ask(root, json!({"type": "delete_agent", "id": worker}))
+        .await;
+    if let Some(e) = error_of(&r) {
+        return refused(worker, action, format!("could not remove '{worker}': {e}"));
+    }
+    // The memory may be absent (a worker made another way): that is not an error.
+    let _ = peers
+        .ask(
+            root,
+            json!({"type": "delete_agent", "id": crate::config::memory_id(worker)}),
+        )
+        .await;
+    let left = groups_without(at.groups, worker);
+    if let Err(e) = save_groups(peers, at, &left).await {
+        return refused(worker, action, e);
+    }
+    reply
+}
+
 /// The dispatcher bundle: `sidebar`, `tree`, `open`, `control`.
 #[derive(Default)]
 pub struct DispatcherBundle;
@@ -473,7 +716,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
             "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts",
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
             "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher)",
-            "control": "control {node, action: start|pause|stop, confirm?} → {sent, error?} (or a question for stop without confirm); the node's refusal or no reply is sent: false with its error",
+            "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker and its memory from the team.yaml template in the working directory and lists it in the group (its chat grant follows at the next start; team.yaml is not rewritten). remove_worker {node: worker, confirm} deletes the worker and its memory and drops it from its group",
         })
     }
 
@@ -507,6 +750,18 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
             .and_then(Value::as_u64)
             .unwrap_or(30);
         let groups = groups_of(&meta);
+        // The board's own `team_groups`, kept in step when a worker is added or removed.
+        let board_groups = kernel
+            .agents
+            .get(&fantastic_kernel::AgentId::from(board.as_str()))
+            .map(|e| {
+                e.meta
+                    .read()
+                    .expect("meta")
+                    .get("team_groups")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            });
         let peers = KernelPeers(kernel.clone());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -526,7 +781,14 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                     .map(|r| (r.id.clone(), subagents_of(&agents, &r.id)))
                     .collect();
                 let reply = peers.ask(&board, json!({"type": "rows"})).await;
-                let load = reply.get("load").cloned().unwrap_or(Value::Null);
+                let mut load = reply.get("load").cloned().unwrap_or(Value::Null);
+                // The cadencer's load holds the board's counts plus the cost per hour.
+                let cad = peers
+                    .ask(crate::tree::CADENCER_ID, json!({"type": "status"}))
+                    .await;
+                if cad.get("error").is_none() && cad["load"].is_object() {
+                    load = cad["load"].clone();
+                }
                 sidebar(&team, &groups, &rows, &subs, &expanded_of(payload), &load)
             }
             "open" => {
@@ -544,21 +806,45 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                 if reply["sent"] != json!(true) {
                     return Ok(Some(reply));
                 }
-                // The node's own answer decides: a refusal or no reply is not "sent".
-                let peer = peers.ask(&node, json!({"type": action})).await;
-                let peer_error = if peer.is_null() {
-                    Some(json!(format!("team_dispatcher: no reply from '{node}'")))
-                } else {
-                    peer.get("error").filter(|e| !e.is_null()).cloned()
-                };
-                match peer_error {
-                    Some(error) => {
-                        json!({"sent": false, "node": node, "action": action, "error": error})
+                match action {
+                    "hand_task" => {
+                        let task = payload["task"].as_str().unwrap_or("").trim().to_string();
+                        if task.is_empty() {
+                            return Ok(Some(json!({
+                                "error": "team_dispatcher: hand_task needs a task",
+                                "sent": false,
+                            })));
+                        }
+                        let peer = peers
+                            .ask(
+                                &node,
+                                json!({"type": "send", "text": format!("task {task}")}),
+                            )
+                            .await;
+                        relayed(reply, &node, action, peer)
                     }
-                    None => {
-                        let mut out = reply;
-                        out["reply"] = peer;
-                        out
+                    "add_worker" => {
+                        let at = Membership {
+                            me: agent_id.as_str(),
+                            board: &board,
+                            board_groups: board_groups.as_ref(),
+                            groups: &groups,
+                        };
+                        add_worker(&peers, &at, &node, payload, reply).await
+                    }
+                    "remove_worker" => {
+                        let at = Membership {
+                            me: agent_id.as_str(),
+                            board: &board,
+                            board_groups: board_groups.as_ref(),
+                            groups: &groups,
+                        };
+                        remove_worker(&peers, &at, &node, reply).await
+                    }
+                    _ => {
+                        // The node's own answer decides: a refusal or no reply is not "sent".
+                        let peer = peers.ask(&node, json!({"type": action})).await;
+                        relayed(reply, &node, action, peer)
                     }
                 }
             }
@@ -596,7 +882,51 @@ mod tests {
         let r = row_of("w1", &board(), 600, 30);
         assert_eq!(r.task.as_deref(), Some("r#1"));
         assert_eq!(r.cost, 1.5);
-        assert!(r.minutes.is_none() || r.minutes.is_some());
+    }
+
+    #[test]
+    fn row_shows_minutes_on_the_task() {
+        let b = json!({
+            "tasks": {"in_work": [{"id": "r#1", "claimers": ["w1"], "updated": 600}], "done": [], "pending": [], "failed": []},
+            "agents": {}
+        });
+        let r = row_of("w1", &b, 1200, 30);
+        assert_eq!(r.minutes, Some(10));
+        // A worker with no task has no minutes.
+        assert_eq!(row_of("w2", &b, 1200, 30).minutes, None);
+    }
+
+    #[test]
+    fn row_carries_the_pr_number_of_its_done_task() {
+        let b = json!({
+            "tasks": {"in_work": [], "pending": [], "failed": [], "done": [
+                {"id": "r#1", "claimers": ["w1"], "updated": 100, "pr": "https://github.com/o/r/pull/7"},
+                {"id": "r#2", "claimers": ["w1"], "updated": 300, "pr": "https://github.com/o/r/pull/9"},
+                {"id": "r#3", "claimers": ["w1"], "updated": 900},
+                {"id": "r#4", "claimers": ["w3"], "updated": 400, "pr": "https://github.com/o/r/pull/11"}
+            ]},
+            "agents": {}
+        });
+        // The most recently updated done task that has a PR.
+        assert_eq!(row_of("w1", &b, 1000, 30).pr, Some(9));
+        assert_eq!(row_of("w2", &b, 1000, 30).pr, None);
+        // A task in hand with a PR shows that PR.
+        let held = json!({
+            "tasks": {"in_work": [{"id": "r#5", "claimers": ["w2"], "updated": 10, "pr": "o/r#12"}], "done": [], "pending": [], "failed": []},
+            "agents": {}
+        });
+        assert_eq!(row_of("w2", &held, 100, 30).pr, Some(12));
+    }
+
+    #[test]
+    fn pr_number_reads_url_and_hash_forms() {
+        assert_eq!(pr_number("https://github.com/o/r/pull/9"), Some(9));
+        assert_eq!(pr_number("https://github.com/o/r/pull/9/"), Some(9));
+        assert_eq!(pr_number("o/r#42"), Some(42));
+        assert_eq!(pr_number("#7"), Some(7));
+        assert_eq!(pr_number("https://github.com/o/r/pull/"), None);
+        assert_eq!(pr_number("not a pr"), None);
+        assert_eq!(pr_number(""), None);
     }
 
     #[test]
@@ -1222,6 +1552,447 @@ mod tests {
     fn dispatcher_page_ask_node_is_generic_and_ask_is_unchanged() {
         assert!(js_fn("askNode").contains("fantastic.send(id, payload)"));
         assert!(js_fn("ask").contains("fantastic.send('dispatcher', payload)"));
+    }
+
+    fn load_full() -> Value {
+        json!({
+            "workers": {"busy": 1, "idle": 2, "stalled": 2},
+            "tasks": {"held": 1, "in_review": 3, "done": 2, "blocked": 0, "queued": 3},
+            "done_last_hour": 2,
+            "digest_bytes_per_hour": 480,
+            "driver_tokens_per_hour": 1200,
+        })
+    }
+
+    fn sidebar_of(rows: &[Row], load: &Value) -> Value {
+        let mut groups = BTreeMap::new();
+        groups.insert("A".to_string(), vec!["w1".to_string(), "w2".to_string()]);
+        sidebar(
+            "team",
+            &groups,
+            rows,
+            &subs_of(rows),
+            &BTreeSet::new(),
+            load,
+        )
+    }
+
+    #[test]
+    fn sidebar_load_carries_digest_bytes_and_driver_tokens_per_hour() {
+        let sb = sidebar_of(&rows_w(), &load_full());
+        assert_eq!(sb["load"]["digest_bytes_per_hour"], 480);
+        assert_eq!(sb["load"]["driver_tokens_per_hour"], 1200);
+        let mut bare = load_full();
+        bare.as_object_mut()
+            .unwrap()
+            .remove("digest_bytes_per_hour");
+        bare.as_object_mut()
+            .unwrap()
+            .remove("driver_tokens_per_hour");
+        let sb = sidebar_of(&rows_w(), &bare);
+        assert!(sb["load"].get("digest_bytes_per_hour").is_none(), "{sb}");
+        assert!(sb["load"].get("driver_tokens_per_hour").is_none(), "{sb}");
+    }
+
+    #[test]
+    fn html_footer_draws_cost_per_hour() {
+        assert!(HTML.contains("digest_bytes_per_hour"));
+        assert!(HTML.contains("driver_tokens_per_hour"));
+        assert!(HTML.contains("tok/h"));
+        assert!(HTML.contains("B/h"));
+    }
+
+    #[test]
+    fn sidebar_worker_item_has_minutes_and_pr() {
+        let mut rows = rows_w();
+        rows[0].minutes = Some(2);
+        rows[0].pr = Some(9);
+        let sb = sidebar_of(&rows, &Value::Null);
+        let items = group_items(&sb, "A");
+        let w1 = items
+            .iter()
+            .find(|i| i["kind"] == "worker" && i["id"] == "w1")
+            .unwrap();
+        assert_eq!(w1["minutes"], 2);
+        assert_eq!(w1["pr"], 9);
+        let w2 = items
+            .iter()
+            .find(|i| i["kind"] == "worker" && i["id"] == "w2")
+            .unwrap();
+        assert!(w2["minutes"].is_null() && w2["pr"].is_null(), "{w2}");
+    }
+
+    #[test]
+    fn html_worker_row_draws_minutes_and_pr() {
+        let w = js_fn("workerRow");
+        assert!(w.contains("it.minutes"), "{w}");
+        assert!(w.contains("'m'"), "{w}");
+        assert!(w.contains("it.pr"), "{w}");
+        assert!(w.contains("'minutes'") && w.contains("'pr'"), "{w}");
+        assert!(!w.contains("innerHTML"));
+    }
+
+    #[test]
+    fn sidebar_overview_counts_prs_waiting_and_stalled() {
+        let sb = sidebar_of(&rows_w(), &load_full());
+        assert_eq!(sb["waiting"], json!({"prs": 3, "stalled": 2}));
+    }
+
+    #[test]
+    fn sidebar_without_load_has_no_waiting() {
+        let sb = sidebar_of(&rows_w(), &Value::Null);
+        assert!(sb.get("waiting").is_none(), "{sb}");
+    }
+
+    #[test]
+    fn sidebar_marks_a_stalled_worker() {
+        let mut rows = rows_w();
+        rows[0].state = "stalled 45 min".into();
+        let sb = sidebar_of(&rows, &Value::Null);
+        let items = group_items(&sb, "A");
+        let get = |id: &str| {
+            items
+                .iter()
+                .find(|i| i["kind"] == "worker" && i["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(get("w1")["stalled"], json!(true));
+        assert_eq!(get("w2")["stalled"], json!(false));
+    }
+
+    #[test]
+    fn html_draws_waiting_for_you() {
+        assert!(HTML.contains("reply.waiting"));
+        assert!(HTML.contains("el('div', 'team-waiting'"));
+        assert!(HTML.contains("waiting for you: "));
+        assert!(HTML.contains("it.stalled"));
+        assert!(js_fn("renderSidebar").contains("reply.waiting"));
+        // The waiting line comes before the footer.
+        let r = js_fn("renderSidebar");
+        assert!(r.find("team-waiting").unwrap() < r.find("'team-load'").unwrap());
+    }
+
+    #[test]
+    fn control_accepts_hand_task_add_and_remove_worker_and_refuses_others() {
+        for action in ["hand_task", "add_worker"] {
+            assert_eq!(
+                control_reply("w1", action, false)["sent"],
+                json!(true),
+                "{action}"
+            );
+        }
+        let r = control_reply("w1", "remove_worker", true);
+        assert_eq!(r["sent"], json!(true), "{r}");
+        assert_eq!(r["action"], "remove_worker");
+        for action in ["delete_agent", "reflect"] {
+            let r = control_reply("w1", action, true);
+            assert_eq!(r["sent"], json!(false), "{r}");
+            assert!(r["error"].as_str().is_some(), "{r}");
+        }
+    }
+
+    #[test]
+    fn remove_worker_without_confirm_asks_first() {
+        let r = control_reply("w1", "remove_worker", false);
+        assert_eq!(r["sent"], json!(false));
+        assert!(r["question"].as_str().unwrap().contains("w1"), "{r}");
+    }
+
+    #[test]
+    fn groups_with_adds_a_member_and_refuses_unknown_group_or_duplicate() {
+        let g = groups_a();
+        let out = groups_with(&g, "A", "w9").unwrap();
+        assert_eq!(out["A"], vec!["w1".to_string(), "w9".to_string()]);
+        assert_eq!(g["A"], vec!["w1".to_string()], "the input is not changed");
+        assert!(groups_with(&g, "nope", "w9")
+            .unwrap_err()
+            .contains("unknown group"));
+        assert!(groups_with(&g, "A", "w1").unwrap_err().contains("already"));
+    }
+
+    #[test]
+    fn groups_without_removes_a_member_everywhere() {
+        let mut g = groups_a();
+        g.insert("B".to_string(), vec!["w1".to_string(), "w2".to_string()]);
+        let out = groups_without(&g, "w1");
+        assert!(out["A"].is_empty());
+        assert_eq!(out["B"], vec!["w2".to_string()]);
+    }
+
+    #[test]
+    fn team_groups_with_keeps_the_driver_and_replaces_members() {
+        let cur = json!({"A": {"driver": "lead", "members": ["w1"]}});
+        let mut g = BTreeMap::new();
+        g.insert("A".to_string(), vec!["w1".to_string(), "w9".to_string()]);
+        let out = team_groups_with(&cur, &g);
+        assert_eq!(out["A"], json!({"driver": "lead", "members": ["w1", "w9"]}));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hand_task_needs_a_task_text() {
+        use fantastic_kernel::bootstrap;
+        let dir = tempfile::TempDir::new().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kernel = kernel_with_probe(dir.path(), seen.clone()).await;
+        for payload in [
+            json!({"type": "control", "node": "probe", "action": "hand_task"}),
+            json!({"type": "control", "node": "probe", "action": "hand_task", "task": "  "}),
+        ] {
+            let out = ask_kernel(&kernel, "dispatcher", payload).await;
+            assert_eq!(out["sent"], json!(false), "{out}");
+            assert!(
+                out["error"].as_str().unwrap().contains("needs a task"),
+                "{out}"
+            );
+        }
+        assert!(seen.lock().unwrap().is_empty());
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn control_via_kernel_hand_task_reaches_the_worker() {
+        use fantastic_kernel::bootstrap;
+        let dir = tempfile::TempDir::new().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kernel = kernel_with_probe(dir.path(), seen.clone()).await;
+        let out = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "probe", "action": "hand_task", "task": "fix r#5"}),
+        )
+        .await;
+        assert_eq!(out["sent"], json!(true), "{out}");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![json!({"type": "send", "text": "task fix r#5"})]
+        );
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// A kernel with a dispatcher as the plan makes it (the agent verbs on the
+    /// root), a board record holding `team_groups`, and one group `g` with `w1`.
+    async fn kernel_with_groups(dir: &std::path::Path) -> Arc<fantastic_kernel::Kernel> {
+        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
+        use fantastic_kernel::Item;
+        let kernel = crate::start(dir).await.unwrap();
+        let can_call = json!({ (DEFAULT_ROOT_ID): crate::tree::DISPATCHER_KERNEL_VERBS });
+        for item in [
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
+                "handler_module": HANDLER_MODULE, "can_call": can_call,
+                "groups": {"g": ["w1"]}}),
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
+                "handler_module": "ram_store.tools",
+                "team_groups": {"g": {"driver": "lead", "members": ["w1"]}}}),
+        ] {
+            let o = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
+            assert!(o[0].result.get("error").is_none(), "{:?}", o[0].result);
+        }
+        crate::tree::grant_agent_verbs(&kernel).unwrap();
+        kernel
+    }
+
+    fn meta_of(kernel: &Arc<fantastic_kernel::Kernel>, id: &str) -> serde_json::Map<String, Value> {
+        kernel
+            .agents
+            .get(&fantastic_kernel::AgentId::from(id))
+            .map(|a| a.meta.read().unwrap().clone())
+            .unwrap_or_default()
+    }
+
+    const MINI_TEAM: &str = "templates:\n  t:\n    handler_module: ram_store.tools\n    model: m\n    endpoint: http://e\nfirst_agent:\n  template: t\nqueue:\n  id: q\n";
+
+    /// Serialises the tests that change the process's working directory.
+    static CWD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn control_via_kernel_add_worker_creates_the_agent_and_lists_it_in_the_tree() {
+        use fantastic_kernel::bootstrap;
+        let _cwd = CWD.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("team.yaml"), MINI_TEAM).unwrap();
+        let kernel = kernel_with_groups(dir.path()).await;
+        let before = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let out = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "g", "action": "add_worker", "id": "w2", "template": "t"}),
+        )
+        .await;
+        // An unknown template and a duplicate id are refused, nothing is created.
+        let bad = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "g", "action": "add_worker", "id": "w3", "template": "nope"}),
+        )
+        .await;
+        let dup = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "g", "action": "add_worker", "id": "w1", "template": "t"}),
+        )
+        .await;
+        std::env::set_current_dir(before).unwrap();
+        assert_eq!(out["sent"], json!(true), "{out}");
+        assert_eq!(bad["sent"], json!(false), "{bad}");
+        assert!(
+            bad["error"].as_str().unwrap().contains("no template"),
+            "{bad}"
+        );
+        assert_eq!(dup["sent"], json!(false), "{dup}");
+        for id in ["w2", "w2_memory"] {
+            assert!(
+                kernel
+                    .agents
+                    .contains_key(&fantastic_kernel::AgentId::from(id)),
+                "{id}"
+            );
+        }
+        assert!(!kernel
+            .agents
+            .contains_key(&fantastic_kernel::AgentId::from("w3")));
+        assert_eq!(
+            meta_of(&kernel, "dispatcher")["groups"],
+            json!({"g": ["w1", "w2"]})
+        );
+        assert_eq!(
+            meta_of(&kernel, "board")["team_groups"],
+            json!({"g": {"driver": "lead", "members": ["w1", "w2"]}})
+        );
+        let tree = ask_kernel(&kernel, "dispatcher", json!({"type": "tree"})).await;
+        let ids: Vec<&str> = tree["children"][0]["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["row"]["id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"w2"), "{tree}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn control_via_kernel_remove_worker_deletes_it_and_drops_it_from_the_groups() {
+        use fantastic_kernel::bootstrap;
+        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
+        use fantastic_kernel::Item;
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_groups(dir.path()).await;
+        for item in [
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "w1_memory", "handler_module": "ram_store.tools"}),
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "w1", "handler_module": "ram_store.tools"}),
+        ] {
+            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
+        }
+        let asked = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "w1", "action": "remove_worker"}),
+        )
+        .await;
+        assert!(asked["question"].as_str().is_some(), "{asked}");
+        assert!(kernel
+            .agents
+            .contains_key(&fantastic_kernel::AgentId::from("w1")));
+        let out = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "w1", "action": "remove_worker", "confirm": true}),
+        )
+        .await;
+        assert_eq!(out["sent"], json!(true), "{out}");
+        for id in ["w1", "w1_memory"] {
+            assert!(
+                !kernel
+                    .agents
+                    .contains_key(&fantastic_kernel::AgentId::from(id)),
+                "{id}"
+            );
+        }
+        assert_eq!(meta_of(&kernel, "dispatcher")["groups"], json!({"g": []}));
+        assert_eq!(
+            meta_of(&kernel, "board")["team_groups"],
+            json!({"g": {"driver": "lead", "members": []}})
+        );
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn html_has_hand_task_add_and_remove_controls() {
+        let w = js_fn("workerRow");
+        assert!(
+            w.contains("hand_task") && w.contains("remove_worker"),
+            "{w}"
+        );
+        assert!(HTML.contains("window.prompt("));
+        assert!(js_fn("handTask").contains("'hand_task'"));
+        let form = js_fn("addWorkerForm");
+        assert!(form.contains("'add_worker'"), "{form}");
+        assert!(form.contains("template"), "{form}");
+        assert!(js_fn("renderSidebar").contains("addWorkerForm(g.id)"));
+        // The confirm for a remove goes through the same question as stop.
+        assert!(js_fn("control").contains("reply.question"));
+        assert!(!HTML.contains("innerHTML"));
+    }
+
+    /// A sidebar answers with the cadencer's load (cost per hour) when it replies.
+    struct LoadBundle;
+
+    #[async_trait::async_trait]
+    impl fantastic_kernel::bundle::Bundle for LoadBundle {
+        fn name(&self) -> &str {
+            "load_test.tools"
+        }
+
+        async fn handle(
+            &self,
+            _agent_id: &fantastic_kernel::AgentId,
+            payload: &Value,
+            _kernel: &Arc<fantastic_kernel::Kernel>,
+        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
+        {
+            Ok(match payload["type"].as_str() {
+                Some("status") => Some(json!({"load": {
+                    "tasks": {"in_review": 2}, "workers": {"stalled": 1},
+                    "digest_bytes_per_hour": 99, "driver_tokens_per_hour": 7}})),
+                Some("rows") => Some(json!({"rows": [], "load": {"tasks": {"in_review": 2}}})),
+                _ => None,
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sidebar_via_kernel_takes_the_cost_per_hour_from_the_cadencer() {
+        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+        use fantastic_kernel::Item;
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut reg = crate::registry();
+        reg.register("load_test.tools", LoadBundle);
+        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir.path())).unwrap();
+        fantastic_kernel::lock::acquire(dir.path()).unwrap();
+        booted.write_seed().unwrap();
+        let kernel = booted.kernel.clone();
+        crate::boot_kernel(&kernel).await.unwrap();
+        for item in [
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
+                "handler_module": HANDLER_MODULE, "can_call": {"board": "*", "cadencer": "*"}}),
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
+                "handler_module": "load_test.tools", "callable_by": {"dispatcher": "*"}}),
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "cadencer",
+                "handler_module": "load_test.tools", "callable_by": {"dispatcher": "*"}}),
+        ] {
+            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
+        }
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert_eq!(sb["load"]["digest_bytes_per_hour"], 99, "{sb}");
+        assert_eq!(sb["load"]["driver_tokens_per_hour"], 7, "{sb}");
+        assert_eq!(sb["waiting"], json!({"prs": 2, "stalled": 1}), "{sb}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
     }
 
     // ---- the page's chat surface, run in node against a stub DOM ----

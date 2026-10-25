@@ -27,6 +27,11 @@
   .state-done { color: #15803d; }
   .error { color: #b91c1c; }
   .task { color: #6b7280; }
+  .minutes, .pr { color: #6b7280; font-size: 0.9em; }
+  .team-waiting { font-size: 13px; font-weight: 600; margin: 12px 0 0; color: #374151; }
+  .add-worker { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 4px; }
+  .add-worker input { font: inherit; font-size: 0.9em; min-width: 0; width: 7em; padding: 2px 6px; }
+  .add-worker button { font: inherit; font-size: 0.9em; min-height: 28px; padding: 2px 8px; }
   .controls { display: inline-flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
   .controls button { font: inherit; font-size: 0.9em; min-height: 32px; min-width: 52px; padding: 4px 10px; }
   .cell { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
@@ -80,6 +85,11 @@
 // under its title; a group with a driver shows its AI's summary instead.
 // `control {node, action, confirm?}` starts, pauses or stops a worker. A stop
 // asks first (the reply's question); a refusal from the team is shown as an error.
+// Also `hand_task {node, task}`, `add_worker {node: group, id, template}` and
+// `remove_worker {node, confirm}` (asks first, like stop). A worker item carries
+// `minutes` (on the task), `pr` (its number) and `stalled`; the reply carries
+// `waiting` {prs, stalled}, drawn above the footer, and the team `load` may carry
+// `digest_bytes_per_hour` and `driver_tokens_per_hour`.
 // The full-screen chat streams the target agent itself, with the same verbs and
 // events as fantastic's chat cell: `history` (paged, the newest rows drawn),
 // `send {text, client_id}`, `stop`, and `watch` for the parts of this page's
@@ -156,15 +166,20 @@ function workerRow(it) {
   const row = el('div', 'item worker');
   row.dataset.node = it.id;
   row.dataset.kind = 'worker';
+  if (it.stalled) row.classList.add('state-stalled');
   row.appendChild(el('span', 'dot', it.busy ? '●' : '○'));
   row.appendChild(el('span', 'name', it.id));
   row.appendChild(el('span', stateClass(it.state), it.state));
+  if (typeof it.minutes === 'number') row.appendChild(el('span', 'minutes', it.minutes + 'm'));
+  if (typeof it.pr === 'number') row.appendChild(el('span', 'pr', '#' + it.pr));
   if (it.task) row.appendChild(el('span', 'task', it.task));
   if (typeof it.minutes === 'number') row.appendChild(el('span', 'minutes', it.minutes + 'm'));
   if (typeof it.pr === 'number') row.appendChild(el('span', 'pr', 'PR #' + it.pr));
   const controls = el('span', 'controls');
-  ['start', 'pause', 'stop'].forEach(function (action) {
-    const b = el('button', '', action.charAt(0).toUpperCase() + action.slice(1));
+  [['start', 'Start'], ['pause', 'Pause'], ['stop', 'Stop'],
+   ['hand_task', 'Hand task'], ['remove_worker', 'Remove']].forEach(function (a) {
+    const action = a[0];
+    const b = el('button', '', a[1]);
     b.type = 'button';
     b.dataset.control = action;
     b.dataset.node = it.id;
@@ -172,6 +187,33 @@ function workerRow(it) {
   });
   row.appendChild(controls);
   return row;
+}
+
+// The form at the top of a group: the new worker's id and the team.yaml
+// template it is made from.
+function addWorkerForm(group) {
+  const form = el('form', 'add-worker');
+  const id = el('input', '');
+  id.type = 'text';
+  id.placeholder = 'worker id';
+  id.setAttribute('aria-label', 'New worker id');
+  const tpl = el('input', '');
+  tpl.type = 'text';
+  tpl.placeholder = 'template';
+  tpl.setAttribute('aria-label', 'Template');
+  const go = el('button', '', 'Add worker');
+  go.type = 'submit';
+  form.appendChild(id);
+  form.appendChild(tpl);
+  form.appendChild(go);
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    const wid = id.value.trim();
+    const t = tpl.value.trim();
+    if (!wid || !t) { showError('add a worker: give its id and a template'); return; }
+    control(group, 'add_worker', false, { id: wid, template: t });
+  });
+  return form;
 }
 
 function expanderRow(it) {
@@ -227,6 +269,7 @@ function renderSidebar(reply) {
   });
   groups.forEach(function (g) {
     nav.appendChild(el('div', 'group-title', 'Group: ' + g.id));
+    nav.appendChild(addWorkerForm(g.id));
     if (g.load) {
       nav.appendChild(el('div', 'group-load',
         'busy ' + g.load.busy + ' · idle ' + g.load.idle + ' · stalled ' + g.load.stalled));
@@ -234,14 +277,25 @@ function renderSidebar(reply) {
     (g.items || []).forEach(function (it) { nav.appendChild(itemRow(it)); });
   });
   loose.forEach(function (it) { nav.appendChild(itemRow(it)); });
+  if (reply && reply.waiting) {
+    nav.appendChild(el('div', 'team-waiting',
+      'waiting for you: ' + num(reply.waiting.prs) + ' PRs · ' + num(reply.waiting.stalled) + ' stalled'));
+  }
   if (reply && reply.load) {
+    let cost = '';
+    if (typeof reply.load.digest_bytes_per_hour === 'number') {
+      cost += ' · digests ' + num(reply.load.digest_bytes_per_hour) + ' B/h';
+    }
+    if (typeof reply.load.driver_tokens_per_hour === 'number') {
+      cost += ' · driver ' + num(reply.load.driver_tokens_per_hour) + ' tok/h';
+    }
     nav.appendChild(el('div', 'team-load',
       'tasks: held ' + num(reply.load.tasks && reply.load.tasks.held) +
       ' · in review ' + num(reply.load.tasks && reply.load.tasks.in_review) +
       ' · done ' + num(reply.load.tasks && reply.load.tasks.done) +
       ' · blocked ' + num(reply.load.tasks && reply.load.tasks.blocked) +
       ' · queued ' + num(reply.load.tasks && reply.load.tasks.queued) +
-      ' · done last hour ' + num(reply.load.done_last_hour)));
+      ' · done last hour ' + num(reply.load.done_last_hour) + cost));
   }
   if (adopted) loadSidebar();
 }
@@ -256,23 +310,31 @@ async function loadSidebar() {
   }
 }
 
-// Start, pause or stop one worker. A stop asks first: the team's question is
-// shown with window.confirm, and only a yes sends it again with confirm. A
-// refusal is shown as an error; the sidebar reloads either way.
-async function control(node, action, confirm) {
+// Start, pause, stop, hand a task to, add or remove a worker. A stop and a
+// remove ask first: the team's question is shown with window.confirm, and only a
+// yes sends it again with confirm. `extra` carries the action's own fields (task,
+// id, template). A refusal is shown as an error; the sidebar reloads either way.
+async function control(node, action, confirm, extra) {
   let reply;
   try {
-    reply = await ask({ type: 'control', node: node, action: action, confirm: !!confirm });
+    reply = await ask(Object.assign({}, extra || {}, { type: 'control', node: node, action: action, confirm: !!confirm }));
   } catch (err) {
     showError(String(err && err.message ? err.message : err));
     return;
   }
   if (reply && reply.question) {
     if (!window.confirm(reply.question)) return;
-    return control(node, action, true);
+    return control(node, action, true, extra);
   }
   await loadSidebar();
   if (reply && reply.error) showError(reply.error);
+}
+
+// Hand a worker a task: the text is asked for here, and the team sends it on.
+function handTask(node) {
+  const task = window.prompt('Task for ' + node + ':');
+  if (task == null || !task.trim()) return;
+  control(node, 'hand_task', false, { task: task.trim() });
 }
 
 function toggleWorker(worker) {
@@ -817,7 +879,11 @@ async function back() {
 
 document.getElementById('sidebar').addEventListener('click', function (e) {
   const ctl = e.target && e.target.closest ? e.target.closest('[data-control]') : null;
-  if (ctl) { control(ctl.dataset.node, ctl.dataset.control, false); return; }
+  if (ctl) {
+    if (ctl.dataset.control === 'hand_task') handTask(ctl.dataset.node);
+    else control(ctl.dataset.node, ctl.dataset.control, false);
+    return;
+  }
   const exp = e.target && e.target.closest ? e.target.closest('[data-expander]') : null;
   if (exp) { toggleWorker(exp.dataset.expander); return; }
   const node = e.target && e.target.closest ? e.target.closest('[data-node]') : null;
