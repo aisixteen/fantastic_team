@@ -3,7 +3,7 @@ a registry whose certificate the binary does not trust gets a connection and not
 
 import os
 
-from helpers import packs as P
+from helpers import packs_pub as P
 from helpers import run_flow
 from helpers.registry import FakeRegistry
 from helpers.verdict import Verdict

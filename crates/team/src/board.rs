@@ -692,13 +692,44 @@ fn cfg_of(
 
 /// Read the board from the store. A missing or unreadable file is an empty board.
 pub async fn load(peers: &dyn Peers, store: &str) -> Board {
-    let r = peers
-        .ask(store, json!({"type": "read", "path": STATE_PATH}))
-        .await;
-    r["content"]
-        .as_str()
-        .and_then(|c| serde_json::from_str(c).ok())
+    read_text(peers, store, STATE_PATH)
+        .await
+        .and_then(|c| serde_json::from_str(&c).ok())
         .unwrap_or_default()
+}
+
+/// Read a whole text file from the store. A content-carrying store answers
+/// `content`; the file bridge answers pages of `lines` (200 a page, `eof` on
+/// the last), which are read in turn and joined with newlines. `None` when the
+/// store refuses or has no such file.
+async fn read_text(peers: &dyn Peers, store: &str, path: &str) -> Option<String> {
+    let mut text = String::new();
+    let mut offset = 0u64;
+    loop {
+        let r = peers
+            .ask(
+                store,
+                json!({"type": "read", "path": path, "offset": offset}),
+            )
+            .await;
+        if r.get("error").is_some() {
+            return None;
+        }
+        if let Some(c) = r["content"].as_str() {
+            return Some(c.to_string());
+        }
+        let lines = r["lines"].as_array()?;
+        for (i, l) in lines.iter().enumerate() {
+            if offset > 0 || i > 0 {
+                text.push('\n');
+            }
+            text.push_str(l["text"].as_str().unwrap_or(""));
+        }
+        offset += lines.len() as u64;
+        if r["eof"].as_bool().unwrap_or(true) || lines.is_empty() {
+            return Some(text);
+        }
+    }
 }
 
 /// Write the board to the store.
@@ -734,11 +765,8 @@ pub async fn pull(peers: &dyn Peers, cfg: &BoardCfg, board: &mut Board, now: u64
             let title = issue["title"].as_str().unwrap_or("");
             board.add_issue(repo, number, title, now);
             let (_, state) = task_file_names(repo, number);
-            let read = peers
-                .ask(&cfg.store, json!({"type": "read", "path": state}))
-                .await;
-            if let Some(content) = read["content"].as_str() {
-                board.apply_state(&format!("{repo}#{number}"), content, now);
+            if let Some(content) = read_text(peers, &cfg.store, &state).await {
+                board.apply_state(&format!("{repo}#{number}"), &content, now);
             }
         }
     }
@@ -966,6 +994,56 @@ mod tests {
         }
     }
 
+    /// A store that answers like the file bridge: pages of `lines`, two to a page, no `content`.
+    struct PagedStore {
+        files: Mutex<BTreeMap<String, String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Peers for PagedStore {
+        async fn ask(&self, _to: &str, p: Value) -> Value {
+            let path = p["path"].as_str().unwrap_or("").to_string();
+            match p["type"].as_str().unwrap_or("") {
+                "write" => {
+                    let bytes = p["bytes"].as_str().unwrap_or("").to_string();
+                    self.files.lock().unwrap().insert(path, bytes);
+                    json!({"size": 1})
+                }
+                "read" => {
+                    let files = self.files.lock().unwrap();
+                    let Some(text) = files.get(&path) else {
+                        return json!({"error": "not found"});
+                    };
+                    let all: Vec<&str> = text.split('\n').collect();
+                    let at = p["offset"].as_u64().unwrap_or(0) as usize;
+                    let page: Vec<Value> = all
+                        .iter()
+                        .skip(at)
+                        .take(2)
+                        .enumerate()
+                        .map(|(i, t)| json!({"n": at + i + 1, "text": t}))
+                        .collect();
+                    json!({"lines": page, "eof": at + 2 >= all.len()})
+                }
+                _ => json!({"error": "unknown"}),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_board_survives_a_save_and_load_through_a_paging_file_store() {
+        let store = PagedStore {
+            files: Mutex::new(BTreeMap::new()),
+        };
+        let mut board = Board::default();
+        board.add_issue("o/r", 1, "first", 5);
+        board.add_issue("o/r", 2, "second", 6);
+        save(&store, "store", &board).await;
+        let back = load(&store, "store").await;
+        assert_eq!(back.tasks.len(), 2, "the pretty JSON spans many pages");
+        assert_eq!(back.tasks["o/r#2"].title, "second");
+    }
+
     #[tokio::test]
     async fn pull_caches_all_open_issues_from_mock_github() {
         let fake = Fake {
@@ -983,6 +1061,79 @@ mod tests {
             board.tasks["aisixteen/fantastic_team#26"].status,
             Status::Pending
         );
+    }
+
+    /// A file bridge store: a `read` answers pages of `lines` (two a page, `eof` on
+    /// the last), never `content`; a `write` keeps the bytes.
+    struct Bridge {
+        files: Mutex<BTreeMap<String, String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Peers for Bridge {
+        async fn ask(&self, to: &str, p: Value) -> Value {
+            match (to, p["type"].as_str().unwrap_or("")) {
+                ("gh", "issues") => json!({"issues": [{"number": 1, "title": "t"}]}),
+                ("store", "read") => {
+                    let files = self.files.lock().unwrap();
+                    let Some(text) = files.get(p["path"].as_str().unwrap_or("")) else {
+                        return json!({"error": "not found"});
+                    };
+                    let all: Vec<&str> = text.lines().collect();
+                    let from = (p["offset"].as_u64().unwrap_or(0) as usize).min(all.len());
+                    let page: Vec<Value> = all[from..]
+                        .iter()
+                        .take(2)
+                        .enumerate()
+                        .map(|(i, l)| json!({"n": from + i + 1, "text": l}))
+                        .collect();
+                    let eof = from + page.len() >= all.len();
+                    json!({"lines": page, "eof": eof})
+                }
+                ("store", "write") => {
+                    let path = p["path"].as_str().unwrap_or("").to_string();
+                    let bytes = p["bytes"].as_str().unwrap_or("").to_string();
+                    self.files.lock().unwrap().insert(path, bytes);
+                    json!({"ok": true})
+                }
+                _ => json!({"error": "unknown"}),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pull_reads_queue_state_from_a_file_bridge_store() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "queue/aisixteen-fantastic_team-1.state".to_string(),
+            "in_work lead\n".to_string(),
+        );
+        let bridge = Bridge {
+            files: Mutex::new(files),
+        };
+        let mut board = Board::default();
+        let errors = pull(&bridge, &cfg(), &mut board, 100).await;
+        assert!(errors.is_empty(), "{errors:?}");
+        let t = &board.tasks["aisixteen/fantastic_team#1"];
+        assert_eq!(t.status, Status::InWork);
+        assert_eq!(t.claimers, vec!["lead".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn save_then_load_round_trips_through_a_paged_file_bridge() {
+        let bridge = Bridge {
+            files: Mutex::new(BTreeMap::new()),
+        };
+        let mut board = Board::default();
+        for n in 1..=5 {
+            board.add_issue("o/r", n, "t", 1);
+        }
+        board.apply_state("o/r#3", "done o/r#9", 2);
+        save(&bridge, "store", &board).await;
+        let back = load(&bridge, "store").await;
+        assert_eq!(back.tasks.len(), 5, "all pages are read");
+        assert_eq!(back.tasks["o/r#3"].status, Status::Done);
+        assert_eq!(load(&bridge, "nowhere").await.tasks.len(), 0);
     }
 
     #[test]

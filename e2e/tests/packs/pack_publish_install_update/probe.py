@@ -2,7 +2,7 @@
 
 import json
 
-from helpers import packs as P
+from helpers import packs_pub as P
 from helpers import run_flow
 from helpers.verdict import Verdict
 

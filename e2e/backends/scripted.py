@@ -11,6 +11,11 @@ A script is a list of turns. A turn is one of:
   {"text": "words"}
   {"calls": [{"target": "git", "type": "worktree_add", "args": {"path": "..."}}],
    "say": "optional words before the calls"}
+Any turn may also carry `"thinking": "words"`: the stream then opens with a `thinking`
+content block (a `thinking_delta` x2, index 0) before the text block (index 1), so a
+reasoning part reaches the team. `parse_stream` still returns the text only.
+A turn may carry `"delay": seconds`: the plug waits that long before it answers, so a
+test can look at the team while a turn is running.
 Strings may hold `{{name}}` placeholders, filled from `variables`.
 
 It records every request body and every `x-api-key`; a request past the end of
@@ -22,6 +27,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -78,17 +84,24 @@ def sse(kind: str, body: dict) -> bytes:
     return f"event: {kind}\ndata: {json.dumps(body)}\n\n".encode()
 
 
-def stream_frames(text: str, model: str = MODEL) -> list[bytes]:
+def stream_frames(text: str, model: str = MODEL, thinking: str | None = None) -> list[bytes]:
     ev = lambda kind, **b: sse(kind, {"type": kind, **b})
     out = [ev("message_start", message={
         "id": "msg_" + uuid.uuid4().hex[:24], "type": "message", "role": "assistant",
         "content": [], "model": model, "stop_reason": None, "stop_sequence": None,
-        "usage": {"input_tokens": 10, "output_tokens": 1}}),
-        ev("content_block_start", index=0, content_block={"type": "text", "text": ""}),
-        ev("ping")]
-    out += [ev("content_block_delta", index=0, delta={"type": "text_delta", "text": p})
+        "usage": {"input_tokens": 10, "output_tokens": 1}})]
+    at = 0
+    if thinking:
+        out += [ev("content_block_start", index=0, content_block={"type": "thinking", "thinking": ""})]
+        out += [ev("content_block_delta", index=0, delta={"type": "thinking_delta", "thinking": p})
+                for p in halves(thinking) if p]
+        out += [ev("content_block_stop", index=0)]
+        at = 1
+    out += [ev("content_block_start", index=at, content_block={"type": "text", "text": ""}),
+            ev("ping")]
+    out += [ev("content_block_delta", index=at, delta={"type": "text_delta", "text": p})
             for p in halves(text) if p]
-    out += [ev("content_block_stop", index=0),
+    out += [ev("content_block_stop", index=at),
             ev("message_delta", delta={"stop_reason": "end_turn", "stop_sequence": None},
                usage={"output_tokens": max(1, len(text) // 4)}),
             ev("message_stop")]
@@ -114,6 +127,8 @@ class ScriptedModel:
 
     def __init__(self, script: list[dict], variables: dict | None = None) -> None:
         self.turns = [render_turn(fill(t, variables or {})) for t in script]
+        self.thinking = [fill(t, variables or {}).get("thinking") for t in script]
+        self.delays = [float(t.get("delay") or 0) for t in script]
         self.requests: list[dict] = []  # parsed JSON bodies, in order
         self.raw_bodies: list[str] = []
         self.keys: list[str | None] = []  # x-api-key of each POST /v1/messages
@@ -164,7 +179,9 @@ class ScriptedModel:
                 if i >= len(outer.turns):
                     return self._send(500, json.dumps({"type": "error", "error": {
                         "type": "api_error", "message": "scripted model: script exhausted"}}).encode())
-                data = b"".join(stream_frames(outer.turns[i]))
+                if outer.delays[i]:
+                    time.sleep(outer.delays[i])
+                data = b"".join(stream_frames(outer.turns[i], thinking=outer.thinking[i]))
                 self._send(200, data, "text/event-stream; charset=utf-8")
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
