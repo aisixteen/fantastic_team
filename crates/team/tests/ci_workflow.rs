@@ -320,7 +320,7 @@ fn repro_job_builds_twice_in_different_dirs_and_has_no_signing() {
     .expect("inputs");
     let strict = key(inputs, "strict").expect("input `strict` exists");
     assert_eq!(key(strict, "type").and_then(Value::as_str), Some("boolean"));
-    assert_eq!(key(strict, "default"), Some(&Value::Bool(false)));
+    assert_eq!(key(strict, "default"), Some(&Value::Bool(true)));
 
     let pin = std::fs::read_to_string(repo_root().join("rust-toolchain.toml"))
         .expect("rust-toolchain.toml exists");

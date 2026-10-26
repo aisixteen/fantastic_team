@@ -12,9 +12,9 @@ on:
         type: boolean
         default: false
       strict:
-        description: "With e2e: fail the repro job when the two builds differ (off until fantastic's canvas zip is deterministic)"
+        description: "With e2e: fail the repro job when the two builds differ (on by default; -f strict=false only warns)"
         type: boolean
-        default: false
+        default: true
       units_os:
         description: "Units OS set: all (ubuntu, macOS, Windows; the default) or linux (ubuntu only). A full run (e2e) always runs all three."
         type: choice
@@ -235,8 +235,8 @@ jobs:
           key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
 
   # Reproducible builds (#137): two builds of the same commit, in two folders and two target
-  # dirs, must give the same SHA256SUMS. Runs with e2e. The canvas zip is not yet deterministic
-  # (docs/install.md, Reproducible builds), so a difference only fails the job when strict is on.
+  # dirs, must give the same SHA256SUMS. Runs with e2e. The canvas zip is now deterministic
+  # (fantastic #409), so a difference fails the job unless strict=false.
   repro:
     name: repro (${{ matrix.os }})
     if: inputs.e2e == true
