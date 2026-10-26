@@ -6,10 +6,10 @@
 use std::path::{Path, PathBuf};
 
 /// The sentence for `--workers N`. `{n}` is the count.
-pub const WORKERS_TEMPLATE: &str = "Start {n} workers. Each one runs the worker directive: claim a task file in the queue, do it, hand it back, and repeat.";
+pub const WORKERS_TEMPLATE: &str = "Start {n} workers. Each one runs the worker directive: claim a task file in the queue, do it, hand it back, and repeat. Ask `roles` before starting an agent, and start each one with `spawn`.";
 
 /// The sentence for `--leads M --per-lead K`. `{m}` and `{k}` are the counts.
-pub const LEADS_TEMPLATE: &str = "Start {m} leads. Each lead runs the lead directive: it starts {k} workers from templates, keeps them going, and stops the ones that go wrong.";
+pub const LEADS_TEMPLATE: &str = "Start {m} leads. Each lead runs the lead directive: it asks `roles` before starting an agent, starts {k} workers with `spawn`, keeps them going, and stops the ones that go wrong.";
 
 /// The flags that shape the first agent's instructions, as given on the command line.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -134,6 +134,13 @@ mod tests {
             per_lead,
             ..Flags::default()
         }
+    }
+
+    #[test]
+    fn both_sentences_say_ask_roles_before_starting_an_agent() {
+        assert!(WORKERS_TEMPLATE.contains("Ask `roles` before starting an agent"));
+        assert!(LEADS_TEMPLATE.contains("asks `roles` before starting an agent"));
+        assert!(!WORKERS_TEMPLATE.contains("create_agent"));
     }
 
     #[test]

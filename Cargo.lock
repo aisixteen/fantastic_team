@@ -1302,6 +1302,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fantastic-agentic-resources"
+version = "0.1.0"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#7bf494ece908885c335e5ccc881ee25258e5c511"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-kernel",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "fantastic-ai-core"
 version = "0.1.0"
 source = "git+https://github.com/aisixteen/fantastic?branch=main#7bf494ece908885c335e5ccc881ee25258e5c511"
@@ -1599,6 +1611,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "ed25519-dalek",
+ "fantastic-agentic-resources",
  "fantastic-bundle",
  "fantastic-core",
  "fantastic-exec-bridge",
