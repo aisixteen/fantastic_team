@@ -48,8 +48,8 @@ while True:
     threading.Thread(target=pipe, args=(r, c), daemon=True).start()
 '''
 
-# The remote box's front: the launcher asks for a 200 at `/`, and the web host answers
-# 404 there (the page is at the canvas path), so `/` is mapped to the page. See README.
+# The remote box's front: the launcher asks for the page path (/team_page/...), which
+# passes through; `/` is mapped to the page only for the probe's own GET. See README.
 FRONT = r'''
 import http.server, sys, urllib.request
 front, real, page = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
