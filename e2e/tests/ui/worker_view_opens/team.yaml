@@ -1,0 +1,30 @@
+# The team of the ui e2e: a lead on the scripted model, a queue, and a group `workers`
+# whose two members (w1, w2) the probe creates. No git, no github.
+templates:
+  lead_t:
+    handler_module: anthropic_backend.tools
+    model: scripted-model
+    endpoint: "{{model_endpoint}}"
+    credentials:
+      store: credentials
+      ref: "model/{{model_host}}"
+    can_call: [queue]
+    extra:
+      context_window: 100000
+      max_tokens: 4000
+first_agent:
+  id: lead
+  template: lead_t
+queue:
+  id: queue
+groups:
+  workers:
+    members: [w1, w2]
+credentials:
+  id: credentials
+  backend: env
+  refs:
+    "model/{{model_host}}":
+      host: "{{model_host}}"
+      env:
+        api_key: E2E_MODEL_KEY
