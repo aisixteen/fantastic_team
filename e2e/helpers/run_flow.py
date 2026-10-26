@@ -103,3 +103,15 @@ def wait_done(ctx, predicate, wait_s: float = 900.0, every: float = 5.0) -> bool
             return False
         time.sleep(every)
     return bool(predicate())
+
+
+def wait_model_body(ctx, needle: str, timeout: float = 30.0, every: float = 0.3):
+    """Poll the scripted model's request bodies for `needle`; the body, or None."""
+    end = time.time() + timeout
+    while True:
+        for b in list(ctx.model.raw_bodies):
+            if needle in b:
+                return b
+        if time.time() >= end:
+            return None
+        time.sleep(every)
