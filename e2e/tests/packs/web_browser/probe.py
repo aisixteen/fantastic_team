@@ -97,7 +97,11 @@ def run(ctx):
     ev = P.result(t.send("pack", {"type": "eval", "pack": "packs/checker-1.0.0", "worker": "lead"}))
     v.check("eval runs the pack's eval on the lead: one eval, pass rate 1",
             ev.get("total") == 1 and ev.get("passed") == 1 and ev.get("pass_rate") == 1, str(ev))
-    v.check("the scripted model served exactly that request", ctx.model.served == served + 1,
-            f"{served} -> {ctx.model.served}")
+    # the lead answers its own reply once more (an absent reply_to is self), a moment later: wait
+    # for the count to settle, then read the first request this eval made
+    after = run_flow.wait_model_quiet(ctx.model, quiet=2.0)
+    first = ctx.model.raw_bodies[served] if len(ctx.model.raw_bodies) > served else ""
+    v.check("the scripted model served the eval's request first", after >= served + 1
+            and "Reply with the word ok." in first, f"{served} -> {after}")
     t.stop()
     return v.finish()

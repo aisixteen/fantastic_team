@@ -115,3 +115,18 @@ def wait_model_body(ctx, needle: str, timeout: float = 30.0, every: float = 0.3)
         if time.time() >= end:
             return None
         time.sleep(every)
+
+
+def wait_model_quiet(model, quiet: float = 3.0, limit: float = 30.0) -> int:
+    """Wait until the scripted model's served count has not moved for `quiet` seconds (or `limit`
+    passes); the count. A lead answers its own reply once more (an absent reply_to is self), a
+    request that lands moments after the verb returned, so a count read at once is a race."""
+    end = time.time() + limit
+    last, since = model.served, time.time()
+    while time.time() < end:
+        if model.served != last:
+            last, since = model.served, time.time()
+        elif time.time() - since >= quiet:
+            break
+        time.sleep(0.05)
+    return model.served

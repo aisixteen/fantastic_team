@@ -29,6 +29,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 import urllib.error
@@ -44,6 +45,7 @@ from helpers import forge as forge_mod  # noqa: E402
 from helpers import app as app_mod  # noqa: E402
 from helpers import packs_pub as packs_mod  # noqa: E402
 from helpers import registry as registry_mod  # noqa: E402
+from helpers import run_flow  # noqa: E402
 from helpers import team as team_mod  # noqa: E402
 from helpers import web as web_mod  # noqa: E402
 from helpers.verdict import Skip, Verdict  # noqa: E402
@@ -278,6 +280,16 @@ def selftest() -> int:
         v.check("the plug fills placeholders", scripted.parse_stream(b2) == "all done for me")
         s3, _ = post(3)
         v.check("a request past the script is a 500", s3 == 500 and m.overrun == 1 and not m.consumed)
+        late = scripted.ScriptedModel([{"text": "a"}, {"text": "b"}]).start()
+        try:
+            threading.Timer(0.4, lambda: urllib.request.urlopen(urllib.request.Request(
+                late.endpoint, data=b"{}", method="POST"), timeout=10).read()).start()
+            n = run_flow.wait_model_quiet(late, quiet=1.0, limit=10)
+            v.check("wait_model_quiet waits out a request that lands late", n == 1, str(n))
+            v.check("and returns at once-ish when nothing comes", run_flow.wait_model_quiet(
+                late, quiet=0.2, limit=5) == 1)
+        finally:
+            late.stop()
         v.check("the plug records bodies and keys", m.keys == ["k-1", "k-2", "k-3"]
                 and [r["n"] for r in m.requests] == [1, 2, 3])
     finally:
