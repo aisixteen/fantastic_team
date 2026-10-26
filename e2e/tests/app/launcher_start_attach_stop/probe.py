@@ -7,6 +7,7 @@ import subprocess
 from helpers import app, run_flow, web
 from helpers.verdict import Verdict
 
+
 def run(ctx):
     v = Verdict("app/launcher_start_attach_stop")
     app.app_binary(ctx)  # a Skip when the app is not built next to --bin

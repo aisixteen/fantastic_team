@@ -783,7 +783,12 @@ mod tests {
     async fn launch_start_times_out_when_only_root_answers_200() {
         let _exec = EXEC_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
-        let bin = fake_binary(dir.path(), "fake", "exec sleep 30");
+        let pidfile = dir.path().join("pid");
+        let bin = fake_binary(
+            dir.path(),
+            "fake",
+            &format!("echo $$ > {}\nexec sleep 30", pidfile.display()),
+        );
         let (listener, port) = bind_free().await;
         serve_by_path(listener, "/");
         let target = Target::Start { binary: bin, port };
@@ -792,6 +797,27 @@ mod tests {
             Err(e) => e,
         };
         assert!(err.contains("no 200"), "{err}");
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let mut gone = false;
+        for _ in 0..50 {
+            // kill -0 fails once the process is gone (a zombie is reaped by launch).
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !alive {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(gone, "child {pid} still running after the timeout");
     }
 
     #[test]
