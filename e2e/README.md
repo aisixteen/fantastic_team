@@ -43,7 +43,7 @@ Each run writes `cost.json` in its run folder (tokens, requests, model, the USD 
 
 - `run.py`: the launcher.
 - `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted` or `plug: anthropic`); a test never names a model, an endpoint or a key. A team.yaml takes `{{model_name}}` (the plug's model) and `{{model_endpoint}}`.
-- `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start with extra args such as `--port`, stop, `send`, wiring, the page's chat grant), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks).
+- `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start with extra args such as `--port`, stop, `send`, wiring, the page's chat grant), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks), `packs.py` (the packs tests: a plain team, a source worker, `pack` and `install` through `send`).
 - `helpers/web.py`, `helpers/app.py`: HTTP and websocket client; the app shell and handle driver as processes.
 - `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`, `build`: `any` (default), `general` or `github`; `run.py --build` runs the tests for `any` and that build), `team.yaml`, `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code).
 - `runs/`: one folder per run, gitignored (it holds model output).
@@ -87,6 +87,7 @@ These are facts about the binary at the commit this was built on, not decisions 
 4. `directive` on a connector is not passed to its record (github refuses without it); the test's `team.yaml` puts it in `record`.
 5. A model cannot pass `title` to `github pr_create`: `title` is a call-level field of the `<call>` grammar. The scripted model therefore stops after the push, and the probe sends `pr_create` itself, as the operator. The PR request is still what the github connector sends.
 6. A `team.yaml` with `groups:` and `board:` makes the `dispatcher`, `cadencer` and `board`, but `wire()` replaces github's and the queue folder's `callable_by` (dropping the `board` entry the plan made) and never grants the `mcp` leg on `dispatcher`, `cadencer` or `board`. The `dispatcher` tests call `wire_dispatcher()` after `boot`: it writes those grants again with `board` and `mcp` added. The plan also points the board's `store` at the RAM `queue`, which has no `read`/`write` by path, so `wire_dispatcher()` points it at the queue folder (`queue_files`).
+7. The packs tests (`tests/packs/`) boot a small team without `wire` (`helpers/packs.py: boot_plain`). Because of workaround 1 the base tree is seeded before the team plan is applied, so the base `files` and `user` agents (under `user`) keep the ids the plan's own were to take, and their `callable_by` does not name the `pack` agent. `boot_plain` adds `pack` to `files` and `pack: [import_subtree, send]` to `user`, keeping the other entries. The `pack` agent itself accepts the operator's `send`.
 
 ## Later
 

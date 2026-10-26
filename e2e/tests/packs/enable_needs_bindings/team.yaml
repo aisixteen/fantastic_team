@@ -1,0 +1,43 @@
+# A small team: one lead on the scripted model (never called) and the github connector,
+# so that a blueprint port bound to `github` has a live agent. No puller, no queue folder.
+templates:
+  lead_t:
+    handler_module: anthropic_backend.tools
+    model: scripted-model
+    endpoint: "{{model_endpoint}}"
+    credentials:
+      store: credentials
+      ref: "model/{{model_host}}"
+    can_call: [github]
+    extra:
+      context_window: 100000
+      max_tokens: 4000
+first_agent:
+  id: lead
+  template: lead_t
+connectors:
+  github:
+    kind: team_github.tools
+    record:
+      app:
+        credentials:
+          store: credentials
+          ref: github/app
+      repos: [acme/widgets]
+      api_url: "{{forge_url}}"
+      directive: Push a work branch and open a draft pull request.
+queue:
+  id: queue
+credentials:
+  id: credentials
+  backend: env
+  refs:
+    "model/{{model_host}}":
+      host: "{{model_host}}"
+      env:
+        api_key: E2E_MODEL_KEY
+    github/app:
+      host: "{{forge_host}}"
+      env:
+        app_id: E2E_APP_ID
+        private_key: E2E_APP_PEM
