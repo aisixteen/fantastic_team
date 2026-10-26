@@ -95,5 +95,34 @@ else
   bad verify_accepts_matching_binary_and_rejects_one_changed_byte "exit $v1/$v2/$v3: $(cat "$T/v1.out" "$T/v2.out" "$T/v3.out")"
 fi
 
+# 4. canvas_zip_is_byte_identical_across_two_packs
+# The pinned fantastic must pack its canvas page the same way twice: two folders, a different
+# clock and TZ, the same SOURCE_DATE_EPOCH (fantastic #409).
+# A fresh CI runner has no registry cache, so --offline cannot resolve; fall back to the network.
+meta_mf() {
+  grep -o '"manifest_path":"[^"]*fantastic-canvas-page/Cargo.toml"' | head -n 1 \
+    | sed 's/^"manifest_path":"//; s/"$//'
+}
+mf=$(cd "$ROOT" && cargo metadata --locked --offline --format-version 1 2>"$T/meta.err" | meta_mf)
+if [ -z "$mf" ]; then
+  mf=$(cd "$ROOT" && cargo metadata --locked --format-version 1 2>"$T/meta.err" | meta_mf)
+fi
+APP=""
+[ -n "$mf" ] && APP="$(dirname "$mf")/../../web/canvas"
+if [ -z "$mf" ] || [ ! -f "$APP/scripts/pack.sh" ]; then
+  bad canvas_zip_is_byte_identical_across_two_packs "no canvas app or scripts/pack.sh (manifest='$mf' app='$APP') $(cat "$T/meta.err" 2>/dev/null)"
+else
+  mkdir -p "$T/a" "$T/b"
+  (cd "$APP" && SOURCE_DATE_EPOCH=1700000000 TZ=UTC sh scripts/pack.sh "$T/a/canvas.zip") >"$T/pa.out" 2>&1
+  sleep 2
+  (cd "$APP" && SOURCE_DATE_EPOCH=1700000000 TZ=America/Los_Angeles sh scripts/pack.sh "$T/b/canvas.zip") >"$T/pb.out" 2>&1
+  if [ -s "$T/a/canvas.zip" ] && [ -s "$T/b/canvas.zip" ] \
+    && [ "$(sha256_of "$T/a/canvas.zip")" = "$(sha256_of "$T/b/canvas.zip")" ]; then
+    ok canvas_zip_is_byte_identical_across_two_packs
+  else
+    bad canvas_zip_is_byte_identical_across_two_packs "a=$(sha256_of "$T/a/canvas.zip" 2>/dev/null) b=$(sha256_of "$T/b/canvas.zip" 2>/dev/null) $(unzip -Z -T "$T/a/canvas.zip" 2>&1 | head -n 5) | $(unzip -Z -T "$T/b/canvas.zip" 2>&1 | head -n 5) $(cat "$T/pa.out" "$T/pb.out" | tail -n 5)"
+  fi
+fi
+
 echo "repro_scripts: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

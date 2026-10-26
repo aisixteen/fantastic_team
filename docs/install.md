@@ -51,8 +51,8 @@ Both builds are reproducible in intent (#137): the same commit gives the same by
 - **Verify.** `sh scripts/verify.sh <binary>` checks the binary's SHA-256 against its `SHA256SUMS` line. Exit 0 means it matches; 1 means a mismatch or no entry for the name; 2 means a usage or file error. `sh scripts/verify.sh --rebuild <binary>` also rebuilds from this checkout (check out the tag first) and compares the hash.
 - **SHA-256 and MD5.** Use SHA-256; it is the checksum to compare. `MD5SUMS` is only there for corruption checks on a mirror. MD5 is not a security check.
 - **Signing is laptop-only.** No signing, notarization or key material runs in CI or sits in GitHub. A signature is made by the maintainer on a laptop, after the checksums.
-- **CI.** The `repro` job runs with `-f e2e=true`. It builds the same commit twice, in two folders and two target directories, and compares `SHA256SUMS`. It is non-strict by default: a difference is a warning. `-f strict=true` makes a difference fail the job. Turn `strict` on once the canvas zip is deterministic.
-- **The canvas zip.** fantastic's canvas packer writes its zip with the current file times and extra fields, so the zip embedded in the binary changes on every build. The exact changes that fix it belong in fantastic: see [docs/fantastic-notes.md](fantastic-notes.md). Until they land, the two builds differ and `repro` reports it.
+- **CI.** The `repro` job runs with `-f e2e=true`. It builds the same commit twice, in two folders and two target directories, and compares `SHA256SUMS`. It is strict by default: a difference fails the job; `-f strict=false` turns it into a warning.
+- **The canvas zip.** fantastic's canvas packer writes its zip with the current file times and extra fields, so the zip embedded in the binary changes on every build. This is fixed in fantastic #409 (see [docs/fantastic-notes.md](fantastic-notes.md)); the pinned fantastic has it, and `tests/repro_scripts.sh` packs the canvas twice to check it.
 
 ## 3. Register the GitHub App
 

@@ -26,11 +26,11 @@ Not verified. The esbuild call is `"$ESBUILD" "$ENTRY" --bundle ... --sourcemap 
 
 ## Team side
 
-Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from two builds. Until steps 1 to 3 land, that comparison differs; the job warns, and fails only with `-f strict=true`. When fantastic lands them, bump the fantastic commit in `Cargo.lock` (`scripts/update-fantastic.sh`) and turn `strict` on for the release run.
+Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from two builds. The steps landed in fantastic #409, the pin in `Cargo.lock` was bumped (`scripts/update-fantastic.sh`), and `strict` is on by default: a difference fails the job (`-f strict=false` only warns).
 
 ## What Team gets from the bump
 
-`Cargo.lock` now pins fantastic `ef6f9a7` (aisixteen/fantastic main, 11 commits past `717765e`, which was 24 commits past `e7ede96`). Only the fantastic crates moved, plus the new transitive crates that `fantastic-system-agents` needs (`zbus` and its family, from the fantastic lock entries). The build and tests pass with no Team code change. Features the bump brings to Team:
+`Cargo.lock` now pins fantastic `df64468` (aisixteen/fantastic main, 40 commits past `ef6f9a7`, which was 11 commits past `717765e`, which was 24 commits past `e7ede96`). Only the fantastic crates moved, plus the new transitive crates that `fantastic-system-agents` needs (`zbus` and its family, from the fantastic lock entries). The build and tests pass with no Team code change. Features the bump brings to Team:
 
 - Blueprints (fantastic#357, for #268 and #269 which stay open): `user.export_subtree {agent_id, path}` writes an agent and its subtree as a blueprint folder, with ports for references that point outside it (`@memory`, `@credentials`, `@exec`, `@files`, `@model`, `@connector:<id>`, `@path:<field>`). Key values and absolute paths are stripped, and a secrets scan runs before the rename. `user.import_subtree` installs it under any parent with fresh ids (one `_<k>` suffix), ports bound and granted back, and a preview until `approve: true`. It refuses unbound ports, key values, absolute paths, and code without `allow_code`. This is what worker packs (#40) need; Team does not use it yet.
 - Atomic writes survive a transient rename refusal: fantastic retries a refused atomic-write rename a bounded 8 times and removes the sibling tmp file on final failure (fantastic#352). This helps claim files.
