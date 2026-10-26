@@ -1024,3 +1024,190 @@ async fn issue_state_rejects_other_state_values() {
     );
     assert!(f.gh.received_requests().await.unwrap().is_empty());
 }
+
+/// Mount GET and PATCH for issue `number` on acme/widgets; the GET returns `body`.
+async fn mock_issue_body(gh: &MockServer, number: u64, body: &str) {
+    let p = format!("/repos/acme/widgets/issues/{number}");
+    Mock::given(method("GET"))
+        .and(path(p.clone()))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"number": number, "body": body})),
+        )
+        .mount(gh)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(p))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"number": number})))
+        .mount(gh)
+        .await;
+}
+
+fn edit(old: &str, new: &str) -> Value {
+    json!({"type": "issue_edit", "repo": "acme/widgets", "number": 5, "old": old, "new": new})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_edit_replaces_exactly_the_one_matching_line() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    mock_issue_body(&f.gh, 5, "# T\n- [ ] a\n- [ ] b\n## Notes\n- [ ] c").await;
+    let r = f.call(edit("- [ ] b", "- [x] b")).await;
+    assert_eq!(r["number"], 5, "{r}");
+    assert_eq!(r["line"], 3, "{r}");
+    assert!(r.get("error").is_none(), "{r}");
+    let p = "/repos/acme/widgets/issues/5";
+    assert_eq!(
+        patch_bodies_to(&f.gh, p).await,
+        vec![json!({"body": "# T\n- [ ] a\n- [x] b\n## Notes\n- [ ] c"})]
+    );
+    let patch_auth: Vec<String> = requests_to(&f.gh, p)
+        .await
+        .iter()
+        .filter(|r| r.method.as_str() == "PATCH")
+        .filter_map(|r| {
+            r.headers
+                .get("authorization")
+                .and_then(|h| h.to_str().ok())
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(patch_auth, vec![format!("Bearer {}", token())]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_edit_refuses_when_no_line_matches() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    mock_issue_body(&f.gh, 5, "# T\n- [ ] a").await;
+    let r = f.call(edit("- [ ] zzz", "x")).await;
+    assert_eq!(r["reason"], "bad_arg", "{r}");
+    assert!(
+        r["error"]
+            .as_str()
+            .unwrap()
+            .contains("no line of #5 matches"),
+        "{r}"
+    );
+    assert!(patch_bodies_to(&f.gh, "/repos/acme/widgets/issues/5")
+        .await
+        .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_edit_refuses_when_more_than_one_line_matches() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    mock_issue_body(&f.gh, 5, "- [ ] a\nmid\n- [ ] a").await;
+    let r = f.call(edit("- [ ] a", "- [x] a")).await;
+    assert_eq!(r["reason"], "bad_arg", "{r}");
+    let e = r["error"].as_str().unwrap();
+    assert!(
+        e.contains("2 lines of #5 match") && e.contains("give a unique line"),
+        "{r}"
+    );
+    assert!(patch_bodies_to(&f.gh, "/repos/acme/widgets/issues/5")
+        .await
+        .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_edit_refuses_a_line_inside_the_spec_section() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    mock_issue_body(
+        &f.gh,
+        5,
+        "## Notes\n- [ ] n\n## SPEC\n- [ ] s\n## After\n- [ ] z",
+    )
+    .await;
+    let p = "/repos/acme/widgets/issues/5";
+    let r = f.call(edit("- [ ] s", "- [x] s")).await;
+    assert_eq!(r["reason"], "bad_arg", "{r}");
+    let e = r["error"].as_str().unwrap();
+    assert!(
+        e.contains("inside a `## SPEC` section") && e.contains("line 4"),
+        "{r}"
+    );
+    assert!(patch_bodies_to(&f.gh, p).await.is_empty());
+    let r = f.call(edit("- [ ] z", "- [x] z")).await;
+    assert!(r.get("error").is_none(), "{r}");
+    assert_eq!(
+        patch_bodies_to(&f.gh, p).await,
+        vec![json!({"body": "## Notes\n- [ ] n\n## SPEC\n- [ ] s\n## After\n- [x] z"})]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_edit_refuses_a_repo_off_the_allowlist() {
+    let f = fx(json!({})).await;
+    let r = f
+        .call(json!({"type": "issue_edit", "repo": "evil/other", "number": 5, "old": "a", "new": "b"}))
+        .await;
+    assert_eq!(r["reason"], "bad_arg", "{r}");
+    assert!(
+        r["error"]
+            .as_str()
+            .unwrap()
+            .contains("not in this connector's repos"),
+        "{r}"
+    );
+    assert!(f.gh.received_requests().await.unwrap().is_empty());
+}
+
+fn field_set() -> Value {
+    json!({"type": "project_field_set", "repo": "acme/widgets", "project": "PVT_1",
+           "item": "PVTI_1", "field": "PVTF_9", "value": "Done"})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn project_field_set_sends_one_graphql_mutation_with_item_field_value() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "PVTI_1"}}}
+        })))
+        .mount(&f.gh)
+        .await;
+    let r = f.call(field_set()).await;
+    assert_eq!(
+        r,
+        json!({"repo": "acme/widgets", "item": "PVTI_1", "field": "PVTF_9"})
+    );
+    let reqs = requests_to(&f.gh, "/graphql").await;
+    assert_eq!(reqs.len(), 1);
+    let b: Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(
+        b["variables"],
+        json!({"p": "PVT_1", "i": "PVTI_1", "f": "PVTF_9", "v": "Done"})
+    );
+    assert!(b["query"]
+        .as_str()
+        .unwrap()
+        .contains("updateProjectV2ItemFieldValue"));
+    assert_eq!(
+        auth_headers_to(&f.gh, "/graphql").await,
+        vec![format!("Bearer {}", token())]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn project_field_set_graphql_errors_are_named_without_the_token() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "errors": [{"message": format!("Could not resolve to a node with the global id of 'PVTF_9' {}", token())}]
+        })))
+        .mount(&f.gh)
+        .await;
+    let r = f.call(field_set()).await;
+    let e = r["error"].as_str().unwrap_or_default();
+    assert!(e.starts_with("team_github project_field_set:"), "{r}");
+    assert!(e.contains("Could not resolve"), "{r}");
+    assert_eq!(r["reason"], "bad_arg", "{r}");
+    assert_eq!(r["field"], "PVTF_9", "{r}");
+    assert!(!r.to_string().contains(&token()), "{r}");
+}
