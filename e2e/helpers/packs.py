@@ -1,105 +1,105 @@
-"""Helpers for the packs tests: build a worker folder, pack it, and drive the
-`fantastic_team packs ...` CLI against the live team.
-
-Everything is plain files under the run dir (the `files` agent is rooted there,
-so every pack path is relative to the run dir). No verb, flag or record field is
-added: the CLI maps flags onto the payloads the bundles already read; the two
-payload fields with no flag (`signing_key`, `from_shifts`) go to the `pack` agent
-with `Team.send`.
-"""
+"""Shared steps of the packs tests: a plain team (no puller, no queue), a source worker,
+and the `pack` agent's verbs through `send`."""
 
 from __future__ import annotations
 
 import json
 import os
 import secrets
-import subprocess
 
-# One eval that always passes (the executor defaults a missing exit_code to 0) and
-# one that always fails (exit_code 1 is never reported by a lead's reply).
-PASS_EVAL = "- id: a\n  task: say ok\n  check:\n    exit_code: 0\n"
-FAIL_EVAL = "- id: b\n  task: say ok\n  check:\n    exit_code: 1\n"
+from . import team as team_mod
 
-
-def write_worker(run_dir: str, name: str, evals_yaml: dict[str, str], blueprint: bool = False) -> str:
-    """Write `workers/<name>/` (worker.json, evals/*.yaml, optionally a blueprint)."""
-    root = os.path.join(run_dir, "workers", name)
-    os.makedirs(os.path.join(root, "evals"), exist_ok=True)
-    with open(os.path.join(root, "worker.json"), "w") as f:
-        json.dump({"name": name, "version": "1.0.0", "model": "scripted-model",
-                   "ports": [], "grants": []}, f)
-    for fname, text in evals_yaml.items():
-        with open(os.path.join(root, "evals", fname), "w") as f:
-            f.write(text)
-    if blueprint:
-        bp = os.path.join(root, "blueprint")
-        os.makedirs(os.path.join(bp, name), exist_ok=True)
-        with open(os.path.join(bp, "blueprint.yaml"), "w") as f:
-            f.write(f"agents:\n  - id: {name}\n    handler_module: ram_store.tools\n")
-        with open(os.path.join(bp, name, "directive.md"), "w") as f:
-            f.write("Summarise issues.")
-    return os.path.join("workers", name)
+WORKER_BLUEPRINT = """agents:
+  - id: scribe
+    handler_module: ram_store.tools
+    can_call:
+      '@connector:github': '*'
+ports:
+  '@connector:github':
+    kind: connector
+    why: reads issues
+    used_by: [scribe]
+"""
 
 
-def cli(team, *args: str, timeout: int = 120) -> tuple[int, dict]:
-    """Run `fantastic_team packs <args>` in the run dir. Returns (exit code, the printed row)."""
-    r = subprocess.run([team.binary, "packs", *args], env=team.env, cwd=team.dir,
-                       capture_output=True, text=True, timeout=timeout)
-    try:
-        row = json.loads(r.stdout)
-    except ValueError:
-        row = {"raw": (r.stdout + r.stderr).strip()}
-    return r.returncode, row
+def boot_plain(ctx, name: str) -> team_mod.Team:
+    """Boot a team in `<run_dir>/<name>` from the test's team.yaml. No `wire`: the packs
+    tests need no credentials grant, puller or queue folder."""
+    d = os.path.join(ctx.run_dir, name)
+    os.makedirs(d, exist_ok=True)
+    t = team_mod.Team(ctx.binary, d, {})
+    team_mod.boot(t, os.path.join(ctx.dir, "team.yaml"), dict(ctx.vars, run_dir=d))
+    # The harness boots twice (see helpers/team.py): the first start seeds the base tree, whose
+    # `files` and `user` agents then take the ids the team plan's own were to have, and their
+    # `callable_by` does not name the pack agent as the plan writes it. Grant it, keeping the rest.
+    grant(t, "files", "pack", "*")
+    grant(t, "files", "pack_listing", "*")
+    grant(t, "user", "pack", ["import_subtree", "send"])
+    return t
 
 
-def make_pack(team, name: str, evals_yaml: dict[str, str], blueprint: bool = False) -> str:
-    """Write a worker and pack it into `packs/<name>`. Returns the pack folder (relative)."""
-    worker = write_worker(team.dir, name, evals_yaml, blueprint)
-    rc, row = cli(team, "pack", "--worker", worker, "--out", f"packs/{name}")
-    if rc != 0 or (row.get("result") or {}).get("error"):
-        raise RuntimeError(f"cannot pack {name}: {rc} {row}")
-    return f"packs/{name}"
-
-
-def write_signing_seed(run_dir: str, name: str = "pack_signer") -> str:
-    """A random 64-hex seed in secrets/ (gitignored). Returns its path relative to the
-    run dir, the file bridge path the verbs take. The seed is never printed."""
-    sdir = os.path.join(run_dir, "secrets")
-    os.makedirs(sdir, exist_ok=True)
-    gi = os.path.join(run_dir, ".gitignore")
-    if not os.path.exists(gi) or "secrets/" not in open(gi).read():
-        with open(gi, "a") as f:
-            f.write("secrets/\n")
-    with open(os.path.join(sdir, f"{name}.key"), "w") as f:
-        f.write(secrets.token_hex(32))
-    return f"secrets/{name}.key"
-
-
-def result(row: dict) -> dict:
-    """The verb's reply out of a `send` row."""
-    return row.get("result") or {}
-
-
-def grant(team, agent: str, extra: dict, field: str = "callable_by") -> None:
-    """Add entries to `agent`'s callable_by (or can_call), keeping the ones it has
-    (`update_agent` replaces the whole map, and `reflect` shows the current one)."""
-    r = team.send(agent, {"type": "reflect"})
-    by = dict((r.get("result") or {}).get(field) or {})
-    if not by:
-        raise RuntimeError(f"cannot read {agent}'s {field}: {r}")
-    by.update(extra)
-    r = team.send("kernel", {"type": "update_agent", "id": agent, field: by})
+def grant(team: team_mod.Team, agent: str, caller: str, verbs) -> None:
+    """Add `caller: verbs` to `agent`'s callable_by, keeping the other entries."""
+    r = team.send("kernel", {"type": "list_agents", "limit": 200})
+    rows = r.get("result", r).get("agents", [])
+    cb = dict(next(a for a in rows if a.get("id") == agent).get("callable_by", {}))
+    cb[caller] = verbs
+    r = team.send("kernel", {"type": "update_agent", "id": agent, "callable_by": cb})
     if r.get("status") != "completed":
-        raise RuntimeError(f"cannot wire {agent}: {r}")
+        raise RuntimeError(f"cannot grant {caller} on {agent}: {r}")
 
 
-def wire_packs(team) -> None:
-    """The operator grants the harness' two-step boot leaves out (see e2e/README, item 1).
+def write_source_worker(team_dir: str) -> str:
+    """`w/` under the team dir: a worker record (with a fake key and a model binding), a
+    directive and a blueprint with one agent that needs the github connector.
+    Returns the fake key (built from pieces, so no source scan trips on it)."""
+    key = "".join(["sk-", "ant-", secrets.token_hex(20)])
+    w = os.path.join(team_dir, "w")
+    for sub in ("directives", os.path.join("blueprint", "scribe")):
+        os.makedirs(os.path.join(w, sub), exist_ok=True)
+    rec = {"name": "scribe", "version": "1.0.0", "author": "e2e", "license": "MIT",
+           "ports": ["@connector:github"], "model": "scripted-model", "api_key": key}
+    with open(os.path.join(w, "worker.json"), "w") as f:
+        json.dump(rec, f)
+    with open(os.path.join(w, "directives", "main.md"), "w") as f:
+        f.write("Summarise the issue in three lines.\n")
+    with open(os.path.join(w, "blueprint", "blueprint.yaml"), "w") as f:
+        f.write(WORKER_BLUEPRINT)
+    with open(os.path.join(w, "blueprint", "scribe", "directive.md"), "w") as f:
+        f.write("Read the issue and summarise it.\n")
+    return key
 
-    The first start (no team.yaml) seeds a base tree with its own `files` and `user`;
-    the second start finds them and keeps them as they are, so their `callable_by` does
-    not name the pack agents. Add `pack` and `pack_listing` to `files`, and `pack` (the
-    `import_subtree` verb only) to `user`. A fresh run of the product creates them with
-    these grants (tree.rs)."""
-    grant(team, "files", {"pack": "*", "pack_listing": "*"})
-    grant(team, "user", {"pack": ["import_subtree"]})
+
+def send_pack(team: team_mod.Team, payload: dict) -> dict:
+    """The `pack` agent's reply (the operator leg, as `fantastic_team send`)."""
+    r = team.send("pack", payload)
+    inner = r.get("result", r)
+    return inner if isinstance(inner, dict) else {"error": str(r)}
+
+
+def agents(team: team_mod.Team) -> set:
+    """The ids of the live agents."""
+    out, after = set(), None
+    for _ in range(50):
+        ask = {"type": "list_agents", "limit": 200}
+        if after:
+            ask["after"] = after
+        r = team.send("kernel", ask)
+        r = r.get("result", r)
+        out.update(a["id"] for a in r.get("agents", []) if isinstance(a, dict) and "id" in a)
+        after = r.get("next")
+        if not isinstance(after, str):
+            break
+    return out
+
+
+def tree_text(root: str) -> str:
+    """Every file under `root`, concatenated."""
+    parts = []
+    for base, _, names in os.walk(root):
+        for n in names:
+            try:
+                parts.append(open(os.path.join(base, n), errors="replace").read())
+            except OSError:
+                pass
+    return "\n".join(parts)

@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 
-from helpers import packs as P
+from helpers import packs_evals as P
 from helpers import run_flow
 from helpers.verdict import Verdict
 
