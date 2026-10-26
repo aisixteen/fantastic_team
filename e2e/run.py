@@ -41,8 +41,10 @@ sys.path.insert(0, HERE)
 from backends import PLUGS, available, provides_vars, scripted  # noqa: E402
 from backends import anthropic as relay_mod  # noqa: E402
 from helpers import forge as forge_mod  # noqa: E402
+from helpers import app as app_mod  # noqa: E402
 from helpers import team as team_mod  # noqa: E402
-from helpers.verdict import Verdict  # noqa: E402
+from helpers import web as web_mod  # noqa: E402
+from helpers.verdict import Skip, Verdict  # noqa: E402
 
 # A real-key shape, built from pieces so this file does not hold one.
 KEY_SHAPE = re.compile("sk-" "ant-" r"[A-Za-z0-9_\-]{20,}")
@@ -120,10 +122,11 @@ class Ctx:
         self.team: team_mod.Team | None = None
         self.secrets: dict = {}
 
-    def boot_team(self, env_extra: dict[str, str]) -> team_mod.Team:
+    def boot_team(self, env_extra: dict[str, str], port: int | None = None,
+                  wire=None) -> team_mod.Team:
         self.team = team_mod.Team(self.binary, self.run_dir, env_extra)
-        team_mod.boot(self.team, os.path.join(self.dir, "team.yaml"), self.vars)
-        team_mod.wire(self.team)
+        team_mod.boot(self.team, os.path.join(self.dir, "team.yaml"), self.vars, port)
+        team_mod.wire(self.team, wire)
         return self.team
 
 
@@ -131,13 +134,15 @@ class Timeout(Exception):
     pass
 
 
-def run_test(test: dict, binary: str, stamp_dir: str) -> bool:
+def run_test(test: dict, binary: str, stamp_dir: str) -> str:
+    """Run one test. Returns `PASS`, `FAIL` or `SKIP` (a probe raised `Skip`)."""
     name = test["name"]
     run_dir = os.path.join(stamp_dir, *name.split("/"))
     os.makedirs(run_dir)
     print(f"\n=== {name}  (costs: {test['costs']}, plug: {test['plug']})\n    run dir: {run_dir}")
     forge = model = ctx = None
     ok = False
+    skipped = None
     try:
         bare = forge_mod.make_bare(os.path.join(run_dir, "forge"))
         forge_mod.seed_clone(bare, os.path.join(run_dir, "clone"))
@@ -162,27 +167,38 @@ def run_test(test: dict, binary: str, stamp_dir: str) -> bool:
             ok = probe.run(ctx) == 0
         finally:
             signal.alarm(0)
+    except Skip as e:  # a resource this machine lacks: not a failure
+        skipped = e.reason
     except Exception:  # a probe that raises is a failed test, with its trace
         traceback.print_exc()
     finally:
         if ctx and ctx.team:
             code = ctx.team.stop()
             print(f"  team stopped (exit {code})")
-            if not ok:
+            if not ok and skipped is None:
                 print("  --- team log (tail) ---\n" + ctx.team.log()[-3000:])
         for s in (model, forge):
             if s:
                 s.stop()
+    if skipped is not None:
+        print(f"SKIP {name} ({skipped})")
+        return "SKIP"
     print(f"--- {name}: {'PASS' if ok else 'FAIL'}")
-    return ok
+    return "PASS" if ok else "FAIL"
+
+
+def summary(results: dict) -> int:
+    """The exit code of a run: non-zero when any test FAILed; a SKIP never fails it."""
+    return 1 if any(r == "FAIL" for r in results.values()) else 0
 
 
 def build() -> str:
-    print("building fantastic_team ...", flush=True)
-    r = subprocess.run(["cargo", "build", "-p", "fantastic-team", "--bin", "fantastic_team"],
-                       cwd=ROOT)
-    if r.returncode != 0:
-        sys.exit("cargo build failed")
+    print("building fantastic_team, fantastic_team_app and the handle_serve example ...", flush=True)
+    for cmd in (["-p", "fantastic-team", "--bin", "fantastic_team"],
+                ["-p", "fantastic-team-app", "--bin", "fantastic_team_app"],
+                ["-p", "fantastic-team", "--example", "handle_serve"]):
+        if subprocess.run(["cargo", "build", *cmd], cwd=ROOT).returncode != 0:
+            sys.exit("cargo build failed")
     meta = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=ROOT,
                           capture_output=True, text=True, check=True).stdout
     return os.path.join(json.loads(meta)["target_directory"], "debug", "fantastic_team")
@@ -299,6 +315,12 @@ def selftest() -> int:
     selftest_selection(v)
     selftest_turns(v)
     selftest_source(v)
+    selftest_skip(v)
+    selftest_scripted_thinking(v)
+    selftest_web(v)
+    selftest_team_args(v)
+    selftest_app_helpers(v)
+    selftest_new_tests_collect(v)
     return v.finish()
 
 
@@ -325,6 +347,10 @@ def selftest_relay(v: Verdict) -> None:
         v.check("the relay streams the upstream's reply back unchanged",
                 s == 200 and scripted.parse_stream(body) == "a" * 80, body[:200].decode(errors="replace"))
         v.check("the upstream got the team's x-api-key", up.keys[-1] == key, str(up.keys[-1:]))
+        for _ in range(50):  # the relay books the usage as the stream closes: a moment after the reply
+            if (a.usage_in, a.usage_out) == (10, 20) and a.served == 1:
+                break
+            time.sleep(0.1)
         v.check("the recorded usage is the upstream's: 10 in, 20 out",
                 (a.usage_in, a.usage_out) == (10, 20), f"{a.usage_in} in, {a.usage_out} out")
         v.check("one reply served, none errored: consumed", a.served == 1 and a.consumed)
@@ -414,6 +440,279 @@ def selftest_source(v: Verdict) -> None:
             ", ".join(hits))
 
 
+NEW_TESTS = ("app/launcher_start_attach_stop", "app/handle_serves_port", "app/window_per_platform",
+             "app/attach_remote", "app/connector_setup", "dispatcher/chat_history_send_stream",
+             "dispatcher/chat_features")
+
+
+def selftest_skip(v: Verdict) -> None:
+    """A probe that raises Skip is a SKIP: printed with its reason, never a failure."""
+    import contextlib
+    import io
+
+    tmp = tempfile.mkdtemp(prefix="e2e-skip-")
+    try:
+        tdir = os.path.join(tmp, "t")
+        os.makedirs(tdir)
+        with open(os.path.join(tdir, "probe.py"), "w") as f:
+            f.write("from helpers.verdict import Skip\n\ndef run(ctx):\n    raise Skip('no such thing here')\n")
+        with open(os.path.join(tdir, "script.json"), "w") as f:
+            f.write("[]")
+        test = {"name": "g/skipper", "dir": tdir, "costs": "free", "timeout": 30, "plug": "scripted",
+                "build": "any"}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            res = run_test(test, "/nonexistent", os.path.join(tmp, "runs"))
+        text = out.getvalue()
+        v.check("a probe that raises Skip is reported as SKIP with its reason",
+                res == "SKIP" and "SKIP g/skipper (no such thing here)" in text, text[-300:])
+        v.check("a SKIP is not a failure, a FAIL is", summary({"a": "SKIP", "b": "PASS"}) == 0
+                and summary({"a": "SKIP", "b": "FAIL"}) == 1)
+        with open(os.path.join(tdir, "probe.py"), "w") as f:
+            f.write("def run(ctx):\n    return 1\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            res = run_test(test, "/nonexistent", os.path.join(tmp, "runs2"))
+        v.check("a probe that returns 1 is a FAIL", res == "FAIL")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def selftest_scripted_thinking(v: Verdict) -> None:
+    """`thinking` streams a reasoning block before the text; `delay` holds the answer."""
+    frames = scripted.stream_frames("the answer", thinking="some thought")
+    raw = b"".join(frames)
+    evs = [json.loads(line[6:]) for block in raw.decode().split("\n\n") for line in block.splitlines()
+           if line.startswith("data: ")]
+    starts = [(e["index"], e["content_block"]["type"]) for e in evs if e["type"] == "content_block_start"]
+    deltas = [e["delta"] for e in evs if e["type"] == "content_block_delta"]
+    v.check("a turn with thinking streams a thinking block (index 0) before the text block (index 1)",
+            starts == [(0, "thinking"), (1, "text")], str(starts))
+    v.check("the thinking arrives as thinking_delta, the text as text_delta",
+            "".join(d.get("thinking", "") for d in deltas if d["type"] == "thinking_delta") == "some thought"
+            and "".join(d.get("text", "") for d in deltas if d["type"] == "text_delta") == "the answer", str(deltas))
+    v.check("parse_stream still returns the text only", scripted.parse_stream(raw) == "the answer")
+    plain = [(e["index"], e["content_block"]["type"]) for e in
+             (json.loads(line[6:]) for block in b"".join(scripted.stream_frames("x")).decode().split("\n\n")
+              for line in block.splitlines() if line.startswith("data: "))
+             if e["type"] == "content_block_start"]
+    v.check("a turn without thinking is unchanged: one text block at index 0", plain == [(0, "text")], str(plain))
+    m = scripted.ScriptedModel([{"text": "a", "delay": 0.4, "thinking": "t"}, {"text": "b"}]).start()
+    try:
+        def timed(i):
+            t0 = time.time()
+            req = urllib.request.Request(m.endpoint, data=b"{}", method="POST")
+            with urllib.request.urlopen(req, timeout=10) as r:
+                body = r.read()
+            return time.time() - t0, body
+        slow, body = timed(0)
+        fast, _ = timed(1)
+        v.check("a delayed turn answers after its delay, the next at once, with thinking in the stream",
+                slow >= 0.4 and fast < 0.4 and b"thinking_delta" in body, f"{slow:.2f}s {fast:.2f}s")
+    finally:
+        m.stop()
+
+
+def selftest_web(v: Verdict) -> None:
+    """helpers/web.py against an in-process websocket server: masked frames of all three
+    length forms round-trip, `event` frames are kept apart from replies, ids are unique."""
+    import base64
+    import hashlib
+    import socket
+    import struct
+    import threading
+
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(4)
+    port = srv.getsockname()[1]
+    got: list[dict] = []
+
+    def read_exact(c, n):
+        b = b""
+        while len(b) < n:
+            d = c.recv(n - len(b))
+            if not d:
+                raise OSError("eof")
+            b += d
+        return b
+
+    def frame(obj):
+        data = json.dumps(obj).encode()
+        n = len(data)
+        if n < 126:
+            head = bytes([0x81, n])
+        elif n < 65536:
+            head = bytes([0x81, 126]) + struct.pack("!H", n)
+        else:
+            head = bytes([0x81, 127]) + struct.pack("!Q", n)
+        return head + data
+
+    def serve():
+        c, _ = srv.accept()
+        req = b""
+        while not req.endswith(b"\r\n\r\n"):
+            req += c.recv(1)
+        key = re.search(rb"Sec-WebSocket-Key: (\S+)", req).group(1)
+        acc = base64.b64encode(hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest())
+        c.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                  b"Sec-WebSocket-Accept: " + acc + b"\r\n\r\n")
+        try:
+            while True:
+                b0, b1 = read_exact(c, 2)
+                n = b1 & 0x7F
+                if n == 126:
+                    n = struct.unpack("!H", read_exact(c, 2))[0]
+                elif n == 127:
+                    n = struct.unpack("!Q", read_exact(c, 8))[0]
+                masked = bool(b1 & 0x80)
+                mask = read_exact(c, 4)
+                body = bytes(x ^ mask[i % 4] for i, x in enumerate(read_exact(c, n)))
+                msg = json.loads(body)
+                got.append({"masked": masked, "msg": msg})
+                if msg.get("type") == "call":
+                    c.sendall(frame({"type": "event", "src": "s", "payload": {"n": 1}}))
+                    c.sendall(frame({"type": "reply", "id": msg["id"], "data": {"echo": msg["payload"]}}))
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    ws = None
+    try:
+        ws = web_mod.WsClient(port)
+        small = ws.call("t", {"x": 1})
+        big_text = "z" * 300
+        big = ws.call("t", {"text": big_text})
+        huge_text = "y" * 70000
+        huge = ws.call("t", {"text": huge_text}, timeout=30)
+        v.check("a small, a 300-byte and a 70000-byte masked frame round-trip through the websocket",
+                small == {"echo": {"x": 1}} and big == {"echo": {"text": big_text}}
+                and huge == {"echo": {"text": huge_text}} and all(g["masked"] for g in got), str(small)[:80])
+        v.check("event frames are kept apart from the reply", len(ws.events("s")) == 3
+                and all(f.get("type") == "event" for f in ws.events("s")))
+        ws.watch("lead")
+        time.sleep(0.2)
+        v.check("watch sends a watch frame the page's shim sends", got[-1]["msg"] == {"type": "watch", "src": "lead"})
+        v.check("call ids are distinct, and tagged per connection", ws.call("t", {})  == {"echo": {}}
+                and len({g["msg"].get("id") for g in got if g["msg"].get("type") == "call"}) == 4)
+    finally:
+        if ws:
+            ws.close()
+        srv.close()
+    m = scripted.ScriptedModel([]).start()
+    try:
+        ok = web_mod.http_get(m.url + "/v1/models/x")[0]
+        nf = web_mod.http_get(m.url + "/nope")[0]
+        up_now = web_mod.up(m.port, "/v1/models/x")
+    finally:
+        m.stop()
+    v.check("http_get returns the status of a 200 and of a 404; up() sees a server and refuses() a closed port",
+            ok == 200 and nf == 404 and up_now and web_mod.refuses(m.port))
+    v.check("encode_frame masks and uses the 16-bit and 64-bit lengths",
+            web_mod.encode_frame(b"a" * 5)[1] == 0x80 | 5 and web_mod.encode_frame(b"a" * 200)[1] == 0x80 | 126
+            and web_mod.encode_frame(b"a" * 70000)[1] == 0x80 | 127)
+
+
+def selftest_team_args(v: Verdict) -> None:
+    """Team.start passes extra_args after `--dir D`; boot's port goes to the final start only."""
+    tmp = tempfile.mkdtemp(prefix="e2e-args-")
+    t = None
+    try:
+        stub = os.path.join(tmp, "stub")
+        with open(stub, "w") as f:
+            f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" > argv.txt\nmkdir -p .fantastic/cli\n"
+                    ": > .fantastic/cli/mcp.sock\nexec sleep 20\n")
+        os.chmod(stub, 0o755)
+        t = team_mod.Team(stub, tmp, {})
+        t.start(wait_s=10, extra_args=["--port", 18080])
+        argv = open(os.path.join(tmp, "argv.txt")).read().split("\n")[:-1]
+        v.check("Team.start puts extra_args after --dir", argv == ["--dir", tmp, "--port", "18080"], str(argv))
+        v.check("Team.port is the port of the start", t.port == 18080)
+        t.stop()
+        os.remove(os.path.join(tmp, ".fantastic", "cli", "mcp.sock"))
+        t.start(wait_s=10)
+        argv = open(os.path.join(tmp, "argv.txt")).read().split("\n")[:-1]
+        v.check("Team.start with no extra_args is [--dir D] only, and clears the port",
+                argv == ["--dir", tmp] and t.port is None, str(argv))
+        v.check("Team.argv builds the same command line", t.argv(["--port", 7]) == [stub, "--dir", tmp, "--port", "7"])
+    finally:
+        if t:
+            t.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def selftest_app_helpers(v: Verdict) -> None:
+    import socket
+
+    p = app_mod.free_port()
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", p))
+        bound = True
+    except OSError:
+        bound = False
+    finally:
+        s.close()
+    v.check("free_port returns a port that can be bound", bound and 0 < p < 65536)
+    tmp = tempfile.mkdtemp(prefix="e2e-app-")
+    try:
+        class C:
+            binary = os.path.join(tmp, "fantastic_team")
+        errs = []
+        for fn in (app_mod.app_binary, app_mod.handle_example):
+            try:
+                fn(C())
+            except Skip as e:
+                errs.append(e.reason)
+        v.check("app_binary and handle_example raise Skip when the file is not built next to --bin",
+                len(errs) == 2 and "fantastic_team_app" in errs[0] and "handle_serve" in errs[1], str(errs))
+        open(os.path.join(tmp, "fantastic_team_app"), "w").close()
+        v.check("app_binary finds the file next to --bin", app_mod.app_binary(C()).endswith("fantastic_team_app"))
+        parent = subprocess.Popen(["sh", "-c", "sleep 30 & wait"])
+        try:
+            kids: list[int] = []
+            for _ in range(50):
+                kids = app_mod.child_pids(parent.pid)
+                if kids:
+                    break
+                time.sleep(0.1)
+            v.check("child_pids lists the child of a process, and a process with none gives []",
+                    len(kids) == 1 and app_mod.child_pids(kids[0]) == [], str(kids))
+            v.check("alive sees it", app_mod.alive(kids[0]) if kids else False)
+        finally:
+            for k in app_mod.child_pids(parent.pid):
+                os.kill(k, signal.SIGKILL)
+            parent.kill()
+            parent.wait()
+        v.check("wait_gone sees a dead pid", bool(kids) and app_mod.wait_gone(kids[0], 5))
+        os.makedirs(os.path.join(tmp, "secrets"))
+        for rel, text in (("a.log", "xx NEEDLE yy"), ("secrets/k", "NEEDLE"), ("b.log", "clean")):
+            with open(os.path.join(tmp, rel), "w") as f:
+                f.write(text)
+        v.check("files_holding finds a needle outside secrets/ and skips secrets/",
+                app_mod.files_holding(tmp, "NEEDLE") == ["a.log"], str(app_mod.files_holding(tmp, "NEEDLE")))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def selftest_new_tests_collect(v: Verdict) -> None:
+    """Every app/ and dispatcher/ test has its files, collects, and is in the free tier."""
+    by = {t["name"]: t for t in discover()}
+    v.check("the seven #37 e2e tests exist", set(NEW_TESTS) <= set(by), str(sorted(set(NEW_TESTS) - set(by))))
+    bad = []
+    for n in NEW_TESTS:
+        t = by.get(n)
+        if not t:
+            continue
+        ok, detail = collect_probe(t["dir"])
+        files = all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "team.yaml",
+                                                                         "script.json", "probe.py"))
+        if not (ok and files and t["costs"] == "free" and t["plug"] == "scripted" and t["build"] == "any"):
+            bad.append(f"{n}: collect={detail} files={files} costs={t['costs']} plug={t['plug']} build={t['build']}")
+    v.check("each collects, has its files, and is free / scripted / any build", not bad, "; ".join(bad))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("--only-free", action="store_true", help="run only tests whose costs is free")
@@ -459,11 +758,11 @@ def main() -> int:
         return 0
     if selftest() != 0:
         return 1
-    binary = a.bin or build()
+    binary = os.path.abspath(a.bin) if a.bin else build()
     stamp_dir = os.path.join(HERE, "runs", time.strftime("%Y%m%d-%H%M%S"))
     results = {t["name"]: run_test(t, binary, stamp_dir) for t in tests}
-    print("\n" + "\n".join(f"{'PASS' if ok else 'FAIL'}  {n}" for n, ok in results.items()))
-    return 0 if all(results.values()) else 1
+    print("\n" + "\n".join(f"{r}  {n}" for n, r in results.items()))
+    return summary(results)
 
 
 if __name__ == "__main__":
