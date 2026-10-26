@@ -716,7 +716,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
             "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts",
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
             "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher)",
-            "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker and its memory from the team.yaml template in the working directory and lists it in the group (its chat grant follows at the next start; team.yaml is not rewritten). remove_worker {node: worker, confirm} deletes the worker and its memory and drops it from its group",
+            "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker and its memory from the team.yaml template in the working directory and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start; team.yaml is not rewritten). remove_worker {node: worker, confirm} deletes the worker and its memory and drops it from its group",
         })
     }
 
@@ -830,7 +830,15 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                             board_groups: board_groups.as_ref(),
                             groups: &groups,
                         };
-                        add_worker(&peers, &at, &node, payload, reply).await
+                        let out = add_worker(&peers, &at, &node, payload, reply).await;
+                        // The new worker may be steered by the dispatcher at once,
+                        // like the workers granted at the start (`grant_control`).
+                        if out.get("error").is_none() {
+                            if let Some(id) = out["id"].as_str() {
+                                crate::tree::grant_control(kernel, &[id.to_string()]);
+                            }
+                        }
+                        out
                     }
                     "remove_worker" => {
                         let at = Membership {
@@ -1886,6 +1894,40 @@ mod tests {
             .map(|c| c["row"]["id"].as_str().unwrap())
             .collect();
         assert!(ids.contains(&"w2"), "{tree}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn control_via_kernel_add_worker_grants_the_dispatcher_the_new_worker() {
+        use fantastic_kernel::bootstrap;
+        let _cwd = CWD.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("team.yaml"), MINI_TEAM).unwrap();
+        let kernel = kernel_with_groups(dir.path()).await;
+        let before = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let added = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "g", "action": "add_worker", "id": "w2", "template": "t"}),
+        )
+        .await;
+        std::env::set_current_dir(before).unwrap();
+        assert_eq!(added["sent"], json!(true), "{added}");
+        let verbs = json!(crate::tree::CONTROL_VERBS);
+        assert_eq!(meta_of(&kernel, "w2")["callable_by"]["dispatcher"], verbs);
+        assert_eq!(meta_of(&kernel, "dispatcher")["can_call"]["w2"], verbs);
+        // The stop now reaches the worker's own handler (which may not know the verb)
+        // instead of being refused at the edge.
+        let stop = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "control", "node": "w2", "action": "stop", "confirm": true}),
+        )
+        .await;
+        let err = stop["error"].as_str().unwrap_or("");
+        assert!(!err.contains("may not call"), "{stop}");
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }

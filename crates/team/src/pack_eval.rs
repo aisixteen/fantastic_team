@@ -228,9 +228,10 @@ impl<P: Peers> EvalExecutor for PeersExecutor<'_, P> {
             })
             .unwrap_or_default();
         Ok(Outcome {
-            text: reply
-                .get("text")
-                .and_then(Value::as_str)
+            // A model agent answers `final` (and `response`); a plain worker, `text`.
+            text: ["text", "final", "response"]
+                .iter()
+                .find_map(|k| reply.get(*k).and_then(Value::as_str))
                 .unwrap_or("")
                 .to_string(),
             files,
@@ -528,6 +529,15 @@ mod tests {
         let s = run_evals(&evals, &exec, Duration::from_secs(2)).await;
         assert!(s.per_eval[0].passed, "{:?}", s.per_eval[0].reason);
         assert_eq!(s.per_eval[0].cost, Some(0.5));
+    }
+
+    #[tokio::test]
+    async fn peers_executor_reads_a_model_agents_final_answer() {
+        let w = Worker(json!({"response": "ok", "final": "ok", "client_id": "cli"}));
+        let exec = PeersExecutor::new(&w, "lead");
+        let evals = vec![ev("a", "t", Check::Contains("ok".to_string()))];
+        let s = run_evals(&evals, &exec, Duration::from_secs(2)).await;
+        assert!(s.per_eval[0].passed, "{:?}", s.per_eval[0].reason);
     }
 
     #[tokio::test]

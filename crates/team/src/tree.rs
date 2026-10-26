@@ -653,6 +653,47 @@ pub fn grant_chat_to(kernel: &Arc<Kernel>, workers: &[String], principal: &str) 
     granted
 }
 
+/// The verbs the dispatcher relays to a worker: `send` (hand_task) and the `control`
+/// actions `start`, `pause` and `stop`. Granted by [`grant_control`]; never `*`.
+pub const CONTROL_VERBS: [&str; 4] = ["send", "stop", "start", "pause"];
+
+/// Grant the `dispatcher` agent the [`CONTROL_VERBS`] on each worker in `workers`, on
+/// both ends: the dispatcher's `can_call` names the worker and the worker's
+/// `callable_by` names the dispatcher. An operator write made at each start, so it is
+/// idempotent. A worker that is not live is skipped; a refusal is reported, not fatal.
+/// Returns how many workers hold the grant. A worker made after the start is granted by
+/// `add_worker`.
+pub fn grant_control(kernel: &Arc<Kernel>, workers: &[String]) -> usize {
+    if !exists(kernel, DISPATCHER_ID) {
+        return 0;
+    }
+    let verbs = json!(CONTROL_VERBS);
+    let dispatcher = fantastic_kernel::AgentId::from(DISPATCHER_ID);
+    let mut granted = 0;
+    for id in workers.iter().filter(|w| exists(kernel, w)) {
+        let agent = fantastic_kernel::AgentId::from(id.as_str());
+        let by_agent = kernel.edit_callable_by(&agent, |cb| {
+            if cb.get(DISPATCHER_ID) == Some(&verbs) {
+                return false;
+            }
+            cb.insert(DISPATCHER_ID.into(), verbs.clone());
+            true
+        });
+        let by_dispatcher = kernel.edit_can_call(&dispatcher, |cc| {
+            if cc.get(id) == Some(&verbs) {
+                return false;
+            }
+            cc.insert(id.clone(), verbs.clone());
+            true
+        });
+        match (by_agent, by_dispatcher) {
+            (Ok(_), Ok(_)) => granted += 1,
+            (Err(e), _) | (_, Err(e)) => eprintln!("dispatcher control: `{id}`: {e}"),
+        }
+    }
+    granted
+}
+
 /// Name the dispatcher in the root's `callable_by` with the agent verbs
 /// ([`DISPATCHER_KERNEL_VERBS`]), the other end of the dispatcher's `can_call` on
 /// the root. An operator write made at each start, so it is idempotent. Only
@@ -705,6 +746,7 @@ pub fn run_at_start(
                 .flat_map(|g| g.members.iter().cloned())
                 .collect();
             grant_chat(&kernel, &workers);
+            grant_control(&kernel, &workers);
             grant_pack_install(&kernel);
             if let Err(e) = grant_agent_verbs(&kernel) {
                 eprintln!("{e}");
@@ -1609,6 +1651,101 @@ mod tests {
             grants("w1", "callable_by")[DISPATCHER_VIEW_ID],
             json!(CHAT_VERBS)
         );
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// A kernel with a bare dispatcher and workers `w1` and `w2`, none of them granted.
+    async fn kernel_with_workers(dir: &Path) -> Arc<Kernel> {
+        let kernel = crate::start(dir).await.unwrap();
+        let mut items = vec![json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID,
+            "id": "dispatcher", "handler_module": dispatcher::HANDLER_MODULE})];
+        for w in ["w1", "w2"] {
+            items.push(json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID,
+                "id": w, "handler_module": "ram_store.tools"}));
+        }
+        for rec in items {
+            let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, rec)]).await;
+            assert!(
+                matches!(outs[0].status, Status::Completed),
+                "{}",
+                outs[0].result
+            );
+        }
+        kernel
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_control_lets_the_dispatcher_send_and_stop_a_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = kernel_with_workers(dir.path()).await;
+        let stop = json!({"type": "control", "node": "w1", "action": "stop", "confirm": true});
+        let refused = |out: &Value| out["error"].as_str().unwrap_or("").contains("may not call");
+        let before = kernel
+            .send(vec![Item::new("dispatcher", stop.clone())])
+            .await;
+        assert!(refused(&before[0].result), "{}", before[0].result);
+
+        assert_eq!(grant_control(&kernel, &["w1".to_string()]), 1);
+        let after = kernel.send(vec![Item::new("dispatcher", stop)]).await;
+        assert!(
+            !refused(&after[0].result),
+            "the edge is open now: {}",
+            after[0].result
+        );
+        let grants = |id: &str, field: &str| {
+            kernel
+                .agents
+                .get(&fantastic_kernel::AgentId::from(id))
+                .map(|a| a.meta.read().unwrap()[field].clone())
+                .unwrap_or(Value::Null)
+        };
+        assert_eq!(
+            grants("w1", "callable_by")[DISPATCHER_ID],
+            json!(CONTROL_VERBS)
+        );
+        assert_eq!(
+            grants(DISPATCHER_ID, "can_call")["w1"],
+            json!(CONTROL_VERBS)
+        );
+        // only the listed verbs, never `*`; and a worker that was not named stays closed
+        for verb in ["delete_agent", "update_agent", "*"] {
+            assert!(!CONTROL_VERBS.contains(&verb), "{verb}");
+        }
+        assert!(grants(DISPATCHER_ID, "can_call")["w2"].is_null());
+        assert!(grants("w2", "callable_by")[DISPATCHER_ID].is_null());
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_control_is_idempotent_and_skips_dead_workers() {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = kernel_with_workers(dir.path()).await;
+        let ids = ["w1".to_string(), "nobody".to_string()];
+        assert_eq!(grant_control(&kernel, &ids), 1, "the dead id is skipped");
+        let snapshot = |id: &str| {
+            kernel
+                .agents
+                .get(&fantastic_kernel::AgentId::from(id))
+                .map(|a| {
+                    let m = a.meta.read().unwrap();
+                    (m["can_call"].clone(), m["callable_by"].clone())
+                })
+                .unwrap()
+        };
+        let (d1, w1) = (snapshot(DISPATCHER_ID), snapshot("w1"));
+        assert_eq!(grant_control(&kernel, &ids), 1);
+        assert_eq!((snapshot(DISPATCHER_ID), snapshot("w1")), (d1, w1));
+        assert!(snapshot(DISPATCHER_ID).0.get("nobody").is_none());
+        // no dispatcher, nothing granted
+        kernel
+            .send(vec![Item::new(
+                DEFAULT_ROOT_ID,
+                json!({"type": "delete_agent", "id": "dispatcher"}),
+            )])
+            .await;
+        assert_eq!(grant_control(&kernel, &ids), 0);
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
