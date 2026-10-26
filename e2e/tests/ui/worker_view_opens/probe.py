@@ -1,6 +1,7 @@
 """The worker view in the real binary: the verb leg and the web UI leg."""
 
 import os
+import re
 import time
 
 from helpers import run_flow, team as T
@@ -83,28 +84,72 @@ def run(ctx):
     status, page = http_get(port, PAGE)
     v.check("the web UI page is served on --port", status == 200 and "<html" in page.lower(),
             f"{status}")
+    # the dispatcher page and its socket are the in-process app's (TeamHandle); the binary's
+    # --port must not serve them: shown here, so the skip below is a fact, not a claim
+    status, _ = http_get(port, "/team_page/file/index.html")
+    v.check("the binary serves no dispatcher page (/team_page)", status == 404, f"{status}")
+    # the host may accept the websocket upgrade on any path; what matters is that no
+    # dispatcher answers behind /team_ws
+    leg = None
+    try:
+        leg = WsLeg(port, "/team_ws/ws")
+        got, err = leg.call("dispatcher", {"type": "open", "node": "w1"}, timeout=10), None
+    except (RuntimeError, OSError) as e:
+        got, err = None, str(e)
+    finally:
+        if leg:
+            leg.close()
+    print(f"  (team_ws -> dispatcher open w1: reply={got!r} error={err!r})")
+    v.check("nothing behind /team_ws opens a worker", not (isinstance(got, dict) and got.get("view")),
+            f"{got} {err}")
+
     ws = WsLeg(port, WS)
     try:
         for target, payload in (("worker_view", {"type": "open", "worker": "w1"}),
-                                ("lead", {"type": "send", "text": "hi"})):
-            got = None
-            try:  # a refusal is an error frame or a reply that holds `error`
+                                ("dispatcher", {"type": "open", "node": "w1"}),
+                                ("lead", {"type": "send", "text": "hi"}),
+                                ("w1", {"type": "send", "text": "hi"})):
+            got, err = None, None
+            try:
                 got = ws.call(target, payload)
-                refused = isinstance(got, dict) and got.get("reason") == "unauthorized"
-            except RuntimeError:
-                refused = True
-            v.check(f"the page's socket may not call {target}", refused, str(got))
+            except RuntimeError as e:
+                err = str(e)
+            print(f"  (canvas_ws -> {target}: reply={got!r} error={err!r})")
+            refused = err is not None and "closed" not in err or (
+                isinstance(got, dict) and got.get("reason") == "unauthorized")
+            v.check(f"the page's socket may not call {target}", refused, f"{got} {err}")
     finally:
         ws.close()
     v.check("nothing reached the model through the page's socket", ctx.model.served == 0,
             f"served {ctx.model.served}")
 
+    # chat reaches only the bound worker: the verb leg (the operator's `send`), since the
+    # binary's socket is not granted any worker
+    mark = os.path.getsize(team.log_path)
+    r = team.send("w1", {"type": "send", "text": "hi"})
+    v.check("a message to w1 is answered", r.get("status") == "completed", str(r))
+    end, last, since = time.time() + 30, -1, time.time()
+    while time.time() < end:  # until the model count has been still for 3 s
+        if ctx.model.served != last:
+            last, since = ctx.model.served, time.time()
+        elif last >= 1 and time.time() - since > 3:
+            break
+        time.sleep(0.2)
+    v.check("w1's message reached the model", ctx.model.served >= 1, f"served {ctx.model.served}")
+    with open(team.log_path, "rb") as f:
+        f.seek(mark)
+        after = f.read().decode(errors="replace")
+    mine = [ln for ln in after.splitlines() if re.search(r"\] w1 (call|task) ", ln)]
+    other = [ln for ln in after.splitlines() if re.search(r"\] (w2|lead) (call|task) ", ln)]
+    v.check("w1 handled the message", bool(mine), "no w1 line in the team log")
+    v.check("w2 and the lead handled nothing", not other, str(other[:3]))
+
     # 5. not built: see README.md
     print("  [skipped] the page opens a worker as a full-screen chat bound to it (dispatcher "
-          "`open`): the binary's --port serves fantastic's canvas, where the dispatcher view is "
-          "not placed on a fresh start (canvas_page does not exist yet when the tree is applied) "
-          "and canvas_ws may not call the dispatcher; the dispatcher page and its socket "
-          "(team_page, team_ws) are served only by the in-process app (TeamHandle)")
+          "`open`): shown above that the binary's --port has no /team_page, and that a socket "
+          "opened on /team_ws/ws is the canvas_ws leg, which may not call the dispatcher; the "
+          "dispatcher page and its leg (team_page, team_ws, with grant_chat_to for the "
+          "workers) are made only by the in-process app (TeamHandle), which a probe cannot start")
     print("  [skipped] no horizontal scroll at 360x740 and desktop: no page serves the worker "
           "view (the web UI opens the chat only); needs a headless browser, and the stdlib-only "
           "harness has no CDP client")
