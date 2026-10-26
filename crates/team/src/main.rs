@@ -110,7 +110,7 @@ fn main() -> ExitCode {
     // loader) away, so the first run there seeds first and serves the page from the
     // next start.
     if let Surface::Port(p) = args.surface {
-        if std::path::Path::new(".fantastic").exists() {
+        if fantastic_team::web_records_due(std::path::Path::new(".")) {
             if let Err(e) = fantastic_team::app_control::persist_web(std::path::Path::new("."), p) {
                 eprintln!("fantastic_team: {e}");
                 return ExitCode::from(1);

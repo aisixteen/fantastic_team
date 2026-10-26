@@ -116,6 +116,15 @@ pub fn registry() -> BundleRegistry {
 /// by `fantastic_team ai-readme`.
 pub const AI_README: &str = include_str!("../../../docs/ai-readme.md");
 
+/// Whether the binary's `--port` may write the web records into `dir` before the
+/// shell boots: only once the directory holds a kernel (`.fantastic`). A kernel
+/// started in a fresh directory would take fantastic's first-run seeding away (its
+/// `user`, its page loader), so the first run there seeds first and the team page
+/// is served from the next start.
+pub fn web_records_due(dir: &std::path::Path) -> bool {
+    dir.join(".fantastic").exists()
+}
+
 /// Usage text, printed on `--help` and on bad arguments.
 pub const USAGE: &str = "usage: fantastic_team [--dir PATH] [--port N | --tui]\n  no surface flag: fully headless (no port, no terminal UI)\n  --port N: serve the web UI on 127.0.0.1:N (the dispatcher page at /team_page/file/index.html, its socket at /team_ws/ws)\n  --tui: the terminal UI (needs a terminal)\n  (`mcp`, `send` and `readme` as the first word run fantastic's own commands)\n  (`packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)\n  (`packs install` run from a terminal asks for the agent id of each port first; an empty answer skips it)\n  packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]";
 
@@ -397,6 +406,14 @@ mod tests {
         register_team(&mut reg);
         let names: Vec<&str> = reg.catalog().map(|(n, _)| n).collect();
         assert!(names.contains(&"team_puller.tools"));
+    }
+
+    #[test]
+    fn web_records_are_due_only_once_a_kernel_exists() {
+        let d = tempfile::TempDir::new().unwrap();
+        assert!(!web_records_due(d.path()), "fresh directory: seed first");
+        std::fs::create_dir(d.path().join(".fantastic")).unwrap();
+        assert!(web_records_due(d.path()));
     }
 
     #[test]

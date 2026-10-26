@@ -901,7 +901,11 @@ mod tests {
         }
         let cc = meta(page::WS_ID, "can_call");
         assert_eq!(cc.get("dispatcher"), Some(&json!(PAGE_VERBS)), "{cc:?}");
-        assert_eq!(cc.get("dispatcher"), Some(&json!(PAGE_VERBS)), "{cc:?}");
+        assert_eq!(
+            cc.get("w1"),
+            Some(&json!(crate::tree::CHAT_VERBS)),
+            "{cc:?}"
+        );
         k.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
