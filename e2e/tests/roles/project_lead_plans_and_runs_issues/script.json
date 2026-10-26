@@ -1,0 +1,120 @@
+[
+ {
+  "say": "Reading the issues, the board and my room.",
+  "calls": [
+   {
+    "target": "github",
+    "type": "issues",
+    "args": {
+     "repo": "acme/widgets"
+    }
+   },
+   {
+    "target": "board",
+    "type": "rows"
+   },
+   {
+    "target": "roles",
+    "type": "get_count"
+   }
+  ]
+ },
+ {
+  "say": "Proposal. I read 4 open issues: #1 Add a greeting file, #2 Add a greeting file 2, #3 Add a greeting file 3, #4 Add a greeting file 4. Tree: me (project_lead) -> one worker per issue, run in this order: #1, then #2; #3 and #4 wait (no worker yet, they depend on the first two merging). Fork points: none needed. Limits: 5 in total, 2 workers. Shall I start? Say yes.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "Starting a worker for issue 1.",
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "worker",
+     "task": "The queue is queue. Your id is the id in your own reflect. Work on issue 1, then report done."
+    }
+   }
+  ]
+ },
+ {
+  "say": "Worker started. Waiting for it.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "roles",
+    "type": "report",
+    "args": {
+     "state": "done",
+     "result": "PR opened for issue 1"
+    }
+   }
+  ]
+ },
+ {
+  "say": "Issue 1 is done: the pull request is open.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "Starting a worker for issue 2.",
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "worker",
+     "task": "The queue is queue. Your id is the id in your own reflect. Work on issue 2, then report done."
+    }
+   }
+  ]
+ },
+ {
+  "say": "Worker started. Waiting for it.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "roles",
+    "type": "report",
+    "args": {
+     "state": "done",
+     "result": "PR opened for issue 2"
+    }
+   }
+  ]
+ },
+ {
+  "say": "Issue 2 is done: the pull request is open.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "Plan updated: [x] #1 PR open, [x] #2 PR open, [ ] #3, [ ] #4 wait for you. Nothing is cleaned up.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ }
+]

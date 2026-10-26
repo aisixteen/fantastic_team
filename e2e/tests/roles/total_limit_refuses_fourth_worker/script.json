@@ -1,0 +1,61 @@
+[
+ {
+  "say": "Starting worker 1 of 4.",
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "worker",
+     "task": "The queue is queue. Your id is the id in your own reflect."
+    }
+   }
+  ]
+ },
+ {
+  "say": "Starting worker 2 of 4.",
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "worker",
+     "task": "The queue is queue. Your id is the id in your own reflect."
+    }
+   }
+  ]
+ },
+ {
+  "say": "Starting worker 3 of 4.",
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "worker",
+     "task": "The queue is queue. Your id is the id in your own reflect."
+    }
+   }
+  ]
+ },
+ {
+  "say": "Starting worker 4 of 4.",
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "worker",
+     "task": "The queue is queue. Your id is the id in your own reflect."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ }
+]
