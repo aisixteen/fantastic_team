@@ -61,6 +61,8 @@ pub fn register_team(reg: &mut BundleRegistry) {
         team_github_connector::GithubConnectorBundle,
     );
     reg.register(puller::HANDLER_MODULE, puller::PullerBundle);
+    // The dispatcher page, for the web UI that `--port` persists (`app_control::persist_web`).
+    reg.register(page::HANDLER_MODULE, page::PageBundle);
     reg.register(pack_listing::HANDLER_MODULE, pack_listing::ListingBundle);
     reg.register(webhook::HANDLER_MODULE, webhook::WebhookBundle);
     reg.register(board::HANDLER_MODULE, board::BoardBundle);
@@ -106,7 +108,6 @@ pub fn registry() -> BundleRegistry {
         fantastic_web_ws::HANDLER_MODULE,
         fantastic_web_ws::WebWsBundle,
     );
-    reg.register(page::HANDLER_MODULE, page::PageBundle);
     register_team(&mut reg);
     reg
 }
@@ -115,8 +116,17 @@ pub fn registry() -> BundleRegistry {
 /// by `fantastic_team ai-readme`.
 pub const AI_README: &str = include_str!("../../../docs/ai-readme.md");
 
+/// Whether the binary's `--port` may write the web records into `dir` before the
+/// shell boots: only once the directory holds a kernel (`.fantastic`). A kernel
+/// started in a fresh directory would take fantastic's first-run seeding away (its
+/// `user`, its page loader), so the first run there seeds first and the team page
+/// is served from the next start.
+pub fn web_records_due(dir: &std::path::Path) -> bool {
+    dir.join(".fantastic").exists()
+}
+
 /// Usage text, printed on `--help` and on bad arguments.
-pub const USAGE: &str = "usage: fantastic_team [--dir PATH] [--port N | --tui]\n  no surface flag: fully headless (no port, no terminal UI)\n  --port N: serve the web UI on 127.0.0.1:N\n  --tui: the terminal UI (needs a terminal)\n  (`mcp`, `send` and `readme` as the first word run fantastic's own commands)\n  (`packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)\n  (`packs install` run from a terminal asks for the agent id of each port first; an empty answer skips it)\n  packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]";
+pub const USAGE: &str = "usage: fantastic_team [--dir PATH] [--port N | --tui]\n  no surface flag: fully headless (no port, no terminal UI)\n  --port N: serve the web UI on 127.0.0.1:N (the dispatcher page at /team_page/file/index.html, its socket at /team_ws/ws)\n  --tui: the terminal UI (needs a terminal)\n  (`mcp`, `send` and `readme` as the first word run fantastic's own commands)\n  (`packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)\n  (`packs install` run from a terminal asks for the agent id of each port first; an empty answer skips it)\n  packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]";
 
 /// The first words that are fantastic's own commands, passed through untouched.
 const PASSTHROUGH: &[&str] = &["mcp", "send", "readme"];
@@ -383,11 +393,27 @@ mod tests {
     }
 
     #[test]
+    fn register_team_registers_the_team_page_bundle() {
+        let mut reg = BundleRegistry::new();
+        register_team(&mut reg);
+        let names: Vec<&str> = reg.catalog().map(|(n, _)| n).collect();
+        assert!(names.contains(&"team_page.tools"));
+    }
+
+    #[test]
     fn register_team_registers_puller() {
         let mut reg = BundleRegistry::new();
         register_team(&mut reg);
         let names: Vec<&str> = reg.catalog().map(|(n, _)| n).collect();
         assert!(names.contains(&"team_puller.tools"));
+    }
+
+    #[test]
+    fn web_records_are_due_only_once_a_kernel_exists() {
+        let d = tempfile::TempDir::new().unwrap();
+        assert!(!web_records_due(d.path()), "fresh directory: seed first");
+        std::fs::create_dir(d.path().join(".fantastic")).unwrap();
+        assert!(web_records_due(d.path()));
     }
 
     #[test]

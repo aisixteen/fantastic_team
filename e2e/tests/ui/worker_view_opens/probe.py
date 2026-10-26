@@ -9,7 +9,10 @@ from helpers.verdict import Verdict
 from helpers.web import WsClient, http_get
 
 PAGE = "/canvas_page/file/index.html"
-WS = "/canvas_ws/ws"
+TEAM_PAGE = "/team_page/file/index.html"
+WS = "/team_ws/ws"
+CHAT_VERBS = ["history", "send", "stop", "status", "watch"]  # tree::CHAT_VERBS
+PAGE_VERBS = ["sidebar", "tree", "open", "control"]  # app_control::PAGE_VERBS
 TOP = ["task", "files", "output", "preview"]
 
 
@@ -35,9 +38,22 @@ def run(ctx):
     r = team.send("kernel", {"type": "update_agent", "id": "credentials",
                              "callable_by": {"$self": "*", "lead": "*", "w1": "*", "w2": "*"}})
     v.check("the credential store admits the workers", r.get("status") == "completed", str(r))
-    for agent in ("worker_view", "dispatcher"):
-        r = team.send("kernel", {"type": "update_agent", "id": agent,
-                                 "callable_by": {"$self": "*", "$parent": "*", "mcp": "*"}})
+    # the binary grants the page's leg the workers a team.yaml names, at start; these two
+    # are made after boot, so the operator grants them as `tree::grant_chat_to` would
+    for w in ("w1", "w2"):
+        r = team.send("kernel", {"type": "update_agent", "id": w,
+                                 "callable_by": {"$self": "*", "$parent": "*", "team_ws": CHAT_VERBS}})
+        v.check(f"the page's leg may chat with {w}", r.get("status") == "completed", str(r))
+    r = team.send("kernel", {"type": "update_agent", "id": "team_ws",
+                             "can_call": {"$self": "*", "dispatcher": PAGE_VERBS,
+                                          "w1": CHAT_VERBS, "w2": CHAT_VERBS}})
+    v.check("the page's leg may call the dispatcher and the workers", r.get("status") == "completed", str(r))
+    for agent, leg_verbs in (("worker_view", None), ("dispatcher", PAGE_VERBS)):
+        # update_agent rewrites callable_by whole: keep the page's leg on the dispatcher
+        by = {"$self": "*", "$parent": "*", "mcp": "*"}
+        if leg_verbs:
+            by["team_ws"] = leg_verbs
+        r = team.send("kernel", {"type": "update_agent", "id": agent, "callable_by": by})
         v.check(f"the operator may call {agent}", r.get("status") == "completed", str(r))
 
     v.check("the page is served on --port", app.wait_http(f"http://127.0.0.1:{port}{PAGE}", 30))
@@ -84,50 +100,42 @@ def run(ctx):
     page = page.decode(errors="replace")
     v.check("the web UI page is served on --port", status == 200 and "<html" in page.lower(),
             f"{status}")
-    # the dispatcher page and its socket are the in-process app's (TeamHandle); the binary's
-    # --port must not serve them: shown here, so the skip below is a fact, not a claim
-    status, _ = http_get(f"http://127.0.0.1:{port}/team_page/file/index.html")
-    v.check("the binary serves no dispatcher page (/team_page)", status == 404, f"{status}")
-    # the host may accept the websocket upgrade on any path; what matters is that no
-    # dispatcher answers behind /team_ws
-    leg = None
-    try:
-        leg = WsClient(port, "/team_ws/ws")
-        got, err = leg.call("dispatcher", {"type": "open", "node": "w1"}, timeout=10), None
-    except (RuntimeError, OSError) as e:
-        got, err = None, str(e)
-    finally:
-        if leg:
-            leg.close()
-    print(f"  (team_ws -> dispatcher open w1: reply={got!r} error={err!r})")
-    v.check("nothing behind /team_ws opens a worker", not (isinstance(got, dict) and got.get("view")),
-            f"{got} {err}")
+    # the dispatcher page and its socket are the same ones the app serves (`serve_web`)
+    status, tpage = http_get(f"http://127.0.0.1:{port}{TEAM_PAGE}")
+    tpage = tpage.decode(errors="replace")
+    v.check("the binary serves the dispatcher page (/team_page)",
+            status == 200 and "function renderSidebar(" in tpage, f"{status}")
 
     ws = WsClient(port, WS)
     try:
-        for target, payload in (("worker_view", {"type": "open", "worker": "w1"}),
-                                ("dispatcher", {"type": "open", "node": "w1"}),
-                                ("lead", {"type": "send", "text": "hi"}),
-                                ("w1", {"type": "send", "text": "hi"})):
-            got, err = None, None
+        def leg(target, payload):
             try:
-                got = ws.call(target, payload)
+                return ws.call(target, payload, timeout=30), None
             except (RuntimeError, OSError) as e:
-                err = str(e)
-            print(f"  (canvas_ws -> {target}: reply={got!r} error={err!r})")
+                return None, str(e)
+
+        got, err = leg("dispatcher", {"type": "open", "node": "w1"})
+        v.check("the page's socket opens w1 as a full-screen chat bound to it",
+                isinstance(got, dict) and got.get("view") == "chat" and got.get("target") == "w1"
+                and got.get("fullscreen") is True, f"{got} {err}")
+        for target, payload in (("worker_view", {"type": "open", "worker": "w1"}),
+                                ("lead", {"type": "send", "text": "hi"})):
+            got, err = leg(target, payload)
+            print(f"  (team_ws -> {target}: reply={got!r} error={err!r})")
             refused = err is not None and "closed" not in err or (
                 isinstance(got, dict) and (got.get("reason") == "unauthorized" or got.get("refused")))
             v.check(f"the page's socket may not call {target}", refused, f"{got} {err}")
+        v.check("nothing reached the model through the refused calls", ctx.model.served == 0,
+                f"served {ctx.model.served}")
+
+        # chat reaches only the bound worker, over the page's own socket
+        mark = os.path.getsize(team.log_path)
+        got, err = leg("w1", {"type": "send", "text": "hi"})
+        v.check("a message to w1 over the page's socket is answered",
+                isinstance(got, dict) and "error" not in got and got.get("final") == "hello from w1",
+                f"{got} {err}")
     finally:
         ws.close()
-    v.check("nothing reached the model through the page's socket", ctx.model.served == 0,
-            f"served {ctx.model.served}")
-
-    # chat reaches only the bound worker: the verb leg (the operator's `send`), since the
-    # binary's socket is not granted any worker
-    mark = os.path.getsize(team.log_path)
-    r = team.send("w1", {"type": "send", "text": "hi"})
-    v.check("a message to w1 is answered", r.get("status") == "completed", str(r))
     end, last, since = time.time() + 30, -1, time.time()
     while time.time() < end:  # until the model count has been still for 3 s
         if ctx.model.served != last:
@@ -144,15 +152,9 @@ def run(ctx):
     v.check("w1 handled the message", bool(mine), "no w1 line in the team log")
     v.check("w2 and the lead handled nothing", not other, str(other[:3]))
 
-    # 5. not built: see README.md
-    print("  [skipped] the page opens a worker as a full-screen chat bound to it (dispatcher "
-          "`open`): shown above that the binary's --port has no /team_page, and that a socket "
-          "opened on /team_ws/ws is the canvas_ws leg, which may not call the dispatcher; the "
-          "dispatcher page and its leg (team_page, team_ws, with grant_chat_to for the "
-          "workers) are made only by the in-process app (TeamHandle), which a probe cannot start")
-    print("  [skipped] no horizontal scroll at 360x740 and desktop: no page serves the worker "
-          "view (the web UI opens the chat only); needs a headless browser, and the stdlib-only "
-          "harness has no CDP client")
+    # not built: see README.md
+    print("  [skipped] no horizontal scroll at 360x740 and desktop: needs a headless browser, "
+          "and the stdlib-only harness has no CDP client")
 
     code = team.stop()
     v.check("the team stopped on SIGTERM and drained", code in (0, -15), f"exit {code}")

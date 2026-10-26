@@ -263,10 +263,21 @@ impl Drop for TeamHandle {
 }
 
 /// Serve the dispatcher page on `127.0.0.1:port`: a `web` host under the root, the
-/// page agent and the socket leg under it, then boot the host (it mounts the
-/// children, then listens). A taken port makes the boot fail. Safe to repeat:
-/// what exists is kept, and the host's port is set.
+/// page agent and the socket leg under it ([`prepare_web`]), then boot the host (it
+/// mounts the children, then listens). A taken port makes the boot fail. Safe to
+/// repeat: what exists is kept, and the host's port is set.
 async fn serve_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
+    prepare_web(kernel, port).await?;
+    send_one(kernel, page::WEB_ID, json!({"type": "boot"}))
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("serving the web UI on port {port} failed: {e}"))
+}
+
+/// Everything [`serve_web`] does before the boot: the port pre-check, the `web`
+/// host, the page and the socket leg, their edges, the leg's grants on the
+/// dispatcher and the workers, and the records flushed to disk.
+async fn prepare_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
     let live = |id: &str| {
         kernel
             .agents
@@ -341,10 +352,32 @@ async fn serve_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
         tree::grant_chat_to(kernel, &workers, page::WS_ID);
     }
     kernel.flush_records().await;
-    send_one(kernel, page::WEB_ID, json!({"type": "boot"}))
-        .await
-        .map(|_| ())
-        .map_err(|e| format!("serving the web UI on port {port} failed: {e}"))
+    Ok(())
+}
+
+/// Write the web UI's records (the same ones [`serve_web`] makes, with the same
+/// grants) into `dir` without serving them, for a host that boots the directory
+/// itself: the binary's `--port` hands the records to fantastic's shell, which
+/// hydrates and boots them. Runs an offline kernel on its own runtime and
+/// releases the directory lock before it returns, on failure too. Safe to repeat.
+pub fn persist_web(dir: &Path, port: u16) -> Result<(), String> {
+    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    rt.block_on(async {
+        let kernel = start(dir).await.map_err(|e| e.to_string())?;
+        let res = prepare_web(&kernel, port).await;
+        if res.is_err() {
+            drop_web(&kernel).await;
+        }
+        kernel.shutdown().await;
+        let released = bootstrap::shutdown(dir).map_err(|e| e.to_string());
+        match (res, released) {
+            (Ok(()), r) => r,
+            (Err(e), Ok(())) => Err(format!("serving the web UI on port {port} failed: {e}")),
+            (Err(e), Err(r)) => Err(format!(
+                "serving the web UI on port {port} failed: {e}; releasing the lock failed: {r}"
+            )),
+        }
+    })
 }
 
 /// Remove the web host and its children (the page and the socket leg), so the
@@ -586,10 +619,25 @@ mod tests {
         assert_eq!(h.state(), State::Stopped);
     }
 
+    /// fantastic's web host keeps its live servers in a process-wide map keyed by the
+    /// agent id (`web`), so two tests that serve a web host at once undo each other.
+    /// Every test that serves one holds this for its whole run.
+    static WEB: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// A port that is free right now (bound, read, released).
     fn free_port() -> u16 {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
+        // Never the same port twice in this process: the tests run in parallel and a
+        // port released here may be handed out again before its test binds it.
+        static ISSUED: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+        loop {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            let mut issued = ISSUED.lock().unwrap();
+            if !issued.contains(&port) {
+                issued.push(port);
+                return port;
+            }
+        }
     }
 
     /// One HTTP/1.0 GET on 127.0.0.1:port; the whole response as text.
@@ -620,6 +668,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn start_with_a_port_serves_the_web_ui() {
+        let _web = WEB.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         let port = free_port();
         let mut h = TeamHandle::start(dir.path(), TeamOptions { port: Some(port) })
@@ -667,6 +716,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn start_with_a_busy_port_fails_and_releases_the_lock() {
+        let _web = WEB.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = busy.local_addr().unwrap().port();
@@ -683,19 +733,9 @@ mod tests {
         drop(busy);
     }
 
-    /// The page's socket leg reaches the dispatcher: a raw websocket handshake and one
-    /// `call` frame for `sidebar`, answered by a `reply` frame with the same id.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn the_page_socket_reaches_the_dispatcher() {
+    /// Open a raw websocket on `/team_ws/ws`; the handshake head and the stream.
+    async fn ws_open(port: u16) -> (String, tokio::net::TcpStream) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let dir = tempfile::TempDir::new().unwrap();
-        let port = free_port();
-        // The dispatcher exists before the host is served, as after a first start.
-        let k = start(dir.path()).await.unwrap();
-        let mk = json!({"type": "create_agent", "id": "dispatcher", "parent_id": DEFAULT_ROOT_ID,
-            "handler_module": crate::dispatcher::HANDLER_MODULE, "groups": {}});
-        send_one(&k, DEFAULT_ROOT_ID, mk).await.unwrap();
-        serve_web(&k, port).await.unwrap();
         let mut c = loop {
             match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
                 Ok(c) => break c,
@@ -712,18 +752,22 @@ mod tests {
             c.read_exact(&mut b).await.unwrap();
             head.push(b[0]);
         }
-        assert!(
-            String::from_utf8_lossy(&head).starts_with("HTTP/1.1 101"),
-            "{}",
-            String::from_utf8_lossy(&head)
-        );
-        let msg = json!({"type": "call", "target": "dispatcher", "payload": {"type": "sidebar"}, "id": "p1"}).to_string();
+        (String::from_utf8_lossy(&head).into_owned(), c)
+    }
+
+    /// A websocket handshake, one `call` frame for `target`, and the `reply` frame.
+    async fn ws_call(port: u16, target: &str, payload: Value) -> Value {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (head, mut c) = ws_open(port).await;
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+        let msg =
+            json!({"type": "call", "target": target, "payload": payload, "id": "p1"}).to_string();
         assert!(msg.len() < 126);
         let mut frame = vec![0x81, 0x80 | msg.len() as u8, 0, 0, 0, 0];
         frame.extend_from_slice(msg.as_bytes());
         c.write_all(&frame).await.unwrap();
         // The leg also announces what it handles as `event` frames: read to the reply.
-        let reply = loop {
+        loop {
             let mut h2 = [0u8; 2];
             c.read_exact(&mut h2).await.unwrap();
             let len = match h2[1] & 0x7f {
@@ -743,9 +787,38 @@ mod tests {
             c.read_exact(&mut body).await.unwrap();
             let frame: Value = serde_json::from_slice(&body).unwrap();
             if frame["type"] != "event" {
-                break frame;
+                return frame;
             }
-        };
+        }
+    }
+
+    /// `persist_web` blocks on a runtime of its own, as the binary's main does: run it
+    /// off the test's runtime.
+    async fn persist(dir: &Path, port: u16) -> Result<(), String> {
+        let dir = dir.to_path_buf();
+        std::thread::spawn(move || persist_web(&dir, port))
+            .join()
+            .unwrap()
+    }
+
+    async fn make_dispatcher(k: &Arc<Kernel>, groups: Value) {
+        let mk = json!({"type": "create_agent", "id": "dispatcher", "parent_id": DEFAULT_ROOT_ID,
+            "handler_module": crate::dispatcher::HANDLER_MODULE, "groups": groups});
+        send_one(k, DEFAULT_ROOT_ID, mk).await.unwrap();
+    }
+
+    /// The page's socket leg reaches the dispatcher: a raw websocket handshake and one
+    /// `call` frame for `sidebar`, answered by a `reply` frame with the same id.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_page_socket_reaches_the_dispatcher() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let port = free_port();
+        // The dispatcher exists before the host is served, as after a first start.
+        let k = start(dir.path()).await.unwrap();
+        make_dispatcher(&k, json!({})).await;
+        serve_web(&k, port).await.unwrap();
+        let reply = ws_call(port, "dispatcher", json!({"type": "sidebar"})).await;
         assert_eq!(reply["type"], "reply", "{reply}");
         assert_eq!(reply["id"], "p1");
         assert!(reply["data"].get("error").is_none(), "{reply}");
@@ -753,5 +826,141 @@ mod tests {
         drop_web(&k).await;
         k.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// `--port` in the binary: the records are written offline, then a plain start
+    /// (what fantastic's host does) serves the page.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_web_then_a_plain_start_serves_the_page() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let port = free_port();
+        persist(dir.path(), port).await.unwrap();
+        let k = start(dir.path()).await.unwrap();
+        let resp = http_get(port, page::PAGE_PATH).await;
+        assert_eq!(status_of(&resp), 200, "{resp}");
+        assert!(
+            resp.contains("function renderSidebar("),
+            "the page is served"
+        );
+        assert!(
+            resp.contains("window.fantastic = {"),
+            "with the socket shim"
+        );
+        assert_eq!(
+            status_of(&http_get(port, "/team_page/file/other.txt").await),
+            404
+        );
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_web_socket_reaches_the_dispatcher() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let port = free_port();
+        let k = start(dir.path()).await.unwrap();
+        make_dispatcher(&k, json!({})).await;
+        k.flush_records().await;
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+        persist(dir.path(), port).await.unwrap();
+        let k = start(dir.path()).await.unwrap();
+        let (head, _c) = ws_open(port).await;
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+        let reply = ws_call(port, "dispatcher", json!({"type": "sidebar"})).await;
+        assert_eq!(reply["type"], "reply", "{reply}");
+        assert_eq!(reply["id"], "p1");
+        assert_eq!(reply["data"]["groups"], json!([]), "{reply}");
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_web_grants_chat_to_the_workers() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let k = start(dir.path()).await.unwrap();
+        let mk = json!({"type": "create_agent", "id": "w1", "parent_id": DEFAULT_ROOT_ID,
+            "handler_module": "ram_store.tools"});
+        send_one(&k, DEFAULT_ROOT_ID, mk).await.unwrap();
+        make_dispatcher(&k, json!({"workers": ["w1"]})).await;
+        k.flush_records().await;
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+        persist(dir.path(), free_port()).await.unwrap();
+        let k = start(dir.path()).await.unwrap();
+        let id = |s: &str| fantastic_kernel::AgentId::from(s);
+        let meta =
+            |a: &str, key: &str| k.agents.get(&id(a)).unwrap().meta.read().unwrap()[key].clone();
+        let cb = meta("w1", "callable_by");
+        let grant = cb.get(page::WS_ID).expect("team_ws may call w1");
+        for verb in ["history", "send", "stop", "status", "watch"] {
+            assert!(grant.as_array().unwrap().contains(&json!(verb)), "{verb}");
+        }
+        let cc = meta(page::WS_ID, "can_call");
+        assert_eq!(cc.get("dispatcher"), Some(&json!(PAGE_VERBS)), "{cc:?}");
+        assert_eq!(
+            cc.get("w1"),
+            Some(&json!(crate::tree::CHAT_VERBS)),
+            "{cc:?}"
+        );
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_web_is_idempotent() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (p1, p2) = (free_port(), free_port());
+        persist(dir.path(), p1).await.unwrap();
+        persist(dir.path(), p2).await.unwrap();
+        let k = start(dir.path()).await.unwrap();
+        let id = |s: &str| fantastic_kernel::AgentId::from(s);
+        let count = |h: &str| {
+            k.agents
+                .iter()
+                .filter(|a| a.handler_module.as_deref() == Some(h))
+                .count()
+        };
+        assert_eq!(count(fantastic_web::HANDLER_MODULE), 1);
+        assert_eq!(count(page::HANDLER_MODULE), 1);
+        assert_eq!(count(fantastic_web_ws::HANDLER_MODULE), 1);
+        let port = k
+            .agents
+            .get(&id(page::WEB_ID))
+            .unwrap()
+            .meta
+            .read()
+            .unwrap()["port"]
+            .clone();
+        assert_eq!(port, json!(p2));
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_web_busy_port_fails_and_releases_the_lock() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = busy.local_addr().unwrap().port();
+        let err = persist(dir.path(), port)
+            .await
+            .expect_err("a busy port is an error");
+        assert!(err.contains(&port.to_string()), "{err}");
+        let mut h = TeamHandle::start(dir.path(), TeamOptions::default())
+            .await
+            .expect("the lock was released");
+        assert!(!h
+            .kernel
+            .as_ref()
+            .unwrap()
+            .agents
+            .contains_key(&fantastic_kernel::AgentId::from(page::WEB_ID)));
+        h.stop().await.unwrap();
+        drop(busy);
     }
 }
