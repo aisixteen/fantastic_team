@@ -4,7 +4,7 @@ Built the way fantastic's `e2e/` is: one folder per test, a plug picks what answ
 
 ```
 python3 e2e/run.py --only-free          every free test; no network, no key; builds the binary with cargo
-python3 e2e/run.py --only task/one_issue_to_draft_pr --bin PATH
+python3 e2e/run.py --only task/one_issue_to_draft_pr --bin PATH   (PATH absolute)
 python3 e2e/run.py --only-turns         the turns tests, a real model, by hand; SKIP without a key
 python3 e2e/run.py --only-turns --dry-run   discover the turns tests and collect their probes; starts nothing
 python3 e2e/run.py --build github --bin PATH   the tests for the GitHub build (default: general)
@@ -43,7 +43,7 @@ Each run writes `cost.json` in its run folder (tokens, requests, model, the USD 
 
 - `run.py`: the launcher.
 - `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted` or `plug: anthropic`); a test never names a model, an endpoint or a key. A team.yaml takes `{{model_name}}` (the plug's model) and `{{model_endpoint}}`.
-- `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start with extra args such as `--port`, stop, `send`, wiring, the page's chat grant), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks), `packs.py` (the packs tests: a plain team, a source worker, `pack` and `install` through `send`), `packs_evals.py` (the eval and verdict tests: build and pack a worker, drive `fantastic_team packs ...`, the pack agents' grants), `panel_dom.js` (the packs panel on a stub DOM against the live team; needs `node`).
+- `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start with extra args such as `--port`, stop, `send`, wiring, the page's chat grant), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks), `packs.py` (the packs tests: a plain team, a source worker, `pack` and `install` through `send`), `packs_evals.py` (the eval and verdict tests: build and pack a worker, drive `fantastic_team packs ...`, the pack agents' grants), `panel_dom.js` (the packs panel on a stub DOM against the live team; needs `node`), `packs_pub.py` (the pack publishing tests, #42: write pack folders through the `files` agent, pack, publish, trust a signer, the content hash), `registry.py` (`FakeRegistry`, an https server with a throwaway self-signed certificate).
 - `helpers/web.py`, `helpers/app.py`: HTTP and websocket client; the app shell and handle driver as processes.
 - `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`, `build`: `any` (default), `general` or `github`; `run.py --build` runs the tests for `any` and that build), `team.yaml`, `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code).
 - `runs/`: one folder per run, gitignored (it holds model output).
@@ -66,6 +66,19 @@ Facts about the web UI at this commit, found while writing these tests:
 2. The launcher (`fantastic_team_app`) waits for a 200 at `http://127.0.0.1:P/`, so it is never ready against the real binary. `app/launcher_start_attach_stop` and `app/attach_remote` use a stand-in for that one URL, and say so; the product fix (which URL the window loads) is the maintainer's.
 3. The Rust ai-core never emits the `tool_calling` status the page's tool blocks key on; a tool call is a `call` part sent to the watchers of its addressee.
 4. The scripted plug takes `"thinking": "..."` (a reasoning block before the text) and `"delay": seconds` (the plug waits before it answers) on a turn.
+
+## The packs group
+
+`tests/packs/*` (issue #42) drive the `pack` and `pack_listing` agents of a team that has no connector: `Ctx.boot_packs` boots it (the same start-up, none of `wire()`'s GitHub grants; it grants the `send` leg the `files` agent, and `user.import_subtree` for the pack agent), and a probe writes pack folders through `files`. All six are free (scripted model, no key, no network):
+
+- `packs/pack_publish_install_update`: pack, publish (signed), list (untrusted signer skipped), install, an opt-in update with its permission diff, takedown and its warning.
+- `packs/install_from_hosted_registry`: `fetch` pins by name and hash and refuses before any connection; a live entry reaches the (distrusted) fake registry and stops there.
+- `packs/listing_page`: the static, escaped html page.
+- `packs/web_browser`: the panel as the team persists it, and the verbs it sends (list, show, install preview then approve, eval, the browser view-model with and without opt-in). No browser is started: rendering is not exercised.
+- `packs/public_publish_review`: a scan finding refuses a publish and holds a submit, nothing is sent.
+- `packs/report_and_takedown`: report refusals, a takedown whose registry push fails, the warning on the installed pack.
+
+**The hosted-registry limit.** `registry_url` and every entry url must be https, and the binary trusts only the public web roots (rustls with webpki roots, no way to add one). A `FakeRegistry` therefore cannot be trusted: the tests assert exactly that (a connection, a failed handshake, no HTTP request) and everything up to the network. The success paths (a download that matches its pin and is staged, a `submit` that lists, a `report` or a takedown push that the registry accepts) stay unit items in `crates/team/src/pack_listing.rs` until the binary can trust a test certificate; that would be new API and is a decision for the maintainer.
 
 ## Two builds
 
