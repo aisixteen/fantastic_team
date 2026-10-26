@@ -10,10 +10,29 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import time
+import urllib.error
+import urllib.request
 
 SOCK = os.path.join(".fantastic", "cli", "mcp.sock")
+
+
+def free_port() -> int:
+    """A TCP port that is free right now (bound on 127.0.0.1, read, released)."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def http_get(port: int, path: str, timeout: float = 10.0) -> tuple[int, str]:
+    """One GET on 127.0.0.1:port; (status, body)."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=timeout) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
 
 
 def fill_text(text: str, variables: dict) -> str:
@@ -44,9 +63,11 @@ class Team:
         with open(os.path.join(self.dir, "team.yaml"), "w") as f:
             f.write(text)
 
-    def start(self, wait_s: float = 60.0) -> None:
+    def start(self, wait_s: float = 60.0, port: int | None = None) -> None:
+        """Start the binary headless; with `port`, it also serves the web UI there."""
         log = open(self.log_path, "wb")
-        self.proc = subprocess.Popen([self.binary, "--dir", self.dir], env=self.env,
+        argv = [self.binary, "--dir", self.dir] + (["--port", str(port)] if port else [])
+        self.proc = subprocess.Popen(argv, env=self.env,
                                      stdout=log, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL, cwd=self.dir)
         end = time.time() + wait_s
@@ -98,7 +119,7 @@ class Team:
         return None
 
 
-def boot(team: "Team", yaml_template: str, variables: dict) -> None:
+def boot(team: "Team", yaml_template: str, variables: dict, port: int | None = None) -> None:
     """Bring the team up from `yaml_template`.
 
     The binary's own start-up (plan the tree from team.yaml, apply it, then run
@@ -111,7 +132,7 @@ def boot(team: "Team", yaml_template: str, variables: dict) -> None:
     """
     for d in ("work/wt", "work/tasks", "sandbox/home"):  # the binary makes none of these
         os.makedirs(os.path.join(team.dir, d), exist_ok=True)
-    team.start()
+    team.start(port=port)
     r = team.send("kernel", {"type": "create_agent", "id": "team_store", "parent_id": "kernel",
                              "handler_module": "file_bridge.tools", "root": ".fantastic",
                              "allow": ["."], "ingress_rule": "allow_all_ingress"})
@@ -119,7 +140,7 @@ def boot(team: "Team", yaml_template: str, variables: dict) -> None:
         raise RuntimeError(f"cannot add the root store: {r}")
     team.stop()
     team.write_yaml(yaml_template, variables)
-    team.start()
+    team.start(port=port)
 
 
 def wire(team: "Team") -> None:

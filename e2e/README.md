@@ -44,6 +44,7 @@ Each run writes `cost.json` in its run folder (tokens, requests, model, the USD 
 - `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted` or `plug: anthropic`); a test never names a model, an endpoint or a key. A team.yaml takes `{{model_name}}` (the plug's model) and `{{model_endpoint}}`.
 - `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start, stop, `send`, wiring), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks).
 - `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`, `build`: `any` (default), `general` or `github`; `run.py --build` runs the tests for `any` and that build), `team.yaml`, `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code).
+- `ui/sidebar_opens_agent_full_screen` (free): drives the served dispatcher page with `helpers/page_driver.js` (the page's own script on a stub DOM, over the live `/team_ws/ws`); needs node >= 22, else it prints `SKIP` and passes.
 - `runs/`: one folder per run, gitignored (it holds model output).
 
 ## Two builds
