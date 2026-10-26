@@ -1063,6 +1063,79 @@ mod tests {
         );
     }
 
+    /// A file bridge store: a `read` answers pages of `lines` (two a page, `eof` on
+    /// the last), never `content`; a `write` keeps the bytes.
+    struct Bridge {
+        files: Mutex<BTreeMap<String, String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Peers for Bridge {
+        async fn ask(&self, to: &str, p: Value) -> Value {
+            match (to, p["type"].as_str().unwrap_or("")) {
+                ("gh", "issues") => json!({"issues": [{"number": 1, "title": "t"}]}),
+                ("store", "read") => {
+                    let files = self.files.lock().unwrap();
+                    let Some(text) = files.get(p["path"].as_str().unwrap_or("")) else {
+                        return json!({"error": "not found"});
+                    };
+                    let all: Vec<&str> = text.lines().collect();
+                    let from = (p["offset"].as_u64().unwrap_or(0) as usize).min(all.len());
+                    let page: Vec<Value> = all[from..]
+                        .iter()
+                        .take(2)
+                        .enumerate()
+                        .map(|(i, l)| json!({"n": from + i + 1, "text": l}))
+                        .collect();
+                    let eof = from + page.len() >= all.len();
+                    json!({"lines": page, "eof": eof})
+                }
+                ("store", "write") => {
+                    let path = p["path"].as_str().unwrap_or("").to_string();
+                    let bytes = p["bytes"].as_str().unwrap_or("").to_string();
+                    self.files.lock().unwrap().insert(path, bytes);
+                    json!({"ok": true})
+                }
+                _ => json!({"error": "unknown"}),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pull_reads_queue_state_from_a_file_bridge_store() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            "queue/aisixteen-fantastic_team-1.state".to_string(),
+            "in_work lead\n".to_string(),
+        );
+        let bridge = Bridge {
+            files: Mutex::new(files),
+        };
+        let mut board = Board::default();
+        let errors = pull(&bridge, &cfg(), &mut board, 100).await;
+        assert!(errors.is_empty(), "{errors:?}");
+        let t = &board.tasks["aisixteen/fantastic_team#1"];
+        assert_eq!(t.status, Status::InWork);
+        assert_eq!(t.claimers, vec!["lead".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn save_then_load_round_trips_through_a_paged_file_bridge() {
+        let bridge = Bridge {
+            files: Mutex::new(BTreeMap::new()),
+        };
+        let mut board = Board::default();
+        for n in 1..=5 {
+            board.add_issue("o/r", n, "t", 1);
+        }
+        board.apply_state("o/r#3", "done o/r#9", 2);
+        save(&bridge, "store", &board).await;
+        let back = load(&bridge, "store").await;
+        assert_eq!(back.tasks.len(), 5, "all pages are read");
+        assert_eq!(back.tasks["o/r#3"].status, Status::Done);
+        assert_eq!(load(&bridge, "nowhere").await.tasks.len(), 0);
+    }
+
     #[test]
     fn claim_file_moves_task_to_in_work() {
         let mut board = Board::default();

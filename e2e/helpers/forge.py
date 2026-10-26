@@ -57,6 +57,7 @@ class Forge:
         self.root = root
         self.token = make_token()
         self.requests: list[dict] = []
+        self.extra_issues = 0  # more open issues (2, 3, ...) for the issue listing
         self.lock = threading.Lock()
         forge = self
 
@@ -127,8 +128,12 @@ class Forge:
             text = "task_labels:\n  - team-ready\n"
             return 200, {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
         if method == "GET" and path == f"{r}/issues":
-            return 200, [{"number": ISSUE_NUMBER, "title": ISSUE_TITLE, "state": "open",
-                          "labels": [{"name": "team-ready"}]}]
+            issues = [{"number": ISSUE_NUMBER, "title": ISSUE_TITLE, "state": "open",
+                       "labels": [{"name": "team-ready"}]}]
+            # a test may set `forge.extra_issues = n` for n more open issues (numbers 2..)
+            issues += [{"number": ISSUE_NUMBER + i, "title": f"{ISSUE_TITLE} {i + 1}", "state": "open",
+                        "labels": [{"name": "team-ready"}]} for i in range(1, self.extra_issues + 1)]
+            return 200, issues
         if method == "GET" and path == f"{r}/issues/{ISSUE_NUMBER}":
             return 200, {"number": ISSUE_NUMBER, "title": ISSUE_TITLE, "state": "open",
                          "body": "Please add a greeting.", "labels": [{"name": "team-ready"}]}

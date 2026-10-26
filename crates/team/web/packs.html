@@ -280,6 +280,13 @@ function renderPreview(r) {
   if (r.enable) {
     cell.appendChild(el('div', r.enable.allowed ? 'ok' : 'error', 'Evals: ' + (r.enable.reason || '')));
   }
+  // The eval report an install with a worker carries: the verb's own one-line text
+  // names the pass rate, the time and the cost.
+  const evals = r.evals;
+  if (evals && typeof evals === 'object') {
+    if (typeof evals.text === 'string' && evals.text) cell.appendChild(el('div', 'muted', evals.text));
+    else if (typeof evals.pass_rate === 'number') cell.appendChild(el('div', 'muted', 'Pass rate ' + percent(evals.pass_rate)));
+  }
   box.appendChild(cell);
   renderBindings(unbound);
 }
