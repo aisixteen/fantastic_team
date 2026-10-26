@@ -35,6 +35,7 @@ fantastic-core = { git = "https://github.com/aisixteen/fantastic", branch = "mai
 fantastic-file = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-credential-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-user = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
+fantastic-agentic-resources = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-ram-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 async-trait = "0.1"
 tempfile = "3"

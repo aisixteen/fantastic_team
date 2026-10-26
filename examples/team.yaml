@@ -1,5 +1,7 @@
 # team.yaml — what a team may use. HOW MANY agents run is not here: it is said in
 # the first agent's instructions (--instructions, or --workers / --leads / --per-lead).
+# The templates are the TIERS the role cards in `roles/` name (small, strong, issue_keeper):
+# a card never names a model.
 templates:
   strong:
     handler_module: anthropic_backend.tools
@@ -56,7 +58,7 @@ templates:
 first_agent:
   id: lead
   template: strong
-  directive_file: directives/lead.md
+  directive_file: roles/lead.md
 connectors:
   git:
     kind: team_git.tools
@@ -66,8 +68,28 @@ connectors:
       remote: origin
       default_branch: main
     directive: Workers may make a worktree, commit, and push a work branch. Never the default branch, never a force.
+  github:
+    kind: team_github.tools
+    record:
+      app:
+        credentials:
+          store: credentials
+          ref: github/app
+      repos: [owner/name]
+      git: git
+      directive: Push a work branch and open a draft pull request. Never the default branch, never a force, never a merge.
 queue:
   id: queue
+# The roles registry (fantastic's agentic_resources): the role cards in `roles/`
+# (the folder next to this file; copy it from the repo) and the default limits,
+# set at every start. total: agents running at once; per_role: per role name.
+roles:
+  id: roles
+  dirs: [roles]
+  limits:
+    total: 3
+    per_role:
+      worker: 2
 # Optional. Groups of workers: the dispatcher shows them, and a group may name an
 # AI driver (an agent id) that gets its digest. A group with no driver has no AI.
 # groups:
@@ -79,10 +101,11 @@ queue:
 #     stall_after: 900    # seconds a member holding a task may sit still
 #     quiet: true         # send only changes (plus a heartbeat, see README)
 #     enabled: true       # false: this group gets no digest
-# Optional. The board caches these repos (owner/name) through a connector above.
-# board:
-#   repos: [aisixteen/fantastic_team]
-#   github: git
+# The board caches these repos (owner/name) through a connector above. The
+# project_lead card reads it.
+board:
+  repos: [owner/name]
+  github: github
 credentials:
   id: credentials
   backend: env
@@ -91,3 +114,8 @@ credentials:
       host: api.anthropic.com
       env:
         api_key: ANTHROPIC_API_KEY
+    github/app:
+      host: api.github.com
+      env:
+        app_id: GITHUB_APP_ID
+        private_key: GITHUB_APP_PRIVATE_KEY

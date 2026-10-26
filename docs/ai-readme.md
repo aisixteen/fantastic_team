@@ -46,6 +46,8 @@ list; `open` answers the chat for one agent (`view: chat`, `target`, `fullscreen
 - `board` (optional): `repos` (`owner/name`, at least one) and `github` (the id of a connector of this file). The board caches the open issues and PRs of those repos and is created under the root, so the GitHub connector and the queue name it in their `callable_by`. Without a `board` section there is no board agent.
 - `credentials`: `backend: env`, and per ref the host and the NAMES of the environment variables that hold the key (for example `ANTHROPIC_API_KEY`).
 
+- `roles` (optional): `id`, `dirs` (role-card folders, default `roles`) and `limits` (`total`, `per_role: {role: n}`). The cards are in `roles/` of the repo (copy the folder next to `team.yaml`): each names a `tier` that must be a template, and grants only agents `team.yaml` defines. Limits are set at every start.
+
 Keys are never written in `team.yaml`. Set the environment variables named there in your shell, and tell the user which names to set.
 
 ## 4. Run it on a remote box

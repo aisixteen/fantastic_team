@@ -48,9 +48,10 @@ pub mod worker_exec;
 
 /// This repo's bundles, added to the registry of fantastic's shell AFTER its
 /// stock set (an `fantastic_tui::Extra`): the git and github connectors. The
-/// worker exec restriction ([`worker_exec`]) and the config and directives
-/// ([`config`], [`directives`]) are records and files, not bundles, so nothing
-/// else registers.
+/// worker exec restriction ([`worker_exec`]), the config ([`config`]) and the
+/// role cards ([`roles`]) are records and files, not bundles; the one other
+/// bundle is fantastic's roles registry (`agentic_resources.tools`), inert in
+/// a team whose registry record has no `role_dirs`.
 pub fn register_team(reg: &mut BundleRegistry) {
     reg.register(
         team_git_connector::HANDLER_MODULE,
@@ -59,6 +60,10 @@ pub fn register_team(reg: &mut BundleRegistry) {
     reg.register(
         team_github_connector::HANDLER_MODULE,
         team_github_connector::GithubConnectorBundle,
+    );
+    reg.register(
+        fantastic_agentic_resources::HANDLER_MODULE,
+        fantastic_agentic_resources::AgenticResourcesBundle,
     );
     reg.register(puller::HANDLER_MODULE, puller::PullerBundle);
     // The dispatcher page, for the web UI that `--port` persists (`app_control::persist_web`).
@@ -337,9 +342,9 @@ async fn persist_seeded_records(kernel: &Arc<Kernel>) -> Result<(), String> {
     Ok(())
 }
 
-pub mod directives;
 pub mod pack_bundle;
 pub mod pack_registry;
+pub mod roles;
 
 #[cfg(test)]
 mod tests {

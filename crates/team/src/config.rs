@@ -54,6 +54,38 @@ pub struct TeamConfig {
     /// The board: the repos it caches and the GitHub connector that reads them.
     #[serde(default)]
     pub board: Option<BoardCfg>,
+    /// The roles registry (fantastic's `agentic_resources`): the card folders and
+    /// the default limits. Absent: the team has no registry.
+    #[serde(default)]
+    pub roles: Option<RolesCfg>,
+}
+
+/// The roles section: where the registry lives, which folders hold the role cards,
+/// and the limits set on every start.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RolesCfg {
+    /// The registry agent's id.
+    #[serde(default = "default_roles_id")]
+    pub id: String,
+    /// The folders of role cards, relative to the team's directory.
+    #[serde(default = "default_role_dirs")]
+    pub dirs: Vec<String>,
+    /// The default limits, set with `set_limit` at every start.
+    #[serde(default)]
+    pub limits: RoleLimits,
+}
+
+/// The registry's limits: agents running in total, and per role.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleLimits {
+    /// Agents running at once, all roles together. Absent: no cap.
+    #[serde(default)]
+    pub total: Option<u64>,
+    /// Agents running at once per role name.
+    #[serde(default)]
+    pub per_role: BTreeMap<String, u64>,
 }
 
 /// A group of the team: its AI driver (none when absent) and its members.
@@ -187,6 +219,14 @@ fn default_first_id() -> String {
 
 fn default_store_id() -> String {
     "credentials".into()
+}
+
+fn default_roles_id() -> String {
+    "roles".into()
+}
+
+fn default_role_dirs() -> Vec<String> {
+    vec!["roles".into()]
 }
 
 /// Parse and validate a `team.yaml` text.
@@ -330,7 +370,24 @@ pub fn validate(cfg: &TeamConfig) -> Result<(), String> {
             }
         }
     }
+    if let Some(r) = &cfg.roles {
+        if r.id.trim().is_empty() {
+            return Err("roles.id is empty".into());
+        }
+        if r.dirs.is_empty() {
+            return Err("roles.dirs is empty — name at least one folder of role cards".into());
+        }
+        if r.dirs.iter().any(|d| d.trim().is_empty()) {
+            return Err("roles.dirs has an empty folder".into());
+        }
+        if r.limits.per_role.keys().any(|k| k.trim().is_empty()) {
+            return Err("roles.limits.per_role has an empty role name".into());
+        }
+    }
     let mut ids: Vec<&str> = vec![cfg.first_agent.id.as_str(), cfg.queue.id.as_str()];
+    if let Some(r) = &cfg.roles {
+        ids.push(r.id.as_str());
+    }
     ids.extend(cfg.connectors.keys().map(String::as_str));
     if let Some(s) = &cfg.credentials {
         ids.push(s.id.as_str());
@@ -413,6 +470,34 @@ pub fn agent_record(tpl: &Template, id: &str) -> Value {
     Value::Object(m)
 }
 
+/// The tier `tpl` stands for in the roles registry's `tiers`: the backend fields
+/// of the template (handler module, model, endpoint, credentials, prices and the
+/// `extra` fields) plus the shared memory store. No `can_call` (the role card
+/// grants), no id, no parent. The tier's KEY is the template's name.
+pub fn tier_fields(tpl: &Template, memory_store: &str) -> Value {
+    let mut m = Map::new();
+    m.insert("handler_module".into(), json!(tpl.handler_module));
+    m.insert("model".into(), json!(tpl.model));
+    m.insert("endpoint".into(), json!(tpl.endpoint));
+    if let Some(r) = &tpl.credentials {
+        m.insert(
+            "credentials".into(),
+            json!({"store": r.store, "ref": r.ref_}),
+        );
+    }
+    if let Some(p) = tpl.price_input_per_mtok {
+        m.insert("price_input_per_mtok".into(), json!(p));
+    }
+    if let Some(p) = tpl.price_output_per_mtok {
+        m.insert("price_output_per_mtok".into(), json!(p));
+    }
+    m.insert("memory_store_id".into(), json!(memory_store));
+    for (k, v) in &tpl.extra {
+        m.insert(k.clone(), v.clone());
+    }
+    Value::Object(m)
+}
+
 /// A `create_agent` payload for the memory store of `agent_id`.
 pub fn memory_record(agent_id: &str) -> Value {
     let mut callable_by = Map::new();
@@ -484,7 +569,7 @@ mod tests {
         assert_eq!(cfg.first_agent.template, "strong");
         assert_eq!(
             cfg.first_agent.directive_file.as_deref(),
-            Some("directives/lead.md")
+            Some("roles/lead.md")
         );
         assert_eq!(cfg.templates["small"].price_input_per_mtok, Some(0.1));
         assert_eq!(
@@ -818,5 +903,102 @@ mod tests {
         assert_eq!(e, "board: repo `o` is not owner/name");
         let e = with("  repos: [o/r]\n  github: git\n  ask_to: me\n").unwrap_err();
         assert!(e.contains("unknown field `ask_to`"), "{e}");
+    }
+
+    #[test]
+    fn roles_section_parses_with_defaults() {
+        let cfg = parse(&format!("{MIN}roles: {{}}\n")).unwrap();
+        let r = cfg.roles.unwrap();
+        assert_eq!(r.id, "roles");
+        assert_eq!(r.dirs, ["roles"]);
+        assert_eq!(r.limits, RoleLimits::default());
+        assert_eq!(r.limits.total, None);
+        assert!(r.limits.per_role.is_empty());
+        assert!(parse(MIN).unwrap().roles.is_none());
+    }
+
+    #[test]
+    fn roles_limits_parse_and_unknown_keys_refused() {
+        let y = format!(
+            "{MIN}roles:\n  id: reg\n  dirs: [a, b/c]\n  limits:\n    total: 3\n    per_role:\n      worker: 2\n      lead: 1\n"
+        );
+        let r = parse(&y).unwrap().roles.unwrap();
+        assert_eq!(r.id, "reg");
+        assert_eq!(r.dirs, ["a", "b/c"]);
+        assert_eq!(r.limits.total, Some(3));
+        assert_eq!(r.limits.per_role["worker"], 2);
+        assert_eq!(r.limits.per_role["lead"], 1);
+        let e = parse(&format!("{MIN}roles:\n  colour: red\n")).unwrap_err();
+        assert!(e.contains("unknown field `colour`"), "{e}");
+        let e = parse(&format!("{MIN}roles:\n  limits:\n    most: 3\n")).unwrap_err();
+        assert!(e.contains("unknown field `most`"), "{e}");
+        let e = parse(&format!("{MIN}roles:\n  limits:\n    total: -1\n")).unwrap_err();
+        assert!(
+            e.contains("invalid number") || e.contains("invalid value"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn roles_validate_texts_are_exact() {
+        let e = parse(&format!("{MIN}roles:\n  id: ''\n")).unwrap_err();
+        assert_eq!(e, "roles.id is empty");
+        let e = parse(&format!("{MIN}roles:\n  dirs: []\n")).unwrap_err();
+        assert_eq!(
+            e,
+            "roles.dirs is empty — name at least one folder of role cards"
+        );
+        let e = parse(&format!("{MIN}roles:\n  dirs: ['a', ' ']\n")).unwrap_err();
+        assert_eq!(e, "roles.dirs has an empty folder");
+        let e = parse(&format!(
+            "{MIN}roles:\n  limits:\n    per_role:\n      '': 1\n"
+        ))
+        .unwrap_err();
+        assert_eq!(e, "roles.limits.per_role has an empty role name");
+        let e = parse(&format!(
+            "{MIN}connectors:\n  roles:\n    kind: team_git.tools\nroles: {{}}\n"
+        ))
+        .unwrap_err();
+        assert_eq!(e, "agent id `roles` is used twice");
+        let e = parse(&format!("{MIN}roles:\n  id: q\n")).unwrap_err();
+        assert_eq!(e, "agent id `q` is used twice");
+    }
+
+    #[test]
+    fn the_example_enables_roles_with_limits() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/team.yaml");
+        let r = load(&path).unwrap().roles.expect("the example has roles");
+        assert_eq!(r.id, "roles");
+        assert_eq!(r.dirs, ["roles"]);
+        assert_eq!(r.limits.total, Some(3));
+        assert_eq!(r.limits.per_role["worker"], 2);
+    }
+
+    #[test]
+    fn tier_fields_carry_the_template_and_no_can_call() {
+        let t = tpl(json!({"max_tokens": 4000}));
+        assert_eq!(
+            tier_fields(&t, "roles_memory"),
+            json!({
+                "handler_module": "x_backend.tools",
+                "model": "m-small",
+                "endpoint": "http://127.0.0.1:9/v1",
+                "credentials": {"store": "credentials", "ref": "x/127.0.0.1"},
+                "price_input_per_mtok": 0.1,
+                "price_output_per_mtok": 0.5,
+                "memory_store_id": "roles_memory",
+                "max_tokens": 4000,
+            })
+        );
+        let v = tier_fields(&t, "m");
+        for k in ["can_call", "callable_by", "id", "parent_id", "type"] {
+            assert!(v.get(k).is_none(), "{k}");
+        }
+        let mut bare = tpl(json!({}));
+        bare.credentials = None;
+        bare.price_input_per_mtok = None;
+        bare.price_output_per_mtok = None;
+        let v = tier_fields(&bare, "m");
+        assert!(v.get("credentials").is_none() && v.get("price_input_per_mtok").is_none());
     }
 }

@@ -62,6 +62,27 @@ credentials:
 - `connectors`: GitHub, a plain git remote, or others, each with its own directive.
 - `queue`: where tasks wait.
 - `credentials`: the store the team creates when it has none. The values are never in this file; only the ref names are.
+- `roles` (optional): turns on fantastic's roles registry (`agentic_resources`) for the team, see below.
+
+### Roles and limits
+
+With a `roles:` section the team gets a registry agent (`roles` by default). The coder role cards live in the `roles/` folder of this repo, one file each: `worker`, `lead`, `issue_keeper`, `issue_writer`, `spec_reviewer` and `project_lead`. A card is a `---` header (`name`, `purpose`, `tier`, `grants`) and the directive text. The `tier` is a key: the name of a template in `team.yaml` (`small`, `strong`, `issue_keeper` in the example), so a card never names a model. The registry holds one tier per template. The lead starts every agent with `spawn` on the registry, after it asks `roles` and `get_count`; it does not use `create_agent`.
+
+```yaml
+roles:
+  id: roles        # the registry agent's id (default roles)
+  dirs: [roles]    # card folders, relative to the team's directory (default [roles])
+  limits:          # set with set_limit at every start; absent keys clear the old limit
+    total: 3
+    per_role:
+      worker: 2
+```
+
+The team refuses to start when a card does not parse, names a tier that is not a template, grants an agent `team.yaml` does not define (the `project_lead` card grants the `github` connector and the `board`, so a team with `roles:` defines both, or ships its own `project_lead.md`), or when one of the six cards is missing. A spawn past a limit is refused with `{error: "limit", reason}`; the dispatcher's sidebar shows the count (`fleet` `{running, max}`, and "agents R/M" in its footer line). The shared memory store `<id>_memory` keeps every spawned agent's conversation under its own id.
+
+The `project_lead` waits for its children with the kernel's `await_set`; each start names the agents below the root for `await_set` and `await_cancel` in the root's `callable_by`.
+
+Not done yet (#185, later): the chat entry for the `project_lead` in the dispatcher, the plan shown and updated in place, the approval gate, and `task_registry` (aisixteen/fantastic#429). `spawn` does not open a tool's `callable_by` to the new agent: the lead names each spawned agent on the tools its card lists (the lead card says how), and the credential store must name it too.
 
 Each repo that the team serves can opt in with `.github/team.yaml`:
 
@@ -250,7 +271,7 @@ CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh w
 | cadencer | Sends each group's AI driver a digest of its workers, and reports the load counts in `status`. |
 | `team_pack.tools` | Worker packs: verbs `pack`, `install` and `eval`. See Worker packs. |
 | `team_app` | The launcher `fantastic_team_app` for the desktop app. See The app. |
-| `team.yaml` | The lead, the worker templates, the connectors and their directives, the queue. |
+| `team.yaml` | The lead, the worker templates, the connectors and their directives, the queue, the roles and their limits. |
 
 ## Updating fantastic
 

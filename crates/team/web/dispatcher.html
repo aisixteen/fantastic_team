@@ -323,6 +323,9 @@ function renderSidebar(reply) {
     if (typeof reply.load.driver_tokens_per_hour === 'number') {
       cost += ' · driver ' + num(reply.load.driver_tokens_per_hour) + ' tok/h';
     }
+    if (reply.fleet && typeof reply.fleet.running === 'number') {
+      cost += ' · agents ' + reply.fleet.running + '/' + (reply.fleet.max === null ? '-' : reply.fleet.max);
+    }
     nav.appendChild(el('div', 'team-load',
       'tasks: held ' + num(reply.load.tasks && reply.load.tasks.held) +
       ' · in review ' + num(reply.load.tasks && reply.load.tasks.in_review) +

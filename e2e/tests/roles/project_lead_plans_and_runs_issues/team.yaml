@@ -1,0 +1,85 @@
+# The roles e2e for the coder project_lead: the team has a lead, and the probe
+# spawns the project_lead through the roles registry and chats to it. The strong
+# and small tiers answer from the one scripted model; the issue_keeper tier is
+# inert. The github connector (against the fake forge) and the board are the
+# project_lead card's grants. The small tier names a ref the store does not hold: a spawned worker's
+# first message is refused until the operator gives it the real ref (see the README).
+# Double-brace names are filled by the launcher.
+templates:
+  strong:
+    handler_module: anthropic_backend.tools
+    model: scripted-model
+    endpoint: "{{model_endpoint}}"
+    credentials:
+      store: credentials
+      ref: "model/{{model_host}}"
+    can_call: [worker_exec, worker_files, queue]
+    extra:
+      context_window: 100000
+      max_tokens: 4000
+  small:
+    handler_module: anthropic_backend.tools
+    model: scripted-model
+    endpoint: "{{model_endpoint}}"
+    credentials:
+      store: credentials
+      ref: model/unprovisioned
+    can_call: [worker_exec, worker_files, queue]
+    extra:
+      context_window: 100000
+      max_tokens: 4000
+  issue_keeper:
+    handler_module: ram_store.tools
+    model: inert
+    endpoint: "{{model_endpoint}}"
+    can_call: [queue]
+first_agent:
+  id: lead
+  template: strong
+connectors:
+  git:
+    kind: team_git.tools
+    record:
+      repo_dir: "{{run_dir}}/clone"
+      workspace_root: "{{run_dir}}/work/wt"
+      remote: "{{forge_url}}/acme/widgets.git"
+      default_branch: main
+      author_name: Team Bot
+      author_email: team-bot@example.invalid
+      directive: Workers may make a worktree and commit. Never the default branch, never a force.
+  github:
+    kind: team_github.tools
+    record:
+      app:
+        credentials:
+          store: credentials
+          ref: github/app
+      repos: [acme/widgets]
+      api_url: "{{forge_url}}"
+      git: git
+      directive: Push a work branch and open a draft pull request.
+queue:
+  id: queue
+board:
+  repos: [acme/widgets]
+  github: github
+roles:
+  id: roles
+  dirs: [roles]
+  limits:
+    total: 5
+    per_role:
+      worker: 2
+credentials:
+  id: credentials
+  backend: env
+  refs:
+    "model/{{model_host}}":
+      host: "{{model_host}}"
+      env:
+        api_key: E2E_MODEL_KEY
+    github/app:
+      host: "{{forge_host}}"
+      env:
+        app_id: E2E_APP_ID
+        private_key: E2E_APP_PEM
