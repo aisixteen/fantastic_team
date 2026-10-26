@@ -253,7 +253,7 @@ fn worker_items(
 /// {tasks, done_last_hour} when the board gave one, plus the cadencer's
 /// `digest_bytes_per_hour` and `driver_tokens_per_hour` when `load` carries them,
 /// and `waiting` {prs, stalled}: the PRs waiting for approval and the stalled
-/// workers, the figures that need the person.
+/// workers, the figures that need the person. (The bundle adds `fleet` after this.)
 pub fn sidebar(
     team: &str,
     groups: &BTreeMap<String, Vec<String>>,
@@ -307,6 +307,16 @@ pub fn sidebar(
         });
     }
     out
+}
+
+/// The sidebar's `fleet` {running, max} from a registry's `get_count` reply: none when the
+/// reply is an error or lacks a count. `max` is null when the registry has no cap.
+pub fn fleet_of(count: &Value) -> Option<Value> {
+    if count.get("error").is_some() {
+        return None;
+    }
+    let running = count.get("running")?.as_u64()?;
+    Some(json!({"running": running, "max": count.get("max").cloned().unwrap_or(Value::Null)}))
 }
 
 /// The full-screen chat for one agent (a worker or a subagent). The chat targets
@@ -713,7 +723,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
-            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts",
+            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts; with a roles registry the reply also has fleet {running, max}, the registry's get_count",
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
             "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher)",
             "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker and its memory from the team.yaml template in the working directory and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start; team.yaml is not rewritten). remove_worker {node: worker, confirm} deletes the worker and its memory and drops it from its group",
@@ -789,7 +799,16 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                 if cad.get("error").is_none() && cad["load"].is_object() {
                     load = cad["load"].clone();
                 }
-                sidebar(&team, &groups, &rows, &subs, &expanded_of(payload), &load)
+                let mut out = sidebar(&team, &groups, &rows, &subs, &expanded_of(payload), &load);
+                // The roles registry's count (agents running, and the cap), when the
+                // team has a registry and it answers.
+                if let Some(roles) = meta.get("roles").and_then(Value::as_str) {
+                    let c = peers.ask(roles, json!({"type": "get_count"})).await;
+                    if let Some(f) = fleet_of(&c) {
+                        out["fleet"] = f;
+                    }
+                }
+                out
             }
             "open" => {
                 let node = payload["node"].as_str().unwrap_or("").to_string();
@@ -2051,6 +2070,120 @@ mod tests {
         assert_eq!(sb["waiting"], json!({"prs": 2, "stalled": 1}), "{sb}");
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// A registry stand-in: answers `get_count` with {running: 2, max: 3}, or with a
+    /// refusal when its `fail` field is set.
+    struct CountBundle;
+
+    #[async_trait::async_trait]
+    impl fantastic_kernel::bundle::Bundle for CountBundle {
+        fn name(&self) -> &str {
+            "count_test.tools"
+        }
+
+        async fn handle(
+            &self,
+            agent_id: &fantastic_kernel::AgentId,
+            payload: &Value,
+            kernel: &Arc<fantastic_kernel::Kernel>,
+        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
+        {
+            let fail = kernel
+                .agents
+                .get(agent_id)
+                .is_some_and(|a| a.meta.read().unwrap().get("fail").is_some());
+            Ok(match payload["type"].as_str() {
+                Some("get_count") if fail => Some(json!({"error": "disabled"})),
+                Some("get_count") => Some(json!({"running": 2, "max": 3})),
+                _ => None,
+            })
+        }
+    }
+
+    /// A kernel with a dispatcher (its `roles` meta set to `roles`, when given) and a
+    /// registry stand-in `reg` (it refuses `get_count` when `fail`).
+    async fn kernel_with_registry(
+        dir: &std::path::Path,
+        roles: Option<&str>,
+        fail: bool,
+    ) -> Arc<fantastic_kernel::Kernel> {
+        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+        use fantastic_kernel::Item;
+        let mut reg = crate::registry();
+        reg.register("count_test.tools", CountBundle);
+        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir)).unwrap();
+        fantastic_kernel::lock::acquire(dir).unwrap();
+        booted.write_seed().unwrap();
+        let kernel = booted.kernel.clone();
+        crate::boot_kernel(&kernel).await.unwrap();
+        let mut d = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
+            "handler_module": HANDLER_MODULE, "can_call": {"reg": "*"}});
+        if let Some(r) = roles {
+            d["roles"] = json!(r);
+        }
+        let mut r = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "reg",
+            "handler_module": "count_test.tools", "callable_by": {"dispatcher": "*"}});
+        if fail {
+            r["fail"] = json!(true);
+        }
+        for item in [d, r] {
+            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
+        }
+        kernel
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sidebar_carries_fleet_when_a_registry_answers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_registry(dir.path(), Some("reg"), false).await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert_eq!(sb["fleet"], json!({"running": 2, "max": 3}), "{sb}");
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sidebar_has_no_fleet_without_a_registry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_registry(dir.path(), None, false).await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert!(sb.get("fleet").is_none(), "{sb}");
+        assert!(sb["team"].is_string(), "{sb}");
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sidebar_has_no_fleet_when_the_registry_refuses() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_registry(dir.path(), Some("reg"), true).await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert!(sb.get("fleet").is_none(), "{sb}");
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn fleet_of_reads_a_count_and_ignores_errors() {
+        assert_eq!(
+            fleet_of(&json!({"running": 1, "max": null})),
+            Some(json!({"running": 1, "max": null}))
+        );
+        assert_eq!(
+            fleet_of(&json!({"running": 0})),
+            Some(json!({"running": 0, "max": null}))
+        );
+        assert_eq!(fleet_of(&json!({"error": "x", "running": 1})), None);
+        assert_eq!(fleet_of(&json!({})), None);
+    }
+
+    #[test]
+    fn html_footer_shows_agents_count() {
+        assert!(HTML.contains("' · agents '"));
+        assert!(HTML.contains("reply.fleet.running"));
+        assert!(HTML.contains("reply.fleet.max"));
+        assert!(!HTML.contains("innerHTML"));
     }
 
     // ---- the page's chat surface, run in node against a stub DOM ----

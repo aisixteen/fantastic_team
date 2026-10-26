@@ -17,7 +17,8 @@ use serde_json::{json, Value};
 
 use crate::config::{self, TeamConfig};
 use crate::{
-    board, cadencer, dispatcher, pack_bundle, pack_listing, pack_panel, worker_exec, worker_view,
+    board, cadencer, dispatcher, pack_bundle, pack_listing, pack_panel, roles, worker_exec,
+    worker_view,
 };
 
 /// The dispatcher's agent id: the team's main view, created at start.
@@ -30,6 +31,17 @@ pub const WORKER_VIEW_ID: &str = "worker_view";
 pub const BOARD_ID: &str = "board";
 /// The cadencer agent, under the root, when `team.yaml` has a `board` section.
 pub const CADENCER_ID: &str = "cadencer";
+/// The roles registry's default agent id (`roles.id` in `team.yaml` may name another).
+pub const ROLES_ID: &str = "roles";
+/// What the first agent may call on the roles registry: ask the roles and the room
+/// (`roles`, `role`, `get_count`), start an agent (`spawn`) and list who it started
+/// (`fleet`). It does not set limits: those come from `team.yaml` at start.
+pub const LEAD_ROLES_VERBS: [&str; 5] = ["roles", "role", "spawn", "get_count", "fleet"];
+/// The kernel verbs a spawned agent may call on the root to wait for its children
+/// (`await_set`, `await_cancel`): the project_lead card lists them.
+pub const AWAIT_VERBS: [&str; 2] = ["await_set", "await_cancel"];
+/// What the dispatcher may call on the roles registry: the count it shows.
+pub const DISPATCHER_ROLES_VERBS: [&str; 1] = ["get_count"];
 /// The kernel verbs the dispatcher may call on the root to add and remove a worker
 /// (`control` with `add_worker` / `remove_worker`) and to keep the groups lists current.
 pub const DISPATCHER_KERNEL_VERBS: [&str; 3] = ["create_agent", "update_agent", "delete_agent"];
@@ -74,6 +86,8 @@ pub enum Role {
     Board,
     /// The cadencer: the digests to the group drivers, under the root.
     Cadencer,
+    /// The roles registry (`agentic_resources`) or its shared memory store, under the root.
+    Registry,
 }
 
 /// One agent of the plan: its `create_agent` record and where it goes.
@@ -120,10 +134,109 @@ pub fn check_grants(cfg: &TeamConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// The role cards of a team with a `roles:` section: the folders load without an
+/// error, every card names a tier that is a template, every card of the coder set
+/// is there, and every grant key is an agent the team defines. `Ok` for a team
+/// with no `roles:` section.
+pub fn check_cards(cfg: &TeamConfig, team_dir: &Path) -> Result<(), String> {
+    let Some(r) = &cfg.roles else {
+        return Ok(());
+    };
+    let (cards, errors) = fantastic_agentic_resources::cards::load_dir(&role_dirs(r, team_dir));
+    if !errors.is_empty() {
+        return Err(format!("role cards: {}", errors.join("; ")));
+    }
+    let mut known: BTreeSet<&str> = BUILTIN_TOOLS.iter().copied().collect();
+    known.insert(fantastic_agentic_resources::cards::REGISTRY_TOKEN);
+    known.insert(cfg.queue.id.as_str());
+    known.extend(cfg.connectors.keys().map(String::as_str));
+    if cfg.board.is_some() {
+        known.insert(BOARD_ID);
+    }
+    for want in roles::CODER_ROLES {
+        if !cards.iter().any(|c| c.name == want) {
+            return Err(format!("role card `{want}` is missing"));
+        }
+    }
+    for c in &cards {
+        if !cfg.templates.contains_key(&c.tier) {
+            return Err(format!(
+                "role card `{}` names tier `{}` that is not a template in team.yaml",
+                c.name, c.tier
+            ));
+        }
+        if let Some(k) = c.grants.keys().find(|k| !known.contains(k.as_str())) {
+            return Err(format!(
+                "role card `{}` grants `{k}`, which team.yaml does not define",
+                c.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The card folders of `roles.dirs`, made absolute under the team's directory.
+fn role_dirs(r: &config::RolesCfg, team_dir: &Path) -> Vec<String> {
+    r.dirs
+        .iter()
+        .map(|d| team_dir.join(d).to_string_lossy().into_owned())
+        .collect()
+}
+
+/// The roles registry and its shared memory store, under the root. The registry
+/// holds the tiers (one per template, keyed by the template's name), the card
+/// folders and nothing else: the limits are set at start (`apply_limits`). The
+/// memory store is the one every spawned agent keeps its conversation in; the
+/// store keys each agent's history by its own id.
+fn roles_plan(cfg: &TeamConfig, r: &config::RolesCfg, team_dir: &Path) -> [Planned; 2] {
+    let lead = cfg.first_agent.id.as_str();
+    let mem = config::memory_id(&r.id);
+    let tiers: serde_json::Map<String, Value> = cfg
+        .templates
+        .iter()
+        .map(|(n, t)| (n.clone(), config::tier_fields(t, &mem)))
+        .collect();
+    [
+        Planned {
+            id: mem.clone(),
+            parent: DEFAULT_ROOT_ID.into(),
+            role: Role::Registry,
+            record: json!({
+                "type": "create_agent",
+                "id": mem,
+                "parent_id": DEFAULT_ROOT_ID,
+                "handler_module": "ram_store.tools",
+                "callable_by": {"$self": "*", (lead): "*"},
+            }),
+        },
+        Planned {
+            id: r.id.clone(),
+            parent: DEFAULT_ROOT_ID.into(),
+            role: Role::Registry,
+            record: json!({
+                "type": "create_agent",
+                "id": r.id,
+                "parent_id": DEFAULT_ROOT_ID,
+                "handler_module": fantastic_agentic_resources::HANDLER_MODULE,
+                "role_dirs": role_dirs(r, team_dir),
+                "tiers": tiers,
+                "can_call": {(mem.as_str()): "*"},
+                "callable_by": {
+                    "$self": "*",
+                    "$parent": "*",
+                    (lead): LEAD_ROLES_VERBS,
+                    (DISPATCHER_ID): DISPATCHER_ROLES_VERBS,
+                },
+            }),
+        },
+    ]
+}
+
 /// The plan, lead first. Validates the config and the grants.
 pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     config::validate(cfg)?;
     check_grants(cfg)?;
+    check_cards(cfg, team_dir)?;
     let lead = cfg.first_agent.id.clone();
     let tpl = &cfg.templates[&cfg.first_agent.template];
     let mut out = vec![
@@ -285,6 +398,16 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         }
         out[0].record["callable_by"][CADENCER_ID] = json!(["send"]);
     }
+    if let Some(r) = &cfg.roles {
+        // The lead starts agents through the registry (`spawn`), and the dispatcher
+        // asks it for the count it shows. The registry's own `callable_by` names both.
+        out[0].record["can_call"][r.id.as_str()] = json!(LEAD_ROLES_VERBS);
+        if let Some(d) = out.iter_mut().find(|p| p.id == DISPATCHER_ID) {
+            d.record["can_call"][r.id.as_str()] = json!(DISPATCHER_ROLES_VERBS);
+            d.record["roles"] = json!(r.id);
+        }
+        out.extend(roles_plan(cfg, r, team_dir));
+    }
     Ok(out)
 }
 
@@ -413,6 +536,49 @@ pub async fn apply(kernel: &Arc<Kernel>, plan: &[Planned]) -> Result<Applied, St
     }
     kernel.flush_records().await;
     Ok(out)
+}
+
+/// Set the registry's limits from `team.yaml` as the operator: `set_limit {max}` for the
+/// total, `set_limit {role, max}` per role. A limit the registry holds that the file no
+/// longer names is cleared (`max: null`). Idempotent: the same file gives the same
+/// record. A refusal is returned, not swallowed. `Ok` for a team with no `roles:`.
+pub async fn apply_limits(kernel: &Arc<Kernel>, cfg: &TeamConfig) -> Result<(), String> {
+    let Some(r) = &cfg.roles else {
+        return Ok(());
+    };
+    let held = kernel
+        .agents
+        .get(&fantastic_kernel::AgentId::from(r.id.as_str()))
+        .map(|a| a.meta.read().expect("meta").get("limits").cloned())
+        .ok_or_else(|| format!("limits: the roles registry `{}` is not there", r.id))?
+        .unwrap_or(Value::Null);
+    let mut calls: Vec<Value> = Vec::new();
+    match r.limits.total {
+        Some(n) => calls.push(json!({"type": "set_limit", "max": n})),
+        None if held.get("total").is_some_and(|v| !v.is_null()) => {
+            calls.push(json!({"type": "set_limit", "max": null}));
+        }
+        None => {}
+    }
+    for (role, n) in &r.limits.per_role {
+        calls.push(json!({"type": "set_limit", "role": role, "max": n}));
+    }
+    if let Some(per) = held.get("per_role").and_then(Value::as_object) {
+        for role in per.keys().filter(|k| !r.limits.per_role.contains_key(*k)) {
+            calls.push(json!({"type": "set_limit", "role": role, "max": null}));
+        }
+    }
+    for call in calls {
+        let out = kernel
+            .send(vec![Item::new(r.id.as_str(), call.clone())])
+            .await
+            .remove(0);
+        if !matches!(out.status, Status::Completed) || out.result.get("error").is_some() {
+            return Err(format!("limits: `{}` refused {call}: {}", r.id, out.result));
+        }
+    }
+    kernel.flush_records().await;
+    Ok(())
 }
 
 /// Whether the first message is due: when the lead was just created, or when asked.
@@ -716,6 +882,31 @@ pub fn grant_agent_verbs(kernel: &Arc<Kernel>) -> Result<(), String> {
         .map_err(|e| format!("dispatcher agent verbs: {e}"))
 }
 
+/// Name every agent below the root in the root's `callable_by` with the await verbs
+/// ([`AWAIT_VERBS`]), the other end of a spawned agent's `kernel` grant (its card):
+/// the id of a spawned agent is not known before it exists. An operator write made at
+/// each start, so it is idempotent. Only for a team with a roles registry.
+pub fn grant_await(kernel: &Arc<Kernel>, cfg: &TeamConfig) -> Result<(), String> {
+    let Some(r) = &cfg.roles else {
+        return Ok(());
+    };
+    if !exists(kernel, &r.id) {
+        return Ok(());
+    }
+    let verbs = json!(AWAIT_VERBS);
+    let root = fantastic_kernel::AgentId::from(DEFAULT_ROOT_ID);
+    kernel
+        .edit_callable_by(&root, |cb| {
+            if cb.get("$subtree") == Some(&verbs) {
+                return false;
+            }
+            cb.insert("$subtree".into(), verbs.clone());
+            true
+        })
+        .map(|_| ())
+        .map_err(|e| format!("await verbs: {e}"))
+}
+
 /// Start-up: plan the tree from `team.yaml` in `dir` (if there is one), apply it
 /// to a headless kernel, deliver the instructions when due, then stop the kernel.
 /// Returns `None` when there is no `team.yaml`.
@@ -752,6 +943,10 @@ pub fn run_at_start(
                 eprintln!("{e}");
             }
             grant_inquiries(&kernel);
+            apply_limits(&kernel, &cfg).await?;
+            if let Err(e) = grant_await(&kernel, &cfg) {
+                eprintln!("{e}");
+            }
             if let Some(text) = instructions {
                 if instructions_due(&applied, &cfg.first_agent.id, resend) {
                     deliver_instructions(&kernel, &cfg.first_agent.id, text).await?;
@@ -910,13 +1105,19 @@ mod tests {
         assert!(e.contains("ghost"), "{e}");
     }
 
+    fn repo_root() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
     #[test]
     fn example_team_yaml_validates() {
         let cfg =
             config::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/team.yaml"))
                 .unwrap();
-        let tree = plan(&cfg, Path::new("/team")).unwrap();
+        // the example's `roles` folder is the repo's own
+        let tree = plan(&cfg, &repo_root()).unwrap();
         assert_eq!(tree[0].id, "lead");
+        assert!(tree.iter().any(|p| p.id == "roles"));
     }
 
     #[test]
@@ -924,7 +1125,7 @@ mod tests {
         let cfg =
             config::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/team.yaml"))
                 .unwrap();
-        let tree = plan(&cfg, Path::new("/team")).unwrap();
+        let tree = plan(&cfg, &repo_root()).unwrap();
         let text =
             serde_json::to_string(&tree.iter().map(|p| &p.record).collect::<Vec<_>>()).unwrap();
         assert!(!text.contains("sk-"));
@@ -1817,6 +2018,518 @@ mod tests {
             .unwrap()
             .contains_key("*"));
         assert!(!grant_inquiries(&kernel), "idempotent");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    // ---- the roles registry (#185) ----
+
+    /// A roles-enabled team: the three tiers the cards name, the `github` connector and
+    /// the board the project_lead card grants, the registry with the limits `limits`.
+    /// `lead_handler` is the first agent's handler module.
+    fn roles_yaml(lead_handler: &str, roles: &str) -> String {
+        let quoted = |p: std::path::PathBuf| p.to_string_lossy().replace('\'', "''");
+        let tmp = std::env::temp_dir();
+        let t = |h: &str, can_call: &str| {
+            format!("    handler_module: {h}\n    model: m\n    endpoint: http://e\n    can_call: {can_call}\n")
+        };
+        format!(
+            "templates:\n  strong:\n{}  small:\n{}  issue_keeper:\n{}first_agent:\n  template: strong\nconnectors:\n  git:\n    kind: team_git.tools\n    record:\n      remote: origin\n      repo_dir: '{}'\n      workspace_root: '{}'\n      default_branch: main\n  github:\n    kind: team_github.tools\n    record:\n      app:\n        credentials:\n          store: credentials\n          ref: github/app\n      repos: [o/r]\n      git: git\n      directive: Push a work branch.\nqueue:\n  id: queue\nboard:\n  repos: [o/r]\n  github: github\n{roles}",
+            t(lead_handler, "[worker_exec, worker_files, queue]"),
+            t("ram_store.tools", "[worker_exec, worker_files, queue]"),
+            t("ram_store.tools", "[queue]"),
+            quoted(tmp.join("clone")),
+            quoted(tmp.join("wt")),
+        )
+    }
+
+    const ROLES_LIMITS: &str = "roles:\n  limits:\n    total: 3\n    per_role:\n      worker: 2\n";
+
+    /// A team directory holding a copy of the repo's `roles/` folder.
+    fn roles_team_dir() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../roles");
+        let to = dir.path().join("roles");
+        std::fs::create_dir_all(&to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+        }
+        dir
+    }
+
+    fn roles_cfg(roles: &str) -> TeamConfig {
+        parse(&roles_yaml("ram_store.tools", roles)).unwrap()
+    }
+
+    fn planned<'a>(tree: &'a [Planned], id: &str) -> &'a Planned {
+        tree.iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("the plan has no `{id}`"))
+    }
+
+    #[test]
+    fn plan_without_roles_is_unchanged() {
+        let tree = plan(&sample(), Path::new("/team")).unwrap();
+        assert!(!ids(&tree)
+            .iter()
+            .any(|i| i == ROLES_ID || i == "roles_memory"));
+        assert!(planned(&tree, "dispatcher").record.get("roles").is_none());
+        assert!(planned(&tree, "dispatcher").record["can_call"]
+            .get(ROLES_ID)
+            .is_none());
+        assert!(tree[0].record["can_call"].get(ROLES_ID).is_none());
+        // no cards are read when the team has no `roles:` section
+        assert_eq!(check_cards(&sample(), Path::new("/no/such/dir")), Ok(()));
+    }
+
+    #[test]
+    fn plan_with_roles_adds_registry_memory_and_grants() {
+        let dir = roles_team_dir();
+        let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
+        let ids = ids(&tree);
+        assert_eq!(&ids[ids.len() - 2..], ["roles_memory", "roles"]);
+        let mem = planned(&tree, "roles_memory");
+        assert_eq!(mem.parent, DEFAULT_ROOT_ID);
+        assert_eq!(mem.record["handler_module"], "ram_store.tools");
+        assert_eq!(
+            mem.record["callable_by"],
+            json!({"$self": "*", "lead": "*"})
+        );
+        let reg = planned(&tree, "roles");
+        assert_eq!(reg.parent, DEFAULT_ROOT_ID);
+        assert_eq!(reg.role, Role::Registry);
+        assert_eq!(
+            reg.record["handler_module"],
+            fantastic_agentic_resources::HANDLER_MODULE
+        );
+        let want_dir = dir.path().join("roles").to_string_lossy().into_owned();
+        assert_eq!(reg.record["role_dirs"], json!([want_dir]));
+        let tiers = reg.record["tiers"].as_object().unwrap();
+        let keys: Vec<&str> = tiers.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["issue_keeper", "small", "strong"]);
+        assert_eq!(
+            tiers["small"],
+            config::tier_fields(&roles_cfg("roles: {}\n").templates["small"], "roles_memory")
+        );
+        assert_eq!(tiers["small"]["memory_store_id"], "roles_memory");
+        assert!(
+            reg.record.get("limits").is_none(),
+            "limits are set at start"
+        );
+        assert_eq!(reg.record["can_call"], json!({"roles_memory": "*"}));
+        assert_eq!(
+            reg.record["callable_by"],
+            json!({
+                "$self": "*", "$parent": "*",
+                "lead": ["roles", "role", "spawn", "get_count", "fleet"],
+                "dispatcher": ["get_count"],
+            })
+        );
+        assert_eq!(
+            tree[0].record["can_call"]["roles"],
+            json!(["roles", "role", "spawn", "get_count", "fleet"])
+        );
+        assert!(tree[0].record["can_call"].get("kernel").is_none());
+        let d = planned(&tree, "dispatcher");
+        assert_eq!(d.record["roles"], "roles");
+        assert_eq!(d.record["can_call"]["roles"], json!(["get_count"]));
+        // another id comes from the config
+        let other = plan(&roles_cfg("roles:\n  id: reg\n"), dir.path()).unwrap();
+        assert_eq!(planned(&other, "dispatcher").record["roles"], "reg");
+        assert!(other.iter().any(|p| p.id == "reg_memory"));
+    }
+
+    #[test]
+    fn plan_refuses_a_card_with_an_unknown_tier() {
+        let dir = roles_team_dir();
+        let w = dir.path().join("roles/worker.md");
+        let text = std::fs::read_to_string(&w).unwrap();
+        std::fs::write(&w, text.replace("tier: small", "tier: tiny")).unwrap();
+        let e = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap_err();
+        assert_eq!(
+            e,
+            "role card `worker` names tier `tiny` that is not a template in team.yaml"
+        );
+    }
+
+    #[test]
+    fn plan_refuses_a_card_with_an_unknown_grant() {
+        let dir = roles_team_dir();
+        let w = dir.path().join("roles/worker.md");
+        let text = std::fs::read_to_string(&w).unwrap();
+        std::fs::write(&w, text.replace("  queue: \"*\"\n", "  mystery: \"*\"\n")).unwrap();
+        let e = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap_err();
+        assert_eq!(
+            e,
+            "role card `worker` grants `mystery`, which team.yaml does not define"
+        );
+        // a team with no github connector cannot hold the project_lead card's grants
+        let bare = parse(
+            &roles_yaml("ram_store.tools", "roles: {}\n")
+                .replace("board:\n  repos: [o/r]\n  github: github\n", ""),
+        )
+        .unwrap();
+        let ok = roles_team_dir();
+        let mut no_gh = bare.clone();
+        no_gh.connectors.remove("github");
+        let e = plan(&no_gh, ok.path()).unwrap_err();
+        assert_eq!(
+            e,
+            "role card `project_lead` grants `github`, which team.yaml does not define"
+        );
+    }
+
+    #[test]
+    fn plan_refuses_a_missing_coder_card_and_a_bad_card() {
+        let dir = roles_team_dir();
+        std::fs::remove_file(dir.path().join("roles/spec_reviewer.md")).unwrap();
+        let e = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap_err();
+        assert_eq!(e, "role card `spec_reviewer` is missing");
+        std::fs::write(dir.path().join("roles/broken.md"), "no header\n").unwrap();
+        let e = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap_err();
+        assert_eq!(e, "role cards: card broken.md: missing header");
+        let empty = tempfile::TempDir::new().unwrap();
+        let e = plan(&roles_cfg(ROLES_LIMITS), empty.path()).unwrap_err();
+        assert!(e.starts_with("role cards: role dir "), "{e}");
+    }
+
+    async fn call_as(kernel: &Arc<Kernel>, caller: &str, target: &str, payload: Value) -> Value {
+        kernel
+            .send(vec![Item::new(
+                caller,
+                json!({"type": "call", "target": target, "payload": payload}),
+            )])
+            .await
+            .remove(0)
+            .result
+    }
+
+    async fn ask(kernel: &Arc<Kernel>, target: &str, payload: Value) -> Value {
+        kernel
+            .send(vec![Item::new(target, payload)])
+            .await
+            .remove(0)
+            .result
+    }
+
+    fn meta_value(kernel: &Arc<Kernel>, id: &str) -> Value {
+        let a = kernel
+            .agents
+            .get(&fantastic_kernel::AgentId::from(id))
+            .unwrap_or_else(|| panic!("no agent `{id}`"));
+        let m = a.meta.read().unwrap().clone();
+        Value::Object(m)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn config_enables_the_registry_and_loads_the_five_cards() {
+        let dir = roles_team_dir();
+        let cfg = roles_cfg(ROLES_LIMITS);
+        let tree = plan(&cfg, dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        let out = ask(&kernel, "roles", json!({"type": "roles"})).await;
+        assert_eq!(out["errors"], json!([]), "{out}");
+        let mut names: Vec<String> = out["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "issue_keeper",
+                "issue_writer",
+                "lead",
+                "project_lead",
+                "spec_reviewer",
+                "worker"
+            ]
+        );
+        let r = ask(&kernel, "roles", json!({"type": "reflect"})).await;
+        assert!(r.to_string().contains("enabled"), "{r}");
+        let pl = ask(
+            &kernel,
+            "roles",
+            json!({"type": "role", "name": "project_lead"}),
+        )
+        .await;
+        assert_eq!(pl["tier"], "strong");
+        assert!(
+            pl["grants"]["github"].is_array(),
+            "the coder card replaced the generic: {pl}"
+        );
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// An agent that makes the call it is told to AS ITSELF, so the gate and `spawn`
+    /// see a real lead.
+    struct CallerBundle;
+
+    #[async_trait::async_trait]
+    impl fantastic_kernel::bundle::Bundle for CallerBundle {
+        fn name(&self) -> &str {
+            "caller"
+        }
+
+        async fn handle(
+            &self,
+            _agent_id: &fantastic_kernel::AgentId,
+            payload: &Value,
+            kernel: &Arc<Kernel>,
+        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
+        {
+            match payload["type"].as_str() {
+                Some("call") => {
+                    let out = kernel
+                        .send(vec![Item::new(
+                            payload["target"].as_str().unwrap_or(""),
+                            payload["payload"].clone(),
+                        )])
+                        .await
+                        .remove(0);
+                    Ok(Some(out.result))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+
+    /// The roles team on a kernel whose first agent is a caller.
+    async fn caller_team(dir: &Path, roles: &str) -> Arc<Kernel> {
+        let mut reg = crate::registry();
+        reg.register("caller.tools", CallerBundle);
+        let mut booted =
+            bootstrap::bootstrap(reg, bootstrap::BootstrapOptions::one_shot(dir)).unwrap();
+        fantastic_kernel::lock::acquire(dir).unwrap();
+        booted.write_seed().unwrap();
+        let kernel = booted.kernel.clone();
+        crate::boot_kernel(&kernel).await.unwrap();
+        let cfg = parse(&roles_yaml("caller.tools", roles)).unwrap();
+        apply(&kernel, &plan(&cfg, dir).unwrap()).await.unwrap();
+        kernel
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lead_spawn_goes_through_the_registry() {
+        let dir = roles_team_dir();
+        let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
+        let out = call_as(
+            &kernel,
+            "lead",
+            "roles",
+            json!({"type": "spawn", "role": "worker"}),
+        )
+        .await;
+        let id = out["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{out}"))
+            .to_string();
+        assert_eq!(out["role"], "worker");
+        assert_eq!(out["tier"], "small");
+        let m = meta_value(&kernel, &id);
+        assert_eq!(m["spawned_by"], "roles");
+        assert_eq!(m["role"], "worker");
+        assert_eq!(m["tier"], "small");
+        assert_eq!(m["memory_store_id"], "roles_memory");
+        let card =
+            fantastic_agentic_resources::cards::parse_card(roles::WORKER, "worker.md").unwrap();
+        assert_eq!(m["system_prompt"], json!(card.directive));
+        let child = kernel
+            .agents
+            .get(&fantastic_kernel::AgentId::from(id.as_str()))
+            .unwrap()
+            .parent_id
+            .clone();
+        assert_eq!(child.unwrap().as_str(), "lead", "a child of the lead");
+        // the card's grants: the exec and file tools and the queue, plus the shared store
+        for t in ["worker_exec", "worker_files", "queue", "roles_memory"] {
+            assert_eq!(m["can_call"][t], "*", "{t}");
+        }
+        // the lead holds pause/resume/stop on it, and the child admits only that
+        let verbs = json!(["pause", "resume", "stop"]);
+        let lead = meta_value(&kernel, "lead");
+        assert_eq!(lead["can_call"][id.as_str()], verbs);
+        assert_eq!(m["callable_by"]["lead"], verbs);
+        // the lead has no way to create an agent itself
+        assert!(lead["can_call"].get("kernel").is_none());
+        let direct = call_as(
+            &kernel,
+            "lead",
+            "kernel",
+            json!({"type": "create_agent", "id": "sneak", "handler_module": "ram_store.tools"}),
+        )
+        .await;
+        assert!(direct["error"].is_string(), "{direct}");
+        assert!(!kernel
+            .agents
+            .contains_key(&fantastic_kernel::AgentId::from("sneak")));
+        // a spawn does not open the tools to the child: the lead admits it
+        let q = meta_value(&kernel, "queue");
+        assert!(q["callable_by"].get(id.as_str()).is_none(), "{q}");
+        // another caller cannot spawn
+        let denied = call_as(
+            &kernel,
+            id.as_str(),
+            "roles",
+            json!({"type": "spawn", "role": "worker"}),
+        )
+        .await;
+        assert!(denied["error"].is_string(), "{denied}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn boot_limits_are_applied() {
+        let dir = roles_team_dir();
+        let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
+        apply_limits(&kernel, &roles_cfg(ROLES_LIMITS))
+            .await
+            .unwrap();
+        let total = ask(&kernel, "roles", json!({"type": "get_count"})).await;
+        assert_eq!(total, json!({"running": 0, "max": 3}));
+        let w = ask(
+            &kernel,
+            "roles",
+            json!({"type": "get_count", "role": "worker"}),
+        )
+        .await;
+        assert_eq!(w, json!({"running": 0, "max": 2}));
+        let spawn = |role: &'static str| {
+            call_as(
+                &kernel,
+                "lead",
+                "roles",
+                json!({"type": "spawn", "role": role}),
+            )
+        };
+        assert!(spawn("worker").await["id"].is_string());
+        assert!(spawn("worker").await["id"].is_string());
+        let third = spawn("worker").await;
+        assert_eq!(third["error"], "limit", "{third}");
+        assert_eq!(third["scope"], "role");
+        assert!(
+            third["reason"].as_str().unwrap().contains("at its limit"),
+            "{third}"
+        );
+        assert!(spawn("issue_keeper").await["id"].is_string());
+        let fourth = spawn("issue_keeper").await;
+        assert_eq!(fourth["error"], "limit", "{fourth}");
+        assert_eq!(fourth["scope"], "total");
+        assert_eq!(
+            fourth["reason"],
+            "all roles together are at the limit (3 running, max 3)"
+        );
+        let total = ask(&kernel, "roles", json!({"type": "get_count"})).await;
+        assert_eq!(total, json!({"running": 3, "max": 3}));
+        // a limit the file no longer names is cleared
+        apply_limits(&kernel, &roles_cfg("roles: {}\n"))
+            .await
+            .unwrap();
+        let total = ask(&kernel, "roles", json!({"type": "get_count"})).await;
+        assert_eq!(total, json!({"running": 3, "max": null}));
+        let w = ask(
+            &kernel,
+            "roles",
+            json!({"type": "get_count", "role": "worker"}),
+        )
+        .await;
+        assert_eq!(w, json!({"running": 2, "max": null}));
+        assert!(meta_value(&kernel, "roles")
+            .get("limits")
+            .is_none_or(|l| l.as_object().is_some_and(|m| m.is_empty())));
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_spawned_project_lead_may_await_its_children() {
+        let dir = roles_team_dir();
+        let kernel = caller_team(dir.path(), "roles: {}\n").await;
+        grant_await(&kernel, &roles_cfg("roles: {}\n")).unwrap();
+        let root = meta_value(&kernel, DEFAULT_ROOT_ID);
+        assert_eq!(
+            root["callable_by"]["$subtree"],
+            json!(["await_set", "await_cancel"])
+        );
+        grant_await(&kernel, &roles_cfg("roles: {}\n")).unwrap();
+        assert_eq!(
+            meta_value(&kernel, DEFAULT_ROOT_ID)["callable_by"]["$subtree"],
+            root["callable_by"]["$subtree"]
+        );
+        // the project_lead the lead spawns waits for its own child with await_set
+        let pl = call_as(
+            &kernel,
+            "lead",
+            "roles",
+            json!({"type": "spawn", "role": "project_lead"}),
+        )
+        .await;
+        let pl = pl["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{pl}"))
+            .to_string();
+        let w = call_as(
+            &kernel,
+            "lead",
+            "roles",
+            json!({"type": "spawn", "role": "worker"}),
+        )
+        .await;
+        let w = w["id"].as_str().unwrap().to_string();
+        let out = kernel
+            .send(vec![Item::new(
+                pl.as_str(),
+                json!({"type": "call", "target": "kernel_state",
+                    "payload": {"type": "await_set", "ids": [w], "timeout_s": 5}}),
+            )])
+            .await
+            .remove(0)
+            .result;
+        assert!(out.get("error").is_none(), "{out}");
+        // no grant for a team with no registry
+        let mut none = roles_cfg("roles: {}\n");
+        none.roles = None;
+        let dir2 = tempfile::TempDir::new().unwrap();
+        let k2 = crate::start(dir2.path()).await.unwrap();
+        grant_await(&k2, &none).unwrap();
+        assert!(meta_value(&k2, DEFAULT_ROOT_ID)["callable_by"]
+            .get("$subtree")
+            .is_none());
+        k2.shutdown().await;
+        bootstrap::shutdown(dir2.path()).unwrap();
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_limits_is_idempotent_and_refusals_are_returned() {
+        let dir = roles_team_dir();
+        let cfg = roles_cfg(ROLES_LIMITS);
+        let tree = plan(&cfg, dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        apply_limits(&kernel, &cfg).await.unwrap();
+        let first = meta_value(&kernel, "roles")["limits"].clone();
+        assert_eq!(first, json!({"total": 3, "per_role": {"worker": 2}}));
+        apply_limits(&kernel, &cfg).await.unwrap();
+        assert_eq!(meta_value(&kernel, "roles")["limits"], first);
+        // a team with no `roles:` has nothing to apply
+        apply_limits(&kernel, &sample()).await.unwrap();
+        // a registry that refuses (no role_dirs: disabled) is an error, not silence
+        ask(
+            &kernel,
+            "kernel",
+            json!({"type": "update_agent", "id": "roles", "role_dirs": null}),
+        )
+        .await;
+        let e = apply_limits(&kernel, &cfg).await.unwrap_err();
+        assert!(e.starts_with("limits: `roles` refused"), "{e}");
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
