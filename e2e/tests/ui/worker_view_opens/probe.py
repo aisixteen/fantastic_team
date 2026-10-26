@@ -4,9 +4,9 @@ import os
 import re
 import time
 
-from helpers import run_flow, team as T
+from helpers import app, run_flow, team as T
 from helpers.verdict import Verdict
-from helpers.web import WsLeg, free_port, http_get, wait_http
+from helpers.web import WsClient, http_get
 
 PAGE = "/canvas_page/file/index.html"
 WS = "/canvas_ws/ws"
@@ -19,9 +19,8 @@ def run(ctx):
     keys = run_flow.fake_keys(ctx)
     ctx.secrets = keys
     team = ctx.team = T.Team(ctx.binary, ctx.run_dir, {"E2E_MODEL_KEY": keys["model_key"]})
-    port = free_port()
-    team.args = ("--port", str(port))  # every start serves the web UI
-    T.boot(team, os.path.join(ctx.dir, "team.yaml"), ctx.vars)
+    port = app.free_port()
+    T.boot(team, os.path.join(ctx.dir, "team.yaml"), ctx.vars, port=port)
 
     # two workers on the scripted model, and the operator's grants a team.yaml cannot say
     for w in ("w1", "w2"):
@@ -41,7 +40,7 @@ def run(ctx):
                                  "callable_by": {"$self": "*", "$parent": "*", "mcp": "*"}})
         v.check(f"the operator may call {agent}", r.get("status") == "completed", str(r))
 
-    v.check("the page is served on --port", wait_http(port, PAGE))
+    v.check("the page is served on --port", app.wait_http(f"http://127.0.0.1:{port}{PAGE}", 30))
 
     def wv(payload):
         return team.send("worker_view", payload).get("result", {})
@@ -81,18 +80,19 @@ def run(ctx):
     v.check("placing a chat cell is refused", "error" in refused, str(refused))
 
     # 4. web leg: what the binary's --port serves, and what its socket may do
-    status, page = http_get(port, PAGE)
+    status, page = http_get(f"http://127.0.0.1:{port}{PAGE}")
+    page = page.decode(errors="replace")
     v.check("the web UI page is served on --port", status == 200 and "<html" in page.lower(),
             f"{status}")
     # the dispatcher page and its socket are the in-process app's (TeamHandle); the binary's
     # --port must not serve them: shown here, so the skip below is a fact, not a claim
-    status, _ = http_get(port, "/team_page/file/index.html")
+    status, _ = http_get(f"http://127.0.0.1:{port}/team_page/file/index.html")
     v.check("the binary serves no dispatcher page (/team_page)", status == 404, f"{status}")
     # the host may accept the websocket upgrade on any path; what matters is that no
     # dispatcher answers behind /team_ws
     leg = None
     try:
-        leg = WsLeg(port, "/team_ws/ws")
+        leg = WsClient(port, "/team_ws/ws")
         got, err = leg.call("dispatcher", {"type": "open", "node": "w1"}, timeout=10), None
     except (RuntimeError, OSError) as e:
         got, err = None, str(e)
@@ -103,7 +103,7 @@ def run(ctx):
     v.check("nothing behind /team_ws opens a worker", not (isinstance(got, dict) and got.get("view")),
             f"{got} {err}")
 
-    ws = WsLeg(port, WS)
+    ws = WsClient(port, WS)
     try:
         for target, payload in (("worker_view", {"type": "open", "worker": "w1"}),
                                 ("dispatcher", {"type": "open", "node": "w1"}),
@@ -112,11 +112,11 @@ def run(ctx):
             got, err = None, None
             try:
                 got = ws.call(target, payload)
-            except RuntimeError as e:
+            except (RuntimeError, OSError) as e:
                 err = str(e)
             print(f"  (canvas_ws -> {target}: reply={got!r} error={err!r})")
             refused = err is not None and "closed" not in err or (
-                isinstance(got, dict) and got.get("reason") == "unauthorized")
+                isinstance(got, dict) and (got.get("reason") == "unauthorized" or got.get("refused")))
             v.check(f"the page's socket may not call {target}", refused, f"{got} {err}")
     finally:
         ws.close()

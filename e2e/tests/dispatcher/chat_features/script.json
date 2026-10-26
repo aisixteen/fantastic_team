@@ -1,0 +1,5 @@
+[
+  {"thinking": "let me check the queue", "say": "checking", "calls": [{"target": "queue", "type": "read"}]},
+  {"delay": 3, "say": "done", "calls": [{"name": "done"}]},
+  {"say": "got the file", "calls": [{"name": "done"}]}
+]

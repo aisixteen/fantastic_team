@@ -132,3 +132,25 @@ fn panel_draws_text_only() {
     }
     assert!(js_fn("el").contains("textContent"));
 }
+
+#[test]
+fn panel_install_result_draws_the_eval_pass_rate_time_and_cost() {
+    // An install with a worker replies `evals` (the eval verb's report: pass_rate,
+    // total_time_s, total_cost and the one-line `text` that names all three).
+    let preview = js_fn("renderPreview");
+    assert!(preview.contains("r.evals"), "{preview}");
+    assert!(preview.contains("evals.text"), "{preview}");
+    assert!(preview.contains("evals.pass_rate"), "{preview}");
+    // As text only, through el(), never as markup.
+    assert!(!preview.contains("innerHTML"), "{preview}");
+}
+
+#[test]
+fn panel_eval_and_install_both_draw_the_eval_summary_text() {
+    assert!(js_fn("runEval").contains("r.text"));
+    let preview = js_fn("renderPreview");
+    assert!(
+        preview.contains("r.evals") && preview.contains("evals.text"),
+        "{preview}"
+    );
+}

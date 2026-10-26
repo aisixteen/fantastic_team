@@ -5,6 +5,15 @@ from __future__ import annotations
 import sys
 
 
+class Skip(Exception):
+    """Raised by a probe that cannot run here (a resource this machine lacks).
+    The launcher prints `SKIP <name> (<reason>)`; the run does not fail."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class Verdict:
     def __init__(self, name: str) -> None:
         self.name = name
