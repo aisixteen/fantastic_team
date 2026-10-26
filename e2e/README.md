@@ -42,7 +42,7 @@ Each run writes `cost.json` in its run folder (tokens, requests, model, the USD 
 
 - `run.py`: the launcher.
 - `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted` or `plug: anthropic`); a test never names a model, an endpoint or a key. A team.yaml takes `{{model_name}}` (the plug's model) and `{{model_endpoint}}`.
-- `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start, stop, `send`, wiring), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks).
+- `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start, stop, `send`, wiring), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks), `packs.py` (build and pack a worker, drive `fantastic_team packs ...`, the pack agents' grants), `panel_dom.js` (the packs panel on a stub DOM against the live team; needs `node`).
 - `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`, `build`: `any` (default), `general` or `github`; `run.py --build` runs the tests for `any` and that build), `team.yaml`, `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code).
 - `runs/`: one folder per run, gitignored (it holds model output).
 
@@ -65,6 +65,10 @@ These are facts about the binary at the commit this was built on, not decisions 
 3. The binary never calls `prepare_sandbox`: the harness makes `work/`, `work/wt`, `work/tasks` and `sandbox/home` first. The worker's HOME is the relative `./sandbox/home`.
 4. `directive` on a connector is not passed to its record (github refuses without it); the test's `team.yaml` puts it in `record`.
 5. A model cannot pass `title` to `github pr_create`: `title` is a call-level field of the `<call>` grammar. The scripted model therefore stops after the push, and the probe sends `pr_create` itself, as the operator. The PR request is still what the github connector sends.
+
+## The packs tests
+
+`tests/packs/*` drive the pack verbs the way a person does: `fantastic_team packs pack|install|eval ...` (the CLI) for what has a flag, and `Team.send` to the `pack` and `pack_listing` agents for `signing_key`, `from_shifts` and `publish` (which have no flag). All are `free` on the scripted model: each eval task is one `send` to the lead, which the script answers with `ok` then `done` (the lead nudges once when an answer holds no call). `helpers/packs.py` adds the grants the two-step boot leaves out (the base `files` and `user` do not name the pack agents). `packs/shifts_produce_verifiable_record` also points the planned board at `queue_files` (the planned board's store is the `queue`, a ram_store with no files) and has the fake forge list a second issue. `packs/ui_shows_pass_rate_time_cost` runs the real panel page in node (no browser, no display) and prints `SKIP: node not found` and passes when there is no `node`.
 
 ## Later
 
