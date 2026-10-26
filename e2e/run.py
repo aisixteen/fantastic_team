@@ -41,6 +41,8 @@ sys.path.insert(0, HERE)
 from backends import PLUGS, available, provides_vars, scripted  # noqa: E402
 from backends import anthropic as relay_mod  # noqa: E402
 from helpers import forge as forge_mod  # noqa: E402
+from helpers import packs as packs_mod  # noqa: E402
+from helpers import registry as registry_mod  # noqa: E402
 from helpers import team as team_mod  # noqa: E402
 from helpers.verdict import Verdict  # noqa: E402
 
@@ -124,6 +126,16 @@ class Ctx:
         self.team = team_mod.Team(self.binary, self.run_dir, env_extra)
         team_mod.boot(self.team, os.path.join(self.dir, "team.yaml"), self.vars)
         team_mod.wire(self.team)
+        return self.team
+
+    def boot_packs(self, env_extra: dict[str, str], canvas: bool = False) -> team_mod.Team:
+        """Boot a team that has no connectors (the packs tests): the same start-up, none of
+        `wire()`'s grants for the credentials, puller, github and queue agents, and one
+        grant of its own (the operator may call the `files` agent). `canvas` adds the canvas the
+        app would make, so the pack browser panel is placed on it."""
+        self.team = team_mod.Team(self.binary, self.run_dir, env_extra)
+        team_mod.boot(self.team, os.path.join(self.dir, "team.yaml"), self.vars, canvas)
+        packs_mod.wire_packs(self.team)
         return self.team
 
 
@@ -295,11 +307,46 @@ def selftest() -> int:
     names = {t["name"]: t["build"] for t in discover()}
     v.check("the exec tests name their build", names.get("exec/general_allows_gh") == "general"
             and names.get("exec/github_refuses_forge_calls") == "github")
+    selftest_registry(v)
     selftest_relay(v)
     selftest_selection(v)
     selftest_turns(v)
     selftest_source(v)
     return v.finish()
+
+
+def selftest_registry(v: Verdict) -> None:
+    """The fake hosted registry counts what a distrusting client does, and serves one that trusts it.
+    The pack content hash is the binary's: the vector is checked against a real `pack` run in
+    packs/pack_publish_install_update."""
+    import ssl
+    tmp = tempfile.mkdtemp(prefix="e2e-registry-")
+    reg = registry_mod.FakeRegistry(tmp, {"/index.json": (200, '{"ok": true}')}).start()
+    try:
+        try:
+            urllib.request.urlopen(reg.url + "/index.json", timeout=10,
+                                   context=ssl.create_default_context())
+            distrusted = False
+        except (urllib.error.URLError, ssl.SSLError, OSError):
+            distrusted = True
+        deadline = time.time() + 5
+        while reg.handshake_failures < 1 and time.time() < deadline:
+            time.sleep(0.05)
+        v.check("a client that does not trust the registry cert fails: a connection, a failed "
+                "handshake, no request",
+                distrusted and reg.connections >= 1 and reg.handshake_failures >= 1
+                and reg.requests == [], f"{reg.connections} {reg.handshake_failures} {reg.requests}")
+        trusting = ssl.create_default_context(cafile=reg.cert)
+        with urllib.request.urlopen(reg.url + "/index.json", timeout=10, context=trusting) as r:
+            body = r.read()
+        v.check("a client that trusts the cert is served its route and the request is recorded",
+                json.loads(body) == {"ok": True} and [q["path"] for q in reg.requests] == ["/index.json"])
+    finally:
+        reg.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+    got = packs_mod.content_hash({"b": "yz", "a": "x", "pack.yaml": "ignored"})
+    v.check("content_hash follows the rule: sorted paths, NUL, u64 LE length, bytes, no pack.yaml",
+            got == "9f52052b3bebf486794e5e47379af6aa002567bbad6ba7b0a90ce05191b62c3e", got)
 
 
 def selftest_relay(v: Verdict) -> None:

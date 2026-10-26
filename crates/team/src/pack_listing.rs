@@ -189,17 +189,24 @@ pub fn split_installed(dir: &str) -> (String, String) {
     (dir.to_string(), String::new())
 }
 
-/// The packs installed in the templates directory, from its listing
-/// (`entries`: strings, or objects with a `name`), as `(name, version)`.
+/// The packs installed in the templates directory, from its listing, as
+/// `(name, version)`. The file bridge answers `files: [{name, type}]` (only
+/// folders count: a pack installs as a folder); a plain `entries` list of
+/// strings, or of objects with a `name`, is read too.
 pub fn installed_packs(templates: &Value) -> Vec<(String, String)> {
+    let named = |a: &Vec<Value>, dirs_only: bool| -> Vec<(String, String)> {
+        a.iter()
+            .filter(|x| !dirs_only || x["type"].as_str().is_none_or(|t| t == "dir"))
+            .filter_map(|x| x.as_str().or_else(|| x["name"].as_str()))
+            .map(split_installed)
+            .collect()
+    };
+    if let Some(a) = templates["files"].as_array() {
+        return named(a, true);
+    }
     templates["entries"]
         .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().or_else(|| x["name"].as_str()))
-                .map(split_installed)
-                .collect()
-        })
+        .map(|a| named(a, false))
         .unwrap_or_default()
 }
 
@@ -427,14 +434,9 @@ async fn pinned_hash(
     version: &str,
 ) -> Option<String> {
     let dir = cfg.templates_dir.trim_end_matches('/');
-    let r = peers
-        .ask(
-            &cfg.store,
-            json!({"type": "read", "path": format!("{dir}/{name}-{version}/{MANIFEST_FILE}")}),
-        )
-        .await;
-    let text = r["content"].as_str()?;
-    let m = pack_manifest::Manifest::parse(text).ok()?;
+    let path = format!("{dir}/{name}-{version}/{MANIFEST_FILE}");
+    let text = read_text(peers, &cfg.store, &path).await.ok()?;
+    let m = pack_manifest::Manifest::parse(&text).ok()?;
     (!m.content_hash.is_empty()).then_some(m.content_hash)
 }
 
@@ -1289,6 +1291,46 @@ mod tests {
         let cards = list_view(&l.entries, &l.installed, None);
         let alpha = cards.iter().find(|c| c["name"] == "alpha").unwrap();
         assert_eq!(alpha["installed"], json!(true));
+    }
+
+    /// A file bridge that answers a read as `lines`, as the real one does.
+    struct LinesPeer(&'static str);
+
+    #[async_trait::async_trait]
+    impl Peers for LinesPeer {
+        async fn ask(&self, _to: &str, _p: Value) -> Value {
+            let lines: Vec<Value> = self
+                .0
+                .lines()
+                .enumerate()
+                .map(|(i, t)| json!({"n": i + 1, "text": t}))
+                .collect();
+            json!({"lines": lines, "eof": true})
+        }
+    }
+
+    #[tokio::test]
+    async fn pinned_hash_reads_the_bridge_lines_reply() {
+        let peer =
+            LinesPeer("name: demo\nversion: 1.0.0\nauthor: a\nlicense: MIT\ncontent_hash: abc123");
+        let got = pinned_hash(&peer, &cfg_with(vec![]), "demo", "1.0.0").await;
+        assert_eq!(got.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn installed_packs_reads_the_file_bridge_listing() {
+        let bridge = json!({"path": "templates", "files": [
+            {"name": "demo-1.0.0", "path": "templates/demo-1.0.0", "type": "dir"},
+            {"name": "notes.txt", "path": "templates/notes.txt", "type": "file"},
+        ]});
+        assert_eq!(
+            installed_packs(&bridge),
+            vec![("demo".to_string(), "1.0.0".to_string())]
+        );
+        assert_eq!(
+            installed_packs(&json!({"entries": ["demo-1.0.0"]})),
+            vec![("demo".to_string(), "1.0.0".to_string())]
+        );
     }
 
     #[test]

@@ -98,7 +98,7 @@ class Team:
         return None
 
 
-def boot(team: "Team", yaml_template: str, variables: dict) -> None:
+def boot(team: "Team", yaml_template: str, variables: dict, canvas: bool = False) -> None:
     """Bring the team up from `yaml_template`.
 
     The binary's own start-up (plan the tree from team.yaml, apply it, then run
@@ -108,6 +108,8 @@ def boot(team: "Team", yaml_template: str, variables: dict) -> None:
        open file store at the root with a public verb, stop;
     2. write team.yaml and start again: the start-up now finds a store, applies
        the tree to disk, and the shell boots it.
+    With `canvas`, step 1 also adds the `canvas_page` agent the app would make, so the
+    start-up places the dispatcher and the pack browser panel on it.
     """
     for d in ("work/wt", "work/tasks", "sandbox/home"):  # the binary makes none of these
         os.makedirs(os.path.join(team.dir, d), exist_ok=True)
@@ -117,6 +119,11 @@ def boot(team: "Team", yaml_template: str, variables: dict) -> None:
                              "allow": ["."], "ingress_rule": "allow_all_ingress"})
     if r.get("status") != "completed":
         raise RuntimeError(f"cannot add the root store: {r}")
+    if canvas:  # the app makes the canvas; a headless team has none, and so no panels on it
+        r = team.send("kernel", {"type": "create_agent", "id": "canvas_page", "parent_id": "kernel",
+                                 "handler_module": "ram_store.tools"})
+        if r.get("status") != "completed":
+            raise RuntimeError(f"cannot add the canvas: {r}")
     team.stop()
     team.write_yaml(yaml_template, variables)
     team.start()
