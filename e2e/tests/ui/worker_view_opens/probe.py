@@ -85,9 +85,9 @@ def run(ctx):
             f"{status}")
     ws = WsLeg(port, WS)
     try:
-        got = None
         for target, payload in (("worker_view", {"type": "open", "worker": "w1"}),
                                 ("lead", {"type": "send", "text": "hi"})):
+            got = None
             try:  # a refusal is an error frame or a reply that holds `error`
                 got = ws.call(target, payload)
                 refused = isinstance(got, dict) and got.get("reason") == "unauthorized"
