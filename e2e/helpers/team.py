@@ -141,7 +141,7 @@ def boot(team: "Team", yaml_template: str, variables: dict, port: int | None = N
     """
     for d in ("work/wt", "work/tasks", "sandbox/home"):  # the binary makes none of these
         os.makedirs(os.path.join(team.dir, d), exist_ok=True)
-    team.start(port=port)
+    team.start()
     r = team.send("kernel", {"type": "create_agent", "id": "team_store", "parent_id": "kernel",
                              "handler_module": "file_bridge.tools", "root": ".fantastic",
                              "allow": ["."], "ingress_rule": "allow_all_ingress"})
