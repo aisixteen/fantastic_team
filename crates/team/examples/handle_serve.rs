@@ -8,13 +8,25 @@ use std::path::PathBuf;
 
 use fantastic_team::app_control::{TeamHandle, TeamOptions};
 use tokio::io::AsyncReadExt;
-use tokio::signal::unix::{signal, SignalKind};
 
 fn arg(name: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     args.iter()
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1).cloned())
+}
+
+/// Resolves on SIGTERM (unix); never resolves elsewhere, where end of stdin is the stop.
+#[cfg(unix)]
+async fn terminated() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = signal(SignalKind::terminate()).expect("sigterm");
+    term.recv().await;
+}
+
+#[cfg(not(unix))]
+async fn terminated() {
+    std::future::pending::<()>().await;
 }
 
 #[tokio::main]
@@ -32,12 +44,11 @@ async fn main() {
         }
     };
     println!("url: {}", handle.url().unwrap_or_default());
-    let mut term = signal(SignalKind::terminate()).expect("sigterm");
     let mut sink = Vec::new();
     let mut stdin = tokio::io::stdin();
     tokio::select! {
         _ = stdin.read_to_end(&mut sink) => {}
-        _ = term.recv() => {}
+        _ = terminated() => {}
     }
     if let Err(e) = handle.stop().await {
         eprintln!("handle_serve: stop failed: {e}");
