@@ -33,6 +33,14 @@ pub const BOARD_ID: &str = "board";
 pub const CADENCER_ID: &str = "cadencer";
 /// The roles registry's default agent id (`roles.id` in `team.yaml` may name another).
 pub const ROLES_ID: &str = "roles";
+/// The task registry's agent id (fantastic's `task_registry`), a child of the lead,
+/// present in every team with `roles:`.
+pub const TASKS_ID: &str = config::TASKS_ID;
+/// The verbs the `project_lead` card grants on the task registry (documentation: the
+/// card is the source).
+pub const PROJECT_LEAD_TASK_VERBS: [&str; 7] = [
+    "add", "assign", "reassign", "status", "report", "list", "get",
+];
 /// What the first agent may call on the roles registry: ask the roles and the room
 /// (`roles`, `role`, `get_count`), start an agent (`spawn`) and list who it started
 /// (`fleet`). It does not set limits: those come from `team.yaml` at start.
@@ -86,7 +94,7 @@ pub enum Role {
     Board,
     /// The cadencer: the digests to the group drivers, under the root.
     Cadencer,
-    /// The roles registry (`agentic_resources`) or its shared memory store, under the root.
+    /// The roles registry (`agentic_resources`) its shared memory store (both under the root), or the task registry (under the lead).
     Registry,
 }
 
@@ -149,6 +157,7 @@ pub fn check_cards(cfg: &TeamConfig, team_dir: &Path) -> Result<(), String> {
     let mut known: BTreeSet<&str> = BUILTIN_TOOLS.iter().copied().collect();
     known.insert(fantastic_agentic_resources::cards::REGISTRY_TOKEN);
     known.insert(cfg.queue.id.as_str());
+    known.insert(TASKS_ID);
     known.extend(cfg.connectors.keys().map(String::as_str));
     if cfg.board.is_some() {
         known.insert(BOARD_ID);
@@ -206,7 +215,7 @@ fn roles_plan(cfg: &TeamConfig, r: &config::RolesCfg, team_dir: &Path) -> [Plann
                 "id": mem,
                 "parent_id": DEFAULT_ROOT_ID,
                 "handler_module": "ram_store.tools",
-                "callable_by": {"$self": "*", (lead): "*"},
+                "callable_by": {"$self": "*", (lead): "*", (TASKS_ID): "*"},
             }),
         },
         Planned {
@@ -230,6 +239,26 @@ fn roles_plan(cfg: &TeamConfig, r: &config::RolesCfg, team_dir: &Path) -> [Plann
             }),
         },
     ]
+}
+
+/// The task registry (fantastic `task_registry`), a child of the lead so the lead
+/// can admit a spawned project_lead on it (the card's admit step). It keeps its
+/// rows in the roles memory store, which keys them apart from the conversations.
+fn tasks_plan(cfg: &TeamConfig, r: &config::RolesCfg) -> Planned {
+    Planned {
+        id: TASKS_ID.into(),
+        parent: cfg.first_agent.id.clone(),
+        role: Role::Registry,
+        record: json!({
+            "type": "create_agent",
+            "id": TASKS_ID,
+            "parent_id": cfg.first_agent.id,
+            "handler_module": fantastic_task_registry::HANDLER_MODULE,
+            "task_store_id": config::memory_id(&r.id),
+            "can_call": {(config::memory_id(&r.id).as_str()): "*"},
+            "callable_by": {"$self": "*", "$parent": "*"},
+        }),
+    }
 }
 
 /// The plan, lead first. Validates the config and the grants.
@@ -407,6 +436,7 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
             d.record["roles"] = json!(r.id);
         }
         out.extend(roles_plan(cfg, r, team_dir));
+        out.push(tasks_plan(cfg, r));
     }
     Ok(out)
 }
@@ -2079,6 +2109,7 @@ mod tests {
             .get(ROLES_ID)
             .is_none());
         assert!(tree[0].record["can_call"].get(ROLES_ID).is_none());
+        assert!(!ids(&tree).iter().any(|i| i == TASKS_ID));
         // no cards are read when the team has no `roles:` section
         assert_eq!(check_cards(&sample(), Path::new("/no/such/dir")), Ok(()));
     }
@@ -2088,13 +2119,13 @@ mod tests {
         let dir = roles_team_dir();
         let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
         let ids = ids(&tree);
-        assert_eq!(&ids[ids.len() - 2..], ["roles_memory", "roles"]);
+        assert_eq!(&ids[ids.len() - 3..], ["roles_memory", "roles", "tasks"]);
         let mem = planned(&tree, "roles_memory");
         assert_eq!(mem.parent, DEFAULT_ROOT_ID);
         assert_eq!(mem.record["handler_module"], "ram_store.tools");
         assert_eq!(
             mem.record["callable_by"],
-            json!({"$self": "*", "lead": "*"})
+            json!({"$self": "*", "lead": "*", "tasks": "*"})
         );
         let reg = planned(&tree, "roles");
         assert_eq!(reg.parent, DEFAULT_ROOT_ID);
@@ -2192,6 +2223,150 @@ mod tests {
         let empty = tempfile::TempDir::new().unwrap();
         let e = plan(&roles_cfg(ROLES_LIMITS), empty.path()).unwrap_err();
         assert!(e.starts_with("role cards: role dir "), "{e}");
+    }
+
+    #[test]
+    fn plan_with_roles_adds_the_task_registry() {
+        let dir = roles_team_dir();
+        let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
+        let t = planned(&tree, "tasks");
+        assert_eq!(t.parent, "lead");
+        assert_eq!(t.role, Role::Registry);
+        assert_eq!(t.record["parent_id"], "lead");
+        assert_eq!(
+            t.record["handler_module"],
+            fantastic_task_registry::HANDLER_MODULE
+        );
+        assert_eq!(t.record["task_store_id"], "roles_memory");
+        assert_eq!(t.record["can_call"], json!({"roles_memory": "*"}));
+        assert_eq!(
+            t.record["callable_by"],
+            json!({"$self": "*", "$parent": "*"})
+        );
+        let at = |i: &str| ids(&tree).iter().position(|x| x == i).unwrap();
+        assert!(at("lead") < at("tasks"), "the lead exists first");
+        // another registry id names its own store
+        let other = plan(&roles_cfg("roles:\n  id: reg\n"), dir.path()).unwrap();
+        assert_eq!(
+            planned(&other, "tasks").record["task_store_id"],
+            "reg_memory"
+        );
+    }
+
+    #[test]
+    fn a_card_may_grant_the_task_registry() {
+        let dir = roles_team_dir();
+        assert_eq!(check_cards(&roles_cfg(ROLES_LIMITS), dir.path()), Ok(()));
+        let card = std::fs::read_to_string(dir.path().join("roles/project_lead.md")).unwrap();
+        assert!(card.contains("  tasks: [add"));
+        // an unknown grant key is still refused
+        let bad = card.replace("  tasks: [add", "  nope: [add");
+        std::fs::write(dir.path().join("roles/project_lead.md"), bad).unwrap();
+        let e = check_cards(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap_err();
+        assert_eq!(
+            e,
+            "role card `project_lead` grants `nope`, which team.yaml does not define"
+        );
+    }
+
+    /// Spawn a project_lead and a worker as the lead, and admit the project_lead on `tasks`.
+    async fn lead_with_project_lead(kernel: &Arc<Kernel>) -> (String, String) {
+        let spawn = |role: &'static str| {
+            call_as(
+                kernel,
+                "lead",
+                "roles",
+                json!({"type": "spawn", "role": role}),
+            )
+        };
+        let pl = spawn("project_lead").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let w = spawn("worker").await["id"].as_str().unwrap().to_string();
+        (pl, w)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_spawned_project_lead_records_a_handed_out_issue() {
+        let dir = roles_team_dir();
+        let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
+        let (pl, w) = lead_with_project_lead(&kernel).await;
+        let pl_meta = meta_value(&kernel, &pl);
+        assert_eq!(
+            pl_meta["can_call"]["tasks"],
+            json!(PROJECT_LEAD_TASK_VERBS),
+            "the card's grant reached the spawned agent"
+        );
+        // not admitted yet: refused by the gate
+        let add = json!({"type": "add", "id": "o/r#7", "source": "gh:o/r#7", "holder": w});
+        let denied = call_as(&kernel, &pl, "tasks", add.clone()).await;
+        assert_eq!(denied["reason"], "unauthorized", "{denied}");
+        // the admit step is an update_agent of `tasks`.callable_by; the lead's template
+        // grant for it is team config, so the operator does it here
+        let mut by = meta_value(&kernel, "tasks")["callable_by"].clone();
+        by[pl.as_str()] = json!("*");
+        let up = ask(
+            &kernel,
+            "kernel_state",
+            json!({"type": "update_agent", "id": "tasks", "callable_by": by}),
+        )
+        .await;
+        assert!(up.get("error").is_none(), "{up}");
+        let e = call_as(&kernel, &pl, "tasks", add).await;
+        assert!(e.get("error").is_none(), "{e}");
+        assert_eq!(e["source"], "gh:o/r#7", "{e}");
+        assert_eq!(e["update_to"], "gh:o/r#7");
+        assert_eq!(e["holder"], json!(w));
+        assert_eq!(e["status"], "waiting");
+        assert_eq!(e["history"].as_array().unwrap().len(), 1);
+        let re = call_as(
+            &kernel,
+            &pl,
+            "tasks",
+            json!({"type": "reassign", "id": "o/r#7", "holder": {"subtree": pl}}),
+        )
+        .await;
+        assert!(re.get("error").is_none(), "{re}");
+        let hist = re["history"].as_array().unwrap();
+        assert_eq!(hist.len(), 2, "{re}");
+        assert_eq!(hist[1]["from"], json!(w), "{re}");
+        let got = call_as(&kernel, &pl, "tasks", json!({"type": "get", "id": "o/r#7"})).await;
+        assert_eq!(got["holder"], json!({"subtree": pl}), "{got}");
+        let list = call_as(
+            &kernel,
+            &pl,
+            "tasks",
+            json!({"type": "list", "holder": {"subtree": pl}}),
+        )
+        .await;
+        assert!(list.to_string().contains("o/r#7"), "{list}");
+        // the rows live in the roles memory store
+        let dump = ask(&kernel, "roles_memory", json!({"type": "dump"})).await;
+        assert!(dump.to_string().contains("o/r#7"), "{dump}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_worker_cannot_write_the_task_registry() {
+        let dir = roles_team_dir();
+        let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
+        let (pl, w) = lead_with_project_lead(&kernel).await;
+        // the worker card grants nothing on `tasks`, and `tasks` admits no worker
+        let wm = meta_value(&kernel, &w);
+        assert!(wm["can_call"].get("tasks").is_none(), "{wm}");
+        assert!(meta_value(&kernel, "tasks")["callable_by"]
+            .get(w.as_str())
+            .is_none());
+        // a project_lead the lead has not admitted is refused by the gate
+        let add = json!({"type": "add", "id": "o/r#8", "source": "gh:o/r#8", "holder": w});
+        let denied = call_as(&kernel, &pl, "tasks", add).await;
+        assert_eq!(denied["reason"], "unauthorized", "{denied}");
+        let got = call_as(&kernel, "lead", "tasks", json!({"type": "list"})).await;
+        assert!(!got.to_string().contains("o/r#8"), "{got}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
     }
 
     async fn call_as(kernel: &Arc<Kernel>, caller: &str, target: &str, payload: Value) -> Value {

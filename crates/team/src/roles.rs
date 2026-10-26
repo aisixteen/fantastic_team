@@ -40,6 +40,15 @@ pub const CODER_ROLES: [&str; 6] = [
 ];
 
 #[cfg(test)]
+fn card_grants_tasks(file: &str) -> bool {
+    let text = ALL.iter().find(|(f, _)| *f == file).unwrap().1;
+    fantastic_agentic_resources::cards::parse_card(text, file)
+        .unwrap()
+        .grants
+        .contains_key("tasks")
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use fantastic_agentic_resources::cards::{self, parse_card};
@@ -231,6 +240,37 @@ mod tests {
         ] {
             assert!(c.directive.contains(s), "project_lead card lacks {s}");
         }
+    }
+
+    #[test]
+    fn project_lead_card_grants_the_task_registry() {
+        let c = card("project_lead.md");
+        assert_eq!(
+            c.grants["tasks"],
+            serde_json::json!(["add", "assign", "reassign", "status", "report", "list", "get"])
+        );
+        for s in [
+            "gh:",
+            "update_to",
+            "reassign",
+            "holder",
+            "subtree",
+            "nothing syncs automatically",
+            "YOURSELF",
+        ] {
+            assert!(c.directive.contains(s), "project_lead card lacks {s}");
+        }
+        for card in ["lead.md", "worker.md"] {
+            assert!(!super::card_grants_tasks(card), "{card} grants tasks");
+        }
+    }
+
+    #[test]
+    fn cards_use_the_removed_task_lines_no_more() {
+        let pl = card("project_lead.md").directive;
+        assert!(!pl.contains("waits_on"));
+        assert!(!pl.contains("{label"));
+        assert!(!card("lead.md").directive.contains("state in `fleet`"));
     }
 
     #[test]

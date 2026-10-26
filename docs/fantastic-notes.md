@@ -28,6 +28,10 @@ Not verified. The esbuild call is `"$ESBUILD" "$ENTRY" --bundle ... --sourcemap 
 
 Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from two builds. The steps landed in fantastic #409, the pin in `Cargo.lock` was bumped (`scripts/update-fantastic.sh`), and `strict` is on by default: a difference fails the job (`-f strict=false` only warns).
 
+## Pin at `69971e5`
+
+`Cargo.lock` now pins fantastic `69971e5`. It brings the task registry `task_registry` (fantastic#429) and drops the #424 task lines: spawn `task` is a string only, `fleet` entries are `{id}` without a state, and `get_count` counts every spawned agent that still exists.
+
 ## Pin at `7bf494e`
 
 `Cargo.lock` now pins fantastic `7bf494e`. It brings the generic roles registry `agentic_resources` (fantastic#424), fork points (#425), `await_set` (#426) and spawn from a fork point (#431). Team configures the registry for the coder role set (#185).
