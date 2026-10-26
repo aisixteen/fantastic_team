@@ -232,7 +232,7 @@ End to end (e2e/README.md) has three tiers:
 - `python3 e2e/run.py --only-turns`: the turns tests, with a real model, by hand. Without a key they are skipped. Never in CI.
 - `sh tests/e2e.sh BIN`: the model-free e2e on one built binary.
 
-CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh workflow run ci.yml` runs the unit tests on Linux, macOS and Windows; `gh workflow run ci.yml -f units_os=linux` runs them on Linux only (a full run always uses all three). `gh workflow run ci.yml -f e2e=true` is the full run (release builds, the reproducible-build check and the model-free e2e), for a finished milestone or a release.
+CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh workflow run ci.yml` runs the unit tests on Linux, macOS and Windows; `gh workflow run ci.yml -f units_os=linux` runs them on Linux only (a full run always uses all three). `gh workflow run ci.yml -f e2e=true` is the full run (release builds, the reproducible-build check and the model-free e2e), for a finished milestone or a release. `-f cleanup=true` also saves the build caches at the end of each job (off by default; run it on main to refresh the caches).
 
 ## What is in this repo
 
