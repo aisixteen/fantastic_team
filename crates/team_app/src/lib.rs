@@ -286,6 +286,21 @@ pub fn web_url(target: &Target) -> String {
     }
 }
 
+/// The page the headless binary's `--port` serves since #181 (the team crate's
+/// `PAGE_PATH`). The web host answers 404 at `/`, so this is what the launcher
+/// waits for; the window URL is still [`web_url`].
+pub const READY_PATH: &str = "/team_page/file/index.html";
+
+/// The URL the launcher polls for a 200. `Attach` is the URL the user named.
+pub fn ready_url(target: &Target) -> String {
+    match target {
+        Target::Start { port, .. } => format!("http://127.0.0.1:{port}{READY_PATH}"),
+        Target::Attach { url } => url.clone(),
+        Target::Tunnel { local_port, .. } => format!("http://127.0.0.1:{local_port}{READY_PATH}"),
+        Target::Setup { .. } => String::new(),
+    }
+}
+
 async fn http_status(addr: &str, host: &str, path: &str) -> std::io::Result<u16> {
     let mut s = TcpStream::connect(addr).await?;
     let req = format!("GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n");
@@ -344,6 +359,7 @@ pub async fn launch(
     ready_timeout: Duration,
 ) -> Result<Launched, String> {
     let url = web_url(target);
+    let ready = ready_url(target);
     let (program, args, with_dir) = match target {
         Target::Start { binary, port } => (binary, start_args(*port), true),
         Target::Tunnel {
@@ -353,7 +369,7 @@ pub async fn launch(
             local_port,
         } => (ssh, tunnel_args(host, *remote_port, *local_port), false),
         Target::Attach { .. } => {
-            wait_ready(&url, ready_timeout).await?;
+            wait_ready(&ready, ready_timeout).await?;
             return Ok(Launched { child: None, url });
         }
         Target::Setup { .. } => return Err("setup is started with start_setup".to_string()),
@@ -375,12 +391,12 @@ pub async fn launch(
     }
     let outcome = tokio::select! {
         status = child.wait() => Outcome::Exited(status),
-        r = wait_ready(&url, ready_timeout) => Outcome::Ready(r),
+        r = wait_ready(&ready, ready_timeout) => Outcome::Ready(r),
     };
     match outcome {
         Outcome::Exited(status) => Err(match status {
-            Ok(s) => format!("{binary} exited before serving {url}: {s}"),
-            Err(e) => format!("{binary} exited before serving {url}: {e}"),
+            Ok(s) => format!("{binary} exited before serving {ready}: {s}"),
+            Err(e) => format!("{binary} exited before serving {ready}: {e}"),
         }),
         Outcome::Ready(Ok(())) => Ok(Launched {
             child: Some(child),
@@ -602,6 +618,30 @@ mod tests {
         });
     }
 
+    /// Answer 200 only for `GET ok_path`, 404 for anything else (the real binary).
+    fn serve_by_path(listener: TcpListener, ok_path: &'static str) {
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let ok = req.split_whitespace().nth(1) == Some(ok_path);
+                    let resp: &[u8] = if ok {
+                        b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok"
+                    } else {
+                        b"HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+                    };
+                    let _ = s.write_all(resp).await;
+                    let _ = s.shutdown().await;
+                });
+            }
+        });
+    }
+
     /// Serialises "write a script, then exec it" across tests. A fork in a
     /// parallel test can inherit our still-open write fd and make the exec fail
     /// with ETXTBSY ("Text file busy") until that child execs.
@@ -624,7 +664,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_binary(dir.path(), "fake", "exec sleep 30");
         let (listener, port) = bind_free().await;
-        serve_200(listener);
+        serve_by_path(listener, READY_PATH);
         let target = Target::Start { binary: bin, port };
         let mut l = launch(&target, None, Duration::from_secs(10))
             .await
@@ -660,7 +700,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_binary(dir.path(), "fake", "exec sleep 30");
         let (listener, port) = bind_free().await;
-        serve_200(listener);
+        serve_by_path(listener, READY_PATH);
         let target = Target::Start { binary: bin, port };
         let mut l = launch(&target, None, Duration::from_secs(10))
             .await
@@ -700,6 +740,100 @@ mod tests {
             let err = TcpListener::bind(("127.0.0.1", *port)).await.unwrap_err();
             assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
         }
+    }
+
+    #[tokio::test]
+    async fn wait_ready_accepts_a_server_that_404s_at_root_and_200s_on_the_page_path() {
+        let (listener, port) = bind_free().await;
+        serve_by_path(listener, READY_PATH);
+        wait_ready(
+            &format!("http://127.0.0.1:{port}{READY_PATH}"),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let r = wait_ready(
+            &format!("http://127.0.0.1:{port}/"),
+            Duration::from_millis(700),
+        )
+        .await;
+        assert!(r.is_err(), "a 404 is not ready");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_start_is_ready_when_only_the_page_path_answers_200() {
+        let _exec = EXEC_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(dir.path(), "fake", "exec sleep 30");
+        let (listener, port) = bind_free().await;
+        serve_by_path(listener, READY_PATH);
+        let target = Target::Start { binary: bin, port };
+        let mut l = launch(&target, None, Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert_eq!(l.url, web_url(&target));
+        assert!(l.url.ends_with('/'));
+        assert!(l.child.is_some());
+        l.stop().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_start_times_out_when_only_root_answers_200() {
+        let _exec = EXEC_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(dir.path(), "fake", "exec sleep 30");
+        let (listener, port) = bind_free().await;
+        serve_by_path(listener, "/");
+        let target = Target::Start { binary: bin, port };
+        let err = match launch(&target, None, Duration::from_millis(600)).await {
+            Ok(_) => panic!("root alone must not be ready"),
+            Err(e) => e,
+        };
+        assert!(err.contains("no 200"), "{err}");
+    }
+
+    #[test]
+    fn ready_url_is_the_served_page_for_start_and_tunnel_and_the_given_url_for_attach() {
+        let start = Target::Start {
+            binary: "b".into(),
+            port: 9123,
+        };
+        assert_eq!(
+            ready_url(&start),
+            "http://127.0.0.1:9123/team_page/file/index.html"
+        );
+        assert!(web_url(&start).ends_with('/'));
+        let tunnel = Target::Tunnel {
+            ssh: "ssh".into(),
+            host: "h".into(),
+            remote_port: 1,
+            local_port: 9100,
+        };
+        assert_eq!(
+            ready_url(&tunnel),
+            "http://127.0.0.1:9100/team_page/file/index.html"
+        );
+        let attach = Target::Attach {
+            url: "http://127.0.0.1:1/x".into(),
+        };
+        assert_eq!(ready_url(&attach), "http://127.0.0.1:1/x");
+        assert_eq!(
+            ready_url(&Target::Setup {
+                binary: "b".into(),
+                name: "n".into(),
+                org: None
+            }),
+            ""
+        );
+    }
+
+    #[test]
+    fn ready_path_matches_the_teams_page_path() {
+        assert_eq!(READY_PATH, "/team_page/file/index.html");
+        let page = include_str!("../../team/src/page.rs");
+        assert!(page.contains("PAGE_PATH: &str = \"/team_page/file/index.html\""));
     }
 
     #[tokio::test]
