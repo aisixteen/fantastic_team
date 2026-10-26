@@ -15,7 +15,7 @@ Only one agent has a model request open at a time, so the script's order is the 
 
 ## Asserts
 
-Before "yes": two model requests, `fleet` empty, only the project_lead running. The proposal names all four issues and is still in the project_lead's next request. A worker asked the model nothing before it was admitted. After: the fake forge holds two draft PRs from `team/issue-1` and `team/issue-2`, both workers' `fleet` state is `done`, the project_lead and both workers are still in the tree, no `delete_agent` was sent, and the last answer ticks the plan in place. The project_lead's reads show in the team's log.
+Before "yes": two model requests, `fleet` empty, only the project_lead running. The proposal names all four issues and is still in the project_lead's next request. A worker asked the model nothing before it was admitted. After: the fake forge holds two draft PRs from `team/issue-1` and `team/issue-2`, `fleet` lists both workers by id and the log shows their two `report` sends, the project_lead and both workers are still in the tree, no `delete_agent` was sent, and the last answer ticks the plan in place. The project_lead's reads show in the team's log.
 
 ## Skipped, with a note
 

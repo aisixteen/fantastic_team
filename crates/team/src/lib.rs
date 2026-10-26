@@ -51,7 +51,9 @@ pub mod worker_exec;
 /// worker exec restriction ([`worker_exec`]), the config ([`config`]) and the
 /// role cards ([`roles`]) are records and files, not bundles; the one other
 /// bundle is fantastic's roles registry (`agentic_resources.tools`), inert in
-/// a team whose registry record has no `role_dirs`.
+/// a team whose registry record has no `role_dirs`; the task registry
+/// (`task_registry.tools`, fantastic#429) is inert in a team whose registry record
+/// has no `task_store_id`.
 pub fn register_team(reg: &mut BundleRegistry) {
     reg.register(
         team_git_connector::HANDLER_MODULE,
@@ -64,6 +66,10 @@ pub fn register_team(reg: &mut BundleRegistry) {
     reg.register(
         fantastic_agentic_resources::HANDLER_MODULE,
         fantastic_agentic_resources::AgenticResourcesBundle,
+    );
+    reg.register(
+        fantastic_task_registry::HANDLER_MODULE,
+        fantastic_task_registry::TaskRegistryBundle::default(),
     );
     reg.register(puller::HANDLER_MODULE, puller::PullerBundle);
     // The dispatcher page, for the web UI that `--port` persists (`app_control::persist_web`).
@@ -350,6 +356,11 @@ pub mod roles;
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn register_team_registers_the_task_registry() {
+        assert!(registry().get("task_registry.tools").is_some());
+    }
 
     /// Boot the root and write its record without starting the kernel, so a
     /// test can seed a fresh tree and inspect it.

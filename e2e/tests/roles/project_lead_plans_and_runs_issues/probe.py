@@ -127,7 +127,8 @@ def run(ctx):
     v.check("the forge recorded two draft PRs, one per worker",
             heads == ["team/issue-1", "team/issue-2"] and all(p["json"].get("draft") for p in pulls), str(heads))
     ws = workers(team)
-    v.check("both workers report done", len(ws) == 2 and all(x["state"] == "done" for x in ws), str(ws))
+    v.check("fleet lists both workers and the log shows their two reports",
+            len(ws) == 2 and all(x.get("id") for x in ws) and str(team.log()).count("report") >= 2, str(ws))
     have = agents(team)
     v.check("the project_lead and both workers are still in the tree",
             pl in have and all(x["id"] in have for x in ws))

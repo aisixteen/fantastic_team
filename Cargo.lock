@@ -1606,6 +1606,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fantastic-task-registry"
+version = "0.1.0"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#69971e5b71747614597de1b953068ac2375d0a0d"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-kernel",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "fantastic-team"
 version = "0.1.0"
 dependencies = [
@@ -1618,6 +1630,7 @@ dependencies = [
  "fantastic-file",
  "fantastic-kernel",
  "fantastic-ram-store",
+ "fantastic-task-registry",
  "fantastic-team-secrets-guard",
  "fantastic-tui",
  "fantastic-user",

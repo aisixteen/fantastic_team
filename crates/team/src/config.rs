@@ -221,6 +221,9 @@ fn default_store_id() -> String {
     "credentials".into()
 }
 
+/// The task registry's agent id: a team with `roles:` has one, and the id is taken.
+pub const TASKS_ID: &str = "tasks";
+
 fn default_roles_id() -> String {
     "roles".into()
 }
@@ -387,6 +390,7 @@ pub fn validate(cfg: &TeamConfig) -> Result<(), String> {
     let mut ids: Vec<&str> = vec![cfg.first_agent.id.as_str(), cfg.queue.id.as_str()];
     if let Some(r) = &cfg.roles {
         ids.push(r.id.as_str());
+        ids.push(TASKS_ID);
     }
     ids.extend(cfg.connectors.keys().map(String::as_str));
     if let Some(s) = &cfg.credentials {
@@ -962,6 +966,20 @@ mod tests {
         assert_eq!(e, "agent id `roles` is used twice");
         let e = parse(&format!("{MIN}roles:\n  id: q\n")).unwrap_err();
         assert_eq!(e, "agent id `q` is used twice");
+    }
+
+    #[test]
+    fn roles_id_tasks_clashes() {
+        let e = parse(&format!(
+            "{MIN}connectors:\n  tasks:\n    kind: team_git.tools\nroles: {{}}\n"
+        ))
+        .unwrap_err();
+        assert_eq!(e, "agent id `tasks` is used twice");
+        // without `roles:` the id is free
+        assert!(parse(&format!(
+            "{MIN}connectors:\n  tasks:\n    kind: team_git.tools\n"
+        ))
+        .is_ok());
     }
 
     #[test]
