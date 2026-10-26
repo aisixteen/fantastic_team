@@ -142,6 +142,31 @@ def wire(team: "Team") -> None:
             raise RuntimeError(f"cannot wire {agent}: {r}")
 
 
+def wire_dispatcher(team: "Team") -> None:
+    """The grants a team.yaml with `groups:` and `board:` cannot say, for the
+    operator (the `mcp` leg) to steer the dispatcher, the cadencer and the board.
+    `wire()` replaces github's and the queue folder's callable_by, which drops
+    the `board` entry the tree plan made; so both are written again here with
+    `board` added. The plan points the board's `store` at the RAM `queue`, which
+    has no `read`/`write` by path, so the board could not keep its tasks; the
+    harness points it at the queue folder (`queue_files`) instead."""
+    both = {"$self": "*", "$parent": "*", "puller": "*", "mcp": "*", "board": "*"}
+    steps = [
+        ("dispatcher", {"callable_by": {"$self": "*", "$parent": "*", "mcp": "*"}}),
+        ("cadencer", {"callable_by": {"$self": "*", "$parent": "*", "dispatcher": ["status"], "mcp": "*"}}),
+        ("board", {"callable_by": {"$self": "*", "$parent": "*", "dispatcher": "*",
+                                   "cadencer": ["rows"], "mcp": "*"},
+                   "store": "queue_files",
+                   "can_call": {"$self": "*", "github": "*", "queue_files": "*"}}),
+        ("github", {"callable_by": both}),
+        ("queue_files", {"callable_by": both}),
+    ]
+    for agent, fields in steps:
+        r = team.send("kernel", dict(fields, type="update_agent", id=agent))
+        if r.get("status") != "completed":
+            raise RuntimeError(f"cannot wire {agent}: {r}")
+
+
 def log_calls(log_text: str) -> list[tuple[str, str]]:
     """`(agent, verb)` of every `[n] <agent> call <verb>` line the team printed."""
     return re.findall(r"\[\d+\] (\w+) call (\w+)", log_text)

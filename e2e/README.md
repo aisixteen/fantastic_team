@@ -48,7 +48,7 @@ Each run writes `cost.json` in its run folder (tokens, requests, model, the USD 
 
 ## Two builds
 
-The general build (stock exec) and the GitHub build (`patches/github-exec.patch`, built by `scripts/build-github.sh`) share the `any` tests. `exec/general_allows_gh` runs on the general binary only; `exec/github_refuses_forge_calls`, `secrets/github_no_credential_in_worker` and `task/github_pr_through_connector` on the GitHub binary only.
+The general build (stock exec) and the GitHub build (`patches/github-exec.patch`, built by `scripts/build-github.sh`) share the `any` tests. `exec/general_allows_gh` runs on the general binary only; the four `dispatcher/*` tests (`digest_reaches_driver`, `quiet_heartbeat`, `stop_asks_then_stops`, `hand_task_add_worker`) are free and run on either build; `exec/github_refuses_forge_calls`, `secrets/github_no_credential_in_worker` and `task/github_pr_through_connector` on the GitHub binary only.
 
 ## How a free test runs
 
@@ -65,9 +65,9 @@ These are facts about the binary at the commit this was built on, not decisions 
 3. The binary never calls `prepare_sandbox`: the harness makes `work/`, `work/wt`, `work/tasks` and `sandbox/home` first. The worker's HOME is the relative `./sandbox/home`.
 4. `directive` on a connector is not passed to its record (github refuses without it); the test's `team.yaml` puts it in `record`.
 5. A model cannot pass `title` to `github pr_create`: `title` is a call-level field of the `<call>` grammar. The scripted model therefore stops after the push, and the probe sends `pr_create` itself, as the operator. The PR request is still what the github connector sends.
+6. A `team.yaml` with `groups:` and `board:` makes the `dispatcher`, `cadencer` and `board`, but `wire()` replaces github's and the queue folder's `callable_by` (dropping the `board` entry the plan made) and never grants the `mcp` leg on `dispatcher`, `cadencer` or `board`. The `dispatcher` tests call `wire_dispatcher()` after `boot`: it writes those grants again with `board` and `mcp` added. The plan also points the board's `store` at the RAM `queue`, which has no `read`/`write` by path, so `wire_dispatcher()` points it at the queue folder (`queue_files`).
 
 ## Later
 
 - `driver/rulebook_reply_and_escalation` waits for the group driver (#95): the driver is a library (`crates/team/src/driver/`) with no agent, verb or `main.rs` wiring yet, so there is nothing for a turns test to drive. It is not written, and it is not a turns test until #95 wires the driver.
-- `dispatcher/digest_reaches_driver` waits for #58's delivery.
 - the `gpu` tier (a local-model plug, aisixteen/fantastic#303).
