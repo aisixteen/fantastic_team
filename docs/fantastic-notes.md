@@ -28,6 +28,10 @@ Not verified. The esbuild call is `"$ESBUILD" "$ENTRY" --bundle ... --sourcemap 
 
 Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from two builds. The steps landed in fantastic #409, the pin in `Cargo.lock` was bumped (`scripts/update-fantastic.sh`), and `strict` is on by default: a difference fails the job (`-f strict=false` only warns).
 
+## Pin at `7bf494e`
+
+`Cargo.lock` now pins fantastic `7bf494e`. It brings the generic roles registry `agentic_resources` (fantastic#424), fork points (#425), `await_set` (#426) and spawn from a fork point (#431). Team configures the registry for the coder role set (#185).
+
 ## What Team gets from the bump
 
 `Cargo.lock` now pins fantastic `bab97de` (aisixteen/fantastic main, 11 commits past `df64468`, which was 40 commits past `ef6f9a7`, which was 11 commits past `717765e`, which was 24 commits past `e7ede96`). Only the fantastic crates moved (the 11 newest commits are e2e and CI fixes, no API change), after the earlier bump added the transitive crates that `fantastic-system-agents` needs (`zbus` and its family, from the fantastic lock entries). The build and tests pass with no Team code change. Features the bump brings to Team:
