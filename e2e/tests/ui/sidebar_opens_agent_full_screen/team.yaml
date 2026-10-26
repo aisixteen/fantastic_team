@@ -1,0 +1,32 @@
+# The team of the e2e: one lead on the scripted model and one group, `fantastic`,
+# of two workers (w1, w2) with no driver and no board. The probe makes the workers
+# and w2's two subagents itself, then restarts the team on a port.
+# Double-brace names are filled by the launcher; no model, host or key is named here.
+templates:
+  worker_t:
+    handler_module: anthropic_backend.tools
+    model: scripted-model
+    endpoint: "{{model_endpoint}}"
+    credentials:
+      store: credentials
+      ref: "model/{{model_host}}"
+    can_call: []
+    extra:
+      context_window: 100000
+      max_tokens: 4000
+first_agent:
+  id: lead
+  template: worker_t
+queue:
+  id: queue
+credentials:
+  id: credentials
+  backend: env
+  refs:
+    "model/{{model_host}}":
+      host: "{{model_host}}"
+      env:
+        api_key: E2E_MODEL_KEY
+groups:
+  fantastic:
+    members: [w1, w2]
