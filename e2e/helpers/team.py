@@ -37,6 +37,7 @@ class Team:
         }
         self.log_path = os.path.join(run_dir, "team.log")
         self.proc: subprocess.Popen | None = None
+        self.args: tuple = ()  # extra command-line args for every start (for example --port N)
 
     def write_yaml(self, template_path: str, variables: dict) -> None:
         with open(template_path) as f:
@@ -44,9 +45,10 @@ class Team:
         with open(os.path.join(self.dir, "team.yaml"), "w") as f:
             f.write(text)
 
-    def start(self, wait_s: float = 60.0) -> None:
-        log = open(self.log_path, "wb")
-        self.proc = subprocess.Popen([self.binary, "--dir", self.dir], env=self.env,
+    def start(self, wait_s: float = 60.0, args: tuple | None = None) -> None:
+        """Start the binary; `args` (default: `self.args`) go after `--dir`, e.g. `("--port", "8123")`."""
+        log = open(self.log_path, "ab")
+        self.proc = subprocess.Popen([self.binary, "--dir", self.dir, *(self.args if args is None else args)], env=self.env,
                                      stdout=log, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL, cwd=self.dir)
         end = time.time() + wait_s
