@@ -98,9 +98,15 @@ fi
 # 4. canvas_zip_is_byte_identical_across_two_packs
 # The pinned fantastic must pack its canvas page the same way twice: two folders, a different
 # clock and TZ, the same SOURCE_DATE_EPOCH (fantastic #409).
-mf=$(cd "$ROOT" && cargo metadata --locked --offline --format-version 1 2>"$T/meta.err" \
-  | grep -o '"manifest_path":"[^"]*fantastic-canvas-page/Cargo.toml"' | head -n 1 \
-  | sed 's/^"manifest_path":"//; s/"$//')
+# A fresh CI runner has no registry cache, so --offline cannot resolve; fall back to the network.
+meta_mf() {
+  grep -o '"manifest_path":"[^"]*fantastic-canvas-page/Cargo.toml"' | head -n 1 \
+    | sed 's/^"manifest_path":"//; s/"$//'
+}
+mf=$(cd "$ROOT" && cargo metadata --locked --offline --format-version 1 2>"$T/meta.err" | meta_mf)
+if [ -z "$mf" ]; then
+  mf=$(cd "$ROOT" && cargo metadata --locked --format-version 1 2>"$T/meta.err" | meta_mf)
+fi
 APP=""
 [ -n "$mf" ] && APP="$(dirname "$mf")/../../web/canvas"
 if [ -z "$mf" ] || [ ! -f "$APP/scripts/pack.sh" ]; then
