@@ -9,6 +9,7 @@ python3 e2e/run.py --only-turns         the turns tests, a real model, by hand; 
 python3 e2e/run.py --only-turns --dry-run   discover the turns tests and collect their probes; starts nothing
 python3 e2e/run.py --build github --bin PATH   the tests for the GitHub build (default: general)
 python3 e2e/run.py --selftest           the harness proves itself, no binary
+python3 e2e/run.py --only app/attach_remote --bin /ABSOLUTE/path/fantastic_team   a test that needs the app: build it next to the binary first
 python3 e2e/run.py --list
 ```
 
@@ -42,9 +43,29 @@ Each run writes `cost.json` in its run folder (tokens, requests, model, the USD 
 
 - `run.py`: the launcher.
 - `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted` or `plug: anthropic`); a test never names a model, an endpoint or a key. A team.yaml takes `{{model_name}}` (the plug's model) and `{{model_endpoint}}`.
-- `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start, stop, `send`, wiring), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks).
+- `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start with extra args such as `--port`, stop, `send`, wiring, the page's chat grant), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks).
+- `helpers/web.py`, `helpers/app.py`: HTTP and websocket client; the app shell and handle driver as processes.
 - `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`, `build`: `any` (default), `general` or `github`; `run.py --build` runs the tests for `any` and that build), `team.yaml`, `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code).
 - `runs/`: one folder per run, gitignored (it holds model output).
+
+## The app and the dispatcher's web UI (#37)
+
+The `app/` and `dispatcher/` tests drive the web UI of a live team: they start the binary with `--port` (`ctx.boot_team(env, port=P, wire=[...])`), talk HTTP and a websocket with `helpers/web.py` (stdlib only), and run the app shell `fantastic_team_app` and the in-process handle driver `crates/team/examples/handle_serve.rs` as processes (`helpers/app.py`). `run.py` builds all three; with `--bin`, build them yourself and keep them in the same folder:
+
+```
+cargo build -p fantastic-team --bin fantastic_team --example handle_serve
+cargo build -p fantastic-team-app --bin fantastic_team_app
+python3 e2e/run.py --only dispatcher/chat_features --bin "$PWD/target/debug/fantastic_team"   # --bin must be absolute
+```
+
+A probe that cannot run here raises `helpers.verdict.Skip(reason)`; the launcher prints `SKIP <name> (<reason>)` and the run still exits 0. A test whose binary (`fantastic_team_app`, `examples/handle_serve`) is not next to `--bin` skips the same way. `app/window_per_platform` also skips without a tauri build (`E2E_APP_TAURI_BIN`), a Linux display and `xdotool`.
+
+Facts about the web UI at this commit, found while writing these tests:
+
+1. `fantastic_team --port P` is fantastic's `canvas --port P`: the page is `/canvas_page/file/index.html` and the web host answers 404 at `/`. The dispatcher's own page and socket (`/team_page/file/index.html`, `/team_ws/ws`) exist only in the in-process `TeamHandle`, whose kernel registry has no model backend, credential store or memory store (the lead is skipped), so a chat with a model cannot go through it yet. The chat tests therefore use the binary's canvas socket `canvas_ws`, to which the harness writes the grant `tree::grant_chat_to` writes for the page's leg (`helpers/team.py grant_chat`).
+2. The launcher (`fantastic_team_app`) waits for a 200 at `http://127.0.0.1:P/`, so it is never ready against the real binary. `app/launcher_start_attach_stop` and `app/attach_remote` use a stand-in for that one URL, and say so; the product fix (which URL the window loads) is the maintainer's.
+3. The Rust ai-core never emits the `tool_calling` status the page's tool blocks key on; a tool call is a `call` part sent to the watchers of its addressee.
+4. The scripted plug takes `"thinking": "..."` (a reasoning block before the text) and `"delay": seconds` (the plug waits before it answers) on a turn.
 
 ## Two builds
 
