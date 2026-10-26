@@ -3,8 +3,8 @@
 # Checks: a headless boot stays up with a clean log; a --port boot serves the canvas
 # page; the secrets guard runs over this run's output. The scripted fake-model master
 # with 2 workers against a local bare git remote is a TODO: it needs the fake-model
-# The no-port headless boot and the --tui refusal are e2e/tests/surfaces/.
 # harness (#38, #8), which is not on main yet.
+# The no-port headless boot and the --tui refusal are e2e/tests/surfaces/.
 # Exit 0: all checks pass. 1: a check failed. 2: no binary.
 set -u
 BIN=${1:?usage: sh tests/e2e.sh PATH_TO_fantastic_team}
