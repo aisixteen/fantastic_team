@@ -127,7 +127,7 @@ else
     rc=$?
     BOXPID=$(sed -n 's/^started gpu · pid \([0-9][0-9]*\) · log .*$/\1/p' "$R")
     i=0
-    while [ ! -f "$T/fake/key.cksum" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+    while [ ! -s "$T/fake/key.cksum" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
     want_args="--dir
 $T/box
 --host
