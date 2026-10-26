@@ -1,0 +1,26 @@
+# A tiny team: one lead on the scripted model. The surface test needs a booted
+# tree and nothing else.
+templates:
+  lead_t:
+    handler_module: anthropic_backend.tools
+    model: scripted-model
+    endpoint: "{{model_endpoint}}"
+    credentials:
+      store: credentials
+      ref: "model/{{model_host}}"
+    extra:
+      context_window: 100000
+      max_tokens: 4000
+first_agent:
+  id: lead
+  template: lead_t
+queue:
+  id: queue
+credentials:
+  id: credentials
+  backend: env
+  refs:
+    "model/{{model_host}}":
+      host: "{{model_host}}"
+      env:
+        api_key: E2E_MODEL_KEY
