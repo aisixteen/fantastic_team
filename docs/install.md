@@ -32,7 +32,7 @@ Output (verified on this box):
 
     usage: fantastic_team [--dir PATH] [--port N | --tui]
       no surface flag: fully headless (no port, no terminal UI)
-      --port N: serve the web UI on 127.0.0.1:N
+      --port N: serve the web UI on 127.0.0.1:N (the dispatcher page at /team_page/file/index.html, its socket at /team_ws/ws)
       --tui: the terminal UI (needs a terminal)
       (`mcp`, `send` and `readme` as the first word run fantastic's own commands)
       (`packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)

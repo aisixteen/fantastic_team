@@ -14,7 +14,7 @@ You are reading the text of the `fantastic_team` binary, the team's start-up. Us
 Run it from the directory the team lives in, or pass `--dir PATH` (created if missing).
 
 - No flags: fully headless. No port, no terminal UI. This is the default.
-- `--port N`: serve the web UI on 127.0.0.1:N.
+- `--port N`: serve the web UI on 127.0.0.1:N. The dispatcher page is at `/team_page/file/index.html` and its socket at `/team_ws/ws`, the same as in the app.
 - `--tui`: the terminal UI. It needs a terminal; without one it exits with code 2. `--port` and `--tui` cannot be combined.
 - `--dir PATH`: the team's directory.
 - `--instructions TEXT` or `--instructions-file PATH`: the first agent's instructions. Its flags `--workers N`, `--leads N`, `--per-lead N` say how many agents run and are put into those instructions.

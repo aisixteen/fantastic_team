@@ -15,7 +15,7 @@ Asserts, in order:
 - Back, then a click on `sub_a` (the expansion is kept): the same for the subagent, every `history`, `send` and `watch` frame sent meanwhile names `sub_a`, a second token costs exactly one more model request and only `sub_a`'s history holds it;
 - Back again: the pane is hidden, the sidebar shown, Back hidden, the reload asks for `expanded: ["w2"]`, w2's subagents are still drawn, w1 is collapsed, the remembered key `fantastic.team.subagents.w2` is `1` (none for w1) and the scroll was restored.
 
-What the harness works around (a fact about the binary at this commit): the headless binary's `--port` serves fantastic's canvas, and its registry has no `team_page.tools`; only the in-process `TeamHandle` (`app_control::serve_web`) serves `/team_page` and `/team_ws`. So the probe makes, with operator verbs, what `serve_web` and `tree::grant_chat_to` make: the `web` host, a file agent that holds the repo's own `dispatcher.html` with the page shim in its head (what `page::index_html` builds), and the `web_ws` leg `team_ws` with the same grants. The dispatcher, the workers, the subagents, their replies and the model calls are the binary's own. When the binary serves the team page itself, drop `serve_team_page` from the probe.
+What the harness works around: the workers and subagents are made after boot, so the probe writes, with operator verbs, the chat grants that `tree::grant_chat_to` writes at start for the workers a team.yaml names (`grant_chat`). The page, the `/team_ws/ws` leg, the dispatcher's grants and the model calls are the binary's own: `--port` serves them through the same code as the app (`app_control::persist_web`, which runs `prepare_web`).
 
 Mutations (each makes named checks fail, and each was run once):
 

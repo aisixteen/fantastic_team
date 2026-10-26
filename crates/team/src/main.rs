@@ -103,6 +103,20 @@ fn main() -> ExitCode {
         eprintln!("fantastic_team: {e}");
         return ExitCode::from(1);
     }
+    // `--port`: write the page and socket records (with their grants) before the
+    // shell boots, so its host serves them. Same code as the app's `serve_web`. Only
+    // into a directory that already holds a kernel: a kernel started here in a fresh
+    // directory would take the shell's first-run seeding (its `user`, its page
+    // loader) away, so the first run there seeds first and serves the page from the
+    // next start.
+    if let Surface::Port(p) = args.surface {
+        if std::path::Path::new(".fantastic").exists() {
+            if let Err(e) = fantastic_team::app_control::persist_web(std::path::Path::new("."), p) {
+                eprintln!("fantastic_team: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
     // The graceful stop can wait on an agent mid-model-call; bound it (#119).
     // The lock registry is keyed by the absolute working directory.
     if let Ok(cwd) = std::env::current_dir() {

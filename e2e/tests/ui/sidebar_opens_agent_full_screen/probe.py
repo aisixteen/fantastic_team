@@ -22,7 +22,6 @@ from helpers.verdict import Verdict
 NAME = "ui/sidebar_opens_agent_full_screen"
 DRIVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "helpers", "page_driver.js")
 ROOT = "kernel_state"  # where the team's agents live
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", ".."))
 
 
 def node_ok() -> bool:
@@ -92,44 +91,15 @@ def operator(team, **fields) -> None:
         raise RuntimeError(f"cannot write {fields.get('id')}: {r}")
 
 
-def serve_team_page(ctx, team, port: int, chat_agents) -> None:
-    """Serve the team page from outside, the way `app_control::serve_web` does inside.
-
-    The headless binary's `--port` serves fantastic's canvas (a browser app, with no
-    dispatcher cell placed by this flow), and it does not register `team_page.tools`: only
-    the in-process `TeamHandle` can serve /team_page and /team_ws. So the operator makes
-    the same agents with the same grants: the web host; the page (a file agent holding
-    the repo's own dispatcher.html with the page shim in its head, which is what
-    `page::index_html` builds); the socket leg (`web_ws.tools`) that may call the
-    dispatcher's page verbs and the chat verbs of the workers and their subagents, as
-    `tree::grant_chat_to` writes them. The dispatcher, the workers and their replies are
-    the binary's own."""
-    web = os.path.join(ROOT_DIR, "crates", "team", "web")
-    html = open(os.path.join(web, "dispatcher.html")).read()
-    shim = open(os.path.join(web, "page_shim.js")).read()
-    page_dir = os.path.join(ctx.run_dir, "page")
-    os.makedirs(page_dir, exist_ok=True)
-    with open(os.path.join(page_dir, "index.html"), "w") as f:
-        f.write(html.replace("</head>", f"<script>\n{shim}</script>\n</head>", 1))
-    operator(team, type="create_agent", id="web", parent_id="kernel_state", handler_module="web.tools", port=port)
-    operator(team, type="create_agent", id="team_page", parent_id="web", handler_module="file_bridge.tools",
-             root=page_dir, allow=["."], ingress_rule="allow_all_ingress")
-    operator(team, type="create_agent", id="team_ws", parent_id="web", handler_module="web_ws.tools",
-             ingress_rule="allow_all_ingress")
-    for served, verb in (("team_ws", "get_routes"), ("team_page", "read_stream")):
-        operator(team, type="update_agent", id=served, callable_by={"$self": "*", "$parent": "*", "web": [verb]})
-    operator(team, type="update_agent", id="web",
-             can_call={"$self": "*", "team_ws": ["get_routes"], "team_page": ["read_stream"]})
+def grant_chat(team, chat_agents) -> None:
+    """The binary grants the page's leg the chat verbs of the workers a team.yaml names, at
+    start (`tree::grant_chat_to`). These agents are made after boot, so the operator writes
+    the same grants. `update_agent` rewrites a field whole, so `team_ws` gets the union."""
     for aid in chat_agents:
         operator(team, type="update_agent", id=aid,
                  callable_by={"$self": "*", "$parent": "*", "team_ws": CHAT_VERBS})
     operator(team, type="update_agent", id="team_ws",
              can_call={"$self": "*", "dispatcher": PAGE_VERBS, **{a: CHAT_VERBS for a in chat_agents}})
-    operator(team, type="update_agent", id="dispatcher",
-             callable_by={"$self": "*", "$parent": "*", "team_ws": PAGE_VERBS})
-    r = team.send("web", {"type": "boot"})
-    if r.get("status") != "completed":
-        raise RuntimeError(f"cannot serve the page: {r}")
 
 
 def holders(page: Page, token: str, nodes) -> dict:
@@ -153,7 +123,8 @@ def run(ctx):
     key = "".join(["sk-", "ant-", secrets.token_hex(20)])
     team = team_mod.Team(ctx.binary, ctx.run_dir, {"E2E_MODEL_KEY": key})
     ctx.team = team
-    team_mod.boot(team, os.path.join(ctx.dir, "team.yaml"), ctx.vars)
+    port = team_mod.free_port()
+    team_mod.boot(team, os.path.join(ctx.dir, "team.yaml"), ctx.vars, port=port)
     ref = "model/" + ctx.vars["model_host"]
     agents = [("w1", ROOT), ("w2", ROOT), ("sub_a", "w2"), ("sub_b", "w2")]
     for aid, parent in agents:
@@ -169,8 +140,7 @@ def run(ctx):
                              "callable_by": {"$self": "*", "lead": "*", **{a: "*" for a, _ in agents}}})
     if r.get("status") != "completed":
         raise RuntimeError(f"cannot admit the agents to the credential store: {r}")
-    port = team_mod.free_port()
-    serve_team_page(ctx, team, port, [a for a, _ in agents])
+    grant_chat(team, [a for a, _ in agents])
 
     status, body = team_mod.http_get(port, "/team_page/file/index.html")
     v.check("the page is served (HTTP 200, the sidebar script and the socket shim)",
