@@ -260,8 +260,19 @@ idle (no task in hand) and tasks are queued, gets one line:
 `team.yaml` may set `cadence`, `stall_after`, `quiet` and `enabled` (whole seconds,
 at least 1); an unset key follows the global setting, which `set` still changes
 live. A group `cadence` longer than the timer's beat skips beats until it is due; a
-shorter one is held to the beat. When `team.yaml` has a `board` section the plan
-creates the `cadencer` agent with these settings.
+shorter one is held to the beat.
+
+The plan always creates the `cadencer` agent with these settings, with or without a
+`board` section (a CLI team has none). It is on by default. `cadencer: {enabled: false}`
+in `team.yaml` creates it switched off, and so does `enabled: false` on every group. The
+dispatcher page has a "Digests (cadencer)" switch in its header that calls `set
+{enabled}`; the state is kept in the cadencer's record and shown again after a restart.
+With a `roles:` section the digest tree is the spawned tree (the project_lead, its
+sub-leads and their workers, read from the roles registry, the root's `reflect` and the
+task registry): each lead gets a digest of its own children, with stalls and the
+heartbeat. Without `roles:` it reads the board's rows, as before. For the digests the
+cadencer is granted `send` on the leads the roles registry lists, at the start and
+before each beat.
 
 The cadencer's `status` carries the team's load as plain counts: workers busy,
 idle and stalled (per group and in all), tasks held, in review, done, blocked

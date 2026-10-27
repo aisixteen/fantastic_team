@@ -440,6 +440,10 @@ fn load_from_record(inner: &mut Inner, meta: &serde_json::Map<String, Value>) ->
         inner.board = Some(b.to_string());
         loaded = true;
     }
+    if let Some(r) = meta.get("roles").and_then(|v| v.as_str()) {
+        inner.roles = Some(r.to_string());
+        loaded = true;
+    }
     if let Some(p) = meta.get("cadencer_parent").and_then(|v| v.as_str()) {
         inner.parent = Some(p.to_string());
         loaded = true;
@@ -483,6 +487,10 @@ struct Inner {
     meter: CostMeter,
     peers: Option<Arc<dyn Peers>>,
     board: Option<String>,
+    /// The roles registry (roles mode): the digest tree is the spawned tree, read from it.
+    roles: Option<String>,
+    /// The kernel, for the grants to the spawned leads (set with the peers).
+    kernel: Option<Arc<Kernel>>,
     /// The groups' own settings from `team.yaml`, by group name.
     groups: Groups,
     /// Consecutive quiet beats with idle members and queued work, per lead.
@@ -626,6 +634,40 @@ async fn read_board(
     Some((nodes, load))
 }
 
+/// The spawned tree (roles mode) as nodes, with its load: the registries' reads
+/// through the public verbs only ([`crate::board::roles_tree_rows`]). `None` when the
+/// project_lead's branch could not be read, so the last tree stays.
+async fn read_roles(
+    peers: &dyn Peers,
+    roles: &str,
+    stall_after_s: u64,
+) -> Option<(Vec<Node>, Value)> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (rows, load) = crate::board::roles_tree_rows(peers, roles, now, stall_after_s).await;
+    if rows.is_empty() {
+        return None;
+    }
+    Some((rows.iter().filter_map(node_from).collect(), load))
+}
+
+/// Where the tree comes from: the spawned tree when the team has `roles:`, else the
+/// board's rows (a team without `roles:` keeps the old path unchanged).
+async fn read_source(
+    peers: &dyn Peers,
+    board: Option<&str>,
+    roles: Option<&str>,
+    stall_after_s: u64,
+) -> Option<(Vec<Node>, Value)> {
+    match (roles, board) {
+        (Some(r), _) => read_roles(peers, r, stall_after_s).await,
+        (None, Some(b)) => read_board(peers, b, stall_after_s).await,
+        (None, None) => None,
+    }
+}
+
 /// Send each digest to its target. A failed send is counted, never fatal.
 /// The lock is not held across the await.
 async fn deliver(shared: &Arc<Mutex<Inner>>, peers: Option<Arc<dyn Peers>>, digests: Vec<Digest>) {
@@ -649,6 +691,45 @@ async fn deliver(shared: &Arc<Mutex<Inner>>, peers: Option<Arc<dyn Peers>>, dige
     }
 }
 
+/// One timer beat: refresh the tree from its source, build the digests and send them.
+/// In roles mode the cadencer is first let `send` to the leads the registry lists now,
+/// so a project_lead spawned after the start gets its digest too.
+async fn beat_once(shared: &Arc<Mutex<Inner>>) {
+    let (peers, board, roles, kernel, stall_after_s) = {
+        let g = shared.lock().expect("cadencer state");
+        (
+            g.peers.clone(),
+            g.board.clone(),
+            g.roles.clone(),
+            g.kernel.clone(),
+            g.settings.stall_after_s,
+        )
+    };
+    if let Some(p) = peers.as_ref() {
+        if let (Some(k), Some(r)) = (kernel.as_ref(), roles.as_deref()) {
+            crate::tree::grant_fleet_digest_targets(k, r).await;
+        }
+        if let Some((tree, load)) = read_source(
+            p.as_ref(),
+            board.as_deref(),
+            roles.as_deref(),
+            stall_after_s,
+        )
+        .await
+        {
+            let mut g = shared.lock().expect("cadencer state");
+            g.tree = tree;
+            g.load = load;
+        }
+    }
+    let (digests, peers) = {
+        let mut g = shared.lock().expect("cadencer state");
+        let digests = beat(&mut g);
+        (digests, g.peers.clone())
+    };
+    deliver(shared, peers, digests).await;
+}
+
 /// Stop the old timer and, when enabled with a cadence, start a new one.
 fn restart_timer(shared: &Arc<Mutex<Inner>>, inner: &mut Inner) {
     inner.timer_cfg = Some((inner.settings.enabled, inner.settings.cadence_s));
@@ -665,36 +746,25 @@ fn restart_timer(shared: &Arc<Mutex<Inner>>, inner: &mut Inner) {
         let mut every = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
         loop {
             every.tick().await;
-            let (peers, board, stall_after_s) = {
-                let g = shared.lock().expect("cadencer state");
-                (g.peers.clone(), g.board.clone(), g.settings.stall_after_s)
-            };
-            if let (Some(p), Some(b)) = (peers.as_ref(), board) {
-                if let Some((tree, load)) = read_board(p.as_ref(), &b, stall_after_s).await {
-                    let mut g = shared.lock().expect("cadencer state");
-                    g.tree = tree;
-                    g.load = load;
-                }
-            }
-            let (digests, peers) = {
-                let mut g = shared.lock().expect("cadencer state");
-                let digests = beat(&mut g);
-                (digests, g.peers.clone())
-            };
-            deliver(&shared, peers, digests).await;
+            beat_once(&shared).await;
         }
     }));
     let now = inner.clock();
     inner.next_beat_s = Some(now + inner.settings.cadence_s);
 }
 
-/// Only the parent, `maintainer`, `user` or the CLI leg (`mcp`) may steer the
-/// cadencer. A send with no origin is an operator send, which is trusted.
+/// Only the parent, `maintainer`, `user`, the CLI leg (`mcp`) or the dispatcher page's
+/// view (the on/off switch) may steer the cadencer. A send with no origin is an
+/// operator send, which is trusted.
 fn allowed(inner: &Inner, origin: Option<&str>) -> bool {
     match origin {
         None => true,
         Some(s) => {
-            s == "maintainer" || s == "user" || s == "mcp" || inner.parent.as_deref() == Some(s)
+            s == "maintainer"
+                || s == "user"
+                || s == "mcp"
+                || s == crate::tree::DISPATCHER_VIEW_ID
+                || inner.parent.as_deref() == Some(s)
         }
     }
 }
@@ -788,12 +858,12 @@ impl CadencerBundle {
     }
 }
 
-/// Load the saved keys and restart the timer when it is enabled with a board.
+/// Load the saved keys and restart the timer when it is enabled with a board or roles.
 /// Returns true when the record had any of them.
 fn boot_from_meta(shared: &Arc<Mutex<Inner>>, meta: &serde_json::Map<String, Value>) -> bool {
     let mut g = shared.lock().expect("cadencer state");
     let loaded = load_from_record(&mut g, meta);
-    if g.settings.enabled && g.board.is_some() {
+    if g.settings.enabled && (g.board.is_some() || g.roles.is_some()) {
         restart_timer(shared, &mut g);
     }
     loaded
@@ -808,9 +878,9 @@ impl Bundle for CadencerBundle {
     fn verb_docs(&self) -> Value {
         json!({
             "tick": "tick {tree: [{id, parent?, has_ai?, state, task, inquiry?, idle_s, time_on_task_s, cost, cache_hit, new_results}]} → {digests: [{to, lines, text}], sent}",
-            "set": "set {sender, enabled?, cadence?, stall_after?, quiet?, lead?, on?} → settings (sender must be the parent, maintainer or user); persisted in the agent record and restored at boot",
+            "set": "set {sender, enabled?, cadence?, stall_after?, quiet?, lead?, on?} → settings (sender must be the parent, maintainer, user, the CLI or the dispatcher page); persisted in the agent record and restored at boot",
             "configure": "configure {board?, parent?} → {parent}; board and parent (kept as cadencer_parent) are persisted in the agent record and restored at boot, and the timer restarts",
-            "boot": "the kernel's lifecycle verb, boot {} → {loaded}: loads the settings and board from the agent record and restarts the timer when enabled with a board",
+            "boot": "the kernel's lifecycle verb, boot {} → {loaded}: loads the settings and board from the agent record and restarts the timer when enabled with a board or roles",
             "status": "status {} → {settings, ticks, last_beat_s, next_beat_s, digests_sent, digest_bytes_per_hour, driver_tokens_per_hour, load}; load is the board's counts (workers busy/idle/stalled per group, tasks held/in_review/done/blocked/queued, done_last_hour, tokens_total) and carries no mode",
         })
     }
@@ -824,6 +894,7 @@ impl Bundle for CadencerBundle {
         {
             let mut g = self.inner.lock().expect("cadencer state");
             g.peers = Some(Arc::new(KernelPeers(kernel.clone())));
+            g.kernel = Some(kernel.clone());
         }
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if t == "boot" {
@@ -1145,6 +1216,7 @@ mod tests {
             assert!(!allowed(&g, Some("stranger")));
             assert!(allowed(&g, Some("lead")));
             assert!(allowed(&g, None));
+            assert!(!allowed(&g, Some("worker_view")));
         }
         assert_eq!(status(&b)["settings"]["cadence"], 60);
     }
@@ -1856,5 +1928,211 @@ mod tests {
             st["load"]["digest_bytes_per_hour"], st["digest_bytes_per_hour"],
             "{st}"
         );
+    }
+
+    #[test]
+    fn allowed_accepts_the_dispatcher_page() {
+        let g = Inner::default();
+        assert!(allowed(&g, Some(crate::tree::DISPATCHER_VIEW_ID)));
+        assert!(!allowed(&g, Some("stranger")));
+        assert!(!allowed(&g, Some("dispatcher_view_2")));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn set_enabled_from_the_page_is_persisted() {
+        let b = shared();
+        let reply = dispatch(&b, &json!({"type": "set", "enabled": false}));
+        assert_eq!(reply["enabled"], false);
+        let patch = record_patch(&b.lock().unwrap());
+        assert_eq!(patch["enabled"], false);
+        let mut restored = Inner::default();
+        assert!(load_from_record(&mut restored, &patch));
+        assert!(!restored.settings.enabled);
+        // And back on.
+        dispatch(&b, &json!({"type": "set", "enabled": true}));
+        let patch = record_patch(&b.lock().unwrap());
+        assert!(load_from_record(&mut restored, &patch));
+        assert!(restored.settings.enabled);
+    }
+
+    #[test]
+    fn roles_key_loads_from_the_record() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("roles".into(), json!("roles"));
+        let mut b = Inner::default();
+        assert!(load_from_record(&mut b, &meta));
+        assert_eq!(b.roles.as_deref(), Some("roles"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timer_starts_with_roles_and_no_board() {
+        let b = shared();
+        let mut meta = serde_json::Map::new();
+        meta.insert("enabled".into(), json!(true));
+        meta.insert("roles".into(), json!("roles"));
+        assert!(boot_from_meta(&b, &meta));
+        assert!(b.lock().unwrap().board.is_none());
+        assert!(!status(&b)["next_beat_s"].is_null());
+        // Switched off at creation: no timer.
+        let off = shared();
+        meta.insert("enabled".into(), json!(false));
+        boot_from_meta(&off, &meta);
+        assert!(status(&off)["next_beat_s"].is_null());
+    }
+
+    fn wall_now() -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+    }
+
+    /// The registries of a spawned team, scripted: project_lead `pl` with a sub-lead
+    /// `sub` (child `w1`) and workers `w2`, `w3`; it records every `send`.
+    struct RolesPeers {
+        tasks: Value,
+        asked: Mutex<Vec<(String, String)>>,
+        sent: Mutex<Vec<(String, String)>>,
+    }
+
+    impl RolesPeers {
+        fn new(tasks: Value) -> Arc<Self> {
+            Arc::new(RolesPeers {
+                tasks,
+                asked: Mutex::new(Vec::new()),
+                sent: Mutex::new(Vec::new()),
+            })
+        }
+        fn sent_to(&self, to: &str) -> Vec<String> {
+            self.sent
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(t, _)| t == to)
+                .map(|(_, x)| x.clone())
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Peers for RolesPeers {
+        async fn ask(&self, to: &str, p: Value) -> Value {
+            let t = p["type"].as_str().unwrap_or("").to_string();
+            self.asked.lock().unwrap().push((to.to_string(), t.clone()));
+            match (to, t.as_str()) {
+                ("roles", "fleet") => json!({"roles": {
+                    "project_lead": [{"id": "pl"}], "lead": [{"id": "sub"}],
+                    "worker": [{"id": "w1"}, {"id": "w2"}, {"id": "w3"}]}}),
+                ("roles", "get_count") => json!({"running": 5, "max": 8}),
+                ("kernel", "reflect") => json!({"tree": [{"id": "pl", "children": [
+                    {"id": "sub", "children": [{"id": "w1", "children": []}]},
+                    {"id": "w2", "children": []},
+                    {"id": "w3", "children": []}]}]}),
+                ("tasks", "list") => self.tasks.clone(),
+                (_, "send") => {
+                    self.sent
+                        .lock()
+                        .unwrap()
+                        .push((to.to_string(), p["text"].as_str().unwrap_or("").to_string()));
+                    json!({"ok": true})
+                }
+                _ => json!({"error": "unexpected"}),
+            }
+        }
+    }
+
+    fn roles_inner(peers: Arc<RolesPeers>) -> Arc<Mutex<Inner>> {
+        let b = shared();
+        {
+            let mut g = b.lock().unwrap();
+            g.peers = Some(peers);
+            g.roles = Some("roles".into());
+        }
+        b
+    }
+
+    fn running(id: &str, holder: &str, age_s: f64) -> Value {
+        json!({"id": id, "source": "s", "holder": holder, "status": "running",
+            "history": [{"from": null, "to": holder, "by": "pl", "at": wall_now() - age_s}], "report": null})
+    }
+
+    #[tokio::test]
+    async fn roles_beat_digests_the_project_lead_and_sub_leads() {
+        let peers =
+            RolesPeers::new(json!({"tasks": [running("t1", "w1", 5.0), running("t2", "w2", 5.0)]}));
+        let b = roles_inner(peers.clone());
+        beat_once(&b).await;
+        let pl = peers.sent_to("pl").join("\n");
+        assert!(
+            pl.contains("sub:") && pl.contains("w2:") && pl.contains("w3:"),
+            "{pl}"
+        );
+        assert!(!pl.contains("w1:"), "the project_lead sees one level: {pl}");
+        let sub = peers.sent_to("sub").join("\n");
+        assert!(sub.contains("w1:") && !sub.contains("w2:"), "{sub}");
+        assert!(peers.sent_to("w2").is_empty(), "a worker has no children");
+        assert!(peers.asked.lock().unwrap().iter().all(|(_, t)| t != "rows"));
+        assert_eq!(status(&b)["delivery_errors"], 0);
+    }
+
+    #[tokio::test]
+    async fn stalled_spawned_agent_is_flagged_in_its_leads_digest() {
+        let peers = RolesPeers::new(
+            json!({"tasks": [running("t1", "w1", 1000.0), running("t2", "w2", 5.0)]}),
+        );
+        let b = roles_inner(peers.clone());
+        beat_once(&b).await;
+        let sub = peers.sent_to("sub").join("\n");
+        assert!(sub.contains("w1:") && sub.contains("STALLED"), "{sub}");
+        let pl = peers.sent_to("pl").join("\n");
+        let w2 = pl.lines().find(|l| l.starts_with("w2:")).expect("w2 line");
+        assert!(!w2.contains("STALLED"), "{w2}");
+        let sub_line = pl
+            .lines()
+            .find(|l| l.starts_with("sub:"))
+            .expect("sub line");
+        assert!(sub_line.contains("1 STALLED"), "{sub_line}");
+    }
+
+    #[tokio::test]
+    async fn roles_heartbeat_when_idle_and_queued() {
+        // `sub` and `w3` hold nothing (two idle children of `pl`); a waiting task with
+        // no holder is queued work.
+        let waiting =
+            json!({"id": "q1", "source": "s", "holder": null, "status": "waiting", "history": []});
+        let peers = RolesPeers::new(
+            json!({"tasks": [running("t1", "w1", 5.0), running("t2", "w2", 5.0), waiting]}),
+        );
+        let b = roles_inner(peers.clone());
+        beat_once(&b).await;
+        let first = peers.sent_to("pl");
+        assert!(first.iter().all(|t| !t.contains("heartbeat")), "{first:?}");
+        for _ in 0..HEARTBEAT_EVERY {
+            beat_once(&b).await;
+        }
+        let all = peers.sent_to("pl").join("\n");
+        assert!(all.contains("heartbeat: 2 idle, 1 queued"), "{all}");
+    }
+
+    #[tokio::test]
+    async fn team_without_roles_keeps_board_rows() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let peers = BoardPeers { sent };
+        let (nodes, _) = read_source(&peers, Some("board"), None, 300)
+            .await
+            .expect("the board path");
+        assert!(nodes
+            .iter()
+            .any(|n| n.id == "w1" && n.parent.as_deref() == Some("g1")));
+        assert!(read_source(&peers, None, None, 300).await.is_none());
+        // With roles the spawned tree is read, and the board is not asked.
+        let rp = RolesPeers::new(json!({"tasks": []}));
+        let (nodes, _) = read_source(rp.as_ref(), Some("board"), Some("roles"), 300)
+            .await
+            .expect("the roles path");
+        assert!(nodes
+            .iter()
+            .any(|n| n.id == "sub" && n.parent.as_deref() == Some("pl")));
+        assert!(rp.asked.lock().unwrap().iter().all(|(to, _)| to != "board"));
     }
 }
