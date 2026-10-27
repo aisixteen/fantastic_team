@@ -92,7 +92,7 @@ pub fn register_team(reg: &mut BundleRegistry) {
 
 /// A kernel registry for [`start`] (tests, embedding): the bundles the base
 /// tree needs (the root's state, the file store, the RAM memory store, the
-/// exec bridge) plus [`register_team`]. fantastic's shell builds its own, fuller
+/// durable `sqlite_store`, the exec bridge) plus [`register_team`]. fantastic's shell builds its own, fuller
 /// set when the binary runs; that one is private to it.
 pub fn registry() -> BundleRegistry {
     let mut reg = BundleRegistry::new();
@@ -104,6 +104,12 @@ pub fn registry() -> BundleRegistry {
     reg.register(
         fantastic_ram_store::HANDLER_MODULE,
         fantastic_ram_store::RamStoreBundle::default(),
+    );
+    // The durable memory store: the team's one store agent (`config::StoreCfg`).
+    // The caller closes it with `fantastic_sqlite_store::close_all` after the shutdown.
+    reg.register(
+        fantastic_sqlite_store::HANDLER_MODULE,
+        fantastic_sqlite_store::SqliteStoreBundle,
     );
     reg.register(
         fantastic_exec_bridge::HANDLER_MODULE,
@@ -302,6 +308,7 @@ pub async fn start(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>
         Ok(()) => Ok(kernel),
         Err(msg) => {
             kernel.shutdown().await;
+            fantastic_sqlite_store::close_all(&kernel);
             bootstrap::shutdown(dir)?;
             Err(msg.into())
         }
@@ -590,6 +597,11 @@ mod tests {
         );
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn register_team_registry_has_sqlite_store() {
+        assert!(registry().get("sqlite_store.tools").is_some());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

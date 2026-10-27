@@ -58,7 +58,7 @@ mod tests {
         assert!(write_app_preset(dir.path()).unwrap());
         let cfg = config::load(&dir.path().join(config::FILE_NAME)).unwrap();
         let plan = tree::plan(&cfg, dir.path()).unwrap();
-        for id in ["roles", "roles_memory", "tasks", "lead", "dispatcher"] {
+        for id in ["roles", "memory", "tasks", "lead", "dispatcher"] {
             assert!(plan.iter().any(|p| p.id == id), "the plan has no `{id}`");
         }
         for (file, _) in roles::ALL {

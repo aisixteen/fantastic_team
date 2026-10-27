@@ -1,0 +1,36 @@
+[
+ {
+  "say": "Starting a worker.",
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "worker",
+     "task": "The queue is queue. Your id is the id in your own reflect."
+    }
+   }
+  ]
+ },
+ {
+  "say": "Recording the issue I hand out.",
+  "calls": [
+   {
+    "target": "tasks",
+    "type": "add",
+    "args": {
+     "id": "acme/widgets#1",
+     "source": "gh:acme/widgets#1",
+     "holder": "lead"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ }
+]
