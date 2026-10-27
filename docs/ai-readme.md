@@ -29,10 +29,12 @@ the team's groups. In each group, every worker is followed by a `subagents (N)`
 expander, and its subagents (kernel agents whose parent is that worker) show
 under it only when expanded. A click on a worker or a subagent opens that agent
 as a full-screen chat, and Back returns to the sidebar with its scroll and
-expansion kept. The dispatcher is placed on `canvas_page` at the first start
-only. It reads no secrets and sends no work. The `sidebar` verb answers the
+expansion kept. The dispatcher's view is made at the first start and is not put on
+the canvas (a canvas lists sidecars only). It reads no secrets and sends no work. The `sidebar` verb answers the
 list; `open` answers the chat for one agent (`view: chat`, `target`, `fullscreen`).
 `control {node, action, confirm?}` sends start, pause or stop to a worker (any other action is refused); stop needs `confirm: true`, and the answer is `{sent, error?}`.
+
+The right pane fills the height beside the tree: the chat's transcript scrolls inside it and the chat has no fixed height. An `embed {id}` row in the chat's history is drawn as a card where the row sits (a sandboxed iframe of the host agent's `get_html`; `unembed` removes it, the X hides it in the page only); the page's leg may call that host's panel verbs plus `get_html` and `watch`, granted at `open` and again after a turn, never `*`. When a canvas named after the node exists (`canvas_<id>`, what `new_canvas {name: <id>}` makes), the `open` reply carries `canvas {id, url}` and the pane shows a Canvas button that swaps the chat for `url` (`/canvas_page/file/index.html?canvas=<id>`) in an iframe. The `agents` rows carry `has_children`, so a subtree and the whole tree column fold (remembered in the browser). Up to 600 px wide the list and the pane are two snap panels side by side: opening a node scrolls the pane into view and Back scrolls the list back. `team.yaml` may carry `canvases: {persist: false}`; the team reads it (`canvases_persist()`), fantastic has no switch to write nothing yet.
 
 ## 3. team.yaml
 

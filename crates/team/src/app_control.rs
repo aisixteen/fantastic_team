@@ -1042,4 +1042,34 @@ mod tests {
         h.stop().await.unwrap();
         drop(busy);
     }
+
+    /// fantastic refuses a web boot in which two children declare the same literal route
+    /// (fantastic#446: "is already declared by"). The team's page and socket leg, mounted
+    /// next to each other on the one host, must not clash.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn team_web_routes_do_not_clash_at_boot() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let port = free_port();
+        persist(dir.path(), port).await.unwrap();
+        // the boot of the host is the clash check: it must succeed and serve both routes
+        let k = start(dir.path()).await.unwrap();
+        let resp = http_get(port, page::PAGE_PATH).await;
+        assert_eq!(status_of(&resp), 200, "{resp}");
+        assert!(!resp.contains("is already declared by"), "{resp}");
+        let (head, _c) = ws_open(port).await;
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+        let web = k.agents.get(&fantastic_kernel::AgentId::from(page::WEB_ID));
+        let status = web
+            .map(|w| w.meta.read().unwrap().get("status").cloned())
+            .unwrap_or(None);
+        assert!(
+            !status
+                .map(|v| v.to_string().contains("already declared"))
+                .unwrap_or(false),
+            "the host recorded a route clash"
+        );
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
 }

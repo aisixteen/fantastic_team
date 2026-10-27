@@ -1395,6 +1395,13 @@ pub fn run_at_start(
         );
     }
     let tree = plan(&cfg, dir)?;
+    if !cfg.canvases_persist() {
+        // fantastic has no switch for it yet: its web host always makes the canvas
+        // folder and writes the page records. Said at the start, not hidden.
+        eprintln!(
+            "team.yaml: canvases.persist is false, but this fantastic always writes canvas records"
+        );
+    }
     fantastic_tui::seed_dir(dir)?;
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async {

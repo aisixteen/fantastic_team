@@ -351,4 +351,73 @@ mod tests {
             "the coder card replaces the generic one"
         );
     }
+
+    #[test]
+    fn only_the_lead_card_grants_the_root_and_no_card_names_the_canvas() {
+        // A card may only grant what its spawner holds (fantastic#436) and the team's lead
+        // holds no verb of the root: so sidecar creation is text on the cards, not a grant.
+        for file in [
+            "worker.md",
+            "project_lead.md",
+            "issue_keeper.md",
+            "issue_writer.md",
+            "spec_reviewer.md",
+        ] {
+            let g = card(file).grants;
+            assert!(!g.contains_key("kernel"), "{file}");
+            assert!(!g.contains_key("canvas_page"), "{file}");
+        }
+        let g = card("lead.md").grants;
+        assert!(!g.contains_key("canvas_page"));
+        assert_eq!(g["kernel"], "*", "the lead card's grant is unchanged");
+    }
+
+    #[test]
+    fn service_style_cards_grant_no_sidecars() {
+        for file in ["issue_keeper.md", "issue_writer.md", "spec_reviewer.md"] {
+            let c = card(file);
+            assert!(!c.grants.contains_key("canvas_page"), "{file}");
+            assert!(!c.grants.contains_key("kernel"), "{file}");
+            assert!(!c.directive.contains("new_canvas"), "{file}");
+            assert!(!c.directive.contains("## Sidecars and canvases"), "{file}");
+        }
+    }
+
+    #[test]
+    fn cards_tell_when_to_embed_and_when_to_make_a_canvas() {
+        for file in ["worker.md", "lead.md", "project_lead.md"] {
+            let d = card(file).directive;
+            let at = d
+                .find("## Sidecars and canvases")
+                .unwrap_or_else(|| panic!("{file}"));
+            let section = &d[at..];
+            for s in [
+                "embed",
+                "unembed",
+                "new_canvas",
+                "nested",
+                "delete",
+                "YOUR OWN ID",
+            ] {
+                assert!(section.contains(s), "{file} lacks {s}");
+            }
+            assert!(
+                section.contains("Never put workers, leads or services on a canvas"),
+                "{file}"
+            );
+        }
+    }
+
+    #[test]
+    fn lead_card_starting_an_agent_section_still_has_no_create_agent() {
+        let l = card("lead.md").directive;
+        let start = l.find("## Starting an agent").unwrap();
+        let end = l.find("## Workers that serve themselves").unwrap();
+        assert!(!l[start..end].contains("create_agent"));
+        // the sidecar text is its own section, outside it, and says it is about sidecars only
+        let side = l.find("## Sidecars and canvases").unwrap();
+        assert!(side > end);
+        assert!(l[side..].contains("sidecars only"));
+        assert!(l[side..].contains("never create a worker or a lead with `create_agent`"));
+    }
 }

@@ -23,7 +23,8 @@ The team web UI is the one page an operator opens to see the team of AI workers 
 
 ## Shared rules
 - Light and dark themes both work: text and state colours keep their contrast in each.
-- Phone width (up to 430 px) stacks the sidebar above the pane, with a 16 px side gutter and no horizontal scroll. Desktop width puts the sidebar beside the pane.
+- Phone width (up to 600 px) makes the list and the pane two panels side by side that snap into view: opening a node shows the pane, Back shows the list; nothing swipes from one agent to the next. Desktop width puts the sidebar beside the pane; the pane fills the height and the chat scrolls inside it.
+- A chat shows an embedded agent as a card where the embed row sits, and a Canvas button swaps the chat for the agent's canvas when one exists. The tree folds per subtree and as a column.
 - The same page in a browser and in the app: one set of files, no separate app screens.
 - A brief shows data and sends verbs. It holds no logic beyond that: no sorting rules, no timers and no computed totals on the page.
 - No auth, accounts, billing or SaaS chrome. No provider or model names in any layout.
