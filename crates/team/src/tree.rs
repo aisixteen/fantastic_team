@@ -50,6 +50,14 @@ pub const LEAD_ROLES_VERBS: [&str; 5] = ["roles", "role", "spawn", "get_count", 
 /// The kernel verbs a spawned agent may call on the root to wait for its children
 /// (`await_set`, `await_cancel`): the project_lead card lists them.
 pub const AWAIT_VERBS: [&str; 2] = ["await_set", "await_cancel"];
+
+/// The root verbs a spawned worker, lead or project_lead holds to make and remove its
+/// own sidecars (their cards grant them). The lead holds them too, since a spawn grants
+/// only what the spawner holds (fantastic #436).
+pub const SIDECAR_ROOT_VERBS: [&str; 2] = ["create_agent", "delete_agent"];
+
+/// The canvas verb those cards grant; held by the lead for the same reason.
+pub const SIDECAR_CANVAS_VERBS: [&str; 1] = ["new_canvas"];
 /// What the board may call on the roles registry (roles mode): who runs (`fleet`) and
 /// the count (`get_count`).
 pub const BOARD_ROLES_VERBS: [&str; 2] = ["fleet", "get_count"];
@@ -167,6 +175,8 @@ pub fn check_cards(cfg: &TeamConfig, team_dir: &Path) -> Result<(), String> {
     known.insert(fantastic_agentic_resources::cards::REGISTRY_TOKEN);
     known.insert(cfg.queue.id.as_str());
     known.insert(TASKS_ID);
+    // the canvas host the web boot makes: a card may grant its `new_canvas`
+    known.insert(CANVAS_ID);
     known.extend(cfg.connectors.keys().map(String::as_str));
     if cfg.board.is_some() {
         known.insert(BOARD_ID);
@@ -512,7 +522,13 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         // The lead holds the await verbs on the root: the project_lead card grants
         // them, and a spawner may only grant what it holds (fantastic #436). The
         // root's end is `grant_await`.
-        planned_mut(&mut out, l).record["can_call"][DEFAULT_ROOT_ID] = json!(AWAIT_VERBS);
+        let lead_root: Vec<&str> = AWAIT_VERBS
+            .iter()
+            .chain(SIDECAR_ROOT_VERBS.iter())
+            .copied()
+            .collect();
+        planned_mut(&mut out, l).record["can_call"][DEFAULT_ROOT_ID] = json!(lead_root);
+        planned_mut(&mut out, l).record["can_call"][CANVAS_ID] = json!(SIDECAR_CANVAS_VERBS);
         if let Some(d) = out.iter_mut().find(|p| p.id == DISPATCHER_ID) {
             d.record["can_call"][r.id.as_str()] = json!(DISPATCHER_ROLES_VERBS);
             d.record["roles"] = json!(r.id);
@@ -1128,33 +1144,6 @@ pub async fn grant_cards(kernel: &Arc<Kernel>, principal: &str, chat_agent: &str
         }
     }
     grant_card_ids(kernel, principal, &card_ids(&rows))
-}
-
-/// The ids a canvas may be given: live agents whose record is a sidecar
-/// ([`dispatcher::is_sidecar`]) and that are not in `team_agents` (the team's workers,
-/// leads and services). The canvas lists these only; what the canvas itself does with an
-/// id it is told to place is fantastic's.
-pub fn grant_canvas_place(kernel: &Arc<Kernel>, team_agents: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = kernel
-        .agents
-        .iter()
-        .filter(|e| {
-            let a = e.value();
-            if team_agents.iter().any(|t| *t == a.id.0) {
-                return false;
-            }
-            let Ok(meta) = a.meta.read() else {
-                return false;
-            };
-            let mut rec = Value::Object(meta.clone());
-            rec["id"] = json!(a.id.0);
-            rec["handler_module"] = json!(a.handler_module.clone().unwrap_or_default());
-            dispatcher::is_sidecar(&rec)
-        })
-        .map(|e| e.value().id.0.clone())
-        .collect();
-    out.sort();
-    out
 }
 
 /// The verbs the dispatcher relays to a worker: `send` (hand_task) and the `control`
@@ -2890,7 +2879,12 @@ mod tests {
         let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
         let can = &planned(&tree, "lead").record["can_call"];
         assert_eq!(can[BOARD_ID], json!(["board", "rows"]), "{can}");
-        assert_eq!(can[DEFAULT_ROOT_ID], json!(AWAIT_VERBS), "{can}");
+        assert_eq!(
+            can[DEFAULT_ROOT_ID],
+            json!(["await_set", "await_cancel", "create_agent", "delete_agent"]),
+            "{can}"
+        );
+        assert_eq!(can[CANVAS_ID], json!(["new_canvas"]), "{can}");
     }
 
     #[test]
@@ -3640,6 +3634,12 @@ mod tests {
         for t in ["worker_exec", "worker_files", "queue", "memory"] {
             assert_eq!(m["can_call"][t], "*", "{t}");
         }
+        // the sidecar grants of its card, exact verbs and never `*`
+        assert_eq!(
+            m["can_call"]["kernel_state"],
+            json!(["create_agent", "delete_agent"]),
+            "{m}"
+        );
         // and the store admits it, so it keeps its own rows there
         let store = meta_value(&kernel, "memory");
         assert_eq!(store["callable_by"][id.as_str()], "*", "{store}");
@@ -4030,19 +4030,6 @@ mod tests {
             field_of(&kernel, DISPATCHER_VIEW_ID, "can_call"),
         );
         assert_eq!(first, second);
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn grant_canvas_place_lists_sidecars_only() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = started_with_canvas(dir.path()).await;
-        panel_host(&kernel, "preview", serde_json::from_str(CARD_VIEW).unwrap()).await;
-        panel_host(&kernel, "w1", serde_json::from_str(CARD_VIEW).unwrap()).await;
-        panel_host(&kernel, "plain", Value::Null).await;
-        let team = vec!["w1".to_string()];
-        assert_eq!(grant_canvas_place(&kernel, &team), ["preview"]);
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }

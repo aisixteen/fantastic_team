@@ -221,8 +221,8 @@ mod tests {
         assert_eq!(c.grants["board"], serde_json::json!(["board", "rows"]));
         assert_eq!(
             c.grants["kernel_state"],
-            serde_json::json!(["await_set", "await_cancel"]),
-            "the card tells it to wait with await_set"
+            serde_json::json!(["await_set", "await_cancel", "create_agent", "delete_agent"]),
+            "the card tells it to wait with await_set and may make a sidecar"
         );
         assert!(c.grants["$registry"]
             .as_array()
@@ -353,23 +353,25 @@ mod tests {
     }
 
     #[test]
-    fn only_the_lead_card_grants_the_root_and_no_card_names_the_canvas() {
-        // A card may only grant what its spawner holds (fantastic#436) and the team's lead
-        // holds no verb of the root: so sidecar creation is text on the cards, not a grant.
-        for file in [
-            "worker.md",
-            "project_lead.md",
-            "issue_keeper.md",
-            "issue_writer.md",
-            "spec_reviewer.md",
-        ] {
+    fn worker_lead_and_project_lead_cards_grant_sidecar_creation() {
+        for file in ["worker.md", "lead.md", "project_lead.md"] {
             let g = card(file).grants;
-            assert!(!g.contains_key("kernel"), "{file}");
-            assert!(!g.contains_key("canvas_page"), "{file}");
+            let k = g["kernel_state"].as_array().unwrap();
+            for v in ["create_agent", "delete_agent"] {
+                assert!(k.contains(&serde_json::json!(v)), "{file} lacks {v}");
+            }
+            assert_ne!(g["kernel_state"], "*", "{file}");
+            assert_eq!(
+                g["canvas_page"],
+                serde_json::json!(["new_canvas"]),
+                "{file}"
+            );
         }
-        let g = card("lead.md").grants;
-        assert!(!g.contains_key("canvas_page"));
-        assert_eq!(g["kernel"], "*", "the lead card's grant is unchanged");
+        assert_eq!(
+            card("lead.md").grants["kernel"],
+            "*",
+            "the lead card's kernel grant is unchanged"
+        );
     }
 
     #[test]
