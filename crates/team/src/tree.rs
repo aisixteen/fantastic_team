@@ -48,6 +48,9 @@ pub const LEAD_ROLES_VERBS: [&str; 5] = ["roles", "role", "spawn", "get_count", 
 /// The kernel verbs a spawned agent may call on the root to wait for its children
 /// (`await_set`, `await_cancel`): the project_lead card lists them.
 pub const AWAIT_VERBS: [&str; 2] = ["await_set", "await_cancel"];
+/// The board verbs the lead holds so that a spawn can grant them to a project_lead
+/// (the card lists `board` and `rows`).
+pub const LEAD_BOARD_VERBS: [&str; 2] = ["board", "rows"];
 /// What the board may call on the roles registry (roles mode): who runs (`fleet`) and
 /// the count (`get_count`).
 pub const BOARD_ROLES_VERBS: [&str; 2] = ["fleet", "get_count"];
@@ -494,6 +497,19 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         // The lead starts agents through the registry (`spawn`), and the dispatcher
         // asks it for the count it shows. The registry's own `callable_by` names both.
         planned_mut(&mut out, l).record["can_call"][r.id.as_str()] = json!(LEAD_ROLES_VERBS);
+        {
+            // Same for the wait: the card lists `await_set` and `await_cancel` on
+            // `kernel_state`. A template that already grants it (`*`) keeps its grant.
+            let can = &mut planned_mut(&mut out, l).record["can_call"];
+            if can.get("kernel_state").is_none() {
+                can["kernel_state"] = json!(AWAIT_VERBS);
+            }
+        }
+        if cfg.board.is_some() {
+            // A spawn grants only what the spawner itself holds (fantastic#436): the
+            // project_lead card lists the board's `board` and `rows`.
+            planned_mut(&mut out, l).record["can_call"][BOARD_ID] = json!(LEAD_BOARD_VERBS);
+        }
         if let Some(d) = out.iter_mut().find(|p| p.id == DISPATCHER_ID) {
             d.record["can_call"][r.id.as_str()] = json!(DISPATCHER_ROLES_VERBS);
             d.record["roles"] = json!(r.id);
@@ -2426,6 +2442,17 @@ mod tests {
         assert!(!ids(&tree).iter().any(|i| i == TASKS_ID));
         // no cards are read when the team has no `roles:` section
         assert_eq!(check_cards(&sample(), Path::new("/no/such/dir")), Ok(()));
+    }
+
+    #[test]
+    fn lead_holds_the_verbs_a_spawn_may_grant_a_project_lead() {
+        // fantastic#436: a spawn grants only what the spawner holds, so the lead's
+        // own record carries the board and the wait verbs the project_lead card lists.
+        let dir = roles_team_dir();
+        let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
+        let can = &planned(&tree, "lead").record["can_call"];
+        assert_eq!(can[BOARD_ID], json!(["board", "rows"]), "{can}");
+        assert_eq!(can["kernel_state"], json!(AWAIT_VERBS), "{can}");
     }
 
     #[test]
