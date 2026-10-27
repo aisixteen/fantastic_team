@@ -2,6 +2,10 @@
 //! from, the connectors and their directives, the queue's id, and the
 //! credential store. It does not hold how many agents run (the first agent's
 //! instructions say that), nor any provider or model name in code.
+//!
+//! The caller defines the agents: a file with no templates and no `first_agent`
+//! is valid and starts only the system agents. `first_agent` (the lead) is
+//! optional; `roles:` needs it, because the lead spawns through the registry.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -36,14 +40,17 @@ pub const CONNECTOR_RESERVED: [&str; 4] = ["type", "id", "parent_id", "handler_m
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TeamConfig {
-    /// The agent templates, by name.
+    /// The agent templates, by name. Absent: none.
+    #[serde(default)]
     pub templates: BTreeMap<String, Template>,
-    /// The agent the binary creates and instructs.
-    pub first_agent: FirstAgent,
+    /// The agent the binary creates and instructs. Absent: no agent is created.
+    #[serde(default)]
+    pub first_agent: Option<FirstAgent>,
     /// The connector agents, by id.
     #[serde(default)]
     pub connectors: BTreeMap<String, Connector>,
-    /// Where the queue lives.
+    /// Where the queue lives. Absent: the agent `queue`.
+    #[serde(default = "default_queue")]
     pub queue: QueueRef,
     /// The credential store the team creates when it has none.
     #[serde(default)]
@@ -247,6 +254,17 @@ pub struct CredentialStore {
     pub refs: Map<String, Value>,
 }
 
+fn default_queue() -> QueueRef {
+    QueueRef { id: "queue".into() }
+}
+
+impl TeamConfig {
+    /// The first agent's id, when the file defines one.
+    pub fn lead_id(&self) -> Option<&str> {
+        self.first_agent.as_ref().map(|f| f.id.as_str())
+    }
+}
+
 fn default_first_id() -> String {
     "lead".into()
 }
@@ -283,9 +301,6 @@ pub fn load(path: &Path) -> Result<TeamConfig, String> {
 
 /// Check the cross-field rules; the first failure is the error.
 pub fn validate(cfg: &TeamConfig) -> Result<(), String> {
-    if cfg.templates.is_empty() {
-        return Err("templates is empty — declare at least one agent template".into());
-    }
     for (n, t) in &cfg.templates {
         for (field, val) in [
             ("handler_module", &t.handler_module),
@@ -322,16 +337,24 @@ pub fn validate(cfg: &TeamConfig) -> Result<(), String> {
             return Err(format!("template `{n}`: can_call has an empty id"));
         }
     }
-    if cfg.first_agent.id.trim().is_empty() {
-        return Err("first_agent.id is empty".into());
+    if let Some(f) = &cfg.first_agent {
+        if f.id.trim().is_empty() {
+            return Err("first_agent.id is empty".into());
+        }
+        if !cfg.templates.contains_key(&f.template) {
+            let names: Vec<&str> = cfg.templates.keys().map(String::as_str).collect();
+            return Err(format!(
+                "first_agent.template `{}` is not a template (have: {})",
+                f.template,
+                names.join(", ")
+            ));
+        }
     }
-    if !cfg.templates.contains_key(&cfg.first_agent.template) {
-        let names: Vec<&str> = cfg.templates.keys().map(String::as_str).collect();
-        return Err(format!(
-            "first_agent.template `{}` is not a template (have: {})",
-            cfg.first_agent.template,
-            names.join(", ")
-        ));
+    if cfg.roles.is_some() && cfg.first_agent.is_none() {
+        return Err("roles needs first_agent: the lead spawns through the registry".into());
+    }
+    if cfg.roles.is_some() && cfg.templates.is_empty() {
+        return Err("roles needs templates: the registry's tiers are the templates".into());
     }
     if cfg.queue.id.trim().is_empty() {
         return Err("queue.id is empty".into());
@@ -372,7 +395,7 @@ pub fn validate(cfg: &TeamConfig) -> Result<(), String> {
         if g.trim().is_empty() {
             return Err("group name is empty".into());
         }
-        if *g == cfg.first_agent.id {
+        if cfg.lead_id() == Some(g.as_str()) {
             return Err(format!("group `{g}`: the name is the first agent's id"));
         }
         if grp.driver.as_deref().is_some_and(|d| d.trim().is_empty()) {
@@ -433,11 +456,8 @@ pub fn validate(cfg: &TeamConfig) -> Result<(), String> {
             "store.path `{sp}` must be a file path inside the team directory (relative, no `..`)"
         ));
     }
-    let mut ids: Vec<&str> = vec![
-        cfg.first_agent.id.as_str(),
-        cfg.queue.id.as_str(),
-        cfg.store.id.as_str(),
-    ];
+    let mut ids: Vec<&str> = vec![cfg.queue.id.as_str(), cfg.store.id.as_str()];
+    ids.extend(cfg.lead_id());
     if let Some(r) = &cfg.roles {
         ids.push(r.id.as_str());
         ids.push(TASKS_ID);
@@ -621,12 +641,10 @@ mod tests {
         let cfg = load(&path).unwrap();
         let keys: Vec<&str> = cfg.templates.keys().map(String::as_str).collect();
         assert_eq!(keys, ["issue_keeper", "local", "small", "strong"]);
-        assert_eq!(cfg.first_agent.id, "lead");
-        assert_eq!(cfg.first_agent.template, "strong");
-        assert_eq!(
-            cfg.first_agent.directive_file.as_deref(),
-            Some("roles/lead.md")
-        );
+        let first = cfg.first_agent.as_ref().unwrap();
+        assert_eq!(first.id, "lead");
+        assert_eq!(first.template, "strong");
+        assert_eq!(first.directive_file.as_deref(), Some("roles/lead.md"));
         assert_eq!(cfg.templates["small"].price_input_per_mtok, Some(0.1));
         assert_eq!(
             cfg.templates["small"].credentials.as_ref().unwrap().ref_,
@@ -699,8 +717,9 @@ mod tests {
     #[test]
     fn a_minimal_file_parses_with_defaults() {
         let cfg = parse(MIN).unwrap();
-        assert_eq!(cfg.first_agent.id, "lead");
-        assert_eq!(cfg.first_agent.directive_file, None);
+        let first = cfg.first_agent.as_ref().unwrap();
+        assert_eq!(first.id, "lead");
+        assert_eq!(first.directive_file, None);
         assert!(cfg.connectors.is_empty());
         assert_eq!(cfg.credentials, None);
         let t = &cfg.templates["t"];
@@ -727,6 +746,56 @@ mod tests {
     }
 
     #[test]
+    fn empty_config_is_valid_and_defines_no_agent() {
+        for text in ["{}", "templates: {}\n"] {
+            let cfg = parse(text).unwrap();
+            assert!(cfg.first_agent.is_none());
+            assert!(cfg.templates.is_empty());
+            assert!(cfg.roles.is_none());
+            assert_eq!(cfg.queue.id, "queue");
+            assert_eq!(cfg.lead_id(), None);
+        }
+    }
+
+    #[test]
+    fn first_agent_is_optional_with_templates_only() {
+        let text = MIN.replace("first_agent:\n  template: t\n", "");
+        let cfg = parse(&text).unwrap();
+        assert!(cfg.first_agent.is_none());
+        assert_eq!(cfg.templates.len(), 1);
+        assert_eq!(cfg.queue.id, "q");
+    }
+
+    #[test]
+    fn roles_without_first_agent_is_refused() {
+        let text = MIN.replace("first_agent:\n  template: t\n", "") + "roles: {}\n";
+        let e = parse(&text).unwrap_err();
+        assert!(e.contains("first_agent"), "{e}");
+        let e = parse("roles: {}\n").unwrap_err();
+        assert!(e.contains("first_agent"), "{e}");
+    }
+
+    #[test]
+    fn a_group_may_not_reuse_nothing_when_no_lead() {
+        let cfg = parse("groups:\n  lead:\n    members: [w1]\n").unwrap();
+        assert!(cfg.first_agent.is_none());
+        let e = parse(&(MIN.to_string() + "groups:\n  lead:\n    members: [w1]\n")).unwrap_err();
+        assert_eq!(e, "group `lead`: the name is the first agent's id");
+    }
+
+    #[test]
+    fn worker_only_config_parses() {
+        let text = "templates:\n  worker:\n    handler_module: h.tools\n    model: m\n    endpoint: http://e\nfirst_agent:\n  id: w1\n  template: worker\n";
+        let cfg = parse(text).unwrap();
+        let first = cfg.first_agent.as_ref().unwrap();
+        assert_eq!(first.id, "w1");
+        assert_eq!(first.directive_file, None);
+        assert!(cfg.roles.is_none());
+        assert!(cfg.groups.is_empty());
+        assert_eq!(cfg.lead_id(), Some("w1"));
+    }
+
+    #[test]
     fn a_missing_template_is_refused() {
         let e = parse(&MIN.replace("  template: t\n", "  template: big\n")).unwrap_err();
         assert_eq!(e, "first_agent.template `big` is not a template (have: t)");
@@ -734,8 +803,8 @@ mod tests {
 
     #[test]
     fn missing_required_fields_are_refused() {
-        let e = parse(&MIN.replace("queue:\n  id: q\n", "")).unwrap_err();
-        assert!(e.contains("missing field `queue`"));
+        let cfg = parse(&MIN.replace("queue:\n  id: q\n", "")).unwrap();
+        assert_eq!(cfg.queue.id, "queue", "an absent queue is the default one");
         let e = parse(&MIN.replace("    model: m\n", "")).unwrap_err();
         assert!(e.contains("missing field `model`"));
     }
@@ -748,7 +817,7 @@ mod tests {
         cfg.templates.clear();
         assert_eq!(
             validate(&cfg).unwrap_err(),
-            "templates is empty — declare at least one agent template"
+            "first_agent.template `t` is not a template (have: )"
         );
 
         let mut cfg = base.clone();

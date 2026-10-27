@@ -204,8 +204,7 @@ fn role_dirs(r: &config::RolesCfg, team_dir: &Path) -> Vec<String> {
 /// limits are set at start (`apply_limits`). Every tier names the team's one store
 /// agent (`cfg.store`) as its `memory_store_id`; the store keys each agent's history
 /// by its own id. The store itself is planned by [`plan`], not here.
-fn roles_plan(cfg: &TeamConfig, r: &config::RolesCfg, team_dir: &Path) -> Planned {
-    let lead = cfg.first_agent.id.as_str();
+fn roles_plan(cfg: &TeamConfig, lead: &str, r: &config::RolesCfg, team_dir: &Path) -> Planned {
     let mem = cfg.store.id.as_str();
     let tiers: serde_json::Map<String, Value> = cfg
         .templates
@@ -237,21 +236,28 @@ fn roles_plan(cfg: &TeamConfig, r: &config::RolesCfg, team_dir: &Path) -> Planne
 /// The task registry (fantastic `task_registry`), a child of the lead so the lead
 /// can admit a spawned project_lead on it (the card's admit step). It keeps its
 /// rows in the team's one store agent, which keys them apart from the conversations.
-fn tasks_plan(cfg: &TeamConfig) -> Planned {
+fn tasks_plan(cfg: &TeamConfig, lead: &str) -> Planned {
     Planned {
         id: TASKS_ID.into(),
-        parent: cfg.first_agent.id.clone(),
+        parent: lead.into(),
         role: Role::Registry,
         record: json!({
             "type": "create_agent",
             "id": TASKS_ID,
-            "parent_id": cfg.first_agent.id,
+            "parent_id": lead,
             "handler_module": fantastic_task_registry::HANDLER_MODULE,
             "task_store_id": cfg.store.id,
             "can_call": {(cfg.store.id.as_str()): "*"},
             "callable_by": {"$self": "*", "$parent": "*"},
         }),
     }
+}
+
+/// The planned agent `id` (the lead, planned first; it is there when a lead is).
+fn planned_mut<'a>(out: &'a mut [Planned], id: &str) -> &'a mut Planned {
+    out.iter_mut()
+        .find(|p| p.id == id)
+        .expect("the planned lead")
 }
 
 /// The team's ONE store agent (a `sqlite_store`, one file under the team directory).
@@ -271,7 +277,7 @@ fn store_plan(cfg: &TeamConfig) -> Planned {
 /// The agents the plan lets call the store: the lead, `tasks` (with `roles:`) and every
 /// group driver and member.
 fn store_callers(cfg: &TeamConfig) -> Vec<String> {
-    let mut callable = vec![cfg.first_agent.id.clone()];
+    let mut callable: Vec<String> = cfg.lead_id().map(str::to_owned).into_iter().collect();
     if cfg.roles.is_some() {
         callable.push(TASKS_ID.to_string());
     }
@@ -298,17 +304,21 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     config::validate(cfg)?;
     check_grants(cfg)?;
     check_cards(cfg, team_dir)?;
-    let lead = cfg.first_agent.id.clone();
-    let tpl = &cfg.templates[&cfg.first_agent.template];
-    let mut out = vec![
-        Planned {
-            id: lead.clone(),
+    // The lead is the caller's: a file with no `first_agent` plans none, and the
+    // tools hang under the root.
+    let lead_id = cfg.lead_id().map(str::to_owned);
+    let lead = lead_id.as_deref().unwrap_or(DEFAULT_ROOT_ID);
+    let mut out = Vec::new();
+    if let Some(f) = &cfg.first_agent {
+        let tpl = &cfg.templates[&f.template];
+        out.push(Planned {
+            id: f.id.clone(),
             parent: DEFAULT_ROOT_ID.into(),
             role: Role::Lead,
-            record: config::agent_record(tpl, &lead, &cfg.store.id),
-        },
-        store_plan(cfg),
-    ];
+            record: config::agent_record(tpl, &f.id, &cfg.store.id),
+        });
+    }
+    out.push(store_plan(cfg));
     if let Some(s) = &cfg.credentials {
         out.push(Planned {
             id: s.id.clone(),
@@ -317,7 +327,7 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
             record: config::store_record(s),
         });
     }
-    out.push(Planned {
+    let mut dispatcher = Planned {
         id: DISPATCHER_ID.into(),
         parent: DEFAULT_ROOT_ID.into(),
         role: Role::Dispatcher,
@@ -327,7 +337,6 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
             "parent_id": DEFAULT_ROOT_ID,
             "handler_module": dispatcher::HANDLER_MODULE,
             "board": BOARD_ID,
-            "team": lead,
             "groups": dispatcher_groups(cfg),
             // The dispatcher may place itself on the canvas and open worker views;
             // nothing else is granted.
@@ -340,7 +349,11 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
                 (DEFAULT_ROOT_ID): DISPATCHER_KERNEL_VERBS,
             },
         }),
-    });
+    };
+    if let Some(l) = &lead_id {
+        dispatcher.record["team"] = json!(l);
+    }
+    out.push(dispatcher);
     // Under the dispatcher, so its `$parent` and `$subtree` baseline lets the
     // dispatcher open a worker's view without a further grant.
     out.push(tool_plan(
@@ -353,12 +366,12 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         .into_owned();
     out.push(tool_plan(
         "worker_exec",
-        &lead,
+        lead,
         worker_exec::worker_exec_record(team_dir),
     ));
     out.push(tool_plan(
         "worker_files",
-        &lead,
+        lead,
         json!({"handler_module": "file_bridge.tools", "root": work, "allow": ["."]}),
     ));
     // Only the pack agents may reach the files peer; the lead's own grants do not name it.
@@ -366,7 +379,7 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     // names who may call.
     let mut files = tool_plan(
         FILES_ID,
-        &lead,
+        lead,
         json!({
             "handler_module": "file_bridge.tools",
             "root": team_dir.to_string_lossy().into_owned(),
@@ -382,7 +395,9 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     // agent whose own `callable_by` names `pack`; the lead's does, below).
     let mut pack_can_call = serde_json::Map::new();
     pack_can_call.insert(FILES_ID.into(), json!("*"));
-    pack_can_call.insert(lead.clone(), json!("*"));
+    if let Some(l) = &lead_id {
+        pack_can_call.insert(l.clone(), json!("*"));
+    }
     // `install --parent-id` builds a pack's blueprint through `user.import_subtree`;
     // the other end of this edge is the `user` agent's `callable_by`, below.
     pack_can_call.insert(USER_ID.into(), json!(PACK_USER_VERBS));
@@ -397,24 +412,26 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     if cfg.board.is_some() {
         pack_can_call.insert(BOARD_ID.into(), json!(PACK_BOARD_VERBS));
     }
-    out[0].record["callable_by"][PACK_ID] = json!("*");
+    if let Some(l) = &lead_id {
+        planned_mut(&mut out, l).record["callable_by"][PACK_ID] = json!("*");
+    }
     out.push(pack_plan(
         PACK_ID,
-        &lead,
+        lead,
         json!({"handler_module": pack_bundle::HANDLER_MODULE, "can_call": pack_can_call}),
     ));
     // The `user` agent: its `import_subtree` builds a pack's blueprint. Only the pack
     // agent may call it, and only that verb.
     let mut user = tool_plan(
         USER_ID,
-        &lead,
+        lead,
         json!({"handler_module": fantastic_user::HANDLER_MODULE}),
     );
     user.record["callable_by"] = json!({"$self": "*", "$parent": "*", (PACK_ID): PACK_USER_VERBS});
     out.push(user);
     out.push(pack_plan(
         PACK_LISTING_ID,
-        &lead,
+        lead,
         json!({
             "handler_module": pack_listing::HANDLER_MODULE,
             "index_path": "packs/index.json",
@@ -425,11 +442,11 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     ));
     out.push(tool_plan(
         &cfg.queue.id,
-        &lead,
+        lead,
         json!({"handler_module": "ram_store.tools"}),
     ));
     for (id, c) in &cfg.connectors {
-        out.push(tool_plan(id, &lead, config::connector_record(id, c)));
+        out.push(tool_plan(id, lead, config::connector_record(id, c)));
     }
     // The dispatcher's github view reads each github connector's `reflect` (the calls it
     // served, its rate limit): the dispatcher names it, and the connector names the
@@ -469,18 +486,20 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         {
             by.insert(CADENCER_ID.into(), json!(["rows"]));
         }
-        out[0].record["callable_by"][CADENCER_ID] = json!(["send"]);
+        if let Some(l) = &lead_id {
+            planned_mut(&mut out, l).record["callable_by"][CADENCER_ID] = json!(["send"]);
+        }
     }
-    if let Some(r) = &cfg.roles {
+    if let (Some(r), Some(l)) = (&cfg.roles, &lead_id) {
         // The lead starts agents through the registry (`spawn`), and the dispatcher
         // asks it for the count it shows. The registry's own `callable_by` names both.
-        out[0].record["can_call"][r.id.as_str()] = json!(LEAD_ROLES_VERBS);
+        planned_mut(&mut out, l).record["can_call"][r.id.as_str()] = json!(LEAD_ROLES_VERBS);
         if let Some(d) = out.iter_mut().find(|p| p.id == DISPATCHER_ID) {
             d.record["can_call"][r.id.as_str()] = json!(DISPATCHER_ROLES_VERBS);
             d.record["roles"] = json!(r.id);
         }
-        out.push(roles_plan(cfg, r, team_dir));
-        out.push(tasks_plan(cfg));
+        out.push(roles_plan(cfg, l, r, team_dir));
+        out.push(tasks_plan(cfg, l));
         // The board lists the lead's tree, roles and tasks: it names the registries it
         // reads, and they name it. The root's end (`reflect`) is `grant_board_reflect`.
         if cfg.board.is_some() {
@@ -554,7 +573,9 @@ fn board_plan(cfg: &TeamConfig, b: &config::BoardCfg) -> Planned {
 fn cadencer_plan(cfg: &TeamConfig) -> Planned {
     let mut can_call = serde_json::Map::new();
     can_call.insert(BOARD_ID.into(), json!(["rows"]));
-    can_call.insert(cfg.first_agent.id.clone(), json!(["send"]));
+    if let Some(l) = cfg.lead_id() {
+        can_call.insert(l.into(), json!(["send"]));
+    }
     for d in cfg.groups.values().filter_map(|g| g.driver.as_ref()) {
         can_call.insert(d.clone(), json!(["send"]));
     }
@@ -1057,6 +1078,11 @@ pub fn run_at_start(
         return Ok(None);
     }
     let cfg = config::load(&path)?;
+    if instructions.is_some() && cfg.first_agent.is_none() {
+        return Err(
+            "instructions need a first_agent in team.yaml: the caller defines the agents".into(),
+        );
+    }
     let tree = plan(&cfg, dir)?;
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async {
@@ -1090,9 +1116,9 @@ pub fn run_at_start(
             if let Err(e) = grant_board_reflect(&kernel, &cfg) {
                 eprintln!("{e}");
             }
-            if let Some(text) = instructions {
-                if instructions_due(&applied, &cfg.first_agent.id, resend) {
-                    deliver_instructions(&kernel, &cfg.first_agent.id, text).await?;
+            if let (Some(text), Some(f)) = (instructions, &cfg.first_agent) {
+                if instructions_due(&applied, &f.id, resend) {
+                    deliver_instructions(&kernel, &f.id, text).await?;
                 }
             }
             Ok(applied)
@@ -1274,6 +1300,125 @@ mod tests {
             serde_json::to_string(&tree.iter().map(|p| &p.record).collect::<Vec<_>>()).unwrap();
         assert!(!text.contains("sk-"));
         assert!(!text.contains("Bearer "));
+    }
+
+    const EMPTY_IDS: [&str; 10] = [
+        "memory",
+        "dispatcher",
+        "worker_view",
+        "worker_exec",
+        "worker_files",
+        "files",
+        "pack",
+        "user",
+        "pack_listing",
+        "queue",
+    ];
+
+    fn empty_cfg() -> TeamConfig {
+        parse("{}").unwrap()
+    }
+
+    const WORKER_ONLY: &str = "templates:\n  worker:\n    handler_module: ram_store.tools\n    model: m\n    endpoint: http://e\n    can_call: [queue]\nfirst_agent:\n  id: w1\n  template: worker\n";
+
+    #[test]
+    fn empty_config_plans_only_system_agents() {
+        let tree = plan(&empty_cfg(), Path::new("/team")).unwrap();
+        let got = ids(&tree);
+        for id in EMPTY_IDS {
+            assert!(
+                got.iter().any(|i| i == id),
+                "the plan has no `{id}`: {got:?}"
+            );
+        }
+        assert!(tree.iter().all(|p| p.role != Role::Lead));
+        // The team's one store is a system agent, planned with or without a lead.
+        assert_eq!(planned(&tree, "memory").role, Role::Memory);
+        assert!(!got
+            .iter()
+            .any(|i| i == "lead" || i == ROLES_ID || i == TASKS_ID));
+        for p in &tree {
+            assert!(
+                p.parent == DEFAULT_ROOT_ID || p.parent == DISPATCHER_ID,
+                "{} hangs under {}",
+                p.id,
+                p.parent
+            );
+        }
+    }
+
+    #[test]
+    fn empty_config_tools_hang_under_the_root() {
+        let tree = plan(&empty_cfg(), Path::new("/team")).unwrap();
+        for id in ["queue", "pack", "files", "user", "pack_listing"] {
+            let p = planned(&tree, id);
+            assert_eq!(p.parent, DEFAULT_ROOT_ID, "{id}");
+            assert_eq!(p.record["parent_id"], DEFAULT_ROOT_ID, "{id}");
+        }
+        assert!(planned(&tree, "dispatcher").record.get("team").is_none());
+        let pack = planned(&tree, "pack");
+        assert!(pack.record["can_call"].get("lead").is_none());
+    }
+
+    #[test]
+    fn worker_only_plan_has_no_lead_role_and_no_registry() {
+        let cfg = parse(WORKER_ONLY).unwrap();
+        let tree = plan(&cfg, Path::new("/team")).unwrap();
+        assert_eq!(tree[0].id, "w1");
+        let got = ids(&tree);
+        assert!(!got.iter().any(|i| i == ROLES_ID || i == TASKS_ID));
+        assert_eq!(planned(&tree, "dispatcher").record["team"], "w1");
+        assert_eq!(planned(&tree, "queue").parent, "w1");
+        assert!(tree[0].record.get("can_call").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_of_empty_config_creates_no_coding_agent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = plan(&empty_cfg(), dir.path()).unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        let applied = apply(&kernel, &tree).await.unwrap();
+        assert_eq!(applied.created, ids(&tree));
+        for p in &tree {
+            assert!(p.record.get("model").is_none(), "{}", p.id);
+            let h = p.record["handler_module"].as_str().unwrap_or("");
+            assert!(
+                !h.contains("anthropic") && !h.contains("vllm"),
+                "{} is an AI agent: {h}",
+                p.id
+            );
+        }
+        for id in &applied.created {
+            assert!(EMPTY_IDS.contains(&id.as_str()), "unexpected `{id}`");
+        }
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn instructions_without_a_first_agent_are_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(config::FILE_NAME), "{}\n").unwrap();
+        let e = run_at_start(dir.path(), Some("hi"), false).unwrap_err();
+        assert_eq!(
+            e,
+            "instructions need a first_agent in team.yaml: the caller defines the agents"
+        );
+        assert!(run_at_start(dir.path(), None, false).unwrap().is_some());
+    }
+
+    #[test]
+    fn run_at_start_empty_config_starts_clean() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(config::FILE_NAME), "{}\n").unwrap();
+        let applied = run_at_start(dir.path(), None, false).unwrap().unwrap();
+        assert!(!applied.created.is_empty());
+        let tree = plan(&empty_cfg(), dir.path()).unwrap();
+        for id in &applied.created {
+            let p = planned(&tree, id);
+            assert!(p.record.get("model").is_none(), "{id} has a model");
+        }
+        assert!(!applied.created.iter().any(|c| c == "lead"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -1,0 +1,106 @@
+# team.yaml — the app's preset, in roles mode. Edit me: the app writes this file once
+# and never overwrites it, so your changes stay.
+#
+# The lead (`first_agent`) reads the issue pack, proposes a tree of agents and grows it
+# through the roles registry (`roles:`), recording tasks in `tasks` (implied by `roles`).
+# The templates are the TIERS the role cards in `roles/` name (strong, small,
+# issue_keeper): a card never names a model. Replace the repo paths below
+# (`repo_dir`, `workspace_root`, `repos`) with yours.
+templates:
+  strong:
+    handler_module: anthropic_backend.tools
+    model: claude-opus-5-5
+    endpoint: https://api.anthropic.com/v1/messages
+    credentials:
+      store: credentials
+      ref: anthropic/api.anthropic.com
+    price_input_per_mtok: 4.0
+    price_output_per_mtok: 20.0
+    can_call: [kernel, kernel_state, worker_exec, worker_files, queue]
+    extra:
+      caching: provider_cache
+      context_window: 1000000
+      max_tokens: 32000
+  small:
+    handler_module: anthropic_backend.tools
+    model: claude-haiku-5-5
+    endpoint: https://api.anthropic.com/v1/messages
+    credentials:
+      store: credentials
+      ref: anthropic/api.anthropic.com
+    price_input_per_mtok: 0.1
+    price_output_per_mtok: 0.5
+    can_call: [worker_exec, worker_files, queue]
+    extra:
+      caching: provider_cache
+      context_strategy: compact
+      context_window: 1000000
+      max_tokens: 32000
+  issue_keeper:
+    handler_module: anthropic_backend.tools
+    model: claude-haiku-5-5
+    endpoint: https://api.anthropic.com/v1/messages
+    credentials:
+      store: credentials
+      ref: anthropic/api.anthropic.com
+    price_input_per_mtok: 0.1
+    price_output_per_mtok: 0.5
+    can_call: [queue]
+    extra:
+      caching: provider_cache
+      context_strategy: compact
+      context_window: 1000000
+      max_tokens: 8000
+first_agent:
+  id: lead
+  template: strong
+  directive_file: roles/lead.md
+connectors:
+  git:
+    kind: team_git.tools
+    record:
+      repo_dir: /path/to/clone
+      workspace_root: /path/to/worktrees
+      remote: origin
+      default_branch: main
+    directive: Workers may make a worktree, commit, and push a work branch. Never the default branch, never a force.
+  github:
+    kind: team_github.tools
+    record:
+      app:
+        credentials:
+          store: credentials
+          ref: github/app
+      repos: [owner/name]
+      git: git
+      directive: Push a work branch and open a draft pull request. Never the default branch, never a force, never a merge.
+queue:
+  id: queue
+# The roles registry (fantastic's agentic_resources): the role cards in `roles/`
+# (the folder next to this file; copy it from the repo) and the default limits,
+# set at every start. total: agents running at once; per_role: per role name.
+roles:
+  id: roles
+  dirs: [roles]
+  limits:
+    total: 3
+    per_role:
+      worker: 2
+# The board caches these repos (owner/name) through a connector above. The
+# project_lead card reads it.
+board:
+  repos: [owner/name]
+  github: github
+credentials:
+  id: credentials
+  backend: env
+  refs:
+    anthropic/api.anthropic.com:
+      host: api.anthropic.com
+      env:
+        api_key: ANTHROPIC_API_KEY
+    github/app:
+      host: api.github.com
+      env:
+        app_id: GITHUB_APP_ID
+        private_key: GITHUB_APP_PRIVATE_KEY

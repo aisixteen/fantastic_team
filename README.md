@@ -58,11 +58,73 @@ credentials:
 ```
 
 - `templates`: each is an agent template (model, endpoint, credential ref, prices per million tokens).
-- `first_agent`: the lead, made from a template, instructed by its `directive_file`.
+- `first_agent` (optional): the lead, made from a template, instructed by its `directive_file`. Without it no agent is created.
 - `connectors`: GitHub, a plain git remote, or others, each with its own directive.
 - `queue`: where tasks wait.
 - `credentials`: the store the team creates when it has none. The values are never in this file; only the ref names are.
 - `roles` (optional): turns on fantastic's roles registry (`agentic_resources`) for the team, see below.
+
+### The caller defines the agents
+
+The `fantastic_team` binary creates no coding agent of its own: nothing is added behind `team.yaml`, and no lead or worker is a default. A `team.yaml` with no `templates` and no `first_agent` is valid and starts only the system agents (the dispatcher, the tools, the queue). `queue` defaults to the agent `queue`. Which agents exist, with or without a lead, with or without `roles:`, is the file's choice. `scripts/new-task.sh` renders a task file for whatever agents your `team.yaml` defines.
+
+One worker, no lead, no `roles:` (the worker is the `first_agent`; give `--instructions` to send it work):
+
+```yaml
+# worker-only
+templates:
+  worker:
+    handler_module: anthropic_backend
+    model: example-model
+    endpoint: https://api.example.com/v1
+    can_call: [worker_exec, worker_files, queue]
+first_agent:
+  id: w1
+  template: worker
+```
+
+With `roles:`, the lead spawns the agents it needs through the registry, so `roles:` needs a `first_agent` and templates (the tiers the role cards name):
+
+```yaml
+# roles mode
+templates:
+  strong:
+    handler_module: anthropic_backend
+    model: example-model
+    endpoint: https://api.example.com/v1
+    can_call: [kernel, kernel_state, worker_exec, worker_files, queue]
+  small:
+    handler_module: anthropic_backend
+    model: example-model
+    endpoint: https://api.example.com/v1
+    can_call: [worker_exec, worker_files, queue]
+  issue_keeper:
+    handler_module: anthropic_backend
+    model: example-model
+    endpoint: https://api.example.com/v1
+    can_call: [queue]
+first_agent:
+  id: lead
+  template: strong
+  directive_file: roles/lead.md
+connectors:
+  git:
+    kind: team_git.tools
+    record: {repo_dir: /path/to/clone, workspace_root: /path/to/worktrees, remote: origin, default_branch: main}
+  github:
+    kind: team_github.tools
+    record: {repos: [owner/name], git: git}
+board:
+  repos: [owner/name]
+  github: github
+roles:
+  limits:
+    total: 3
+```
+
+The role cards (`roles/` of this repo) go in a `roles/` folder next to `team.yaml`.
+
+The desktop app ships this second shape as a preset, `crates/team/preset/app_team.yaml`. When the app starts a team in a folder with no `team.yaml`, it writes the preset and the role cards there once. It is an ordinary `team.yaml`: edit it, and the app never overwrites it.
 
 ### Roles and limits
 
