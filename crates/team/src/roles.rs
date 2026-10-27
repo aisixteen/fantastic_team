@@ -189,7 +189,8 @@ mod tests {
         assert!(!section.contains("update_agent"));
         assert!(section.contains("fleet"));
         assert!(section.contains("The queue is QUEUE. Your id is the id in your own reflect."));
-        assert!(section.contains("error:\"limit\""));
+        assert!(section.contains("reason:\"limit\""));
+        assert!(!section.contains("error:\"limit\""));
         assert!(l.contains("Ask `roles` before starting an agent"));
         let g = card("lead.md").grants;
         assert_eq!(
@@ -197,6 +198,15 @@ mod tests {
             serde_json::json!(["roles", "role", "spawn", "get_count", "fleet", "report"])
         );
         assert!(g.contains_key("kernel") && g.contains_key("queue"));
+    }
+
+    #[test]
+    fn cards_read_the_limit_refusal_code_from_reason() {
+        for file in ["lead.md", "project_lead.md"] {
+            let d = card(file).directive;
+            assert!(d.contains("reason:\"limit\""), "{file}");
+            assert!(!d.contains("error:\"limit\""), "{file}");
+        }
     }
 
     #[test]

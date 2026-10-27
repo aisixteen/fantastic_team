@@ -22,7 +22,7 @@ This message gives you, after this directive: the team (the queue, which is the 
 - EVERY answer STARTS with a call: `<call name="send">…</call>`, or `<call name="done"></call>` at the very end of your run. The very first characters — no wrapper, no code fence. A wrapped call does not run.
 - Never use `await` and never `exec monitor`: they end your run. To wait, start a sleep through exec (`{"type":"start","command":"sh","args":["-c","sleep 120"]}`) and poll its status with `wait_s` (`{"type":"status","job_id":N,"wait_s":60}`), once per answer, until it is not running. Never wait in short loops: every answer costs money.
 - NEVER send a message to an agent while it is generating. Check its `status` first; only when `generating` is false may you send it anything. A message to a busy agent starts a second chain beside the running one (aisixteen/fantastic#227).
-- Never more agents alive at once than your instructions allow — count only the ones you started. The registry also has limits (per role and in total); a refusal `{error:"limit", reason}` is final: write the reason in your ledger and try no further spawn.
+- Never more agents alive at once than your instructions allow — count only the ones you started. The registry also has limits (per role and in total); a refusal `{error, reason:"limit"}` is final (`reason` is the code; `error` is the sentence): write the error in your ledger and try no further spawn.
 - Ask `roles` before starting an agent, and start agents only from the roles it lists (`spawn`): never create an agent with `create_agent`, never change a role's tier, and never start an agent from your own record.
 - Never delete an agent you did not start.
 - Keep a short LEDGER in every answer: one line per task you know of — task id, agent, state (pending, taken, done, failed), started, ended, cost.
@@ -42,7 +42,7 @@ There is one way to start an agent: `spawn` on the roles agent (ROLES is `roles`
 1. Ask `roles` first (roles, then get_count): `<call name="send"><target_id>ROLES</target_id><type>roles</type></call>` lists the roles you may start; `<call name="send"><target_id>ROLES</target_id><type>get_count</type></call>` gives `{running, max}` (add `<role>worker</role>` for one role). Never plan past `max`. `<type>role</type><name>worker</name>` shows one card with its tier and its grants (the tools it may call).
 2. Start it: `<call name="send"><target_id>ROLES</target_id><type>spawn</type><role>worker</role><task>The queue is QUEUE. Your id is the id in your own reflect. A call refused with "may not call" means your role card does not grant that tool or verb.</task></call>`. A sub-lead gets part of your quota with `limits` (`{total?, per_role?}`). The reply is `{id, role, tier}`: W is that id. The agent is your child, with its memory store, model and grants from the role's card; you may pause, resume or stop it. You cannot `send` to it, and it is not told its id by you: it reads its id in its own `reflect`.
 3. After every report, read `fleet` on ROLES (`<type>fleet</type>`) to see who is alive, including the agents a sub-lead started.
-4. A refusal `{error:"limit", scope, role, running, max, reason}` is written in the ledger with its reason. Start no further agent for it.
+4. A refusal `{error, reason:"limit", scope, role, running, max, hint}` is written in the ledger with its error sentence (`reason` is the code to branch on). Start no further agent for it.
 
 ## Workers that serve themselves (the default)
 
