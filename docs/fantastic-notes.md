@@ -83,6 +83,10 @@ Installing stays `pack_bundle install` from a local pack directory.
 
 Not built yet: setting `trusted_keys` for the listing (`tree.rs` leaves it unset, so a real team skips every signed entry), a key-generation command and key rotation, a richer automated review step (publish runs the pack scan only), report and takedown (a signed re-publish with `revoked: true`, then a `revoke` verb), fetching index and pack files by url, the aisixteen.com listing site and the in-app browser, evals, measured record and price inside the signed payload (the payload does not cover them, so they are not trusted), install from the registry by hash (resolve, fetch, then `pack_bundle::install`).
 
+## Pin at `f27b3ba`
+
+`Cargo.lock` now pins fantastic `f27b3ba` (#451/#452: agentic_resources and task_registry refuse in the kernel shape: `error` = the sentence, `reason` = the code such as `limit` or `not_allowed`, plus `hint`). Team change: the lead and project_lead cards, the README and the tests read the code from `reason`.
+
 ## Pin at `22f88cb`
 
 `Cargo.lock` now pins fantastic `22f88cb`. It brings the route-clash refusal (fantastic#446: web boot fails and `mount` errors when two children declare the same literal route), `?canvas=<id>` in the canvas page, and ai_core `embed`/`unembed` (history rows `{kind:"embed"|"unembed", head:<agent id>}`, no role). Team's page, ws and canvas routes are distinct, so none clashes.

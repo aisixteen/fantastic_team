@@ -3704,20 +3704,21 @@ mod tests {
         assert!(spawn("worker").await["id"].is_string());
         assert!(spawn("worker").await["id"].is_string());
         let third = spawn("worker").await;
-        assert_eq!(third["error"], "limit", "{third}");
+        assert_eq!(third["reason"], "limit", "{third}");
         assert_eq!(third["scope"], "role");
         assert!(
-            third["reason"].as_str().unwrap().contains("at its limit"),
+            third["error"].as_str().unwrap().contains("at its limit"),
             "{third}"
         );
         assert!(spawn("issue_keeper").await["id"].is_string());
         let fourth = spawn("issue_keeper").await;
-        assert_eq!(fourth["error"], "limit", "{fourth}");
+        assert_eq!(fourth["reason"], "limit", "{fourth}");
         assert_eq!(fourth["scope"], "total");
         assert_eq!(
-            fourth["reason"],
+            fourth["error"],
             "all roles together are at the limit (3 running, max 3)"
         );
+        assert!(fourth["hint"].is_string(), "{fourth}");
         let total = ask(&kernel, "roles", json!({"type": "get_count"})).await;
         assert_eq!(total, json!({"running": 3, "max": 3}));
         // a limit the file no longer names is cleared
@@ -3738,6 +3739,75 @@ mod tests {
             .is_none_or(|l| l.as_object().is_some_and(|m| m.is_empty())));
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn limit_refusal_puts_the_sentence_in_error_and_the_code_in_reason() {
+        let dir = roles_team_dir();
+        let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
+        apply_limits(&kernel, &roles_cfg(ROLES_LIMITS))
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let ok = call_as(
+                &kernel,
+                "lead",
+                "roles",
+                json!({"type": "spawn", "role": "worker"}),
+            )
+            .await;
+            assert!(ok["id"].is_string(), "{ok}");
+        }
+        let r = call_as(
+            &kernel,
+            "lead",
+            "roles",
+            json!({"type": "spawn", "role": "worker"}),
+        )
+        .await;
+        assert_eq!(r["reason"], "limit", "{r}");
+        assert_ne!(r["error"], "limit", "{r}");
+        assert!(
+            r["error"].as_str().unwrap().contains("(2 running, max 2)"),
+            "{r}"
+        );
+        assert_eq!(r["scope"], "role");
+        assert_eq!(r["role"], "worker");
+        assert_eq!(r["running"], 2);
+        assert_eq!(r["max"], 2);
+    }
+
+    #[tokio::test]
+    async fn a_spawn_past_the_total_limit_is_refused_with_reason_limit() {
+        let dir = roles_team_dir();
+        let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
+        apply_limits(&kernel, &roles_cfg(ROLES_LIMITS))
+            .await
+            .unwrap();
+        for role in ["worker", "worker", "issue_keeper"] {
+            let ok = call_as(
+                &kernel,
+                "lead",
+                "roles",
+                json!({"type": "spawn", "role": role}),
+            )
+            .await;
+            assert!(ok["id"].is_string(), "{ok}");
+        }
+        let r = call_as(
+            &kernel,
+            "lead",
+            "roles",
+            json!({"type": "spawn", "role": "issue_keeper"}),
+        )
+        .await;
+        assert_eq!(r["reason"], "limit", "{r}");
+        assert_eq!(r["scope"], "total");
+        assert!(
+            r["error"].as_str().unwrap().contains("(3 running, max 3)"),
+            "{r}"
+        );
+        assert_ne!(r["error"], "limit");
     }
 
     #[tokio::test(flavor = "multi_thread")]
