@@ -235,9 +235,9 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
 /// (`kernel_state`). The root is pointed at the memory store. A root that
 /// already names a `memory_store_id` is left alone. A directory seeded by
 /// `fantastic_tui::seed_dir` already holds the two stores (its blueprint has
-/// `kernel_memory`): then only the root is pointed at the memory store. Returns `Ok(true)` when
-/// it seeded, `Ok(false)` when there was nothing to do. Mirrors the blueprint
-/// in fantastic's terminal app.
+/// `kernel_memory`): then only the root is pointed at the memory store.
+/// Returns `Ok(true)` when it seeded, `Ok(false)` when there was nothing to
+/// do. Mirrors the blueprint in fantastic's terminal app.
 pub async fn seed_base_tree(kernel: &Arc<Kernel>) -> Result<bool, String> {
     let root = kernel
         .send(vec![Item::new(DEFAULT_ROOT_ID, json!({"type": "reflect"}))])
