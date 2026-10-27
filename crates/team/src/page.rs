@@ -25,13 +25,69 @@ pub const WEB_ID: &str = "web";
 pub const PAGE_PATH: &str = "/team_page/file/index.html";
 
 const SHIM: &str = include_str!("../web/page_shim.js");
+const CARD_JS: &str = include_str!("../web/card_connector.js");
+
+/// The files the page serves, in order. Everything the page loads is one of these.
+pub const FILES: [&str; 5] = ["index.html", "page.css", "shim.js", "page.js", "card.js"];
 
 /// What `read_stream` declares on the record, so the host serves the page.
-pub const READ_STREAM_DOC: &str = "args: path:str (req), offset:int?, length:int?. The dispatcher page as a BINARY reply: the bytes as the body, {path, offset, next_offset, eof, size} as the head.";
+pub const READ_STREAM_DOC: &str = "args: path:str (req), offset:int?, length:int?. The dispatcher page (index.html, page.css, shim.js, page.js, card.js) as a BINARY reply: the bytes as the body, {path, offset, next_offset, eof, size} as the head.";
 
-/// The page served as `index.html`: the dispatcher html with the shim in its head.
+/// Cut the first `<tag>...</tag>` body out of `html`; the html gets `replacement` in its place.
+fn cut(html: &str, open: &str, close: &str, replacement: &str) -> (String, String) {
+    let start = html.find(open).expect("page has the tag");
+    let body_at = start + open.len();
+    let end = body_at + html[body_at..].find(close).expect("page closes the tag");
+    let body = html[body_at..end].to_string();
+    let out = format!(
+        "{}{}{}",
+        &html[..start],
+        replacement,
+        &html[end + close.len()..]
+    );
+    (out, body)
+}
+
+/// The dispatcher html cut into the page, its stylesheet and its script, so the page
+/// has no inline style or script (the app's CSP allows `'self'` only).
+fn split_page(html: &str) -> (String, String, String) {
+    let (html, css) = cut(
+        html,
+        "<style>",
+        "</style>",
+        "<link rel=\"stylesheet\" href=\"page.css\">",
+    );
+    let (html, js) = cut(
+        &html,
+        "<script>",
+        "</script>",
+        "<script src=\"page.js\"></script>",
+    );
+    (html, css, js)
+}
+
+/// The page served as `index.html`: the dispatcher html with the shim script in its head.
 pub fn index_html() -> String {
-    dispatcher::HTML.replacen("</head>", &format!("<script>\n{SHIM}</script>\n</head>"), 1)
+    split_page(dispatcher::HTML).0.replacen(
+        "</head>",
+        "<script src=\"shim.js\"></script>\n</head>",
+        1,
+    )
+}
+
+/// The bytes of one served file, or `None` for a path the page does not serve.
+pub fn file_bytes(path: &str) -> Option<Vec<u8>> {
+    Some(
+        match path {
+            "index.html" => index_html(),
+            "page.css" => split_page(dispatcher::HTML).1,
+            "shim.js" => SHIM.to_string(),
+            "page.js" => split_page(dispatcher::HTML).2,
+            "card.js" => CARD_JS.to_string(),
+            _ => return None,
+        }
+        .into_bytes(),
+    )
 }
 
 fn read_stream(payload: &Value) -> (Value, Option<Vec<u8>>) {
@@ -40,14 +96,13 @@ fn read_stream(payload: &Value) -> (Value, Option<Vec<u8>>) {
         .and_then(Value::as_str)
         .unwrap_or("")
         .trim_start_matches('/');
-    if path != "index.html" {
+    let Some(bytes) = file_bytes(path) else {
         return (
-            json!({"error": format!("team_page: no file {path:?} — this page serves [\"index.html\"]"),
+            json!({"error": format!("team_page: no file {path:?} — this page serves {FILES:?}"),
                 "reason": "not_found"}),
             None,
         );
-    }
-    let bytes = index_html().into_bytes();
+    };
     let size = bytes.len() as u64;
     let offset = payload
         .get("offset")
@@ -92,9 +147,9 @@ impl Bundle for PageBundle {
     ) -> Result<Reply, BundleError> {
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         Ok(Some(match verb {
-            "reflect" => json!({"id": agent_id.as_str(), "files": ["index.html"]}),
+            "reflect" => json!({"id": agent_id.as_str(), "files": FILES}),
             "boot" => json!({"booted": true}),
-            "list" => json!({"files": ["index.html"]}),
+            "list" => json!({"files": FILES}),
             "read_stream" => read_stream(payload).0,
             other => {
                 json!({"error": format!("team_page: unknown type {other:?}"), "reason": "unhandled", "verb": other})
@@ -127,18 +182,21 @@ mod tests {
     #[test]
     fn index_is_the_dispatcher_with_the_shim_in_its_head() {
         let html = index_html();
-        let shim_at = html.find("window.fantastic = {").expect("the shim");
+        let shim_at = html.find("<script src=\"shim.js\">").expect("the shim tag");
         let head_end = html.find("</head>").unwrap();
         assert!(shim_at < head_end);
-        assert!(html.contains("function renderSidebar("));
-        assert!(!html.contains("innerHTML"));
+        let shim = String::from_utf8(file_bytes("shim.js").unwrap()).unwrap();
+        assert!(shim.contains("window.fantastic = {"));
+        let js = String::from_utf8(file_bytes("page.js").unwrap()).unwrap();
+        assert!(js.contains("function renderSidebar("));
+        assert!(!html.contains("innerHTML") && !js.contains("innerHTML"));
     }
 
     #[test]
     fn index_page_has_the_agents_section() {
-        let html = index_html();
-        assert!(html.contains("function renderAgents("));
-        assert!(html.contains("'Agents'"));
+        let js = String::from_utf8(file_bytes("page.js").unwrap()).unwrap();
+        assert!(js.contains("function renderAgents("));
+        assert!(js.contains("'Agents'"));
     }
 
     #[test]
@@ -170,5 +228,70 @@ mod tests {
             assert!(SHIM.contains(needle), "{needle}");
         }
         assert!(!SHIM.contains("innerHTML"));
+    }
+
+    #[test]
+    fn split_page_moves_style_and_script_out() {
+        let (html, css, js) = split_page(dispatcher::HTML);
+        assert!(!html.contains("<style>") && !html.contains("</style>"));
+        assert_eq!(
+            html.matches("<link rel=\"stylesheet\" href=\"page.css\">")
+                .count(),
+            1
+        );
+        assert_eq!(html.matches("<script src=\"page.js\"></script>").count(), 1);
+        assert_eq!(html.matches("<script").count(), 1);
+        assert!(!css.is_empty() && !js.is_empty());
+        let rebuilt = html
+            .replace(
+                "<link rel=\"stylesheet\" href=\"page.css\">",
+                &format!("<style>{css}</style>"),
+            )
+            .replace(
+                "<script src=\"page.js\"></script>",
+                &format!("<script>{js}</script>"),
+            );
+        assert_eq!(rebuilt, dispatcher::HTML);
+    }
+
+    fn whole(path: &str) -> (Value, Vec<u8>) {
+        let (head, body) = read_stream(&json!({"path": path}));
+        (head, body.unwrap_or_else(|| panic!("no file {path}")))
+    }
+
+    #[test]
+    fn read_stream_serves_every_listed_file() {
+        for f in ["page.css", "shim.js", "page.js", "card.js"] {
+            let (head, body) = whole(f);
+            assert!(!body.is_empty(), "{f}");
+            assert_eq!(head["eof"], json!(true), "{f}");
+        }
+        let (_, shim) = whole("shim.js");
+        assert!(String::from_utf8(shim)
+            .unwrap()
+            .contains("window.fantastic = {"));
+    }
+
+    #[tokio::test]
+    async fn list_and_reflect_name_all_files() {
+        let kernel = Arc::new(Kernel::new());
+        let id = AgentId::from(PAGE_ID);
+        for verb in ["list", "reflect"] {
+            let r = PageBundle
+                .handle(&id, &json!({"type": verb}), &kernel)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(r["files"], json!(FILES), "{verb}");
+        }
+    }
+
+    #[test]
+    fn card_connector_file_speaks_postmessage() {
+        assert!(CARD_JS.contains("t: \"send\""));
+        assert!(CARD_JS.contains("t: \"watch\""));
+        assert!(CARD_JS.contains("postMessage"));
+        assert!(dispatcher::HTML.contains("/team_page/file/card.js"));
+        assert!(!dispatcher::HTML.contains("postMessage({ t: \"send\""));
     }
 }
