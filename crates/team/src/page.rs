@@ -135,6 +135,13 @@ mod tests {
     }
 
     #[test]
+    fn index_page_has_the_agents_section() {
+        let html = index_html();
+        assert!(html.contains("function renderAgents("));
+        assert!(html.contains("'Agents'"));
+    }
+
+    #[test]
     fn read_stream_serves_index_in_chunks_and_refuses_other_paths() {
         let (head, body) = read_stream(&json!({"path": "index.html", "length": 10}));
         assert_eq!(body.unwrap().len(), 10);

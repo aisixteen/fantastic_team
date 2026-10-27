@@ -109,7 +109,6 @@ function makeRuntime(handler) {
   const idRe = /<[a-z0-9]+[^>]*\sid="([^"]+)"/g;
   let m;
   while ((m = idRe.exec(html))) { byId[m[1]] = new El('div'); byId[m[1]].id = m[1]; }
-  byId.back.hidden = true;
   byId.pane.hidden = true;
   const document = {
     getElementById: (id) => byId[id] || null,
@@ -187,7 +186,83 @@ const base = (extra) => (id, p) => {
   return (extra && extra(id, p)) || {};
 };
 
+const AGENTS = [
+  { id: 'pl', role: 'project_lead', state: 'active', depth: 0, indent: 0, guides: 0, lead: true, label: 'Lead' },
+  { id: 'sub', role: 'project_lead', state: 'paused', depth: 1, indent: 1, guides: 1, lead: false, label: 'project_lead' },
+  { id: 'w1', role: 'worker', state: 'done', depth: 2, indent: 2, guides: 2, lead: false, label: 'worker' },
+];
+const roleReply = (status) => ({
+  team: 't', groups: [], ungrouped: [], agents: AGENTS,
+  plan: { lead: 'pl', fleet: { running: 3, max: 8 }, tasks: [{ id: 'o/r#1', source: 'gh:o/r#1', holder: 'subtree:sub', status }] },
+});
+const roleRuntime = async (status) => {
+  const state = { status };
+  const rt = makeRuntime(base((id, p) => (p.type === 'open' ? { view: 'chat', target: p.node, cell: { label: 'x', kind: 'chat', target: p.node } } : null)));
+  rt.state = state;
+  rt.stub = () => roleReply(state.status);
+  await rt.flush(); // the page's own first sidebar load
+  return rt;
+};
+
 const scenarios = {
+  async lead_layout() {
+    const rt = await roleRuntime('in_work');
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    const rows = rt.byId.sidebar.all('.agent');
+    return {
+      rows: rows.map((r) => ({ cls: r.className, indent: r.dataset.indent, node: r.dataset.node, text: r.textContent })),
+      title: rt.byId.sidebar.all('.agents-title').map((x) => x.textContent),
+      first: rt.byId.sidebar.children[0].className,
+    };
+  },
+
+  async two_columns() {
+    const rt = await roleRuntime('in_work');
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    const row = rt.byId.sidebar.all('.agent')[1];
+    rt.byId.sidebar.dispatch('click', { target: row });
+    await rt.flush();
+    return { sidebarHidden: rt.byId.sidebar.hidden, paneHidden: rt.byId.pane.hidden, selected: rt.byId.sidebar.all('.agent').filter((r) => r.classList.contains('selected')).map((r) => r.dataset.node), hasBack: !!rt.byId.back, opened: rt.sent('open').map((x) => x.payload.node) };
+  },
+
+  async lead_plan() {
+    const rt = await roleRuntime('in_work');
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    const c = await rt.open('pl');
+    const text = () => c.view.textContent;
+    const out = { first: text(), viewHidden: c.view.hidden };
+    const row = c.view.all('.plan-task')[0];
+    rt.state.status = 'done';
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    out.second = text();
+    out.sameRow = c.view.all('.plan-task')[0] === row;
+    out.rows = c.view.all('.plan-task').length;
+    out.watchers = rt.watchers.map((w) => w.node);
+    return out;
+  },
+
+  async lead_live() {
+    const rt = await roleRuntime('in_work');
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    await rt.open('pl');
+    const before = rt.sent('sidebar').length;
+    await rt.emit({ type: 'done', source: 'pl' });
+    await rt.emit({ type: 'status', phase: 'streaming' });
+    const immediate = rt.sent('sidebar').length - before;
+    const timers = Array.from(rt.timers.values()).map((t) => t.ms).sort((a, b) => a - b);
+    await rt.runTimers();
+    const afterTimers = rt.sent('sidebar').length - before;
+    rt.js('dropChat()');
+    return { immediate, afterTimers, timers, left: rt.timers.size, watchers: rt.watchers.length };
+  },
+
+  async plain_agent() {
+    const rt = await roleRuntime('in_work');
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    const c = await rt.open('w1');
+    return { viewHidden: c.view.hidden, viewText: c.view.textContent, tasks: c.view.all('.plan-task').length, hasChat: rt.byId.pane.all('.transcript').length, watchers: rt.watchers.map((w) => w.node) };
+  },
+
   async text_once() {
     const rt = makeRuntime(base());
     await rt.open('w1');

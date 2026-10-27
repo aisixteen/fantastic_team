@@ -25,6 +25,21 @@
   .state-stalled { color: #b45309; }
   .state-failed { color: #b91c1c; }
   .state-done { color: #15803d; }
+  .state-paused { color: #b45309; }
+  .agents-title { font-weight: 600; margin: 0 0 4px; color: #374151; }
+  .agent { background-repeat: no-repeat; background-image: repeating-linear-gradient(to right, #d1d5db 0 1px, transparent 1px 12px); background-size: 0 100%; }
+  .agent.lead { font-weight: 700; }
+  .agent.selected { background-color: #e5e7eb; }
+  .agent[data-indent="0"] { padding-left: 6px; }
+  .agent[data-indent="1"] { padding-left: 18px; background-size: 12px 100%; }
+  .agent[data-indent="2"] { padding-left: 30px; background-size: 24px 100%; }
+  .agent[data-indent="3"] { padding-left: 42px; background-size: 36px 100%; }
+  .agent[data-indent="4"] { padding-left: 54px; background-size: 48px 100%; }
+  .agent .mark { font-size: 0.85em; color: #6b7280; }
+  .agent-view { margin: 0 0 8px; padding: 6px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9em; }
+  .agent-view[hidden] { display: none; }
+  .plan-task { display: flex; gap: 8px; flex-wrap: wrap; padding: 2px 0; overflow-wrap: anywhere; }
+  .plan-task .status { margin-left: auto; font-weight: 600; }
   .error { color: #b91c1c; }
   #packinstall input { font: inherit; padding: 4px 6px; min-width: 0; }
   #packinstall .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
@@ -73,6 +88,8 @@
   @media (prefers-color-scheme: dark) {
     body { background: #111; color: #eee; }
     .item:hover { background: #222; }
+    .agent.selected { background-color: #333; }
+    .agent-view { border-color: #444; }
     #packs .card, #packs .detail, .cell { border-color: #444; }
   }
   @media (max-width: 430px) {
@@ -83,7 +100,7 @@
 </style>
 </head>
 <body>
-<div class="bar"><button id="back" type="button" hidden>Back</button><h2 id="title">Team</h2></div>
+<div class="bar"><h2 id="title">Team</h2></div>
 <div id="error" class="error"></div>
 <div id="layout">
   <nav id="sidebar" aria-label="Workers and subagents"></nav>
@@ -113,8 +130,10 @@
 // (kind worker), then its subagents expander (kind subagents, with count and
 // expanded), then its subagents (kind subagent, with tool and status) only when
 // that worker is expanded. `open {node}` for a worker or a subagent answers a
-// full-screen chat (view chat, target the node). Back returns to the sidebar,
-// restoring its scroll and the expanded workers the level had. A group with no
+// chat (view chat, target the node), shown in the pane beside the sidebar (two columns; the sidebar stays
+// visible). In roles mode the reply also has `agents` (the lead first, then its tree
+// depth-first, each with indent, state and label) and `plan` {lead, fleet, tasks}: the
+// lead's pane draws the plan above its chat and redraws it in place. A group with no
 // AI driver also carries `load` {busy, idle, stalled}, shown as a plain line
 // under its title; a group with a driver shows its AI's summary instead.
 // `control {node, action, confirm?}` starts, pauses or stops a worker. A stop
@@ -135,13 +154,15 @@
 // agent are drawn as cards with controls by kind (confirm, single, multi, text);
 // an answer is `answer_inquiry {re, answer}`. A chosen text file travels inside
 // the same `send` as text ("[attached: NAME]" and its content): no new field.
-// On open, `status {client_id}` rebuilds a turn still running. Back, or a new
-// open, drops the watch and the drafts. Kernel values and streamed text go in as
+// On open, `status {client_id}` rebuilds a turn still running. A new
+// open drops the watch and the drafts. Kernel values and streamed text go in as
 // text only (textContent), never as markup. A worker row also shows the minutes
 // since its task last moved and the number of its pull request.
 const expanded = new Set();   // workers whose subagents are shown
 const seen = new Set();       // workers already checked against the remembered state
-const stack = [];             // levels left behind: { scrollY, expanded }
+let lastReply = null;        // the newest sidebar reply: the agents and the plan are drawn from it
+const PLAN_POLL_MS = 5000;   // the task registry emits no events: poll while a lead is shown
+const PLAN_DEBOUNCE_MS = 500;
 
 // Remembered per worker in this browser. A blocked or full store only costs the
 // memory, never the page.
@@ -291,7 +312,38 @@ function adoptRemembered(items) {
   return changed;
 }
 
+// The lead and the agents under it (roles mode), one flat depth-first list. The lead
+// is pinned first with the label "Lead"; the indent is capped by the server.
+function agentRow(a) {
+  const row = el('div', 'item agent' + (a.lead ? ' lead' : ''));
+  const indent = Math.max(0, Math.min(4, num(a.indent)));
+  row.dataset.node = a.id;
+  row.dataset.kind = 'agent';
+  row.dataset.indent = String(indent);
+  row.dataset.depth = String(num(a.depth));
+  row.appendChild(el('span', 'name', a.label || a.role || a.id));
+  if (!a.lead && a.role && a.label !== a.role) row.appendChild(el('span', 'task', a.role));
+  row.appendChild(el('span', 'mark ' + stateClass(a.state), a.state || 'active'));
+  return row;
+}
+
+function renderAgents(nav, reply) {
+  const list = reply && Array.isArray(reply.agents) ? reply.agents : [];
+  if (!list.length) return;
+  nav.appendChild(el('div', 'agents-title', 'Agents'));
+  list.forEach(function (a) { nav.appendChild(agentRow(a)); });
+}
+
+function markSelected() {
+  const sel = chat ? chat.node : null;
+  document.getElementById('sidebar').querySelectorAll('[data-node]').forEach(function (r) {
+    if (r.dataset.node === sel) r.classList.add('selected');
+    else r.classList.remove('selected');
+  });
+}
+
 function renderSidebar(reply) {
+  lastReply = reply || null;
   const nav = document.getElementById('sidebar');
   nav.textContent = '';
   document.getElementById('title').textContent = (reply && reply.team) || 'Team';
@@ -301,6 +353,7 @@ function renderSidebar(reply) {
   groups.concat([{ id: null, items: loose }]).forEach(function (g) {
     if (adoptRemembered(g.items || [])) adopted = true;
   });
+  renderAgents(nav, reply);
   groups.forEach(function (g) {
     nav.appendChild(el('div', 'group-title', 'Group: ' + g.id));
     nav.appendChild(addWorkerForm(g.id));
@@ -334,6 +387,8 @@ function renderSidebar(reply) {
       ' · queued ' + num(reply.load.tasks && reply.load.tasks.queued) +
       ' · done last hour ' + num(reply.load.done_last_hour) + cost));
   }
+  markSelected();
+  if (chat) drawAgentView(chat);
   if (adopted) loadSidebar();
 }
 
@@ -402,13 +457,123 @@ function scrollChat(c) {
   c.transcript.scrollTop = c.transcript.scrollHeight;
 }
 
-// The full-screen chat for one agent: the pane replaces the sidebar, and its
-// box holds the agent's chat cell label, the transcript and the composer. A new
+// The plan the lead's pane shows, drawn in place: one row per task, kept by its id, so
+// a new sidebar reply changes the text of the rows and never rebuilds them.
+function drawPlan(c, plan) {
+  const view = c.view;
+  if (!c.planBox) {
+    view.textContent = '';
+    c.planHead = el('div', 'plan-head', '');
+    c.planTree = el('div', 'plan-tree task', '');
+    c.planList = el('div', 'plan-tasks', '');
+    c.planRows = new Map();
+    view.appendChild(c.planHead);
+    view.appendChild(c.planTree);
+    view.appendChild(c.planList);
+    c.planBox = true;
+  }
+  const fleet = plan && plan.fleet && typeof plan.fleet.running === 'number'
+    ? ' · agents ' + plan.fleet.running + '/' + (plan.fleet.max === null ? '-' : plan.fleet.max) : '';
+  const tasks = plan && Array.isArray(plan.tasks) ? plan.tasks : [];
+  c.planHead.textContent = 'Plan: ' + tasks.length + ' task' + (tasks.length === 1 ? '' : 's') + fleet;
+  const agents = lastReply && Array.isArray(lastReply.agents) ? lastReply.agents : [];
+  const count = function (st) { return agents.filter(function (a) { return a.state === st; }).length; };
+  c.planTree.textContent = 'tree: ' + agents.length + ' agents · active ' + count('active') +
+    ' · paused ' + count('paused') + ' · done ' + count('done');
+  const keep = new Set();
+  tasks.forEach(function (t) {
+    const id = String(t.id);
+    keep.add(id);
+    let row = c.planRows.get(id);
+    if (!row) {
+      row = el('div', 'plan-task', '');
+      row.dataset.task = id;
+      row.appendChild(el('span', 'id', ''));
+      row.appendChild(el('span', 'source task', ''));
+      row.appendChild(el('span', 'holder task', ''));
+      row.appendChild(el('span', 'status', ''));
+      c.planRows.set(id, row);
+      c.planList.appendChild(row);
+    }
+    row.children[0].textContent = id;
+    row.children[1].textContent = String(t.source == null ? '' : t.source);
+    row.children[2].textContent = String(t.holder == null ? '' : t.holder);
+    row.children[3].textContent = String(t.status == null ? '' : t.status);
+    row.children[3].className = 'status ' + stateClass(t.status);
+  });
+  Array.from(c.planRows.keys()).forEach(function (id) {
+    if (!keep.has(id)) { c.planRows.get(id).remove(); c.planRows.delete(id); }
+  });
+}
+
+function isLead(node) {
+  const list = lastReply && Array.isArray(lastReply.agents) ? lastReply.agents : [];
+  return list.some(function (a) { return a.id === node && a.lead; });
+}
+
+// The top region of the pane. The lead shows the plan; any other agent has no view of
+// its own yet and shows the generic one: the chat alone, with a one-line header.
+function drawAgentView(c) {
+  if (!c.view) return;
+  if (isLead(c.node)) {
+    c.view.hidden = false;
+    drawPlan(c, lastReply.plan || {});
+    startLive(c);
+  } else {
+    if (c.planBox) { c.view.textContent = ''; c.planBox = false; c.planRows = null; }
+    c.view.hidden = true;
+    stopLive(c);
+  }
+}
+
+// While the lead's pane is open the plan stays current: the lead's own status and done
+// events reload the sidebar (debounced), and a poll does too, since the task registry
+// emits no events.
+function startLive(c) {
+  if (c.live2) return;
+  c.live2 = { off: null, wait: null, poll: null };
+  const reload = function () {
+    if (chat !== c || !c.live2) return;
+    loadSidebar();
+  };
+  if (typeof fantastic !== 'undefined' && fantastic && typeof fantastic.watch === 'function') {
+    c.live2.off = fantastic.watch(c.node, function (ev) {
+      if (chat !== c || !c.live2 || !ev || (ev.type !== 'status' && ev.type !== 'done')) return;
+      if (c.live2.wait != null) clearTimeout(c.live2.wait);
+      c.live2.wait = setTimeout(function () { if (c.live2) c.live2.wait = null; reload(); }, PLAN_DEBOUNCE_MS);
+    });
+  }
+  const tick = function () {
+    if (chat !== c || !c.live2) return;
+    reload();
+    c.live2.poll = setTimeout(tick, PLAN_POLL_MS);
+  };
+  c.live2.poll = setTimeout(tick, PLAN_POLL_MS);
+}
+
+function stopLive(c) {
+  const l = c.live2;
+  if (!l) return;
+  c.live2 = null;
+  if (typeof l.off === 'function') {
+    try { l.off(); } catch (e) { /* the watch is gone already */ }
+  }
+  if (l.wait != null) clearTimeout(l.wait);
+  if (l.poll != null) clearTimeout(l.poll);
+}
+
+// The chat for one agent: the pane is the second column beside the sidebar. A top
+// region holds the agent's view (the plan for the lead), then the chat box holds the
+// agent's chat cell label, the transcript and the composer. A new
 // open drops any chat still open first, so its stream is never drawn twice.
 function showChat(reply, node) {
   dropChat();
   const pane = document.getElementById('pane');
   pane.textContent = '';
+  const view = el('div', 'agent-view');
+  view.id = 'agent-view';
+  view.hidden = true;
+  pane.appendChild(view);
   const cell = reply.cell || {};
   const box = el('div', 'cell chat');
   box.appendChild(el('strong', '', cell.label || 'Chat'));
@@ -446,16 +611,16 @@ function showChat(reply, node) {
   box.appendChild(form);
   pane.appendChild(box);
   pane.hidden = false;
-  document.getElementById('sidebar').hidden = true;
-  document.getElementById('title').textContent = node;
-  window.scrollTo(0, 0);
   const c = {
+    view: view, planBox: false, live2: null,
     node: node, transcript: transcript, input: input, send: send, stop: stop,
     drafts: new Map(), tools: new Map(), inquiries: new Set(), attached: null,
     stats: stats, chip: chip, file: file, timer: null, live: false,
     off: null, busy: false
   };
   chat = c;
+  drawAgentView(c);
+  markSelected();
   form.addEventListener('submit', function (e) { e.preventDefault(); sendChat(); });
   stop.addEventListener('click', stopChat);
   attach.addEventListener('click', function () { file.click(); });
@@ -471,6 +636,7 @@ function dropChat() {
   const c = chat;
   if (!c) return;
   chat = null;
+  stopLive(c);
   if (typeof c.off === 'function') {
     try { c.off(); } catch (e) { /* the watch is gone already */ }
   }
@@ -873,18 +1039,6 @@ async function stopChat() {
   }
 }
 
-function hideChat() {
-  dropChat();
-  const pane = document.getElementById('pane');
-  pane.textContent = '';
-  pane.hidden = true;
-  document.getElementById('sidebar').hidden = false;
-}
-
-function updateBack() {
-  document.getElementById('back').hidden = stack.length === 0;
-}
-
 async function openNode(node) {
   let reply;
   try {
@@ -897,21 +1051,8 @@ async function openNode(node) {
     showError(reply && reply.error ? reply.error : 'cannot open ' + node);
     return;
   }
-  stack.push({ scrollY: window.scrollY, expanded: Array.from(expanded) });
   showError('');
   showChat(reply, node);
-  updateBack();
-}
-
-async function back() {
-  const p = stack.pop();
-  if (!p) return;
-  hideChat();
-  expanded.clear();
-  p.expanded.forEach(function (w) { expanded.add(w); });
-  await loadSidebar();
-  window.scrollTo(0, p.scrollY || 0);
-  updateBack();
 }
 
 document.getElementById('sidebar').addEventListener('click', function (e) {
@@ -967,8 +1108,6 @@ async function installPack() {
 }
 
 document.getElementById('pack-install').addEventListener('click', installPack);
-document.getElementById('back').addEventListener('click', back);
-window.addEventListener('dispatcher:back', back);
 
 // Packs panel. It draws the `browser` view-model of the pack_listing agent
 // ({cards, selected?, opt_in, updates, warnings, note?}) and holds no logic of

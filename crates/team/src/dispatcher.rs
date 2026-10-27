@@ -470,6 +470,16 @@ async fn rows_of(
     now: u64,
 ) -> Vec<Row> {
     let snap = peers.ask(board, json!({"type": "board"})).await;
+    rows_from(&snap, groups, limit, now)
+}
+
+/// [`rows_of`] from a board snapshot already in hand.
+fn rows_from(
+    snap: &Value,
+    groups: &BTreeMap<String, Vec<String>>,
+    limit: u64,
+    now: u64,
+) -> Vec<Row> {
     let mut ids: Vec<String> = groups.values().flatten().cloned().collect();
     if let Some(agents) = snap["agents"].as_object() {
         for k in agents.keys() {
@@ -478,7 +488,109 @@ async fn rows_of(
             }
         }
     }
-    ids.iter().map(|w| row_of(w, &snap, now, limit)).collect()
+    ids.iter().map(|w| row_of(w, snap, now, limit)).collect()
+}
+
+/// How many levels the page indents an agent row at most.
+pub const INDENT_CAP: usize = 4;
+
+/// The agents of roles mode as one flat depth-first list for the page, from the board's
+/// `roles` section: the lead first (`lead: true`, label "Lead"), then every node of the
+/// tree in its child order. Each item is {id, role, state, depth, indent, guides, lead,
+/// label}; `indent` and `guides` stop at [`INDENT_CAP`], `depth` keeps counting. With no
+/// tree but a lead id, just the lead; with neither, nothing.
+pub fn agent_list(roles: &Value) -> Vec<Value> {
+    fn item(node: &Value, depth: usize, lead: bool) -> Value {
+        let id = node["id"].as_str().unwrap_or("");
+        let role = node["role"].as_str().unwrap_or("");
+        let state = node["state"].as_str().unwrap_or("active");
+        let indent = depth.min(INDENT_CAP);
+        let label = if lead {
+            "Lead"
+        } else if role.is_empty() {
+            id
+        } else {
+            role
+        };
+        json!({"id": id, "role": role, "state": state, "depth": depth, "indent": indent,
+            "guides": indent, "lead": lead, "label": label})
+    }
+    fn walk(node: &Value, depth: usize, out: &mut Vec<Value>) {
+        out.push(item(node, depth, false));
+        for k in node["children"].as_array().into_iter().flatten() {
+            walk(k, depth + 1, out);
+        }
+    }
+    let lead = roles["lead"].as_str().filter(|l| !l.is_empty());
+    let tree = &roles["tree"];
+    let mut out = Vec::new();
+    if tree.get("id").and_then(Value::as_str).is_some() {
+        let root_is_lead = lead.is_none_or(|l| tree["id"].as_str() == Some(l));
+        if root_is_lead {
+            let mut root = item(tree, 0, true);
+            if root["role"] == "" {
+                root["role"] = json!("project_lead");
+            }
+            out.push(root);
+            for k in tree["children"].as_array().into_iter().flatten() {
+                walk(k, 1, &mut out);
+            }
+        } else {
+            walk(tree, 0, &mut out);
+        }
+    } else if let Some(l) = lead {
+        out.push(item(
+            &json!({"id": l, "role": "project_lead", "state": "active"}),
+            0,
+            true,
+        ));
+    }
+    // The lead is always first, wherever the tree put it.
+    if let Some(l) = lead {
+        if let Some(i) = out.iter().position(|a| a["id"] == l) {
+            let mut a = out.remove(i);
+            a["lead"] = json!(true);
+            a["label"] = json!("Lead");
+            out.insert(0, a);
+        }
+    }
+    out
+}
+
+/// The plan the lead's pane draws, from the board's `roles` section: {lead, fleet,
+/// tasks}; each task is {id, source, holder, status} with the holder as text (an agent id,
+/// or "subtree:<id>").
+pub fn plan_of(roles: &Value) -> Value {
+    let tasks: Vec<Value> = roles["tasks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|t| {
+            let holder = match &t["holder"] {
+                Value::String(h) => h.clone(),
+                Value::Null => String::new(),
+                other => match other.get("subtree").and_then(Value::as_str) {
+                    Some(r) => format!("subtree:{r}"),
+                    None => other.to_string(),
+                },
+            };
+            json!({"id": t["id"], "source": t["source"], "holder": holder, "status": t["status"]})
+        })
+        .collect();
+    json!({"lead": roles["lead"], "fleet": roles["fleet"], "tasks": tasks})
+}
+
+/// Let the page's legs chat with the lead and its agents: the chat verbs only, never `*`.
+fn grant_agents(kernel: &Arc<fantastic_kernel::Kernel>, agents: &[Value]) {
+    let ids: Vec<String> = agents
+        .iter()
+        .filter_map(|a| a["id"].as_str().map(str::to_string))
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    crate::tree::grant_chat_to(kernel, &ids, crate::page::WS_ID);
+    crate::tree::grant_chat_to(kernel, &ids, crate::tree::DISPATCHER_VIEW_ID);
 }
 
 /// The kernel's agent table as the sidebar reads it: every agent with a parent.
@@ -713,7 +825,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
-            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts; with a roles registry the reply also has fleet {running, max}, the registry's get_count",
+            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}",
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
             "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher)",
             "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker from the team.yaml template, its memory in the team's one store agent, in the working directory and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start; team.yaml is not rewritten). remove_worker {node: worker, confirm} deletes the worker (its rows stay in the store) and drops it from its group",
@@ -774,7 +886,8 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                 subtree(&team, &groups, &rows, &node)
             }
             "sidebar" => {
-                let rows = rows_of(&peers, &board, &groups, limit, now).await;
+                let snap = peers.ask(&board, json!({"type": "board"})).await;
+                let rows = rows_from(&snap, &groups, limit, now);
                 let agents = agent_table(kernel);
                 let subs: BTreeMap<String, Vec<Sub>> = rows
                     .iter()
@@ -797,12 +910,28 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                     if let Some(f) = fleet_of(&c) {
                         out["fleet"] = f;
                     }
+                    // The lead and its agents, and the plan, from the board's roles section.
+                    if snap["roles"].is_object() {
+                        let list = agent_list(&snap["roles"]);
+                        grant_agents(kernel, &list);
+                        out["agents"] = json!(list);
+                        out["plan"] = plan_of(&snap["roles"]);
+                    }
                 }
                 out
             }
             "open" => {
                 let node = payload["node"].as_str().unwrap_or("").to_string();
                 let kind = kind_of(&node, &team, &groups);
+                // A spawned lead or child is chatted with like a worker: grant it now.
+                // Only an id the board's roles tree names is granted, never an arbitrary one.
+                if kind == "worker" && meta.get("roles").is_some() {
+                    let snap = peers.ask(&board, json!({"type": "board"})).await;
+                    let list = agent_list(&snap["roles"]);
+                    if list.iter().any(|a| a["id"] == node.as_str()) {
+                        grant_agents(kernel, &list);
+                    }
+                }
                 let mut out = open_target(&node, kind);
                 out["kind"] = json!(kind);
                 out
@@ -1229,11 +1358,11 @@ mod tests {
     }
 
     #[test]
-    fn html_loads_tree_calls_open_and_has_back() {
+    fn html_loads_tree_calls_open_and_has_no_back_flow() {
         assert!(HTML.contains("fantastic.send("));
         assert!(HTML.contains("type: 'open'"));
-        assert!(HTML.contains("getElementById('back')"));
-        assert!(HTML.contains("scrollY"));
+        assert!(!HTML.contains("getElementById('back')"));
+        assert!(!HTML.contains("id=\"back\""));
         assert!(HTML.contains("textContent"));
     }
 
@@ -1254,17 +1383,14 @@ mod tests {
     }
 
     #[test]
-    fn html_sidebar_has_expander_back_and_remembers_state() {
+    fn html_sidebar_has_expander_and_remembers_state() {
         // The sidebar request, the subagent style, the expander label.
         assert!(HTML.contains("type: 'sidebar'"));
         // A group with no AI shows its raw load under its title.
         assert!(HTML.contains("g.load.busy"));
         assert!(HTML.contains(".sub {"));
         assert!(HTML.contains("subagents ("));
-        // Back restores both the scroll and the expansion the level had.
-        assert!(HTML.contains("function back("));
         assert!(HTML.contains("expanded"));
-        assert!(HTML.contains("scrollTo("));
         // Remembered per worker, and wrapped so a blocked store cannot break the page.
         assert!(HTML.contains("localStorage"));
         assert!(HTML.contains("try {"));
@@ -1561,12 +1687,11 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_page_unwatches_on_back() {
-        // Leaving the chat (Back, or the sidebar) drops the watch and the drafts.
-        assert!(js_fn("hideChat").contains("dropChat()"));
-        assert!(js_fn("back").contains("hideChat()"));
+    fn dispatcher_page_unwatches_on_drop() {
+        // Dropping the chat drops the watch, the lead's live watch and the drafts.
         let drop = js_fn("dropChat");
         assert!(drop.contains("c.off()"), "{drop}");
+        assert!(drop.contains("stopLive(c)"), "{drop}");
         assert!(drop.contains("drafts.clear()"), "{drop}");
     }
 
@@ -2486,5 +2611,378 @@ mod tests {
         assert!(v["empty"]["pr"].is_null());
         assert!(!v["empty"]["text"].as_str().unwrap().contains("PR #"));
         assert!(v["zero"]["pr"].is_null());
+    }
+
+    // ---- roles mode: the agents list and the plan (#185) ----
+
+    fn node(id: &str, role: &str, state: &str, kids: Vec<Value>) -> Value {
+        json!({"id": id, "role": role, "state": state, "children": kids})
+    }
+
+    fn ids(list: &[Value]) -> Vec<String> {
+        list.iter()
+            .map(|a| a["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn agent_list_puts_the_lead_first() {
+        // The lead sits in the middle of the fleet: it is still item 0.
+        let roles = json!({"lead": "pl", "tree": node("root", "", "active", vec![
+            node("w0", "worker", "active", vec![]),
+            node("pl", "project_lead", "active", vec![node("w1", "worker", "active", vec![])]),
+            node("w2", "worker", "done", vec![]),
+        ])});
+        let list = agent_list(&roles);
+        assert_eq!(list[0]["id"], "pl", "{list:?}");
+        assert_eq!(list[0]["lead"], true);
+        assert_eq!(list[0]["label"], "Lead");
+        assert_eq!(list.iter().filter(|a| a["lead"] == true).count(), 1);
+    }
+
+    #[test]
+    fn agent_list_nests_children_depth_first_with_roles_and_states() {
+        let roles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
+            node("sub", "project_lead", "paused", vec![node("w1", "worker", "done", vec![])]),
+            node("w2", "worker", "active", vec![]),
+        ])});
+        let list = agent_list(&roles);
+        assert_eq!(ids(&list), ["pl", "sub", "w1", "w2"]);
+        let depth: Vec<u64> = list.iter().map(|a| a["depth"].as_u64().unwrap()).collect();
+        assert_eq!(depth, [0, 1, 2, 1]);
+        let state: Vec<&str> = list.iter().map(|a| a["state"].as_str().unwrap()).collect();
+        assert_eq!(state, ["active", "paused", "done", "active"]);
+        assert_eq!(list[2]["role"], "worker");
+        assert_eq!(list[2]["label"], "worker");
+        assert_eq!(list[2]["indent"], 2);
+        assert_eq!(list[2]["guides"], 2);
+        assert_eq!(list[2]["lead"], false);
+    }
+
+    #[test]
+    fn agent_list_labels_a_roleless_agent_by_its_id_and_defaults_the_state() {
+        let roles = json!({"lead": "pl", "tree": {"id": "pl", "children": [{"id": "x1"}]}});
+        let list = agent_list(&roles);
+        assert_eq!(list[1]["label"], "x1");
+        assert_eq!(list[1]["state"], "active");
+        assert_eq!(list[0]["role"], "project_lead");
+    }
+
+    #[test]
+    fn agent_list_caps_the_indent_but_keeps_depth() {
+        let mut tree = node("n7", "worker", "active", vec![]);
+        for i in (0..7).rev() {
+            tree = node(&format!("n{i}"), "project_lead", "active", vec![tree]);
+        }
+        let list = agent_list(&json!({"lead": "n0", "tree": tree}));
+        assert_eq!(list.len(), 8);
+        for (d, a) in list.iter().enumerate() {
+            assert_eq!(a["depth"], d, "{a}");
+            assert_eq!(a["indent"], d.min(INDENT_CAP), "{a}");
+            assert_eq!(a["guides"], a["indent"]);
+        }
+        assert_eq!(list[7]["indent"], INDENT_CAP);
+        assert_eq!(list[7]["depth"], 7);
+    }
+
+    #[test]
+    fn agent_list_with_only_a_lead_id_and_no_tree() {
+        let list = agent_list(&json!({"lead": "pl", "tree": null}));
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["id"], "pl");
+        assert_eq!(list[0]["lead"], true);
+        assert_eq!(list[0]["state"], "active");
+        assert_eq!(list[0]["role"], "project_lead");
+        assert!(agent_list(&json!({"lead": null, "tree": null})).is_empty());
+    }
+
+    #[test]
+    fn agent_list_empty_without_roles_mode() {
+        assert!(agent_list(&Value::Null).is_empty());
+        assert!(agent_list(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn plan_of_carries_tasks_holder_and_fleet() {
+        let roles = json!({"lead": "pl", "fleet": {"running": 2, "max": 5}, "tasks": [
+            {"id": "o/r#1", "source": "gh:o/r#1", "holder": "w1", "status": "in_work", "extra": 1},
+            {"id": "o/r#2", "source": "gh:o/r#2", "holder": {"subtree": "sub"}, "status": "open"},
+        ]});
+        let plan = plan_of(&roles);
+        assert_eq!(plan["lead"], "pl");
+        assert_eq!(plan["fleet"], json!({"running": 2, "max": 5}));
+        assert_eq!(
+            plan["tasks"][0],
+            json!({"id": "o/r#1", "source": "gh:o/r#1", "holder": "w1", "status": "in_work"})
+        );
+        assert_eq!(plan["tasks"][1]["holder"], "subtree:sub");
+        assert_eq!(plan_of(&Value::Null)["tasks"], json!([]));
+    }
+
+    /// A board stand-in: answers `board` with the `roles` section its meta holds (when any).
+    struct RolesBoard;
+
+    #[async_trait::async_trait]
+    impl fantastic_kernel::bundle::Bundle for RolesBoard {
+        fn name(&self) -> &str {
+            "roles_board_test.tools"
+        }
+
+        async fn handle(
+            &self,
+            agent_id: &fantastic_kernel::AgentId,
+            payload: &Value,
+            kernel: &Arc<fantastic_kernel::Kernel>,
+        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
+        {
+            if payload["type"] != "board" {
+                return Ok(None);
+            }
+            let mut out = json!({"tasks": {"in_work": [], "done": [], "pending": [], "failed": []}, "agents": {}});
+            if let Some(r) = kernel
+                .agents
+                .get(agent_id)
+                .and_then(|a| a.meta.read().unwrap().get("roles_section").cloned())
+            {
+                out["roles"] = r;
+            }
+            Ok(Some(out))
+        }
+    }
+
+    /// A kernel with a dispatcher (roles mode when `section` is given), a board stand-in,
+    /// the `team_ws` leg, and the agents `pl` (the lead) and `c1` (its child), made after
+    /// the start so nobody granted them a chat.
+    async fn kernel_in_roles_mode(
+        dir: &std::path::Path,
+        section: Option<Value>,
+    ) -> Arc<fantastic_kernel::Kernel> {
+        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+        use fantastic_kernel::Item;
+        let mut reg = crate::registry();
+        reg.register("count_test.tools", CountBundle);
+        reg.register("roles_board_test.tools", RolesBoard);
+        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir)).unwrap();
+        fantastic_kernel::lock::acquire(dir).unwrap();
+        booted.write_seed().unwrap();
+        let kernel = booted.kernel.clone();
+        crate::boot_kernel(&kernel).await.unwrap();
+        let mut d = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
+            "handler_module": HANDLER_MODULE, "can_call": {"reg": "*", "board": "*"}});
+        let mut b = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
+            "handler_module": "roles_board_test.tools", "callable_by": {"dispatcher": "*"}});
+        if let Some(s) = section {
+            d["roles"] = json!("reg");
+            b["roles_section"] = s;
+        }
+        let reg = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "reg",
+            "handler_module": "count_test.tools", "callable_by": {"dispatcher": "*"}});
+        let ws = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "team_ws",
+            "handler_module": "count_test.tools"});
+        let pl = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "pl",
+            "handler_module": "count_test.tools"});
+        let c1 = json!({"type": "create_agent", "parent_id": "pl", "id": "c1",
+            "handler_module": "count_test.tools"});
+        for item in [d, b, reg, ws, pl, c1] {
+            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
+        }
+        kernel
+    }
+
+    fn lead_section() -> Value {
+        json!({"lead": "pl", "fleet": {"running": 2, "max": 3},
+            "tree": node("pl", "project_lead", "active", vec![node("c1", "worker", "paused", vec![])]),
+            "agents": [{"id": "c1", "role": "worker", "state": "paused", "parent": "pl"}],
+            "tasks": [{"id": "o/r#1", "source": "gh:o/r#1", "holder": "c1", "status": "in_work"}]})
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sidebar_in_roles_mode_carries_agents_and_plan() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_in_roles_mode(dir.path(), Some(lead_section())).await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert_eq!(sb["agents"][0]["id"], "pl", "{sb}");
+        assert_eq!(sb["agents"][0]["label"], "Lead");
+        assert_eq!(sb["agents"][1]["id"], "c1");
+        assert_eq!(sb["plan"]["tasks"][0]["id"], "o/r#1", "{sb}");
+        assert_eq!(sb["plan"]["lead"], "pl");
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sidebar_without_roles_mode_has_neither_agents_nor_plan() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_in_roles_mode(dir.path(), None).await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert!(sb.get("agents").is_none(), "{sb}");
+        assert!(sb.get("plan").is_none(), "{sb}");
+        assert!(sb["team"].is_string());
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sidebar_in_roles_mode_grants_chat_to_the_lead_and_its_children() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_in_roles_mode(dir.path(), Some(lead_section())).await;
+        let chat = json!(crate::tree::CHAT_VERBS);
+        let before = meta_of(&kernel, "team_ws");
+        assert!(before.get("can_call").is_none_or(|c| c.get("pl").is_none()));
+        ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        let ws = meta_of(&kernel, "team_ws");
+        for id in ["pl", "c1"] {
+            assert_eq!(ws["can_call"][id], chat, "team_ws -> {id}");
+            let m = meta_of(&kernel, id);
+            assert_eq!(m["callable_by"]["team_ws"], chat, "{id}");
+            assert_eq!(
+                m["callable_by"][crate::tree::DISPATCHER_VIEW_ID],
+                json!(null)
+            );
+        }
+        assert!(ws["can_call"].get("*").is_none());
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_of_a_roles_agent_returns_the_chat_view_and_grants_only_known_ids() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_in_roles_mode(dir.path(), Some(lead_section())).await;
+        let out = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": "pl"})).await;
+        assert_eq!(out["view"], "chat", "{out}");
+        assert_eq!(out["target"], "pl");
+        let ws = meta_of(&kernel, "team_ws");
+        assert_eq!(ws["can_call"]["pl"], json!(crate::tree::CHAT_VERBS));
+        // An id the roles tree does not name gets no grant.
+        ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "open", "node": "reg"}),
+        )
+        .await;
+        let ws = meta_of(&kernel, "team_ws");
+        assert!(ws["can_call"].get("reg").is_none(), "{ws:?}");
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn html_two_column_layout_keeps_the_sidebar_visible() {
+        assert!(!HTML.contains("sidebar').hidden = true"));
+        assert!(
+            !js_fn("showChat").contains("getElementById('sidebar')"),
+            "showChat touches the sidebar"
+        );
+        assert!(!js_fn("openNode").contains("sidebar"));
+        assert!(HTML.contains("#sidebar { width: 280px; flex: none; }"));
+        assert!(HTML.contains("#pane { flex: 1; min-width: 0; }"));
+        assert!(HTML.contains("max-width: 430px"));
+        assert!(HTML.contains("'Lead'") || HTML.contains("a.label"));
+        for n in 0..=4 {
+            assert!(
+                HTML.contains(&format!(".agent[data-indent=\"{n}\"]")),
+                "{n}"
+            );
+        }
+        assert!(js_fn("renderAgents").contains("appendChild"));
+        assert!(!HTML.contains("innerHTML"));
+    }
+
+    #[test]
+    fn html_has_no_back_button_flow() {
+        for gone in [
+            "function back(",
+            "function hideChat(",
+            "function updateBack(",
+            "const stack",
+            "id=\"back\"",
+        ] {
+            assert!(!HTML.contains(gone), "still has {gone}");
+        }
+    }
+
+    #[test]
+    fn chat_two_columns_open_keeps_the_sidebar() {
+        let Some(v) = run_node("two_columns") else {
+            return;
+        };
+        assert_eq!(v["sidebarHidden"], false);
+        assert_eq!(v["paneHidden"], false);
+        assert_eq!(v["opened"], json!(["sub"]));
+        assert_eq!(v["selected"], json!(["sub"]));
+        assert_eq!(v["hasBack"], false);
+    }
+
+    #[test]
+    fn lead_layout_pins_the_lead_and_indents_the_rest() {
+        let Some(v) = run_node("lead_layout") else {
+            return;
+        };
+        assert_eq!(v["first"], "agents-title");
+        let rows = v["rows"].as_array().unwrap();
+        assert!(rows[0]["cls"].as_str().unwrap().contains("lead"));
+        assert!(rows[0]["text"].as_str().unwrap().starts_with("Lead"));
+        let indents: Vec<&str> = rows.iter().map(|r| r["indent"].as_str().unwrap()).collect();
+        assert_eq!(indents, ["0", "1", "2"]);
+        assert!(rows[1]["text"].as_str().unwrap().contains("paused"));
+    }
+
+    #[test]
+    fn lead_pane_draws_the_plan_from_the_sidebar_reply() {
+        let Some(v) = run_node("lead_plan") else {
+            return;
+        };
+        let first = v["first"].as_str().unwrap();
+        assert!(
+            first.contains("o/r#1") && first.contains("subtree:sub") && first.contains("in_work")
+        );
+        assert!(first.contains("agents 3/8"));
+        assert_eq!(v["viewHidden"], false);
+    }
+
+    #[test]
+    fn lead_plan_redraws_in_place_on_the_next_sidebar_reply() {
+        let Some(v) = run_node("lead_plan") else {
+            return;
+        };
+        assert_eq!(v["sameRow"], true);
+        assert_eq!(v["rows"], 1);
+        assert!(v["second"].as_str().unwrap().contains("done"));
+        assert!(!v["second"].as_str().unwrap().contains("in_work"));
+    }
+
+    #[test]
+    fn lead_pane_reloads_on_events_and_polls_until_dropped() {
+        let Some(v) = run_node("lead_live") else {
+            return;
+        };
+        // Debounced: nothing at once; one reload for the events and one for the poll.
+        assert_eq!(v["immediate"], 0);
+        assert_eq!(v["afterTimers"], 2);
+        let timers: Vec<u64> = v["timers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_u64().unwrap())
+            .collect();
+        assert!(
+            timers.contains(&500) && timers.contains(&5000),
+            "{timers:?}"
+        );
+        assert_eq!(v["left"], 0);
+        assert_eq!(v["watchers"], 0);
+    }
+
+    #[test]
+    fn agent_without_a_view_shows_the_generic_chat() {
+        let Some(v) = run_node("plain_agent") else {
+            return;
+        };
+        assert_eq!(v["viewHidden"], true);
+        assert_eq!(v["viewText"], "");
+        assert_eq!(v["tasks"], 0);
+        assert_eq!(v["hasChat"], 1);
+        assert_eq!(v["watchers"], json!(["w1"]));
     }
 }

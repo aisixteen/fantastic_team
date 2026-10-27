@@ -88,7 +88,7 @@ With `roles:` the `board` verb also returns a `roles` section: the tree below th
 
 The `project_lead` waits for its children with the kernel's `await_set`; each start names the agents below the root for `await_set` and `await_cancel` in the root's `callable_by`.
 
-Not done yet (#185, later): the chat entry for the `project_lead` in the dispatcher, the plan shown and updated in place, and the approval gate. `spawn` does not open a tool's `callable_by` to the new agent: the lead names each spawned agent on the tools its card lists (the lead card says how), and the credential store must name it too.
+In roles mode the dispatcher page has two columns: an Agents list (the lead first, labelled Lead, then its tree indented by depth) beside the pane of the opened agent. The lead's pane shows the plan (the task registry's rows) above its chat and redraws it in place; any other agent shows its chat alone. Approval is the user's chat reply to the lead: its card says when it asks (a large plan, past its limits, GitHub writes) and honours "show me the plan first". Not done yet (#185, later): the other agents' own views and the e2e. `spawn` does not open a tool's `callable_by` to the new agent: the lead names each spawned agent on the tools its card lists (the lead card says how), and the credential store must name it too.
 
 Each repo that the team serves can opt in with `.github/team.yaml`:
 

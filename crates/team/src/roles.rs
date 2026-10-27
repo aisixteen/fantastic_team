@@ -266,6 +266,28 @@ mod tests {
     }
 
     #[test]
+    fn project_lead_card_decides_when_to_ask() {
+        let d = card("project_lead.md").directive;
+        for s in [
+            "decide when to ask",
+            "large plan",
+            "past your limits",
+            "any GitHub write",
+            "issue_edit",
+            "pr_create",
+            "the user's reply in the chat",
+            "show me the plan first",
+            "wait for \"yes\" before starting anything",
+        ] {
+            assert!(d.contains(s), "project_lead card lacks {s}");
+        }
+        assert!(
+            !d.contains("START NOTHING yet"),
+            "the unconditional gate is gone"
+        );
+    }
+
+    #[test]
     fn cards_use_the_removed_task_lines_no_more() {
         let pl = card("project_lead.md").directive;
         assert!(!pl.contains("waits_on"));
