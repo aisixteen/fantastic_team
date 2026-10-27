@@ -36,7 +36,17 @@ fn key(id: &str, api_url: &str) -> String {
 
 /// The target a caller named, read from the request and never from the reply.
 pub(crate) fn target_of(p: &Value) -> String {
-    let repo = p.get("repo").and_then(|v| v.as_str()).unwrap_or("");
+    // `staleness` names its repos inside `versions` or `issue`: log the first
+    let nested = p
+        .get("versions")
+        .and_then(|v| v.get(0))
+        .or_else(|| p.get("issue"))
+        .and_then(|v| v.get("repo"));
+    let repo = p
+        .get("repo")
+        .or(nested)
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let repo: String = repo.chars().take(100).collect();
     match p.get("number").and_then(|v| v.as_u64()) {
         Some(n) if !repo.is_empty() => format!("{repo}#{n}"),

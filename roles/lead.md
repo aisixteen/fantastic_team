@@ -38,10 +38,9 @@ Refused with `version_mismatch`: the file changed since you read it (a worker cl
 There is one way to start an agent: `spawn` on the roles agent (ROLES is `roles`, unless your instructions name another).
 
 1. Ask `roles` first (roles, then get_count): `<call name="send"><target_id>ROLES</target_id><type>roles</type></call>` lists the roles you may start; `<call name="send"><target_id>ROLES</target_id><type>get_count</type></call>` gives `{running, max}` (add `<role>worker</role>` for one role). Never plan past `max`. `<type>role</type><name>worker</name>` shows one card with its tier and its grants (the tools it may call).
-2. Start it: `<call name="send"><target_id>ROLES</target_id><type>spawn</type><role>worker</role><task>The queue is QUEUE. Your id is the id in your own reflect. A call refused with "may not call" means your lead has not admitted you yet: wait a minute and try again.</task></call>`. A sub-lead gets part of your quota with `limits` (`{total?, per_role?}`). The reply is `{id, role, tier}`: W is that id. The agent is your child, with its memory store, model and grants from the role's card; you may pause, resume or stop it. You cannot `send` to it, and it is not told its id by you: it reads its id in its own `reflect`.
-3. Admit it. Spawn does not open the tools' `callable_by` to the new agent, and you are the tools' parent, so only you can. For every tool T the role's card lists in its grants (not the roles agent), read T's current `callable_by` (from `kernel` `list_agents`) and `update_agent` T with that WHOLE map plus `<W>*</W>`. A grant map is written whole: restate every key already there, never drop one. If the kernel refuses, write the refusal in your ledger.
-4. After every report, sweep `fleet` on ROLES (`<type>fleet</type>`): admit any agent in it that you have not yet admitted, including the ones a sub-lead started.
-5. A refusal `{error:"limit", scope, role, running, max, reason}` is written in the ledger with its reason. Start no further agent for it.
+2. Start it: `<call name="send"><target_id>ROLES</target_id><type>spawn</type><role>worker</role><task>The queue is QUEUE. Your id is the id in your own reflect. A call refused with "may not call" means your role card does not grant that tool or verb.</task></call>`. A sub-lead gets part of your quota with `limits` (`{total?, per_role?}`). The reply is `{id, role, tier}`: W is that id. The agent is your child, with its memory store, model and grants from the role's card; you may pause, resume or stop it. You cannot `send` to it, and it is not told its id by you: it reads its id in its own `reflect`.
+3. After every report, read `fleet` on ROLES (`<type>fleet</type>`) to see who is alive, including the agents a sub-lead started.
+4. A refusal `{error:"limit", scope, role, running, max, reason}` is written in the ledger with its reason. Start no further agent for it.
 
 ## Workers that serve themselves (the default)
 
@@ -73,4 +72,4 @@ Start it like an agent above (`spawn`, the role your instructions name for leads
 
 ## The end
 
-When no `.state` file in the queue is `pending` or `taken`: for every agent you started, `delete_agent` it, and take W back out of every `callable_by` you added it to (the whole map again, without W). Their shared memory store stays. Then answer with the final LEDGER as a table (task, agent, done/failed, one line on what happened, time, cost) and `<call name="done"></call>`.
+When no `.state` file in the queue is `pending` or `taken`: for every agent you started, `delete_agent` it. Their shared memory store stays. Then answer with the final LEDGER as a table (task, agent, done/failed, one line on what happened, time, cost) and `<call name="done"></call>`.

@@ -62,6 +62,7 @@ async fn route(t: &str, id: &AgentId, p: &Value, kernel: &Arc<Kernel>, cfg: &Cfg
         "comment" => comment(id, kernel, cfg, p).await,
         "label" => label(id, kernel, cfg, p).await,
         "pr_status" => pr_status(id, kernel, cfg, p).await,
+        "staleness" => staleness(id, kernel, cfg, p).await,
         "issue_edit" => issue_edit(id, kernel, cfg, p).await,
         "issue_create" => issue_create(id, kernel, cfg, p).await,
         "issue_state" => issue_state(id, kernel, cfg, p).await,
@@ -767,6 +768,213 @@ async fn pr_status(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, p: &Value) -> 
     }
     .await;
     finish(r, &token)
+}
+
+/// The most commits and files `staleness` lists for one repo.
+const STALE_COMMITS: usize = 50;
+const STALE_FILES: usize = 100;
+
+/// What changed on a branch since a recorded commit, from GitHub's compare answer.
+/// Pure: `cmp` is the compare reply (null when none was asked), `commit` the
+/// recorded commit, `head` the branch head. It gives facts and decides nothing.
+pub(crate) fn summarize_compare(cmp: &Value, commit: Option<&str>, head: &str) -> Value {
+    let Some(commit) = commit else {
+        return json!({"state": "unknown", "ahead_by": null, "behind_by": null,
+                      "commits": [], "files": [], "truncated": false});
+    };
+    let state = if commit == head {
+        "same"
+    } else {
+        match cmp["status"].as_str() {
+            Some("identical") => "same",
+            Some("ahead") => "ahead",
+            // diverged, or the recorded commit is past the branch: no longer an ancestor
+            _ => "diverged",
+        }
+    };
+    let all_commits = cmp["commits"].as_array().cloned().unwrap_or_default();
+    let all_files = cmp["files"].as_array().cloned().unwrap_or_default();
+    let ahead_by = cmp["ahead_by"].as_u64().unwrap_or(0);
+    let listed: Vec<Value> = all_commits
+        .iter()
+        .take(STALE_COMMITS)
+        .map(|c| {
+            let sha: String = c["sha"].as_str().unwrap_or("").chars().take(12).collect();
+            let subject = c["commit"]["message"]
+                .as_str()
+                .and_then(|m| m.lines().next())
+                .unwrap_or("");
+            json!({"sha": sha, "subject": subject})
+        })
+        .collect();
+    let paths: Vec<Value> = all_files
+        .iter()
+        .take(STALE_FILES)
+        .filter_map(|f| f["filename"].as_str().map(|n| json!(n)))
+        .collect();
+    let truncated = all_commits.len() > STALE_COMMITS
+        || all_files.len() > STALE_FILES
+        || ahead_by > all_commits.len() as u64;
+    json!({
+        "state": state,
+        "ahead_by": ahead_by,
+        "behind_by": cmp["behind_by"].as_u64().unwrap_or(0),
+        "commits": listed,
+        "files": paths,
+        "truncated": truncated,
+    })
+}
+
+/// The issue facts: its `updated_at`, and whether it differs from the recorded
+/// `source_version` (null when none was recorded).
+pub(crate) fn issue_facts(issue: &Value, source_version: Option<&str>) -> Value {
+    let updated = issue["updated_at"].as_str();
+    let changed = match (source_version, updated) {
+        (Some(sv), Some(u)) => json!(sv != u),
+        (Some(_), None) => json!(true),
+        (None, _) => Value::Null,
+    };
+    json!({"number": issue["number"], "updated_at": updated, "changed": changed})
+}
+
+/// `staleness {versions?: [{repo, branch, commit?}], issue?: {repo, number,
+/// source_version?}}`: facts for reusing a mark. Per repo, the branch head and (given
+/// a recorded commit) the commits and files since it; for the issue, its `updated_at`
+/// and whether it moved since `source_version`. Every repo is checked against the
+/// allowlist before any request; a token is minted per repo.
+async fn staleness(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, p: &Value) -> Value {
+    const V: &str = "staleness";
+    let versions = p.get("versions").and_then(|v| v.as_array());
+    let issue = p.get("issue").filter(|v| !v.is_null());
+    if versions.is_none_or(|a| a.is_empty()) && issue.is_none() {
+        return missing(V, "versions");
+    }
+    // validate everything before the first request
+    let mut asked: Vec<(String, String, Option<String>)> = Vec::new();
+    for e in versions.into_iter().flatten() {
+        let repo = match repo_arg(e, V, cfg) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+        let branch = match e.get("branch").and_then(|v| v.as_str()) {
+            Some(b) if !b.is_empty() => b.to_string(),
+            _ => {
+                return bad(
+                    format!("team_github {V}: each version needs a non-empty `branch`"),
+                    "branch",
+                    e.get("branch").cloned().unwrap_or(Value::Null),
+                )
+            }
+        };
+        let commit = e
+            .get("commit")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        asked.push((repo, branch, commit));
+    }
+    let mut asked_issue: Option<(String, u64, Option<String>)> = None;
+    if let Some(i) = issue {
+        let repo = match repo_arg(i, V, cfg) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+        let number = match number_arg(i, V) {
+            Ok(n) => n,
+            Err(e) => return e,
+        };
+        let sv = i
+            .get("source_version")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        asked_issue = Some((repo, number, sv));
+    }
+    let api = Api::new(cfg);
+    let mut tokens: Vec<(String, String)> = Vec::new();
+    let r: Result<Value, Value> = async {
+        let mut out = serde_json::Map::new();
+        if versions.is_some_and(|a| !a.is_empty()) {
+            let mut repos = Vec::new();
+            for (repo, branch, commit) in &asked {
+                let token = stale_token(id, kernel, cfg, &api, &mut tokens, repo).await?;
+                let seg: String = branch.split('/').map(pct).collect::<Vec<_>>().join("/");
+                let b = ge(api
+                    .call(
+                        V,
+                        Method::GET,
+                        &format!("/repos/{repo}/branches/{seg}"),
+                        &[],
+                        &token,
+                        None,
+                    )
+                    .await)?;
+                let head = b["commit"]["sha"].as_str().unwrap_or("").to_string();
+                let cmp = match commit {
+                    Some(c) if *c != head => ge(api
+                        .call(
+                            V,
+                            Method::GET,
+                            &format!("/repos/{repo}/compare/{}...{seg}", pct(c)),
+                            &[("per_page", "100".into())],
+                            &token,
+                            None,
+                        )
+                        .await)?,
+                    _ => Value::Null,
+                };
+                let mut entry = summarize_compare(&cmp, commit.as_deref(), &head);
+                entry["repo"] = json!(repo);
+                entry["branch"] = json!(branch);
+                entry["head"] = json!(head);
+                repos.push(entry);
+            }
+            out.insert("repos".into(), Value::Array(repos));
+        }
+        if let Some((repo, number, sv)) = &asked_issue {
+            let token = stale_token(id, kernel, cfg, &api, &mut tokens, repo).await?;
+            let v = ge(api
+                .call(
+                    V,
+                    Method::GET,
+                    &format!("/repos/{repo}/issues/{number}"),
+                    &[],
+                    &token,
+                    None,
+                )
+                .await)?;
+            let mut facts = issue_facts(&v, sv.as_deref());
+            facts["repo"] = json!(repo);
+            facts["number"] = json!(number);
+            out.insert("issue".into(), facts);
+        }
+        Ok(Value::Object(out))
+    }
+    .await;
+    let mut v = match r {
+        Ok(v) | Err(v) => v,
+    };
+    for (_, t) in &tokens {
+        scrub(&mut v, t);
+    }
+    v
+}
+
+/// The token for `repo`, minted once per call.
+async fn stale_token(
+    id: &AgentId,
+    kernel: &Arc<Kernel>,
+    cfg: &Cfg,
+    api: &Api,
+    tokens: &mut Vec<(String, String)>,
+    repo: &str,
+) -> Result<String, Value> {
+    if let Some((_, t)) = tokens.iter().find(|(r, _)| r == repo) {
+        return Ok(t.clone());
+    }
+    let t = app::token_for(id, kernel, cfg, api, "staleness", repo).await?;
+    tokens.push((repo.to_string(), t.clone()));
+    Ok(t)
 }
 
 /// True when line `i` sits under a `## SPEC` heading (until the next `## ` heading).
