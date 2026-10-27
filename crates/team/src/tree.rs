@@ -41,6 +41,8 @@ pub const TASKS_ID: &str = config::TASKS_ID;
 pub const PROJECT_LEAD_TASK_VERBS: [&str; 7] = [
     "add", "assign", "reassign", "status", "report", "list", "get",
 ];
+/// What the lead may call on the board: the project_lead card's grants on it.
+pub const LEAD_BOARD_VERBS: [&str; 2] = ["board", "rows"];
 /// What the first agent may call on the roles registry: ask the roles and the room
 /// (`roles`, `role`, `get_count`), start an agent (`spawn`) and list who it started
 /// (`fleet`). It does not set limits: those come from `team.yaml` at start.
@@ -477,6 +479,19 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
             }
         }
         out.push(board_plan(cfg, b));
+        // The lead holds the board's `board` and `rows`: the project_lead card grants
+        // them, and a spawner may only grant what it holds (fantastic #436). The
+        // board names the lead in its `callable_by`, the other end.
+        if let Some(l) = &lead_id {
+            planned_mut(&mut out, l).record["can_call"][BOARD_ID] = json!(LEAD_BOARD_VERBS);
+            if let Some(by) = out
+                .iter_mut()
+                .find(|p| p.id == BOARD_ID)
+                .and_then(|p| p.record["callable_by"].as_object_mut())
+            {
+                by.insert(l.clone(), json!(LEAD_BOARD_VERBS));
+            }
+        }
         // The cadencer reads the board's rows.
         if let Some(by) = out
             .iter_mut()
@@ -495,6 +510,10 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         // The lead starts agents through the registry (`spawn`), and the dispatcher
         // asks it for the count it shows. The registry's own `callable_by` names both.
         planned_mut(&mut out, l).record["can_call"][r.id.as_str()] = json!(LEAD_ROLES_VERBS);
+        // The lead holds the await verbs on the root: the project_lead card grants
+        // them, and a spawner may only grant what it holds (fantastic #436). The
+        // root's end is `grant_await`.
+        planned_mut(&mut out, l).record["can_call"][DEFAULT_ROOT_ID] = json!(AWAIT_VERBS);
         if let Some(d) = out.iter_mut().find(|p| p.id == DISPATCHER_ID) {
             d.record["can_call"][r.id.as_str()] = json!(DISPATCHER_ROLES_VERBS);
             d.record["roles"] = json!(r.id);
@@ -1222,7 +1241,8 @@ pub async fn grant_fleet_digest_targets(kernel: &Arc<Kernel>, roles_id: &str) ->
 
 /// Start-up: plan the tree from `team.yaml` in `dir` (if there is one), apply it
 /// to a headless kernel, deliver the instructions when due, then stop the kernel.
-/// Returns `None` when there is no `team.yaml`.
+/// Returns `None` when there is no `team.yaml`. A fresh directory is seeded
+/// (`fantastic_tui::seed_dir`) once the config is accepted, before the kernel boots.
 pub fn run_at_start(
     dir: &Path,
     instructions: Option<&str>,
@@ -1239,6 +1259,7 @@ pub fn run_at_start(
         );
     }
     let tree = plan(&cfg, dir)?;
+    fantastic_tui::seed_dir(dir)?;
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async {
         let kernel = crate::start(dir).await.map_err(|e| e.to_string())?;
@@ -1569,6 +1590,32 @@ mod tests {
             "instructions need a first_agent in team.yaml: the caller defines the agents"
         );
         assert!(run_at_start(dir.path(), None, false).unwrap().is_some());
+    }
+
+    #[test]
+    fn run_at_start_seeds_a_fresh_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(config::FILE_NAME), "{}\n").unwrap();
+        assert!(run_at_start(dir.path(), None, false).unwrap().is_some());
+        assert!(dir
+            .path()
+            .join(".fantastic/agents/user/agents/store/agent.yaml")
+            .is_file());
+    }
+
+    #[test]
+    fn run_at_start_without_team_yaml_writes_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(run_at_start(dir.path(), None, false).unwrap().is_none());
+        assert!(!dir.path().join(".fantastic").exists());
+    }
+
+    #[test]
+    fn a_refused_config_does_not_seed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(config::FILE_NAME), "{}\n").unwrap();
+        assert!(run_at_start(dir.path(), Some("hi"), false).is_err());
+        assert!(!dir.path().join(".fantastic").exists());
     }
 
     #[test]
@@ -3185,21 +3232,12 @@ mod tests {
             json!(PROJECT_LEAD_TASK_VERBS),
             "the card's grant reached the spawned agent"
         );
-        // not admitted yet: refused by the gate
+        // the spawn admitted it on `tasks` (the card's grant, both ends)
         let add = json!({"type": "add", "id": "o/r#7", "source": "gh:o/r#7", "holder": w});
-        let denied = call_as(&kernel, &pl, "tasks", add.clone()).await;
-        assert_eq!(denied["reason"], "unauthorized", "{denied}");
-        // the admit step is an update_agent of `tasks`.callable_by; the lead's template
-        // grant for it is team config, so the operator does it here
-        let mut by = meta_value(&kernel, "tasks")["callable_by"].clone();
-        by[pl.as_str()] = json!("*");
-        let up = ask(
-            &kernel,
-            "kernel_state",
-            json!({"type": "update_agent", "id": "tasks", "callable_by": by}),
-        )
-        .await;
-        assert!(up.get("error").is_none(), "{up}");
+        assert_eq!(
+            meta_value(&kernel, "tasks")["callable_by"][pl.as_str()],
+            json!(PROJECT_LEAD_TASK_VERBS)
+        );
         let e = call_as(&kernel, &pl, "tasks", add).await;
         assert!(e.get("error").is_none(), "{e}");
         assert_eq!(e["source"], "gh:o/r#7", "{e}");
@@ -3246,10 +3284,10 @@ mod tests {
         assert!(meta_value(&kernel, "tasks")["callable_by"]
             .get(w.as_str())
             .is_none());
-        // a project_lead the lead has not admitted is refused by the gate
-        let add = json!({"type": "add", "id": "o/r#8", "source": "gh:o/r#8", "holder": w});
-        let denied = call_as(&kernel, &pl, "tasks", add).await;
-        assert_eq!(denied["reason"], "unauthorized", "{denied}");
+        // the spawned project_lead is admitted on `tasks`; the worker is not
+        assert!(meta_value(&kernel, "tasks")["callable_by"]
+            .get(pl.as_str())
+            .is_some());
         let got = call_as(&kernel, "lead", "tasks", json!({"type": "list"})).await;
         assert!(!got.to_string().contains("o/r#8"), "{got}");
         kernel.shutdown().await;
@@ -3433,9 +3471,9 @@ mod tests {
         assert!(!kernel
             .agents
             .contains_key(&fantastic_kernel::AgentId::from("sneak")));
-        // a spawn does not open the tools to the child: the lead admits it
+        // a spawn opens the card's tools to the child (fantastic #436): the queue admits it
         let q = meta_value(&kernel, "queue");
-        assert!(q["callable_by"].get(id.as_str()).is_none(), "{q}");
+        assert_eq!(q["callable_by"][id.as_str()], "*", "{q}");
         // another caller cannot spawn
         let denied = call_as(
             &kernel,
