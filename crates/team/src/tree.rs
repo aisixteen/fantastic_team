@@ -1411,6 +1411,10 @@ pub fn run_at_start(
             grant_control(&kernel, &workers);
             grant_pack_install(&kernel);
             grant_cadencer_switch(&kernel);
+            // Declared views (#207): `view.tui` on each declared agent, and the read
+            // grants the page and the dispatcher need to ask the verbs they name.
+            crate::declared_views::sync_views(&kernel);
+            crate::declared_views::grant_views(&kernel);
             if let Err(e) = grant_agent_verbs(&kernel) {
                 eprintln!("{e}");
             }
