@@ -28,6 +28,11 @@
   .state-paused { color: #b45309; }
   .agents-title { font-weight: 600; margin: 0 0 4px; color: #374151; }
   .agent { background-repeat: no-repeat; background-image: repeating-linear-gradient(to right, #d1d5db 0 1px, transparent 1px 12px); background-size: 0 100%; }
+  .team-title { font-weight: 600; margin: 8px 0 4px; color: #374151; }
+  .service.selected { background-color: #e5e7eb; }
+  .panel-summary { color: #6b7280; margin: 2px 0; }
+  .panel-table { border-collapse: collapse; width: 100%; margin-bottom: 8px; }
+  .panel-table th, .panel-table td { text-align: left; padding: 2px 8px 2px 0; border-bottom: 1px solid #e5e7eb; white-space: pre-wrap; word-break: break-word; }
   .agent.lead { font-weight: 700; }
   .agent.selected { background-color: #e5e7eb; }
   .agent[data-indent="0"] { padding-left: 6px; }
@@ -136,6 +141,11 @@
 // lead's pane draws the plan above its chat and redraws it in place. A group with no
 // AI driver also carries `load` {busy, idle, stalled}, shown as a plain line
 // under its title; a group with a driver shows its AI's summary instead.
+// In every mode the reply also has `services` [{id, kind, label}]: the team's own
+// queue, board, github connector and dispatcher, listed under "Team". `open {node}` for
+// one answers {view: panel, kind, target, model: {kind, title, summary: [text],
+// sections: [{name, columns, rows}]}}; the pane draws it as tables of text and asks
+// again every few seconds. Every cell goes in as text (textContent).
 // `control {node, action, confirm?}` starts, pauses or stops a worker. A stop
 // asks first (the reply's question); a refusal from the team is shown as an error.
 // Also `hand_task {node, task}`, `add_worker {node: group, id, template}` and
@@ -163,6 +173,8 @@ const seen = new Set();       // workers already checked against the remembered 
 let lastReply = null;        // the newest sidebar reply: the agents and the plan are drawn from it
 const PLAN_POLL_MS = 5000;   // the task registry emits no events: poll while a lead is shown
 const PLAN_DEBOUNCE_MS = 500;
+const PANEL_REFRESH_MS = 5000; // a service panel in the pane re-asks `open` this often
+let panel = null;            // the service panel in the pane: {node, timer}
 
 // Remembered per worker in this browser. A blocked or full store only costs the
 // memory, never the page.
@@ -335,11 +347,28 @@ function renderAgents(nav, reply) {
 }
 
 function markSelected() {
-  const sel = chat ? chat.node : null;
+  const sel = chat ? chat.node : (panel ? panel.node : null);
   document.getElementById('sidebar').querySelectorAll('[data-node]').forEach(function (r) {
     if (r.dataset.node === sel) r.classList.add('selected');
     else r.classList.remove('selected');
   });
+}
+
+// The team's own services under a "Team" heading: queue, board, github, dispatcher.
+function serviceRow(svc) {
+  const row = el('div', 'item service');
+  row.dataset.node = svc.id;
+  row.dataset.kind = 'service';
+  row.dataset.service = String(svc.kind || '');
+  row.appendChild(el('span', 'name', svc.label || svc.id));
+  return row;
+}
+
+function renderServices(nav, reply) {
+  const list = reply && Array.isArray(reply.services) ? reply.services : [];
+  if (!list.length) return;
+  nav.appendChild(el('div', 'team-title', 'Team'));
+  list.forEach(function (svc) { if (svc && svc.id) nav.appendChild(serviceRow(svc)); });
 }
 
 function renderSidebar(reply) {
@@ -354,6 +383,7 @@ function renderSidebar(reply) {
     if (adoptRemembered(g.items || [])) adopted = true;
   });
   renderAgents(nav, reply);
+  renderServices(nav, reply);
   groups.forEach(function (g) {
     nav.appendChild(el('div', 'group-title', 'Group: ' + g.id));
     nav.appendChild(addWorkerForm(g.id));
@@ -552,6 +582,7 @@ function startLive(c) {
 }
 
 function stopLive(c) {
+  stopPanel();
   const l = c.live2;
   if (!l) return;
   c.live2 = null;
@@ -633,6 +664,7 @@ function showChat(reply, node) {
 
 // Leave the chat: unwatch, and forget its drafts. Safe when no chat is open.
 function dropChat() {
+  stopPanel();
   const c = chat;
   if (!c) return;
   chat = null;
@@ -646,6 +678,64 @@ function dropChat() {
   c.attached = null;
   if (c.timer != null) clearTimeout(c.timer);
   c.timer = null;
+}
+
+// The panel of one team service in the pane: the title, the summary lines and each
+// section as a table. Every value is text. It asks `open` again every few seconds for the
+// same node and ignores an answer that arrives after another node was chosen.
+function drawPanel(model) {
+  const pane = document.getElementById('pane');
+  pane.textContent = '';
+  const box = el('div', 'cell panel');
+  const m = model && typeof model === 'object' ? model : {};
+  box.appendChild(el('strong', 'panel-title', m.title || 'Panel'));
+  (Array.isArray(m.summary) ? m.summary : []).forEach(function (line) {
+    box.appendChild(el('div', 'panel-summary', line));
+  });
+  (Array.isArray(m.sections) ? m.sections : []).forEach(function (sec) {
+    box.appendChild(el('h3', 'panel-section', sec && sec.name));
+    const table = el('table', 'panel-table');
+    const head = el('tr', 'panel-head');
+    (Array.isArray(sec && sec.columns) ? sec.columns : []).forEach(function (col) {
+      head.appendChild(el('th', '', col));
+    });
+    table.appendChild(head);
+    (Array.isArray(sec && sec.rows) ? sec.rows : []).forEach(function (r) {
+      const tr = el('tr', 'panel-row');
+      (Array.isArray(r) ? r : []).forEach(function (cell) { tr.appendChild(el('td', '', cell)); });
+      table.appendChild(tr);
+    });
+    box.appendChild(table);
+  });
+  pane.appendChild(box);
+  pane.hidden = false;
+}
+
+function showPanel(reply, node) {
+  dropChat();
+  const p = { node: node, timer: null };
+  panel = p;
+  drawPanel(reply.model);
+  markSelected();
+  const tick = function () {
+    p.timer = null;
+    if (panel !== p) return;
+    ask({ type: 'open', node: node }).then(function (r) {
+      if (panel !== p) return;
+      if (r && !r.error && r.view === 'panel') drawPanel(r.model);
+    }, function () { /* keep the last view; the next tick tries again */ }).then(function () {
+      if (panel === p) p.timer = setTimeout(tick, PANEL_REFRESH_MS);
+    });
+  };
+  p.timer = setTimeout(tick, PANEL_REFRESH_MS);
+}
+
+function stopPanel() {
+  const p = panel;
+  if (!p) return;
+  panel = null;
+  if (p.timer != null) clearTimeout(p.timer);
+  p.timer = null;
 }
 
 function watchNode(c) {
@@ -1045,6 +1135,11 @@ async function openNode(node) {
     reply = await ask({ type: 'open', node: node });
   } catch (err) {
     showError(String(err && err.message ? err.message : err));
+    return;
+  }
+  if (reply && !reply.error && reply.view === 'panel') {
+    showError('');
+    showPanel(reply, node);
     return;
   }
   if (!reply || reply.error || reply.view !== 'chat') {

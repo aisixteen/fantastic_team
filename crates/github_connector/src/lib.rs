@@ -15,6 +15,7 @@
 
 mod api;
 mod app;
+mod callog;
 mod footer;
 mod push;
 mod verbs;
@@ -212,7 +213,7 @@ impl Bundle for GithubConnectorBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
-            "reflect": "reflect → {id, sentence, repos, api_url, git, directive}",
+            "reflect": "reflect → {id, sentence, repos, api_url, git, directive, recent_calls: [{verb, target, result}] (newest last, at most 50), rate: {limit, remaining, reset}|null}",
             "boot": "boot → nothing",
             "directive": "read this before using the connector → {directive}",
             "whoami": "whoami → {app: {id, slug, name}, repos, api_url}",
@@ -278,15 +279,17 @@ impl Bundle for GithubConnectorBundle {
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if t == "boot" {
-            return Ok(None);
-        }
         let meta = kernel
             .agents
             .get(agent_id)
             .map(|e| e.meta.read().expect("meta").clone())
             .unwrap_or_default();
         let cfg = Self::cfg(&Value::Object(meta));
+        if t == "boot" {
+            // A fresh process or agent starts with an empty call log.
+            callog::reset(&agent_id.to_string(), &cfg.api_url);
+            return Ok(None);
+        }
         let out = verbs::dispatch(t, agent_id, payload, kernel, &cfg).await;
         Ok(Some(out))
     }

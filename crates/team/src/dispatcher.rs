@@ -813,6 +813,155 @@ async fn remove_worker(
     reply
 }
 
+/// The sidebar reply without `services`: the groups, workers, load, and in roles mode the
+/// fleet, the agents and the plan.
+#[allow(clippy::too_many_arguments)]
+async fn sidebar_reply(
+    kernel: &Arc<fantastic_kernel::Kernel>,
+    peers: &KernelPeers,
+    meta: &serde_json::Map<String, Value>,
+    board: &str,
+    team: &str,
+    groups: &BTreeMap<String, Vec<String>>,
+    limit: u64,
+    now: u64,
+    payload: &Value,
+) -> Value {
+    let snap = peers.ask(board, json!({"type": "board"})).await;
+    let rows = rows_from(&snap, groups, limit, now);
+    let agents = agent_table(kernel);
+    let subs: BTreeMap<String, Vec<Sub>> = rows
+        .iter()
+        .map(|r| (r.id.clone(), subagents_of(&agents, &r.id)))
+        .collect();
+    let reply = peers.ask(board, json!({"type": "rows"})).await;
+    let mut load = reply.get("load").cloned().unwrap_or(Value::Null);
+    // The cadencer's load holds the board's counts plus the cost per hour.
+    let cad = peers
+        .ask(crate::tree::CADENCER_ID, json!({"type": "status"}))
+        .await;
+    if cad.get("error").is_none() && cad["load"].is_object() {
+        load = cad["load"].clone();
+    }
+    let mut out = sidebar(team, groups, &rows, &subs, &expanded_of(payload), &load);
+    // The roles registry's count (agents running, and the cap), when the
+    // team has a registry and it answers.
+    if let Some(roles) = meta.get("roles").and_then(Value::as_str) {
+        let c = peers.ask(roles, json!({"type": "get_count"})).await;
+        if let Some(f) = fleet_of(&c) {
+            out["fleet"] = f;
+        }
+        // The lead and its agents, and the plan, from the board's roles section.
+        if snap["roles"].is_object() {
+            let list = agent_list(&snap["roles"]);
+            grant_agents(kernel, &list);
+            out["agents"] = json!(list);
+            out["plan"] = plan_of(&snap["roles"]);
+        }
+    }
+    out
+}
+
+/// The team's own services the page lists under "Team" and opens in the right pane:
+/// the dispatcher itself, the board, the queue (the board's store) and each github
+/// connector. Only agents that exist are listed.
+pub fn services_of(kernel: &fantastic_kernel::Kernel, me: &str, board: &str) -> Vec<Value> {
+    let live = |id: &str| {
+        kernel
+            .agents
+            .contains_key(&fantastic_kernel::AgentId::from(id))
+    };
+    let mut out = vec![json!({"id": me, "kind": "dispatcher", "label": "Dispatcher"})];
+    if live(board) {
+        out.push(json!({"id": board, "kind": "board", "label": "Board"}));
+        let store = kernel
+            .agents
+            .get(&fantastic_kernel::AgentId::from(board))
+            .and_then(|e| {
+                e.meta
+                    .read()
+                    .ok()
+                    .and_then(|m| m.get("store").and_then(Value::as_str).map(str::to_string))
+            });
+        if let Some(q) = store.filter(|q| live(q)) {
+            out.push(json!({"id": q, "kind": "queue", "label": "Queue"}));
+        }
+    }
+    let mut gh: Vec<String> = kernel
+        .agents
+        .iter()
+        .filter(|e| {
+            e.value()
+                .handler_module
+                .as_deref()
+                .and_then(crate::agent_views::service_kind)
+                == Some("github")
+        })
+        .map(|e| e.value().id.0.clone())
+        .collect();
+    gh.sort();
+    for id in gh {
+        out.push(json!({"id": id, "kind": "github", "label": format!("GitHub ({id})")}));
+    }
+    out
+}
+
+/// The panel reply for a service node: the model drawn in the right pane. A service
+/// that errors gives a model with one "unavailable" row, never the raw error.
+#[allow(clippy::too_many_arguments)]
+async fn panel_reply(
+    kernel: &Arc<fantastic_kernel::Kernel>,
+    peers: &KernelPeers,
+    meta: &serde_json::Map<String, Value>,
+    board: &str,
+    team: &str,
+    groups: &BTreeMap<String, Vec<String>>,
+    limit: u64,
+    now: u64,
+    svc: &Value,
+) -> Value {
+    use crate::agent_views as v;
+    let node = svc["id"].as_str().unwrap_or("");
+    let kind = svc["kind"].as_str().unwrap_or("");
+    let ok = |r: &Value| r.is_object() && r.get("error").is_none();
+    let model = match kind {
+        "queue" | "board" => {
+            let snap = peers.ask(board, json!({"type": "board"})).await;
+            if !ok(&snap) {
+                v::unavailable(kind, svc["label"].as_str().unwrap_or(kind))
+            } else if kind == "queue" {
+                v::queue_view(&snap, now)
+            } else {
+                v::board_view(&snap)
+            }
+        }
+        "github" => {
+            let r = peers.ask(node, json!({"type": "reflect"})).await;
+            if ok(&r) {
+                v::github_view(&r)
+            } else {
+                v::unavailable(kind, "GitHub")
+            }
+        }
+        _ => {
+            let sb = sidebar_reply(
+                kernel,
+                peers,
+                meta,
+                board,
+                team,
+                groups,
+                limit,
+                now,
+                &json!({}),
+            )
+            .await;
+            v::dispatcher_view(&sb)
+        }
+    };
+    json!({"view": "panel", "kind": kind, "target": node, "model": model})
+}
+
 /// The dispatcher bundle: `sidebar`, `tree`, `open`, `control`.
 #[derive(Default)]
 pub struct DispatcherBundle;
@@ -825,9 +974,9 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
-            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}",
+            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher, label}], the team's own agents that exist",
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
-            "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher)",
+            "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher; a node in the sidebar's services → {view: panel, kind, target, model: {kind, title, summary, sections}} drawn as text in the right pane)",
             "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker from the team.yaml template, its memory in the team's one store agent, in the working directory and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start; team.yaml is not rewritten). remove_worker {node: worker, confirm} deletes the worker (its rows stay in the store) and drops it from its group",
         })
     }
@@ -886,42 +1035,23 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                 subtree(&team, &groups, &rows, &node)
             }
             "sidebar" => {
-                let snap = peers.ask(&board, json!({"type": "board"})).await;
-                let rows = rows_from(&snap, &groups, limit, now);
-                let agents = agent_table(kernel);
-                let subs: BTreeMap<String, Vec<Sub>> = rows
-                    .iter()
-                    .map(|r| (r.id.clone(), subagents_of(&agents, &r.id)))
-                    .collect();
-                let reply = peers.ask(&board, json!({"type": "rows"})).await;
-                let mut load = reply.get("load").cloned().unwrap_or(Value::Null);
-                // The cadencer's load holds the board's counts plus the cost per hour.
-                let cad = peers
-                    .ask(crate::tree::CADENCER_ID, json!({"type": "status"}))
-                    .await;
-                if cad.get("error").is_none() && cad["load"].is_object() {
-                    load = cad["load"].clone();
-                }
-                let mut out = sidebar(&team, &groups, &rows, &subs, &expanded_of(payload), &load);
-                // The roles registry's count (agents running, and the cap), when the
-                // team has a registry and it answers.
-                if let Some(roles) = meta.get("roles").and_then(Value::as_str) {
-                    let c = peers.ask(roles, json!({"type": "get_count"})).await;
-                    if let Some(f) = fleet_of(&c) {
-                        out["fleet"] = f;
-                    }
-                    // The lead and its agents, and the plan, from the board's roles section.
-                    if snap["roles"].is_object() {
-                        let list = agent_list(&snap["roles"]);
-                        grant_agents(kernel, &list);
-                        out["agents"] = json!(list);
-                        out["plan"] = plan_of(&snap["roles"]);
-                    }
-                }
+                let mut out = sidebar_reply(
+                    kernel, &peers, &meta, &board, &team, &groups, limit, now, payload,
+                )
+                .await;
+                out["services"] = json!(services_of(kernel, agent_id.as_str(), &board));
                 out
             }
             "open" => {
                 let node = payload["node"].as_str().unwrap_or("").to_string();
+                let services = services_of(kernel, agent_id.as_str(), &board);
+                if let Some(svc) = services.iter().find(|s| s["id"] == node.as_str()) {
+                    let out = panel_reply(
+                        kernel, &peers, &meta, &board, &team, &groups, limit, now, svc,
+                    )
+                    .await;
+                    return Ok(Some(out));
+                }
                 let kind = kind_of(&node, &team, &groups);
                 // A spawned lead or child is chatted with like a worker: grant it now.
                 // Only an id the board's roles tree names is granted, never an arbitrary one.
@@ -2984,5 +3114,429 @@ mod tests {
         assert_eq!(v["tasks"], 0);
         assert_eq!(v["hasChat"], 1);
         assert_eq!(v["watchers"], json!(["w1"]));
+    }
+
+    /// A board stand-in for the service views: answers `board` with the `board_reply` its
+    /// meta holds, or with an error carrying a secret when its `fail` field is set.
+    struct ViewsBoard;
+
+    #[async_trait::async_trait]
+    impl fantastic_kernel::bundle::Bundle for ViewsBoard {
+        fn name(&self) -> &str {
+            "views_board_test.tools"
+        }
+
+        async fn handle(
+            &self,
+            agent_id: &fantastic_kernel::AgentId,
+            payload: &Value,
+            kernel: &Arc<fantastic_kernel::Kernel>,
+        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
+        {
+            if payload["type"] != "board" {
+                return Ok(None);
+            }
+            let m = kernel
+                .agents
+                .get(agent_id)
+                .map(|a| a.meta.read().unwrap().clone())
+                .unwrap_or_default();
+            if m.contains_key("fail") {
+                return Ok(Some(json!({"error": format!("boom {}", secret_text())})));
+            }
+            Ok(Some(m.get("board_reply").cloned().unwrap_or(json!({}))))
+        }
+    }
+
+    /// A github connector stand-in: answers `reflect` with the `reflect` its meta holds.
+    struct StubGithub;
+
+    #[async_trait::async_trait]
+    impl fantastic_kernel::bundle::Bundle for StubGithub {
+        fn name(&self) -> &str {
+            "team_github.tools"
+        }
+
+        async fn handle(
+            &self,
+            agent_id: &fantastic_kernel::AgentId,
+            payload: &Value,
+            kernel: &Arc<fantastic_kernel::Kernel>,
+        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
+        {
+            if payload["type"] != "reflect" {
+                return Ok(None);
+            }
+            let m = kernel
+                .agents
+                .get(agent_id)
+                .map(|a| a.meta.read().unwrap().clone())
+                .unwrap_or_default();
+            if m.contains_key("fail") {
+                return Ok(Some(json!({"error": format!("boom {}", secret_text())})));
+            }
+            Ok(Some(m.get("reflect").cloned().unwrap_or(json!({}))))
+        }
+    }
+
+    /// A token-shaped text, built from pieces so no literal sits in the source.
+    fn secret_text() -> String {
+        format!("{}{}{}", "gh", "s_", "Zq9x".repeat(9))
+    }
+
+    /// A kernel with a dispatcher, a board stand-in (store `queue`), the queue, and
+    /// (when `gh`) a github stand-in; `fail` makes the board and github stand-ins error.
+    async fn kernel_with_services(
+        dir: &std::path::Path,
+        board_reply: Value,
+        gh: bool,
+        fail: bool,
+    ) -> Arc<fantastic_kernel::Kernel> {
+        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+        use fantastic_kernel::Item;
+        let mut reg = crate::registry();
+        reg.register("views_board_test.tools", ViewsBoard);
+        reg.register("team_github.tools", StubGithub);
+        reg.register("count_test.tools", CountBundle);
+        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir)).unwrap();
+        fantastic_kernel::lock::acquire(dir).unwrap();
+        booted.write_seed().unwrap();
+        let kernel = booted.kernel.clone();
+        crate::boot_kernel(&kernel).await.unwrap();
+        let mut items = vec![
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
+                "handler_module": HANDLER_MODULE,
+                "can_call": {"board": "*", "github": "*", "queue": "*"}}),
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
+                "handler_module": "views_board_test.tools", "store": "queue",
+                "board_reply": board_reply, "callable_by": {"dispatcher": "*"}}),
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "queue",
+                "handler_module": "count_test.tools"}),
+        ];
+        if fail {
+            items[1]["fail"] = json!(true);
+        }
+        if gh {
+            let mut g = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "github",
+                "handler_module": "team_github.tools", "callable_by": {"dispatcher": ["reflect"]},
+                "reflect": {
+                    "repos": ["acme/widgets"], "api_url": "https://api.github.com",
+                    "recent_calls": [{"verb": "issue_view", "target": "acme/widgets#3", "result": "ok"}],
+                    "rate": {"limit": 5000, "remaining": 4990, "reset": 1760000000u64},
+                    "token": secret_text(), "private_key": format!("-----BEGIN {} KEY-----", "RSA PRIVATE"),
+                    "authorization": format!("Bearer {}", secret_text())}});
+            if fail {
+                g["fail"] = json!(true);
+            }
+            items.push(g);
+        }
+        for item in items {
+            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
+        }
+        kernel
+    }
+
+    fn ids_of(services: &Value) -> Vec<(String, String)> {
+        services
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                (
+                    s["id"].as_str().unwrap().to_string(),
+                    s["kind"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn pair(a: &str, b: &str) -> (String, String) {
+        (a.to_string(), b.to_string())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sidebar_carries_services_in_every_mode() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_services(dir.path(), json!({}), true, false).await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        let want = vec![
+            pair("dispatcher", "dispatcher"),
+            pair("board", "board"),
+            pair("queue", "queue"),
+            pair("github", "github"),
+        ];
+        assert_eq!(ids_of(&sb["services"]), want, "{sb}");
+        assert!(sb.get("agents").is_none(), "this is not roles mode: {sb}");
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+
+        // Roles mode too.
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_in_roles_mode(dir.path(), Some(lead_section())).await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert!(sb["agents"].is_array());
+        assert_eq!(
+            ids_of(&sb["services"]),
+            vec![pair("dispatcher", "dispatcher"), pair("board", "board")],
+            "{sb}"
+        );
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sidebar_services_skip_agents_that_do_not_exist() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_services(dir.path(), json!({}), false, false).await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert_eq!(
+            ids_of(&sb["services"]),
+            vec![
+                pair("dispatcher", "dispatcher"),
+                pair("board", "board"),
+                pair("queue", "queue")
+            ],
+            "no github agent, none listed: {sb}"
+        );
+        // A board whose store is gone lists no queue.
+        ask_kernel(
+            &kernel,
+            fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
+            json!({"type": "delete_agent", "id": "queue"}),
+        )
+        .await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert!(
+            !ids_of(&sb["services"]).iter().any(|(_, k)| k == "queue"),
+            "{sb}"
+        );
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    fn queue_board() -> Value {
+        json!({"tasks": {
+            "pending": [{"id": "o/r#1", "title": "first", "claimers": [], "updated": 0}],
+            "in_work": [{"id": "o/r#2", "title": "second", "claimers": ["w1"], "updated": 0}],
+            "done": [], "failed": []}, "agents": {"w1": {"state": "coding", "cost": 0.5}}})
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_of_queue_returns_panel_model_from_the_board() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_services(dir.path(), queue_board(), false, false).await;
+        let out = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "open", "node": "queue"}),
+        )
+        .await;
+        assert_eq!(out["view"], "panel", "{out}");
+        assert_eq!(out["kind"], "queue");
+        assert_eq!(out["target"], "queue");
+        let m = &out["model"];
+        assert_eq!(m["kind"], "queue");
+        assert_eq!(m["sections"][0]["name"], "queued");
+        assert_eq!(m["sections"][0]["rows"][0][0], "first");
+        assert_eq!(m["sections"][1]["rows"][0][1], "w1");
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_of_board_in_roles_mode_returns_tree_and_tasks() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut b = queue_board();
+        b["roles"] = lead_section();
+        let kernel = kernel_with_services(dir.path(), b, false, false).await;
+        let out = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "open", "node": "board"}),
+        )
+        .await;
+        assert_eq!(out["view"], "panel", "{out}");
+        assert_eq!(out["kind"], "board");
+        let m = &out["model"];
+        assert_eq!(m["sections"][0]["name"], "agents");
+        assert_eq!(m["sections"][0]["rows"][0][0], "Lead");
+        assert_eq!(m["sections"][1]["name"], "tasks");
+        assert_eq!(
+            m["sections"][1]["rows"][0],
+            json!(["o/r#1", "gh:o/r#1", "c1", "in_work"])
+        );
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_of_dispatcher_returns_its_own_workers_and_lanes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_services(dir.path(), queue_board(), false, false).await;
+        let out = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "open", "node": "dispatcher"}),
+        )
+        .await;
+        assert_eq!(out["view"], "panel", "{out}");
+        assert_eq!(out["kind"], "dispatcher");
+        assert_eq!(out["model"]["sections"][0]["name"], "workers");
+        assert_eq!(out["model"]["sections"][0]["rows"][0][0], "w1");
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_of_github_returns_panel_from_reflect_and_no_token() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_services(dir.path(), json!({}), true, false).await;
+        let out = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "open", "node": "github"}),
+        )
+        .await;
+        assert_eq!(out["view"], "panel", "{out}");
+        assert_eq!(out["kind"], "github");
+        let s = out.to_string();
+        assert!(s.contains("acme/widgets#3"), "{s}");
+        assert!(s.contains("4990/5000"), "{s}");
+        assert!(!s.contains(&secret_text()), "{s}");
+        assert!(!s.contains("PRIVATE"), "{s}");
+        assert!(!s.contains("Bearer"), "{s}");
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_of_a_peer_that_errors_returns_unavailable_row() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_services(dir.path(), json!({}), true, true).await;
+        for node in ["queue", "board", "github"] {
+            let out =
+                ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": node})).await;
+            assert_eq!(out["view"], "panel", "{node}: {out}");
+            assert_eq!(
+                out["model"]["sections"][0]["rows"][0][0], "unavailable",
+                "{out}"
+            );
+            let s = out.to_string();
+            assert!(
+                !s.contains(&secret_text()) && !s.contains("boom"),
+                "{node}: {s}"
+            );
+        }
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_of_worker_and_group_unchanged() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_services(dir.path(), queue_board(), true, false).await;
+        let w = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": "w1"})).await;
+        assert_eq!(w["view"], "chat", "{w}");
+        assert_eq!(w["target"], "w1");
+        assert_eq!(w["kind"], "worker");
+        let g = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "open", "node": "team"}),
+        )
+        .await;
+        assert_eq!(g["view"], "dispatcher", "{g}");
+        assert!(g.get("model").is_none());
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn html_has_team_section_and_text_only_panel() {
+        assert!(HTML.contains("showPanel"));
+        assert!(HTML.contains("'Team'"));
+        assert!(js_fn("openNode").contains("showPanel"));
+        for f in ["showPanel", "drawPanel", "renderServices", "serviceRow"] {
+            let body = js_fn(f);
+            assert!(!body.contains("innerHTML"), "{f}");
+            assert!(!body.contains("insertAdjacentHTML"), "{f}");
+        }
+        assert!(js_fn("drawPanel").contains("el("));
+        assert!(js_fn("renderServices").contains("services"));
+    }
+
+    #[test]
+    fn panel_timer_is_cleared_by_drop_chat() {
+        assert!(js_fn("dropChat").contains("stopPanel()"));
+        assert!(js_fn("stopLive").contains("stopPanel()"));
+        assert!(js_fn("stopPanel").contains("clearTimeout"));
+        assert!(js_fn("showPanel").contains("dropChat()"));
+    }
+
+    #[test]
+    fn panel_click_on_queue_draws_sections_in_the_pane() {
+        let Some(v) = run_node("panel_click_on_queue_draws_sections_in_the_pane") else {
+            return;
+        };
+        assert_eq!(v["heading"], json!(["Team"]));
+        assert_eq!(
+            v["services"][0],
+            json!({"node": "queue", "kind": "service", "text": "Queue"})
+        );
+        assert_eq!(v["services"].as_array().unwrap().len(), 2);
+        assert_eq!(v["paneHidden"], false);
+        assert_eq!(v["title"], json!(["Queue"]));
+        assert_eq!(v["sections"], json!(["queued", "taken"]));
+        assert_eq!(v["cells"], json!([["first", "-", "10s"]]));
+        assert_eq!(v["selected"], json!(["queue"]));
+        assert_eq!(v["transcripts"], 0);
+    }
+
+    #[test]
+    fn panel_text_with_markup_is_shown_literally() {
+        let Some(v) = run_node("panel_text_with_markup_is_shown_literally") else {
+            return;
+        };
+        assert_eq!(v["cell"], "<b>x</b>");
+        assert_eq!(v["kids"], 0);
+        assert_eq!(v["num"], "7");
+        assert_eq!(v["title"], "<i>t</i>");
+        assert_eq!(v["summary"], "<b>x</b>");
+        assert_eq!(v["section"], "<u>n</u>");
+    }
+
+    #[test]
+    fn panel_refreshes_and_stops_when_a_chat_is_opened() {
+        let Some(v) = run_node("panel_refreshes_and_stops_when_a_chat_is_opened") else {
+            return;
+        };
+        assert_eq!(v["first"], "n=1");
+        assert_eq!(v["second"], "n=2");
+        assert_eq!(v["timers"], json!([5000]));
+        assert_eq!(v["timersAfterRefresh"], 1);
+        assert_eq!(v["left"], 0);
+        assert_eq!(v["hasChat"], 1);
+        assert_eq!(v["panelGone"], 0);
+        assert_eq!(v["opensAfter"], 3);
+    }
+
+    #[test]
+    fn panel_stale_reply_is_ignored() {
+        let Some(v) = run_node("panel_stale_reply_is_ignored") else {
+            return;
+        };
+        assert_eq!(v["title"], "Board");
+        assert_eq!(v["summary"], json!(["board"]));
+    }
+
+    #[test]
+    fn panel_not_shown_when_open_replies_with_error() {
+        let Some(v) = run_node("panel_not_shown_when_open_replies_with_error") else {
+            return;
+        };
+        assert_eq!(v["paneHidden"], true);
+        assert_eq!(v["tables"], 0);
+        assert_eq!(v["error"], "nope");
+        assert_eq!(v["timers"], 0);
     }
 }

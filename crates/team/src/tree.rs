@@ -431,6 +431,23 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     for (id, c) in &cfg.connectors {
         out.push(tool_plan(id, &lead, config::connector_record(id, c)));
     }
+    // The dispatcher's github view reads each github connector's `reflect` (the calls it
+    // served, its rate limit): the dispatcher names it, and the connector names the
+    // dispatcher, only for that verb.
+    let github_ids: Vec<String> = cfg
+        .connectors
+        .iter()
+        .filter(|(_, c)| c.kind == "team_github.tools")
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in &github_ids {
+        if let Some(d) = out.iter_mut().find(|p| p.id == DISPATCHER_ID) {
+            d.record["can_call"][id.as_str()] = json!(["reflect"]);
+        }
+        if let Some(g) = out.iter_mut().find(|p| &p.id == id) {
+            g.record["callable_by"][DISPATCHER_ID] = json!(["reflect"]);
+        }
+    }
     if let Some(b) = &cfg.board {
         // The board is a sibling of the lead, so the GitHub connector and the
         // queue must name it in their callable_by; the lead's own grants stay.
@@ -1676,6 +1693,23 @@ mod tests {
         let git_rec = &tree[git].record;
         assert_eq!(git_rec["callable_by"]["board"], "*");
         assert_eq!(git_rec["callable_by"]["$parent"], "*");
+    }
+
+    #[test]
+    fn plan_grants_dispatcher_reflect_on_github_at_both_ends() {
+        let dir = roles_team_dir();
+        let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
+        assert_eq!(
+            planned(&tree, DISPATCHER_ID).record["can_call"]["github"],
+            json!(["reflect"])
+        );
+        assert_eq!(
+            planned(&tree, "github").record["callable_by"][DISPATCHER_ID],
+            json!(["reflect"])
+        );
+        // The git connector is not a github connector: no grant.
+        assert!(planned(&tree, "git").record["callable_by"][DISPATCHER_ID].is_null());
+        assert!(planned(&tree, DISPATCHER_ID).record["can_call"]["git"].is_null());
     }
 
     #[test]

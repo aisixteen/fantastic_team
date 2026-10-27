@@ -80,6 +80,19 @@ impl Api {
             }
         };
         let status = resp.status();
+        let hdr = |n: &str| {
+            resp.headers()
+                .get(n)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+        };
+        if let (Some(l), Some(r), Some(t)) = (
+            hdr("x-ratelimit-limit"),
+            hdr("x-ratelimit-remaining"),
+            hdr("x-ratelimit-reset"),
+        ) {
+            crate::callog::set_rate(&self.base, l, r, t);
+        }
         let text = resp.text().await.unwrap_or_default();
         let parsed: Value = if text.trim().is_empty() {
             Value::Null
