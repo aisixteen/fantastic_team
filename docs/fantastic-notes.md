@@ -28,6 +28,10 @@ Not verified. The esbuild call is `"$ESBUILD" "$ENTRY" --bundle ... --sourcemap 
 
 Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from two builds. The steps landed in fantastic #409, the pin in `Cargo.lock` was bumped (`scripts/update-fantastic.sh`), and `strict` is on by default: a difference fails the job (`-f strict=false` only warns).
 
+## Pin at `b175660`
+
+`Cargo.lock` now pins fantastic `b175660`. It brings `fantastic_tui::seed_dir(dir) -> Result<bool, String>` (fantastic#444: the shell's first-run seeding, a no-op once `.fantastic` exists) and spawn applying the card's tool grants on both ends (fantastic#436: a card may only grant what its spawner holds, so the lead holds `board` and the root's await verbs). Team calls `seed_dir` before it boots a fresh directory (`run_at_start`, `persist_web`), so the first `--port` start serves the page; `seed_base_tree` keeps the stores the seed wrote.
+
 ## Pin at `b980705`
 
 `Cargo.lock` now pins fantastic `b980705`. It brings the durable store `sqlite_store` (fantastic#432, crate `fantastic-sqlite-store`, handler `sqlite_store.tools`: ram_store's verbs over one SQLite file per store agent, record field `path` required and relative to the project directory, `close_all` after the kernel's shutdown) and the #424 active-count fix (`get_count` counts the agents that are running). The build and tests pass with no Team code change.

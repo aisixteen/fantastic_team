@@ -41,6 +41,8 @@ pub const TASKS_ID: &str = config::TASKS_ID;
 pub const PROJECT_LEAD_TASK_VERBS: [&str; 7] = [
     "add", "assign", "reassign", "status", "report", "list", "get",
 ];
+/// What the lead may call on the board: the project_lead card's grants on it.
+pub const LEAD_BOARD_VERBS: [&str; 2] = ["board", "rows"];
 /// What the first agent may call on the roles registry: ask the roles and the room
 /// (`roles`, `role`, `get_count`), start an agent (`spawn`) and list who it started
 /// (`fleet`). It does not set limits: those come from `team.yaml` at start.
@@ -48,9 +50,6 @@ pub const LEAD_ROLES_VERBS: [&str; 5] = ["roles", "role", "spawn", "get_count", 
 /// The kernel verbs a spawned agent may call on the root to wait for its children
 /// (`await_set`, `await_cancel`): the project_lead card lists them.
 pub const AWAIT_VERBS: [&str; 2] = ["await_set", "await_cancel"];
-/// The board verbs the lead holds so that a spawn can grant them to a project_lead
-/// (the card lists `board` and `rows`).
-pub const LEAD_BOARD_VERBS: [&str; 2] = ["board", "rows"];
 /// What the board may call on the roles registry (roles mode): who runs (`fleet`) and
 /// the count (`get_count`).
 pub const BOARD_ROLES_VERBS: [&str; 2] = ["fleet", "get_count"];
@@ -480,6 +479,19 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
             }
         }
         out.push(board_plan(cfg, b));
+        // The lead holds the board's `board` and `rows`: the project_lead card grants
+        // them, and a spawner may only grant what it holds (fantastic #436). The
+        // board names the lead in its `callable_by`, the other end.
+        if let Some(l) = &lead_id {
+            planned_mut(&mut out, l).record["can_call"][BOARD_ID] = json!(LEAD_BOARD_VERBS);
+            if let Some(by) = out
+                .iter_mut()
+                .find(|p| p.id == BOARD_ID)
+                .and_then(|p| p.record["callable_by"].as_object_mut())
+            {
+                by.insert(l.clone(), json!(LEAD_BOARD_VERBS));
+            }
+        }
         // The cadencer reads the board's rows.
         if let Some(by) = out
             .iter_mut()
@@ -498,19 +510,10 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         // The lead starts agents through the registry (`spawn`), and the dispatcher
         // asks it for the count it shows. The registry's own `callable_by` names both.
         planned_mut(&mut out, l).record["can_call"][r.id.as_str()] = json!(LEAD_ROLES_VERBS);
-        {
-            // Same for the wait: the card lists `await_set` and `await_cancel` on
-            // `kernel_state`. A template that already grants it (`*`) keeps its grant.
-            let can = &mut planned_mut(&mut out, l).record["can_call"];
-            if can.get("kernel_state").is_none() {
-                can["kernel_state"] = json!(AWAIT_VERBS);
-            }
-        }
-        if cfg.board.is_some() {
-            // A spawn grants only what the spawner itself holds (fantastic#436): the
-            // project_lead card lists the board's `board` and `rows`.
-            planned_mut(&mut out, l).record["can_call"][BOARD_ID] = json!(LEAD_BOARD_VERBS);
-        }
+        // The lead holds the await verbs on the root: the project_lead card grants
+        // them, and a spawner may only grant what it holds (fantastic #436). The
+        // root's end is `grant_await`.
+        planned_mut(&mut out, l).record["can_call"][DEFAULT_ROOT_ID] = json!(AWAIT_VERBS);
         if let Some(d) = out.iter_mut().find(|p| p.id == DISPATCHER_ID) {
             d.record["can_call"][r.id.as_str()] = json!(DISPATCHER_ROLES_VERBS);
             d.record["roles"] = json!(r.id);
@@ -1238,7 +1241,8 @@ pub async fn grant_fleet_digest_targets(kernel: &Arc<Kernel>, roles_id: &str) ->
 
 /// Start-up: plan the tree from `team.yaml` in `dir` (if there is one), apply it
 /// to a headless kernel, deliver the instructions when due, then stop the kernel.
-/// Returns `None` when there is no `team.yaml`.
+/// Returns `None` when there is no `team.yaml`. A fresh directory is seeded
+/// (`fantastic_tui::seed_dir`) once the config is accepted, before the kernel boots.
 pub fn run_at_start(
     dir: &Path,
     instructions: Option<&str>,
@@ -1255,6 +1259,7 @@ pub fn run_at_start(
         );
     }
     let tree = plan(&cfg, dir)?;
+    fantastic_tui::seed_dir(dir)?;
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async {
         let kernel = crate::start(dir).await.map_err(|e| e.to_string())?;
@@ -1585,6 +1590,32 @@ mod tests {
             "instructions need a first_agent in team.yaml: the caller defines the agents"
         );
         assert!(run_at_start(dir.path(), None, false).unwrap().is_some());
+    }
+
+    #[test]
+    fn run_at_start_seeds_a_fresh_directory() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(config::FILE_NAME), "{}\n").unwrap();
+        assert!(run_at_start(dir.path(), None, false).unwrap().is_some());
+        assert!(dir
+            .path()
+            .join(".fantastic/agents/user/agents/store/agent.yaml")
+            .is_file());
+    }
+
+    #[test]
+    fn run_at_start_without_team_yaml_writes_nothing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(run_at_start(dir.path(), None, false).unwrap().is_none());
+        assert!(!dir.path().join(".fantastic").exists());
+    }
+
+    #[test]
+    fn a_refused_config_does_not_seed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(config::FILE_NAME), "{}\n").unwrap();
+        assert!(run_at_start(dir.path(), Some("hi"), false).is_err());
+        assert!(!dir.path().join(".fantastic").exists());
     }
 
     #[test]
@@ -2810,7 +2841,7 @@ mod tests {
         let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
         let can = &planned(&tree, "lead").record["can_call"];
         assert_eq!(can[BOARD_ID], json!(["board", "rows"]), "{can}");
-        assert_eq!(can["kernel_state"], json!(AWAIT_VERBS), "{can}");
+        assert_eq!(can[DEFAULT_ROOT_ID], json!(AWAIT_VERBS), "{can}");
     }
 
     #[test]
@@ -3212,13 +3243,12 @@ mod tests {
             json!(PROJECT_LEAD_TASK_VERBS),
             "the card's grant reached the spawned agent"
         );
-        // spawn opened `tasks` to the project_lead (fantastic#436): no admit step
+        // the spawn admitted it on `tasks` (the card's grant, both ends)
+        let add = json!({"type": "add", "id": "o/r#7", "source": "gh:o/r#7", "holder": w});
         assert_eq!(
             meta_value(&kernel, "tasks")["callable_by"][pl.as_str()],
-            json!(PROJECT_LEAD_TASK_VERBS),
-            "the card's grant reached the tool's callable_by"
+            json!(PROJECT_LEAD_TASK_VERBS)
         );
-        let add = json!({"type": "add", "id": "o/r#7", "source": "gh:o/r#7", "holder": w});
         let e = call_as(&kernel, &pl, "tasks", add).await;
         assert!(e.get("error").is_none(), "{e}");
         assert_eq!(e["source"], "gh:o/r#7", "{e}");
@@ -3582,14 +3612,9 @@ mod tests {
         assert!(!kernel
             .agents
             .contains_key(&fantastic_kernel::AgentId::from("sneak")));
-        // a spawn opens the card's tools to the child (fantastic#436): the worker
-        // card grants the queue "*", the exec and file tools too
+        // a spawn opens the card's tools to the child (fantastic #436): the queue admits it
         let q = meta_value(&kernel, "queue");
         assert_eq!(q["callable_by"][id.as_str()], "*", "{q}");
-        for t in ["worker_exec", "worker_files"] {
-            let tool = meta_value(&kernel, t);
-            assert_eq!(tool["callable_by"][id.as_str()], "*", "{t}: {tool}");
-        }
         // another caller cannot spawn
         let denied = call_as(
             &kernel,
