@@ -26,6 +26,8 @@ mod tests;
 mod tests_read_file;
 #[cfg(test)]
 mod tests_secrets;
+#[cfg(test)]
+mod tests_staleness;
 
 use std::sync::{Arc, OnceLock};
 
@@ -227,6 +229,7 @@ impl Bundle for GithubConnectorBundle {
             "comment": "comment {repo, number, body} → {repo, number, comment_id, url}",
             "label": "label {repo, number, add?, remove?} → {repo, number, labels}",
             "pr_status": "pr_status {repo, number} → {repo, number, state, draft, head_sha, checks, checks_summary, reviews, review_state}",
+            "staleness": "staleness {versions?: [{repo, branch, commit?}], issue?: {repo, number, source_version?}} → {repos?: [{repo, branch, head, state: same|ahead|diverged|unknown, ahead_by, behind_by, commits: [{sha, subject}] (at most 50), files (at most 100), truncated}], issue?: {repo, number, updated_at, changed: bool|null}} (facts only; no commit = the head only)",
         })
     }
 
