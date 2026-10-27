@@ -214,6 +214,7 @@ mod tests {
                 "project_field_set",
                 "pr_create",
                 "pr_status",
+                "staleness",
                 "push"
             ])
         );
@@ -240,6 +241,35 @@ mod tests {
         ] {
             assert!(c.directive.contains(s), "project_lead card lacks {s}");
         }
+    }
+
+    #[test]
+    fn project_lead_card_records_versions_and_checks_staleness() {
+        let c = card("project_lead.md");
+        assert!(c.grants["github"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("staleness")));
+        for s in [
+            "staleness",
+            "versions",
+            "source_version",
+            "fork_from",
+            "Code gives the facts",
+            "5 minutes",
+            "1-hour",
+            "burst",
+            "fork_points",
+            "cache_read_tokens",
+            "usage",
+        ] {
+            assert!(c.directive.contains(s), "project_lead card lacks {s}");
+        }
+        // no new registry verbs: the grants stay as they were
+        assert_eq!(
+            c.grants["tasks"],
+            serde_json::json!(["add", "assign", "reassign", "status", "report", "list", "get"])
+        );
     }
 
     #[test]

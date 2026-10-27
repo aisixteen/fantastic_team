@@ -846,7 +846,7 @@ async fn staleness(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, p: &Value) -> 
     const V: &str = "staleness";
     let versions = p.get("versions").and_then(|v| v.as_array());
     let issue = p.get("issue").filter(|v| !v.is_null());
-    if versions.map_or(true, |a| a.is_empty()) && issue.is_none() {
+    if versions.is_none_or(|a| a.is_empty()) && issue.is_none() {
         return missing(V, "versions");
     }
     // validate everything before the first request

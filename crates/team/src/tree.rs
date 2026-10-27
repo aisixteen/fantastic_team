@@ -2917,6 +2917,61 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_task_keeps_versions_fork_from_and_usage() {
+        // fantastic#437 wired for the card: the registry keeps the versions, the
+        // source version and the fork source, and sums the usage a report carries
+        let dir = roles_team_dir();
+        let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
+        let (pl, w) = lead_with_project_lead(&kernel).await;
+        let versions = json!([
+            {"repo": "o/r", "branch": "main", "commit": "abc123"},
+            {"repo": "o/f", "branch": "main", "commit": "def456"}
+        ]);
+        let added = call_as(
+            &kernel,
+            &pl,
+            "tasks",
+            json!({"type": "add", "id": "o/r#11", "source": "gh:o/r#11", "holder": w,
+                "versions": versions, "source_version": "2026-10-27T10:00:00Z",
+                "fork_from": {"agent": "pl", "mark": "m1"}}),
+        )
+        .await;
+        assert!(added.get("error").is_none(), "{added}");
+        let got = call_as(
+            &kernel,
+            &pl,
+            "tasks",
+            json!({"type": "get", "id": "o/r#11"}),
+        )
+        .await;
+        assert_eq!(got["versions"], versions, "{got}");
+        assert_eq!(got["source_version"], "2026-10-27T10:00:00Z", "{got}");
+        assert_eq!(
+            got["fork_from"],
+            json!({"agent": "pl", "mark": "m1"}),
+            "{got}"
+        );
+        let rep = call_as(
+            &kernel,
+            &pl,
+            "tasks",
+            json!({"type": "report", "id": "o/r#11", "state": "done", "result": "ok",
+                "usage": {"cache_read_tokens": 120, "input_tokens": 10}}),
+        )
+        .await;
+        assert!(rep.get("error").is_none(), "{rep}");
+        let list = call_as(&kernel, &pl, "tasks", json!({"type": "list"})).await;
+        assert!(list.to_string().contains("o/r#11"), "{list}");
+        let row = list["tasks"]
+            .as_array()
+            .and_then(|a| a.iter().find(|t| t["id"] == "o/r#11"))
+            .unwrap_or_else(|| panic!("{list}"));
+        assert_eq!(row["usage"]["cache_read_tokens"], 120, "{list}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_of_a_spawned_agent_drops_it_from_the_tools_callable_by() {
         let dir = roles_team_dir();
         let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
