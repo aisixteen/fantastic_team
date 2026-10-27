@@ -2565,6 +2565,47 @@ mod tests {
     }
 
     #[test]
+    fn page_cadencer_switch_shows_the_persisted_state() {
+        let Some(v) = run_node("cadencer_switch") else {
+            return;
+        };
+        assert_eq!(v["off"]["checked"], false);
+        assert_eq!(v["off"]["disabled"], false);
+        assert_eq!(v["off"]["note"], "off");
+        assert_eq!(v["on"]["checked"], true);
+        assert_eq!(v["on"]["note"], "on");
+        assert_eq!(v["off"]["sets"], 0, "showing the state sends no set");
+    }
+
+    #[test]
+    fn page_cadencer_switch_sends_set_enabled() {
+        let Some(v) = run_node("cadencer_switch") else {
+            return;
+        };
+        assert_eq!(
+            v["click"]["sets"],
+            json!([{"id": "cadencer", "payload": {"type": "set", "enabled": false}}])
+        );
+        assert_eq!(v["click"]["checked"], false);
+        assert_eq!(v["click"]["note"], "off");
+        // A refusal puts the box back and shows the error.
+        assert_eq!(v["refused"]["checked"], true);
+        assert!(v["refused"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("set refused"));
+    }
+
+    #[test]
+    fn page_cadencer_switch_disabled_without_a_cadencer() {
+        let Some(v) = run_node("cadencer_switch") else {
+            return;
+        };
+        assert_eq!(v["none"]["disabled"], true);
+        assert_eq!(v["none"]["note"], "no cadencer");
+    }
+
+    #[test]
     fn chat_stream_draws_text_once() {
         let Some(v) = run_node("text_once") else {
             return;

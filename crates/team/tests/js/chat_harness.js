@@ -535,7 +535,7 @@ const scenarios = {
       const rt = makeRuntime(base((id, p) => (p.type === 'status' ? { current, mine_pending: pending || [] } : null)));
       const c = await rt.open('w1');
       const out = {
-        statusCall: rt.sent('status').map((x) => x.payload),
+        statusCall: rt.sent('status').filter((x) => x.id !== 'cadencer').map((x) => x.payload),
         msgs: rt.msgs(),
         tools: c.transcript.all('.tool-block').length,
         disabled: c.send.disabled,
@@ -555,6 +555,51 @@ const scenarios = {
     const rt = makeRuntime(base((id, p) => (p.type === 'status' ? { error: 'nope' } : null)));
     await rt.open('w1');
     return { msgs: rt.msgs(), disabled: rt.chat().send.disabled };
+  },
+
+  async cadencer_switch() {
+    const view = (rt) => ({
+      checked: rt.byId['cadencer-switch'].checked,
+      disabled: rt.byId['cadencer-switch'].disabled,
+      note: rt.byId['cadencer-state'].textContent,
+      error: rt.byId.error.textContent,
+    });
+    const settings = (enabled) => ({ settings: { enabled, cadence: 60 } });
+    const start = async (state, setReply) => {
+      const rt = makeRuntime(base((id, p) => {
+        if (id !== 'cadencer') return null;
+        if (p.type === 'status') return state.status;
+        if (p.type === 'set') {
+          if (!setReply(p).error) state.status = settings(p.enabled);
+          return setReply(p);
+        }
+        return null;
+      }));
+      await rt.flush();
+      return rt;
+    };
+    const out = {};
+    for (const on of [false, true]) {
+      const rt = await start({ status: settings(on) }, () => ({}));
+      out[on ? 'on' : 'off'] = view(rt);
+      out[on ? 'on' : 'off'].sets = rt.sent('set').length;
+    }
+    const state = { status: settings(true) };
+    const rt = await start(state, (p) => ({ enabled: p.enabled }));
+    const box = rt.byId['cadencer-switch'];
+    box.checked = false;
+    box.dispatch('change');
+    await rt.flush();
+    out.click = view(rt);
+    out.click.sets = rt.sent('set').map((c) => ({ id: c.id, payload: c.payload }));
+    const refused = await start({ status: settings(true) }, () => ({ error: 'team_cadencer: set refused: sender x' }));
+    refused.byId['cadencer-switch'].checked = false;
+    refused.byId['cadencer-switch'].dispatch('change');
+    await refused.flush();
+    out.refused = view(refused);
+    const none = await start({ status: { error: 'no agent cadencer' } }, () => ({}));
+    out.none = view(none);
+    return out;
   },
 
   async rows() {

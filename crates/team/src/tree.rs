@@ -29,7 +29,7 @@ pub const CANVAS_ID: &str = "canvas_page";
 pub const WORKER_VIEW_ID: &str = "worker_view";
 /// The board agent, under the root, when `team.yaml` has a `board` section.
 pub const BOARD_ID: &str = "board";
-/// The cadencer agent, under the root, when `team.yaml` has a `board` section.
+/// The cadencer agent, under the root, in every team (switched off by `cadencer: {enabled: false}`).
 pub const CADENCER_ID: &str = "cadencer";
 /// The roles registry's default agent id (`roles.id` in `team.yaml` may name another).
 pub const ROLES_ID: &str = "roles";
@@ -477,8 +477,7 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
             }
         }
         out.push(board_plan(cfg, b));
-        out.push(cadencer_plan(cfg));
-        // The cadencer reads the board's rows and sends the lead its digest.
+        // The cadencer reads the board's rows.
         if let Some(by) = out
             .iter_mut()
             .find(|p| p.id == BOARD_ID)
@@ -486,9 +485,11 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         {
             by.insert(CADENCER_ID.into(), json!(["rows"]));
         }
-        if let Some(l) = &lead_id {
-            planned_mut(&mut out, l).record["callable_by"][CADENCER_ID] = json!(["send"]);
-        }
+    }
+    // The cadencer is in every team, with or without a board: it sends the lead its digest.
+    out.push(cadencer_plan(cfg));
+    if let Some(l) = &lead_id {
+        planned_mut(&mut out, l).record["callable_by"][CADENCER_ID] = json!(["send"]);
     }
     if let (Some(r), Some(l)) = (&cfg.roles, &lead_id) {
         // The lead starts agents through the registry (`spawn`), and the dispatcher
@@ -500,6 +501,16 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         }
         out.push(roles_plan(cfg, l, r, team_dir));
         out.push(tasks_plan(cfg, l));
+        // The cadencer reads the spawned tree: it names the registries, and they name it.
+        // The root's end (`reflect`) is `grant_cadencer_reflect`.
+        for (id, verbs) in [
+            (r.id.as_str(), json!(BOARD_ROLES_VERBS)),
+            (TASKS_ID, json!(BOARD_TASKS_VERBS)),
+        ] {
+            if let Some(p) = out.iter_mut().find(|p| p.id == id) {
+                p.record["callable_by"][CADENCER_ID] = verbs;
+            }
+        }
         // The board lists the lead's tree, roles and tasks: it names the registries it
         // reads, and they name it. The root's end (`reflect`) is `grant_board_reflect`.
         if cfg.board.is_some() {
@@ -566,33 +577,54 @@ fn board_plan(cfg: &TeamConfig, b: &config::BoardCfg) -> Planned {
     }
 }
 
-/// The cadencer under the root: it reads the board and sends each group's digest
-/// to its driver. The groups' own `cadence`, `stall_after`, `quiet` and `enabled`
-/// from `team.yaml` ride in `group_settings`. It may call the board's `rows`, the
-/// `send` of the lead and of every group driver; the dispatcher may ask `status`.
+/// The cadencer under the root: it reads the board's rows (a team with a board) or
+/// the spawned tree (a team with `roles:`) and sends each lead's digest. The groups'
+/// own `cadence`, `stall_after`, `quiet` and `enabled` from `team.yaml` ride in
+/// `group_settings`. It may call the board's `rows`, the registries' reads and the
+/// `send` of the lead and of every group driver; the dispatcher may ask `status`, and
+/// the page's view `status` and `set` (the switch, [`grant_cadencer_switch`]). `cadencer: {enabled: false}` creates it switched off.
 fn cadencer_plan(cfg: &TeamConfig) -> Planned {
     let mut can_call = serde_json::Map::new();
-    can_call.insert(BOARD_ID.into(), json!(["rows"]));
+    if cfg.board.is_some() {
+        can_call.insert(BOARD_ID.into(), json!(["rows"]));
+    }
     if let Some(l) = cfg.lead_id() {
         can_call.insert(l.into(), json!(["send"]));
     }
     for d in cfg.groups.values().filter_map(|g| g.driver.as_ref()) {
         can_call.insert(d.clone(), json!(["send"]));
     }
+    let mut record = json!({
+        "type": "create_agent",
+        "id": CADENCER_ID,
+        "parent_id": DEFAULT_ROOT_ID,
+        "handler_module": cadencer::HANDLER_MODULE,
+        "group_settings": config::group_settings(cfg),
+        "callable_by": {
+            "$self": "*",
+            "$parent": "*",
+            (DISPATCHER_ID): ["status"],
+        },
+    });
+    if cfg.board.is_some() {
+        can_call.insert(BOARD_ID.into(), json!(["rows"]));
+        record["board"] = json!(BOARD_ID);
+    }
+    if let Some(r) = &cfg.roles {
+        can_call.insert(r.id.clone(), json!(BOARD_ROLES_VERBS));
+        can_call.insert(TASKS_ID.into(), json!(BOARD_TASKS_VERBS));
+        can_call.insert(DEFAULT_ROOT_ID.into(), json!(BOARD_KERNEL_VERBS));
+        record["roles"] = json!(r.id);
+    }
+    if !config::cadencer_enabled(cfg) {
+        record["enabled"] = json!(false);
+    }
+    record["can_call"] = Value::Object(can_call);
     Planned {
         id: CADENCER_ID.into(),
         parent: DEFAULT_ROOT_ID.into(),
         role: Role::Cadencer,
-        record: json!({
-            "type": "create_agent",
-            "id": CADENCER_ID,
-            "parent_id": DEFAULT_ROOT_ID,
-            "handler_module": cadencer::HANDLER_MODULE,
-            "board": BOARD_ID,
-            "group_settings": config::group_settings(cfg),
-            "can_call": can_call,
-            "callable_by": {"$self": "*", "$parent": "*", (DISPATCHER_ID): ["status"]},
-        }),
+        record,
     }
 }
 
@@ -840,6 +872,43 @@ pub fn grant_pack_install(kernel: &Arc<Kernel>) -> bool {
     }
 }
 
+/// The verbs the page uses on the cadencer: its state and the on/off switch (`set`).
+pub const PAGE_CADENCER_VERBS: [&str; 2] = ["status", "set"];
+
+/// Grant the page's agent `status` and `set` on the cadencer, on both ends (the view's
+/// `can_call` and the cadencer's `callable_by`), for the digests switch. Idempotent.
+/// Returns whether both ends hold the grant; false when the view or the cadencer is
+/// not live.
+pub fn grant_cadencer_switch(kernel: &Arc<Kernel>) -> bool {
+    if !exists(kernel, DISPATCHER_VIEW_ID) || !exists(kernel, CADENCER_ID) {
+        return false;
+    }
+    let verbs = json!(PAGE_CADENCER_VERBS);
+    let by_cadencer =
+        kernel.edit_callable_by(&fantastic_kernel::AgentId::from(CADENCER_ID), |cb| {
+            if cb.get(DISPATCHER_VIEW_ID) == Some(&verbs) {
+                return false;
+            }
+            cb.insert(DISPATCHER_VIEW_ID.into(), verbs.clone());
+            true
+        });
+    let by_view =
+        kernel.edit_can_call(&fantastic_kernel::AgentId::from(DISPATCHER_VIEW_ID), |cc| {
+            if cc.get(CADENCER_ID) == Some(&verbs) {
+                return false;
+            }
+            cc.insert(CADENCER_ID.into(), verbs.clone());
+            true
+        });
+    match (by_cadencer, by_view) {
+        (Ok(_), Ok(_)) => true,
+        (Err(e), _) | (_, Err(e)) => {
+            eprintln!("dispatcher cadencer switch: {e}");
+            false
+        }
+    }
+}
+
 /// The two `user` verbs the page uses for the chat's questions: the open
 /// `inquiries` of an asker and `answer_inquiry`. Granted by [`grant_inquiries`].
 pub const INQUIRY_VERBS: [&str; 2] = ["inquiries", "answer_inquiry"];
@@ -1065,6 +1134,92 @@ pub fn grant_board_reflect(kernel: &Arc<Kernel>, cfg: &TeamConfig) -> Result<(),
         .map_err(|e| format!("board reflect: {e}"))
 }
 
+/// Name the cadencer in the root's `callable_by` with `reflect` ([`BOARD_KERNEL_VERBS`]),
+/// the other end of the cadencer's `can_call` on the root: it reads the project_lead's
+/// branch. An operator write made at each start, so it is idempotent. Only for a team
+/// with a roles registry and a cadencer.
+pub fn grant_cadencer_reflect(kernel: &Arc<Kernel>, cfg: &TeamConfig) -> Result<(), String> {
+    if cfg.roles.is_none() || !exists(kernel, CADENCER_ID) {
+        return Ok(());
+    }
+    let verbs = json!(BOARD_KERNEL_VERBS);
+    let root = fantastic_kernel::AgentId::from(DEFAULT_ROOT_ID);
+    kernel
+        .edit_callable_by(&root, |cb| {
+            if cb.get(CADENCER_ID) == Some(&verbs) {
+                return false;
+            }
+            cb.insert(CADENCER_ID.into(), verbs.clone());
+            true
+        })
+        .map(|_| ())
+        .map_err(|e| format!("cadencer reflect: {e}"))
+}
+
+/// The ids the roles registry's `fleet` lists under `project_lead` and `lead`: the
+/// agents that get a digest. Pure; an error reply or any other shape gives none.
+pub fn digest_leads(fleet: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    for role in ["project_lead", "lead"] {
+        for e in fleet["roles"][role].as_array().into_iter().flatten() {
+            if let Some(id) = e.as_str().or_else(|| e["id"].as_str()) {
+                if !out.iter().any(|o| o == id) {
+                    out.push(id.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Let the cadencer `send` to the given live agents, on both ends: the agent's
+/// `callable_by[cadencer]` and the cadencer's `can_call[agent]`. A spawned agent's
+/// `callable_by` names only its spawner, so the digest could not reach it otherwise.
+/// An operator write; idempotent; a dead id is skipped. Returns how many agents got a
+/// new grant.
+pub fn grant_digest_targets(kernel: &Arc<Kernel>, ids: &[String]) -> usize {
+    if !exists(kernel, CADENCER_ID) {
+        return 0;
+    }
+    let verbs = json!(["send"]);
+    let mut granted = 0;
+    for id in ids.iter().filter(|i| exists(kernel, i)) {
+        let by_agent =
+            kernel.edit_callable_by(&fantastic_kernel::AgentId::from(id.as_str()), |cb| {
+                if cb.get(CADENCER_ID) == Some(&verbs) {
+                    return false;
+                }
+                cb.insert(CADENCER_ID.into(), verbs.clone());
+                true
+            });
+        let by_cadencer =
+            kernel.edit_can_call(&fantastic_kernel::AgentId::from(CADENCER_ID), |cc| {
+                if cc.get(id.as_str()) == Some(&verbs) {
+                    return false;
+                }
+                cc.insert(id.clone(), verbs.clone());
+                true
+            });
+        match (by_agent, by_cadencer) {
+            (Ok(a), Ok(b)) => granted += usize::from(a || b),
+            (Err(e), _) | (_, Err(e)) => eprintln!("cadencer digest target {id}: {e}"),
+        }
+    }
+    granted
+}
+
+/// [`grant_digest_targets`] for the leads the roles registry `roles_id` lists now.
+pub async fn grant_fleet_digest_targets(kernel: &Arc<Kernel>, roles_id: &str) -> usize {
+    let outs = kernel
+        .send(vec![Item::new(roles_id, json!({"type": "fleet"}))])
+        .await;
+    let fleet = outs
+        .first()
+        .map(|o| o.result.clone())
+        .unwrap_or(Value::Null);
+    grant_digest_targets(kernel, &digest_leads(&fleet))
+}
+
 /// Start-up: plan the tree from `team.yaml` in `dir` (if there is one), apply it
 /// to a headless kernel, deliver the instructions when due, then stop the kernel.
 /// Returns `None` when there is no `team.yaml`.
@@ -1102,6 +1257,7 @@ pub fn run_at_start(
             grant_chat(&kernel, &workers);
             grant_control(&kernel, &workers);
             grant_pack_install(&kernel);
+            grant_cadencer_switch(&kernel);
             if let Err(e) = grant_agent_verbs(&kernel) {
                 eprintln!("{e}");
             }
@@ -1115,6 +1271,12 @@ pub fn run_at_start(
             }
             if let Err(e) = grant_board_reflect(&kernel, &cfg) {
                 eprintln!("{e}");
+            }
+            if let Err(e) = grant_cadencer_reflect(&kernel, &cfg) {
+                eprintln!("{e}");
+            }
+            if let Some(r) = &cfg.roles {
+                grant_fleet_digest_targets(&kernel, &r.id).await;
             }
             if let (Some(text), Some(f)) = (instructions, &cfg.first_agent) {
                 if instructions_due(&applied, &f.id, resend) {
@@ -1189,7 +1351,8 @@ mod tests {
                 "user",
                 "pack_listing",
                 "queue",
-                "git"
+                "git",
+                "cadencer"
             ]
         );
         assert_eq!(tree[0].parent, DEFAULT_ROOT_ID);
@@ -1302,7 +1465,8 @@ mod tests {
         assert!(!text.contains("Bearer "));
     }
 
-    const EMPTY_IDS: [&str; 10] = [
+    const EMPTY_IDS: [&str; 11] = [
+        "cadencer",
         "memory",
         "dispatcher",
         "worker_view",
@@ -1934,9 +2098,203 @@ mod tests {
         let by = |id: &str| tree.iter().find(|p| p.id == id).unwrap().record["callable_by"].clone();
         assert_eq!(by("board")["cadencer"], json!(["rows"]));
         assert_eq!(by("lead")["cadencer"], json!(["send"]));
-        // No board section, no cadencer.
+    }
+
+    fn cadencer_of(tree: &[Planned]) -> &Planned {
+        tree.iter()
+            .find(|p| p.id == CADENCER_ID)
+            .expect("a cadencer agent")
+    }
+
+    #[test]
+    fn plan_creates_the_cadencer_without_a_board() {
+        let tree = plan(&sample(), Path::new("/team")).unwrap();
+        assert!(!tree.iter().any(|p| p.id == BOARD_ID));
+        let c = cadencer_of(&tree);
+        assert_eq!(c.role, Role::Cadencer);
+        assert!(c.record.get("board").is_none());
+        assert!(c.record["can_call"].get("board").is_none());
+        assert!(c.record.get("roles").is_none());
+        assert!(c.record.get("enabled").is_none(), "on by default");
+        assert_eq!(c.record["can_call"]["lead"], json!(["send"]));
+        assert_eq!(tree[0].record["callable_by"][CADENCER_ID], json!(["send"]));
+    }
+
+    #[test]
+    fn plan_with_board_keeps_the_old_cadencer_record() {
+        let y = sample_yaml() + "board:\n  repos: [o/r]\n  github: git\n";
+        let tree = plan(&parse(&y).unwrap(), Path::new("/team")).unwrap();
+        let c = cadencer_of(&tree);
+        assert_eq!(c.record["board"], "board");
+        assert_eq!(c.record["can_call"]["board"], json!(["rows"]));
+        assert_eq!(
+            planned(&tree, BOARD_ID).record["callable_by"][CADENCER_ID],
+            json!(["rows"])
+        );
+        assert!(c.record.get("roles").is_none());
+    }
+
+    #[test]
+    fn plan_cadencer_enabled_false_creates_it_switched_off() {
+        let y = sample_yaml() + "cadencer:\n  enabled: false\n";
+        let tree = plan(&parse(&y).unwrap(), Path::new("/team")).unwrap();
+        assert_eq!(cadencer_of(&tree).record["enabled"], false);
+        let g = sample_yaml() + "groups:\n  a:\n    members: [w1]\n    enabled: false\n";
+        let tree = plan(&parse(&g).unwrap(), Path::new("/team")).unwrap();
+        assert_eq!(cadencer_of(&tree).record["enabled"], false);
+    }
+
+    #[test]
+    fn plan_roles_cadencer_reads_the_registries() {
+        let team = roles_team_dir();
+        let dir = team.path();
+        // (The shipped cards grant the board, so a roles team here has one.)
+        {
+            let cfg = roles_cfg(ROLES_LIMITS);
+            let tree = plan(&cfg, dir).unwrap();
+            let c = cadencer_of(&tree);
+            assert_eq!(c.record["roles"], "roles");
+            assert_eq!(c.record["can_call"]["roles"], json!(["fleet", "get_count"]));
+            assert_eq!(c.record["can_call"][TASKS_ID], json!(["list"]));
+            assert_eq!(c.record["can_call"][DEFAULT_ROOT_ID], json!(["reflect"]));
+            assert_eq!(
+                planned(&tree, "roles").record["callable_by"][CADENCER_ID],
+                json!(["fleet", "get_count"])
+            );
+            assert_eq!(
+                planned(&tree, TASKS_ID).record["callable_by"][CADENCER_ID],
+                json!(["list"])
+            );
+        }
         let plain = plan(&sample(), Path::new("/team")).unwrap();
-        assert!(!plain.iter().any(|p| p.id == CADENCER_ID));
+        let c = cadencer_of(&plain);
+        for k in ["roles", TASKS_ID, DEFAULT_ROOT_ID] {
+            assert!(c.record["can_call"].get(k).is_none(), "{k}");
+        }
+    }
+
+    async fn cadencer_enabled_after_apply(extra: &str) -> Value {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        let cfg = parse(&(sample_yaml() + extra)).unwrap();
+        apply(&kernel, &plan(&cfg, dir.path()).unwrap())
+            .await
+            .unwrap();
+        let outs = kernel
+            .send(vec![Item::new(CADENCER_ID, json!({"type": "status"}))])
+            .await;
+        outs[0].result["settings"]["enabled"].clone()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn apply_creates_the_default_cadencer_and_boots_enabled() {
+        assert_eq!(cadencer_enabled_after_apply("").await, true);
+        assert_eq!(
+            cadencer_enabled_after_apply("cadencer:\n  enabled: false\n").await,
+            false
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_cadencer_switch_names_both_ends_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        assert!(!grant_cadencer_switch(&kernel), "nothing live yet");
+        apply(&kernel, &plan(&sample(), dir.path()).unwrap())
+            .await
+            .unwrap();
+        let mk = json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
+        kernel.send(vec![Item::new(DEFAULT_ROOT_ID, mk)]).await;
+        place_dispatcher(&kernel).await;
+        assert!(grant_cadencer_switch(&kernel));
+        assert!(grant_cadencer_switch(&kernel), "idempotent");
+        let field = |id: &str, f: &str| {
+            kernel
+                .agents
+                .get(&fantastic_kernel::AgentId::from(id))
+                .map(|a| a.meta.read().unwrap()[f].clone())
+                .unwrap_or(Value::Null)
+        };
+        assert_eq!(
+            field(CADENCER_ID, "callable_by")[DISPATCHER_VIEW_ID],
+            json!(["status", "set"])
+        );
+        assert_eq!(
+            field(DISPATCHER_VIEW_ID, "can_call")[CADENCER_ID],
+            json!(["status", "set"])
+        );
+        // The page's own origin may now switch it, through the kernel's checks.
+        let off = kernel
+            .send(vec![Item::new(
+                CADENCER_ID,
+                json!({"type": "set", "enabled": false}),
+            )])
+            .await;
+        assert!(off[0].result.get("error").is_none(), "{}", off[0].result);
+    }
+
+    #[test]
+    fn digest_leads_lists_project_leads_and_leads_only() {
+        let fleet = json!({"roles": {
+            "project_lead": [{"id": "pl"}], "lead": [{"id": "sub"}, "sub2"],
+            "worker": [{"id": "w1"}]}});
+        assert_eq!(digest_leads(&fleet), ["pl", "sub", "sub2"]);
+        assert!(digest_leads(&json!({"error": "down"})).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_digest_targets_grants_send_to_fleet_leads() {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &plan(&sample(), dir.path()).unwrap())
+            .await
+            .unwrap();
+        for id in ["pl", "sub", "w1"] {
+            let mk = json!({"type": "create_agent", "id": id, "parent_id": DEFAULT_ROOT_ID,
+                "handler_module": "ram_store.tools", "callable_by": {"$self": "*", "$parent": "*"}});
+            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, mk)]).await;
+        }
+        let fleet = json!({"roles": {"project_lead": [{"id": "pl"}], "lead": [{"id": "sub"}, {"id": "gone"}],
+            "worker": [{"id": "w1"}]}});
+        let ids = digest_leads(&fleet);
+        assert_eq!(
+            grant_digest_targets(&kernel, &ids),
+            2,
+            "the dead id is skipped"
+        );
+        assert_eq!(grant_digest_targets(&kernel, &ids), 0, "idempotent");
+        let field = |id: &str, f: &str| {
+            kernel
+                .agents
+                .get(&fantastic_kernel::AgentId::from(id))
+                .map(|a| a.meta.read().unwrap()[f].clone())
+                .unwrap_or(Value::Null)
+        };
+        for id in ["pl", "sub"] {
+            assert_eq!(field(id, "callable_by")[CADENCER_ID], json!(["send"]));
+            assert_eq!(field(CADENCER_ID, "can_call")[id], json!(["send"]));
+        }
+        assert!(field("w1", "callable_by")[CADENCER_ID].is_null());
+        assert!(field(CADENCER_ID, "can_call")["w1"].is_null());
+        assert!(field(CADENCER_ID, "can_call")["gone"].is_null());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_cadencer_reflect_names_it_on_the_root_once() {
+        let dir = roles_team_dir();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        let cfg = roles_cfg(ROLES_LIMITS);
+        apply(&kernel, &plan(&cfg, dir.path()).unwrap())
+            .await
+            .unwrap();
+        grant_cadencer_reflect(&kernel, &cfg).unwrap();
+        grant_cadencer_reflect(&kernel, &cfg).unwrap();
+        let root = kernel
+            .agents
+            .get(&fantastic_kernel::AgentId::from(DEFAULT_ROOT_ID))
+            .map(|a| a.meta.read().unwrap()["callable_by"].clone())
+            .unwrap();
+        assert_eq!(root[CADENCER_ID], json!(["reflect"]));
     }
 
     #[test]
@@ -2470,6 +2828,7 @@ mod tests {
                 "$self": "*", "$parent": "*",
                 "lead": ["roles", "role", "spawn", "get_count", "fleet"],
                 "dispatcher": ["get_count"],
+                "cadencer": ["fleet", "get_count"],
                 "board": ["fleet", "get_count"],
             })
         );
@@ -2557,7 +2916,7 @@ mod tests {
         assert_eq!(t.record["can_call"], json!({"memory": "*"}));
         assert_eq!(
             t.record["callable_by"],
-            json!({"$self": "*", "$parent": "*", "board": ["list"]})
+            json!({"$self": "*", "$parent": "*", "cadencer": ["list"], "board": ["list"]})
         );
         let at = |i: &str| ids(&tree).iter().position(|x| x == i).unwrap();
         assert!(at("lead") < at("tasks"), "the lead exists first");

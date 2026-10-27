@@ -923,10 +923,11 @@ fn find_node(tree: &Value, id: &str) -> Option<Value> {
     list.iter().find_map(|n| find_node(n, id))
 }
 
-/// Read the roles-mode state through the public verbs only: the roles registry's `fleet`
-/// and `get_count`, the root's `reflect` of the project_lead's branch and the task
-/// registry's `list`. A peer that errors leaves its part empty; nothing panics.
-pub async fn roles_state(peers: &dyn Peers, roles: &str) -> Value {
+/// The four registry reads of roles mode, through the public verbs only: the roles
+/// registry's `fleet` and `get_count`, the root's `reflect` of the project_lead's branch
+/// and the task registry's `list`. A peer that errors leaves its part an error value
+/// (or `Null` for the tree); nothing panics. Returns `(fleet, count, tree, tasks)`.
+async fn roles_reads(peers: &dyn Peers, roles: &str) -> (Value, Value, Value, Value) {
     let fleet = peers.ask(roles, json!({"type": "fleet"})).await;
     let count = peers.ask(roles, json!({"type": "get_count"})).await;
     let lead = fleet["roles"]["project_lead"]
@@ -947,7 +948,168 @@ pub async fn roles_state(peers: &dyn Peers, roles: &str) -> Value {
     let tasks = peers
         .ask(crate::config::TASKS_ID, json!({"type": "list"}))
         .await;
+    (fleet, count, tree, tasks)
+}
+
+/// Read the roles-mode state through the public verbs only: the roles registry's `fleet`
+/// and `get_count`, the root's `reflect` of the project_lead's branch and the task
+/// registry's `list`. A peer that errors leaves its part empty; nothing panics.
+pub async fn roles_state(peers: &dyn Peers, roles: &str) -> Value {
+    let (fleet, count, tree, tasks) = roles_reads(peers, roles).await;
     roles_view(&fleet, &count, &tree, &tasks)
+}
+
+/// The newest `at` (seconds) a task shows: over its history entries and its report.
+fn task_at(t: &Value) -> Option<f64> {
+    t["history"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|h| h["at"].as_f64())
+        .chain(t["report"]["at"].as_f64())
+        .fold(None, |m: Option<f64>, a| Some(m.map_or(a, |m| m.max(a))))
+}
+
+/// The oldest `at` of a task's history: when it was first held.
+fn task_since(t: &Value) -> Option<f64> {
+    t["history"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|h| h["at"].as_f64())
+        .fold(None, |m: Option<f64>, a| Some(m.map_or(a, |m| m.min(a))))
+}
+
+/// One row per agent of the spawned tree, in the shape `cadencer` reads (`id`, `parent`,
+/// `has_ai`, `driver`, `state`, `task`, `idle_s`, `time_on_task_s`, `cost`, `cache_hit`,
+/// `new_results`): the project_lead is the root (`parent` null), every other agent has
+/// its spawner as parent. From the registries' replies and the clock in seconds.
+/// An agent holding a running, waiting or blocked task (itself, or by `{subtree}` of an
+/// ancestor) is `busy` with that task, and idles for `now` minus the newest `at` of the
+/// task's history and report; one holding a paused task is `paused`; one whose tasks
+/// are all done is `done`; the rest are `idle`. No tree, no rows.
+pub fn roles_rows(tree: &Value, tasks: &Value, now: u64) -> Vec<Value> {
+    let rows: &[Value] = tasks
+        .get("tasks")
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice);
+    let mut out = Vec::new();
+    if tree.get("id").is_some() {
+        rows_of(tree, None, &mut Vec::new(), rows, now as f64, &mut out);
+    }
+    out
+}
+
+fn rows_of(
+    node: &Value,
+    parent: Option<&str>,
+    ancestors: &mut Vec<String>,
+    tasks: &[Value],
+    now: f64,
+    out: &mut Vec<Value>,
+) {
+    let id = node["id"].as_str().unwrap_or("").to_string();
+    let held: Vec<&Value> = tasks
+        .iter()
+        .filter(|t| holds(&t["holder"], &id, ancestors))
+        .collect();
+    let live: Vec<&Value> = held
+        .iter()
+        .copied()
+        .filter(|t| {
+            matches!(
+                t["status"].as_str(),
+                Some("running" | "waiting" | "blocked")
+            )
+        })
+        .collect();
+    let paused = held.iter().any(|t| t["status"] == "paused");
+    // The task the agent is working on: a running one first.
+    let current = live
+        .iter()
+        .find(|t| t["status"] == "running")
+        .or_else(|| live.first())
+        .copied();
+    let statuses: Vec<&str> = held.iter().filter_map(|t| t["status"].as_str()).collect();
+    let state = if !live.is_empty() {
+        "busy"
+    } else if paused {
+        "paused"
+    } else if !statuses.is_empty() && statuses.iter().all(|s| *s == "done") {
+        "done"
+    } else {
+        "idle"
+    };
+    let secs = |from: Option<f64>| from.map_or(0, |a| (now - a).max(0.0) as u64);
+    out.push(json!({
+        "id": id,
+        "parent": parent,
+        "has_ai": true,
+        "driver": "",
+        "state": state,
+        "task": current.and_then(|t| t["id"].as_str()).unwrap_or(""),
+        "idle_s": secs(current.and_then(task_at)),
+        "time_on_task_s": secs(current.and_then(task_since)),
+        "cost": 0,
+        "cache_hit": 0,
+        "new_results": 0,
+    }));
+    ancestors.push(id.clone());
+    for k in node["children"].as_array().into_iter().flatten() {
+        rows_of(k, Some(&id), ancestors, tasks, now, out);
+    }
+    ancestors.pop();
+}
+
+/// The `load` object of roles mode (what the board's `rows` gives for its own data):
+/// the agents below the project_lead busy, idle and stalled, and the registry's tasks
+/// by status, with `queued` the waiting ones, so the quiet heartbeat can fire.
+pub fn roles_load(rows: &[Value], tasks: &Value, stall_after_s: u64) -> Value {
+    let workers: Vec<&Value> = rows.iter().filter(|r| !r["parent"].is_null()).collect();
+    let busy = workers.iter().filter(|r| r["state"] == "busy").count();
+    let idle = workers.iter().filter(|r| r["state"] == "idle").count();
+    let stalled = workers
+        .iter()
+        .filter(|r| {
+            is_stalled(
+                !r["task"].as_str().unwrap_or("").is_empty(),
+                r["idle_s"].as_u64().unwrap_or(0),
+                stall_after_s,
+            )
+        })
+        .count();
+    let count = |st: &str| {
+        tasks["tasks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|t| t["status"] == st)
+            .count()
+    };
+    json!({
+        "workers": {"busy": busy, "idle": idle, "stalled": stalled},
+        "tasks": {
+            "held": count("running"),
+            "blocked": count("blocked"),
+            "done": count("done"),
+            "queued": count("waiting"),
+        },
+    })
+}
+
+/// The spawned tree for the cadencer: the rows ([`roles_rows`]) and the load
+/// ([`roles_load`]), read through [`roles_reads`] (public verbs only; no spawned agent
+/// is called). A peer that errors gives no rows.
+pub async fn roles_tree_rows(
+    peers: &dyn Peers,
+    roles: &str,
+    now: u64,
+    stall_after_s: u64,
+) -> (Vec<Value>, Value) {
+    let (_, _, tree, tasks) = roles_reads(peers, roles).await;
+    let rows = roles_rows(&tree, &tasks, now);
+    let load = roles_load(&rows, &tasks, stall_after_s);
+    (rows, load)
 }
 
 async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Value {
@@ -1829,6 +1991,141 @@ mod tests {
         assert_eq!(v["roles"]["tree"]["id"], "pl");
         assert_eq!(v["roles"]["fleet"], json!({"running": 3, "max": 5}));
         assert_eq!(v["roles"]["tasks"][0]["id"], "t1");
+    }
+
+    fn row_of<'a>(rows: &'a [Value], id: &str) -> &'a Value {
+        rows.iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no row {id}"))
+    }
+
+    fn history(at: f64) -> Value {
+        json!([{"from": null, "to": "w1", "by": "pl", "at": at}])
+    }
+
+    #[test]
+    fn roles_rows_has_the_feed_shape() {
+        let tree = json!({"id": "pl", "children": [
+            {"id": "sub", "children": [{"id": "w1", "children": []}]},
+            {"id": "w2", "children": []}]});
+        let tasks = json!({"tasks": [
+            {"id": "t1", "source": "s", "holder": "w1", "status": "running",
+             "history": history(900.0), "report": {"from": "w1", "at": 940.0}},
+            {"id": "t2", "source": "s", "holder": "w2", "status": "waiting", "history": history(990.0)}
+        ]});
+        let rows = roles_rows(&tree, &tasks, 1000);
+        assert_eq!(rows.len(), 4);
+        let pl = row_of(&rows, "pl");
+        assert!(pl["parent"].is_null());
+        assert_eq!(pl["has_ai"], true);
+        assert_eq!(pl["driver"], "");
+        assert_eq!(row_of(&rows, "sub")["parent"], "pl");
+        let w1 = row_of(&rows, "w1");
+        assert_eq!(w1["parent"], "sub");
+        assert_eq!(w1["state"], "busy");
+        assert_eq!(w1["task"], "t1");
+        assert_eq!(w1["idle_s"], 60, "now minus the newest history/report at");
+        assert_eq!(w1["time_on_task_s"], 100, "now minus the oldest history at");
+        assert_eq!(row_of(&rows, "w2")["idle_s"], 10);
+        for k in ["cost", "cache_hit", "new_results"] {
+            assert_eq!(w1[k], 0, "{k}");
+        }
+        // Every row reads as a cadencer node.
+        for r in &rows {
+            assert!(crate::cadence_feed::tree_from_board(std::slice::from_ref(r)).len() == 1);
+        }
+    }
+
+    #[test]
+    fn roles_rows_subtree_holder_marks_descendants_busy() {
+        let tree = json!({"id": "pl", "children": [
+            {"id": "sub", "children": [{"id": "kid", "children": []}]},
+            {"id": "other", "children": []}]});
+        let tasks = json!({"tasks": [
+            {"id": "a", "source": "s", "holder": {"subtree": "sub"}, "status": "running", "history": history(500.0)}
+        ]});
+        let rows = roles_rows(&tree, &tasks, 600);
+        assert_eq!(row_of(&rows, "sub")["state"], "busy");
+        assert_eq!(row_of(&rows, "kid")["state"], "busy");
+        assert_eq!(row_of(&rows, "kid")["task"], "a");
+        assert_eq!(row_of(&rows, "other")["state"], "idle");
+        assert_eq!(row_of(&rows, "pl")["state"], "idle");
+    }
+
+    #[test]
+    fn roles_rows_idle_agent_without_task_is_idle_not_stalled() {
+        let tree = json!({"id": "pl", "children": [
+            {"id": "w1", "children": []}, {"id": "w2", "children": []}]});
+        let tasks = json!({"tasks": [
+            {"id": "a", "source": "s", "holder": "w2", "status": "done", "history": history(1.0)}
+        ]});
+        let rows = roles_rows(&tree, &tasks, 100_000);
+        let w1 = row_of(&rows, "w1");
+        assert_eq!(
+            (w1["state"].as_str(), w1["task"].as_str()),
+            (Some("idle"), Some(""))
+        );
+        assert_eq!(w1["idle_s"], 0);
+        assert_eq!(row_of(&rows, "w2")["state"], "done");
+        assert_eq!(row_of(&rows, "w2")["task"], "");
+        let load = roles_load(&rows, &tasks, 300);
+        assert_eq!(load["workers"]["stalled"], 0);
+        assert_eq!(load["workers"]["idle"], 1);
+    }
+
+    #[test]
+    fn roles_load_counts_queued_and_stalled() {
+        let tree = json!({"id": "pl", "children": [{"id": "w1", "children": []}]});
+        let tasks = json!({"tasks": [
+            {"id": "a", "source": "s", "holder": "w1", "status": "running", "history": history(0.0)},
+            {"id": "b", "source": "s", "holder": null, "status": "waiting", "history": []},
+            {"id": "c", "source": "s", "holder": null, "status": "waiting", "history": []}
+        ]});
+        let rows = roles_rows(&tree, &tasks, 1000);
+        let load = roles_load(&rows, &tasks, 300);
+        assert_eq!(load["tasks"]["queued"], 2);
+        assert_eq!(load["tasks"]["held"], 1);
+        assert_eq!(load["workers"]["busy"], 1);
+        assert_eq!(load["workers"]["stalled"], 1);
+    }
+
+    #[tokio::test]
+    async fn roles_tree_rows_reads_the_public_verbs_only() {
+        let peers = roles_peers();
+        let (rows, load) = roles_tree_rows(&peers, "roles", 1000, 300).await;
+        assert_eq!(rows.len(), 3);
+        assert_eq!(load["workers"]["busy"], 1);
+        let calls: Vec<String> = peers
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(to, p)| format!("{to}:{}", p["type"].as_str().unwrap_or("")))
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                "roles:fleet",
+                "roles:get_count",
+                "kernel:reflect",
+                "tasks:list"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn roles_tree_rows_survives_peer_errors() {
+        let e = json!({"error": "down"});
+        let peers = RolesPeers {
+            fleet: e.clone(),
+            count: e.clone(),
+            reflect: e.clone(),
+            tasks: e,
+            calls: Mutex::new(Vec::new()),
+        };
+        let (rows, load) = roles_tree_rows(&peers, "roles", 1000, 300).await;
+        assert!(rows.is_empty());
+        assert_eq!(load["tasks"]["queued"], 0);
     }
 
     #[tokio::test]
