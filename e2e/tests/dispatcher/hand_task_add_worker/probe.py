@@ -38,7 +38,8 @@ def run(ctx):
     v.check("the tree of g lists w2 beside w1", "w2" in tree_ids(team) and "w1" in tree_ids(team),
             str(tree_ids(team)))
     live = ids_of(team.send("kernel", {"type": "list_agents"}))
-    v.check("the worker and its memory exist", "w2" in live and "w2_memory" in live, str(live))
+    v.check("the worker exists and the team's one store serves it, no memory of its own",
+            "w2" in live and "memory" in live and "w2_memory" not in live, str(live))
     v.check("the board's rows put w2 under g", "w2" in board_members(team), str(board_members(team)))
 
     handed = control(team, node="w2", action="hand_task", task="fix issue 1").get("result", {})
@@ -56,7 +57,8 @@ def run(ctx):
     v.check("remove_worker with confirm is sent, with no error",
             gone.get("sent") is True and "error" not in gone, json.dumps(gone))
     live = ids_of(team.send("kernel", {"type": "list_agents"}))
-    v.check("the worker and its memory are gone", "w2" not in live and "w2_memory" not in live, str(live))
+    v.check("the worker is gone and the team's one store stays",
+            "w2" not in live and "w2_memory" not in live and "memory" in live, str(live))
     v.check("the tree no longer lists w2", "w2" not in tree_ids(team), str(tree_ids(team)))
     v.check("the board's rows no longer have w2", "w2" not in board_members(team)
             and "w1" in board_members(team), str(board_members(team)))

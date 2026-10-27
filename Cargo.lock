@@ -1631,6 +1631,7 @@ dependencies = [
  "fantastic-file",
  "fantastic-kernel",
  "fantastic-ram-store",
+ "fantastic-sqlite-store",
  "fantastic-task-registry",
  "fantastic-team-secrets-guard",
  "fantastic-tui",

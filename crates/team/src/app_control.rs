@@ -64,6 +64,7 @@ impl TeamHandle {
             if let Err(e) = serve_web(&kernel, port).await {
                 drop_web(&kernel).await;
                 kernel.shutdown().await;
+                fantastic_sqlite_store::close_all(&kernel);
                 return match bootstrap::shutdown(workdir) {
                     Ok(()) => Err(e),
                     Err(r) => Err(format!("{e}; releasing the lock failed: {r}")),
@@ -143,6 +144,7 @@ impl TeamHandle {
                 drop_web(&kernel).await;
             }
             kernel.shutdown().await;
+            fantastic_sqlite_store::close_all(&kernel);
         }
         self.held.clear();
         match release(&self.dir) {
@@ -251,6 +253,7 @@ impl Drop for TeamHandle {
             Ok(rt) => {
                 rt.spawn(async move {
                     kernel.shutdown().await;
+                    fantastic_sqlite_store::close_all(&kernel);
                     let _ = bootstrap::shutdown(&dir);
                 });
             }
@@ -369,6 +372,7 @@ pub fn persist_web(dir: &Path, port: u16) -> Result<(), String> {
             drop_web(&kernel).await;
         }
         kernel.shutdown().await;
+        fantastic_sqlite_store::close_all(&kernel);
         let released = bootstrap::shutdown(dir).map_err(|e| e.to_string());
         match (res, released) {
             (Ok(()), r) => r,
