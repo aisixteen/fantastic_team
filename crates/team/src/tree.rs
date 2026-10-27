@@ -48,6 +48,13 @@ pub const LEAD_ROLES_VERBS: [&str; 5] = ["roles", "role", "spawn", "get_count", 
 /// The kernel verbs a spawned agent may call on the root to wait for its children
 /// (`await_set`, `await_cancel`): the project_lead card lists them.
 pub const AWAIT_VERBS: [&str; 2] = ["await_set", "await_cancel"];
+/// What the board may call on the roles registry (roles mode): who runs (`fleet`) and
+/// the count (`get_count`).
+pub const BOARD_ROLES_VERBS: [&str; 2] = ["fleet", "get_count"];
+/// What the board may call on the task registry (roles mode): the rows.
+pub const BOARD_TASKS_VERBS: [&str; 1] = ["list"];
+/// What the board may call on the root (roles mode): `reflect`, for the project_lead's branch.
+pub const BOARD_KERNEL_VERBS: [&str; 1] = ["reflect"];
 /// What the dispatcher may call on the roles registry: the count it shows.
 pub const DISPATCHER_ROLES_VERBS: [&str; 1] = ["get_count"];
 /// The kernel verbs the dispatcher may call on the root to add and remove a worker
@@ -437,6 +444,25 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         }
         out.extend(roles_plan(cfg, r, team_dir));
         out.push(tasks_plan(cfg, r));
+        // The board lists the lead's tree, roles and tasks: it names the registries it
+        // reads, and they name it. The root's end (`reflect`) is `grant_board_reflect`.
+        if cfg.board.is_some() {
+            for (id, verbs) in [
+                (r.id.as_str(), json!(BOARD_ROLES_VERBS)),
+                (TASKS_ID, json!(BOARD_TASKS_VERBS)),
+            ] {
+                if let Some(p) = out.iter_mut().find(|p| p.id == id) {
+                    p.record["callable_by"][BOARD_ID] = verbs.clone();
+                }
+                if let Some(b) = out.iter_mut().find(|p| p.id == BOARD_ID) {
+                    b.record["can_call"][id] = verbs;
+                }
+            }
+            if let Some(b) = out.iter_mut().find(|p| p.id == BOARD_ID) {
+                b.record["roles"] = json!(r.id);
+                b.record["can_call"][DEFAULT_ROOT_ID] = json!(BOARD_KERNEL_VERBS);
+            }
+        }
     }
     Ok(out)
 }
@@ -937,6 +963,28 @@ pub fn grant_await(kernel: &Arc<Kernel>, cfg: &TeamConfig) -> Result<(), String>
         .map_err(|e| format!("await verbs: {e}"))
 }
 
+/// Name the board in the root's `callable_by` with `reflect` ([`BOARD_KERNEL_VERBS`]), the
+/// other end of the board's `can_call` on the root: it reads the project_lead's branch.
+/// An operator write made at each start, so it is idempotent. Only for a team with a
+/// roles registry and a board.
+pub fn grant_board_reflect(kernel: &Arc<Kernel>, cfg: &TeamConfig) -> Result<(), String> {
+    if cfg.roles.is_none() || !exists(kernel, BOARD_ID) {
+        return Ok(());
+    }
+    let verbs = json!(BOARD_KERNEL_VERBS);
+    let root = fantastic_kernel::AgentId::from(DEFAULT_ROOT_ID);
+    kernel
+        .edit_callable_by(&root, |cb| {
+            if cb.get(BOARD_ID) == Some(&verbs) {
+                return false;
+            }
+            cb.insert(BOARD_ID.into(), verbs.clone());
+            true
+        })
+        .map(|_| ())
+        .map_err(|e| format!("board reflect: {e}"))
+}
+
 /// Start-up: plan the tree from `team.yaml` in `dir` (if there is one), apply it
 /// to a headless kernel, deliver the instructions when due, then stop the kernel.
 /// Returns `None` when there is no `team.yaml`.
@@ -975,6 +1023,9 @@ pub fn run_at_start(
             grant_inquiries(&kernel);
             apply_limits(&kernel, &cfg).await?;
             if let Err(e) = grant_await(&kernel, &cfg) {
+                eprintln!("{e}");
+            }
+            if let Err(e) = grant_board_reflect(&kernel, &cfg) {
                 eprintln!("{e}");
             }
             if let Some(text) = instructions {
@@ -1582,6 +1633,43 @@ mod tests {
     }
 
     #[test]
+    fn plan_with_roles_and_board_lets_the_board_read_the_registries() {
+        let dir = roles_team_dir();
+        let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
+        let board = planned(&tree, BOARD_ID);
+        assert_eq!(board.record["roles"], "roles");
+        assert_eq!(
+            board.record["can_call"]["roles"],
+            json!(["fleet", "get_count"])
+        );
+        assert_eq!(board.record["can_call"][TASKS_ID], json!(["list"]));
+        assert_eq!(
+            board.record["can_call"][DEFAULT_ROOT_ID],
+            json!(["reflect"])
+        );
+        assert_eq!(
+            planned(&tree, "roles").record["callable_by"][BOARD_ID],
+            json!(["fleet", "get_count"])
+        );
+        assert_eq!(
+            planned(&tree, TASKS_ID).record["callable_by"][BOARD_ID],
+            json!(["list"])
+        );
+    }
+
+    #[test]
+    fn plan_without_roles_leaves_the_board_record_unchanged() {
+        let tree = plan(
+            &parse(&with_groups_and_board()).unwrap(),
+            Path::new("/team"),
+        )
+        .unwrap();
+        let board = planned(&tree, BOARD_ID);
+        assert!(board.record.get("roles").is_none());
+        assert_eq!(board.record["can_call"], json!({"git": "*", "queue": "*"}));
+    }
+
+    #[test]
     fn pack_can_call_the_board_for_shift_outcomes() {
         let tree = plan(
             &parse(&with_groups_and_board()).unwrap(),
@@ -2155,6 +2243,7 @@ mod tests {
                 "$self": "*", "$parent": "*",
                 "lead": ["roles", "role", "spawn", "get_count", "fleet"],
                 "dispatcher": ["get_count"],
+                "board": ["fleet", "get_count"],
             })
         );
         assert_eq!(
@@ -2241,7 +2330,7 @@ mod tests {
         assert_eq!(t.record["can_call"], json!({"roles_memory": "*"}));
         assert_eq!(
             t.record["callable_by"],
-            json!({"$self": "*", "$parent": "*"})
+            json!({"$self": "*", "$parent": "*", "board": ["list"]})
         );
         let at = |i: &str| ids(&tree).iter().position(|x| x == i).unwrap();
         assert!(at("lead") < at("tasks"), "the lead exists first");
@@ -2618,6 +2707,24 @@ mod tests {
         assert!(meta_value(&kernel, "roles")
             .get("limits")
             .is_none_or(|l| l.as_object().is_some_and(|m| m.is_empty())));
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_board_may_reflect_the_root_in_roles_mode() {
+        let dir = roles_team_dir();
+        let kernel = caller_team(dir.path(), "roles: {}\n").await;
+        let cfg = roles_cfg("roles: {}\n");
+        assert!(meta_value(&kernel, DEFAULT_ROOT_ID)["callable_by"]
+            .get(BOARD_ID)
+            .is_none());
+        grant_board_reflect(&kernel, &cfg).unwrap();
+        grant_board_reflect(&kernel, &cfg).unwrap();
+        assert_eq!(
+            meta_value(&kernel, DEFAULT_ROOT_ID)["callable_by"][BOARD_ID],
+            json!(["reflect"])
+        );
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }

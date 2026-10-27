@@ -82,6 +82,8 @@ The team refuses to start when a card does not parse, names a tier that is not a
 
 With `roles:` the team also gets the agent `tasks` (fantastic's `task_registry`, aisixteen/fantastic#429), a child of the lead that keeps its rows in `<roles id>_memory`; the id `tasks` is taken. The `project_lead` card grants its write verbs (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`) and the lead admits it on `tasks` like on every other tool. The `project_lead` records each issue it hands out (source `gh:owner/repo#N`), its holder (an agent or a subtree root) and every reassignment, and pushes updates to the source itself through the GitHub connector; nothing syncs automatically.
 
+With `roles:` the `board` verb also returns a `roles` section: the tree below the `project_lead` (each agent's role and active/paused/done state, from the `fleet` and the tasks it holds), the registry's `get_count` as `fleet`, and the `tasks` rows (source, holder, status). A team without `roles:` keeps the old rows only.
+
 The `project_lead` waits for its children with the kernel's `await_set`; each start names the agents below the root for `await_set` and `await_cancel` in the root's `callable_by`.
 
 Not done yet (#185, later): the chat entry for the `project_lead` in the dispatcher, the plan shown and updated in place, and the approval gate. `spawn` does not open a tool's `callable_by` to the new agent: the lead names each spawned agent on the tools its card lists (the lead card says how), and the credential store must name it too.
