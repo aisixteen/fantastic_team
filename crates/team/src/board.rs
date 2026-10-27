@@ -10,6 +10,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::dispatcher;
 use crate::puller::{task_file_names, KernelPeers, Peers};
 
 /// The bundle's handler module name.
@@ -640,6 +641,9 @@ pub struct BoardCfg {
     pub stale_secs: u64,
     /// Groups from the board record: name → driver and members.
     pub groups: BTreeMap<String, Group>,
+    /// The roles registry's id when the team runs in roles mode (`roles:`): the board
+    /// then adds the `roles` section to its `board` reply. None for the old rows.
+    pub roles: Option<String>,
 }
 
 fn now_secs() -> u64 {
@@ -678,6 +682,7 @@ fn cfg_of(
         github: text("github").ok_or_else(|| "team_board: record needs `github`".to_string())?,
         store: text("store").ok_or_else(|| "team_board: record needs `store`".to_string())?,
         ask_to: text("ask_to").unwrap_or_else(|| "user".into()),
+        roles: text("roles"),
         groups: meta
             .get("team_groups")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -801,6 +806,150 @@ async fn ask_recorded(
     reply
 }
 
+/// An agent's state from the statuses of the task_registry tasks it holds: `paused` when
+/// any is paused; `active` when any is waiting, running or blocked, or when it holds no
+/// task; `done` when all are done. A failed task with nothing live keeps it `active`.
+fn state_of(statuses: &[&str]) -> &'static str {
+    if statuses.contains(&"paused") {
+        "paused"
+    } else if !statuses.is_empty() && statuses.iter().all(|s| *s == "done") {
+        "done"
+    } else {
+        "active"
+    }
+}
+
+/// Who a registry task's `holder` names: an agent id, or `{subtree: id}` for a whole branch.
+fn holds(holder: &Value, id: &str, ancestors: &[String]) -> bool {
+    match holder {
+        Value::String(h) => h == id,
+        other => other
+            .get("subtree")
+            .and_then(Value::as_str)
+            .is_some_and(|r| r == id || ancestors.iter().any(|a| a == r)),
+    }
+}
+
+/// Give `node` and everything below it a role and a state; push each descendant onto `flat`.
+fn annotate(
+    node: &Value,
+    parent: Option<&str>,
+    ancestors: &mut Vec<String>,
+    roles: &BTreeMap<String, String>,
+    tasks: &[Value],
+    flat: &mut Vec<Value>,
+) -> Value {
+    let id = node["id"].as_str().unwrap_or("").to_string();
+    let held: Vec<&str> = tasks
+        .iter()
+        .filter(|t| holds(&t["holder"], &id, ancestors))
+        .filter_map(|t| t["status"].as_str())
+        .collect();
+    let role = roles.get(&id).cloned().unwrap_or_default();
+    let state = state_of(&held);
+    let mut out = node.clone();
+    out["role"] = json!(role);
+    out["state"] = json!(state);
+    if let Some(p) = parent {
+        flat.push(json!({"id": id, "role": role, "state": state, "parent": p}));
+    }
+    ancestors.push(id.clone());
+    let kids: Vec<Value> = node["children"]
+        .as_array()
+        .map(|c| {
+            c.iter()
+                .map(|k| annotate(k, Some(&id), ancestors, roles, tasks, flat))
+                .collect()
+        })
+        .unwrap_or_default();
+    ancestors.pop();
+    out["children"] = json!(kids);
+    out
+}
+
+/// The roles-mode section of the board from the registries' replies: `fleet` (the roles
+/// registry's `fleet`), `count` (its `get_count`, passed through as it answers), `tree`
+/// (the `reflect` node of the project_lead) and `tasks` (the task_registry's `list`).
+/// An error reply leaves its part empty or null.
+pub fn roles_view(fleet: &Value, count: &Value, tree: &Value, tasks: &Value) -> Value {
+    let mut roles = BTreeMap::new();
+    let mut lead: Option<String> = None;
+    if let Some(m) = fleet.get("roles").and_then(Value::as_object) {
+        for (role, list) in m {
+            for e in list.as_array().into_iter().flatten() {
+                let id = e.as_str().or_else(|| e["id"].as_str());
+                if let Some(id) = id {
+                    roles.insert(id.to_string(), role.clone());
+                    if role == "project_lead" && lead.is_none() {
+                        lead = Some(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let rows: Vec<Value> = tasks
+        .get("tasks")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut agents = Vec::new();
+    let tree = if tree.get("id").is_some() {
+        annotate(tree, None, &mut Vec::new(), &roles, &rows, &mut agents)
+    } else {
+        Value::Null
+    };
+    let tasks: Vec<Value> = rows
+        .iter()
+        .map(|t| {
+            json!({"id": t["id"], "source": t["source"], "holder": t["holder"], "status": t["status"]})
+        })
+        .collect();
+    json!({"roles": {
+        "lead": lead,
+        "fleet": dispatcher::fleet_of(count),
+        "tree": tree,
+        "agents": agents,
+        "tasks": tasks,
+    }})
+}
+
+/// The node `id` in a `reflect` reply's `tree` (a list of branches under `show_subtrees`,
+/// or one tree).
+fn find_node(tree: &Value, id: &str) -> Option<Value> {
+    if tree.get("id").and_then(Value::as_str) == Some(id) {
+        return Some(tree.clone());
+    }
+    let list = tree.as_array().or_else(|| tree["children"].as_array())?;
+    list.iter().find_map(|n| find_node(n, id))
+}
+
+/// Read the roles-mode state through the public verbs only: the roles registry's `fleet`
+/// and `get_count`, the root's `reflect` of the project_lead's branch and the task
+/// registry's `list`. A peer that errors leaves its part empty; nothing panics.
+pub async fn roles_state(peers: &dyn Peers, roles: &str) -> Value {
+    let fleet = peers.ask(roles, json!({"type": "fleet"})).await;
+    let count = peers.ask(roles, json!({"type": "get_count"})).await;
+    let lead = fleet["roles"]["project_lead"]
+        .as_array()
+        .and_then(|l| l.first())
+        .and_then(|e| e.as_str().or_else(|| e["id"].as_str()))
+        .map(str::to_string);
+    let mut tree = Value::Null;
+    if let Some(pl) = &lead {
+        let r = peers
+            .ask(
+                "kernel",
+                json!({"type": "reflect", "show_subtrees": [pl], "tree": "all"}),
+            )
+            .await;
+        tree = find_node(&r["tree"], pl).unwrap_or(Value::Null);
+    }
+    let tasks = peers
+        .ask(crate::config::TASKS_ID, json!({"type": "list"}))
+        .await;
+    roles_view(&fleet, &count, &tree, &tasks)
+}
+
 async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Value {
     let now = now_secs();
     let mut board = load(peers, &cfg.store).await;
@@ -809,7 +958,13 @@ async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Valu
             let errors = pull(peers, cfg, &mut board, now).await;
             json!({"tasks": board.tasks.len(), "errors": errors})
         }
-        "board" => board.snapshot(),
+        "board" => {
+            let mut out = board.snapshot();
+            if let Some(r) = &cfg.roles {
+                out["roles"] = roles_state(peers, r).await["roles"].clone();
+            }
+            out
+        }
         "rows" => {
             let mut live = BTreeMap::new();
             let mut names: BTreeSet<String> = board.agents.keys().cloned().collect();
@@ -905,7 +1060,7 @@ impl fantastic_kernel::bundle::Bundle for BoardBundle {
     fn verb_docs(&self) -> Value {
         json!({
             "pull": "pull → {tasks: n, errors: [..]}",
-            "board": "board → {tasks: {pending, in_work, done, failed}, agents: {..}}",
+            "board": "board → {tasks: {pending, in_work, done, failed}, agents: {..}, roles?}; roles (roles mode) = {lead, fleet, tree, agents: [{id, role, state, parent}], tasks: [{id, source, holder, status}]}",
             "task": "task {id} → the task",
             "report": "report {task, status, note?, pr?, author?} → {ok}",
             "agent": "agent {name, state, cost} → {ok}",
@@ -991,6 +1146,7 @@ mod tests {
             ask_to: "user".into(),
             stale_secs: 1800,
             groups: BTreeMap::new(),
+            roles: None,
         }
     }
 
@@ -1501,6 +1657,257 @@ mod tests {
         kernel.shutdown().await;
         crate::bootstrap::shutdown(dir.path()).unwrap();
     }
+
+    // ---- roles mode (#193) ----
+
+    /// A scripted roles registry, kernel reflect and task registry; records every call.
+    struct RolesPeers {
+        fleet: Value,
+        count: Value,
+        reflect: Value,
+        tasks: Value,
+        calls: Mutex<Vec<(String, Value)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Peers for RolesPeers {
+        async fn ask(&self, to: &str, p: Value) -> Value {
+            self.calls.lock().unwrap().push((to.to_string(), p.clone()));
+            match (to, p["type"].as_str().unwrap_or("")) {
+                ("roles", "fleet") => self.fleet.clone(),
+                ("roles", "get_count") => self.count.clone(),
+                ("kernel", "reflect") => self.reflect.clone(),
+                ("tasks", "list") => self.tasks.clone(),
+                ("store", "read") => json!({"error": "not found"}),
+                _ => json!({"error": "unexpected"}),
+            }
+        }
+    }
+
+    fn roles_peers() -> RolesPeers {
+        RolesPeers {
+            fleet: json!({"roles": {"project_lead": [{"id": "pl"}], "worker": [{"id": "w1"}, {"id": "w2"}]}}),
+            count: json!({"running": 3, "max": 5}),
+            reflect: json!({"tree": [{"id": "pl", "children": [{"id": "w1", "children": []}, {"id": "w2", "children": []}]}]}),
+            tasks: json!({"tasks": [
+                {"id": "t1", "source": "issue 7", "holder": "w1", "status": "running", "history": []}
+            ]}),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn fleet_pl() -> Value {
+        json!({"roles": {"project_lead": [{"id": "pl"}], "worker": [{"id": "w1"}, {"id": "w2"}]}})
+    }
+
+    fn tree_pl() -> Value {
+        json!({"id": "pl", "children": [
+            {"id": "w1", "children": []}, {"id": "w2", "children": []}
+        ]})
+    }
+
+    fn state_of_agent(v: &Value, id: &str) -> Value {
+        v["roles"]["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == id)
+            .unwrap_or_else(|| panic!("no agent {id}"))["state"]
+            .clone()
+    }
+
+    #[test]
+    fn roles_view_lists_the_tree_below_the_project_lead_with_roles() {
+        let v = roles_view(&fleet_pl(), &json!({}), &tree_pl(), &json!({"tasks": []}));
+        assert_eq!(v["roles"]["lead"], "pl");
+        assert_eq!(v["roles"]["tree"]["id"], "pl");
+        assert_eq!(v["roles"]["tree"]["role"], "project_lead");
+        assert_eq!(v["roles"]["tree"]["children"][0]["role"], "worker");
+        let agents = v["roles"]["agents"].as_array().unwrap();
+        assert_eq!(agents.len(), 2, "the lead is the root, not listed again");
+        for id in ["w1", "w2"] {
+            let a = agents.iter().find(|a| a["id"] == id).unwrap();
+            assert_eq!(a["role"], "worker");
+            assert_eq!(a["parent"], "pl");
+        }
+    }
+
+    #[test]
+    fn roles_view_agent_state_comes_from_its_tasks() {
+        let fleet = json!({"roles": {"project_lead": [{"id": "pl"}], "worker": [
+            {"id": "w1"}, {"id": "w2"}, {"id": "w3"}, {"id": "w4"}]}});
+        let tree = json!({"id": "pl", "children": [
+            {"id": "w1", "children": []}, {"id": "w2", "children": []},
+            {"id": "w3", "children": []}, {"id": "w4", "children": []}]});
+        let tasks = json!({"tasks": [
+            {"id": "a", "source": "s", "holder": "w1", "status": "running"},
+            {"id": "b", "source": "s", "holder": "w2", "status": "paused"},
+            {"id": "c", "source": "s", "holder": "w3", "status": "done"}
+        ]});
+        let v = roles_view(&fleet, &json!({}), &tree, &tasks);
+        assert_eq!(state_of_agent(&v, "w1"), "active");
+        assert_eq!(state_of_agent(&v, "w2"), "paused");
+        assert_eq!(state_of_agent(&v, "w3"), "done");
+        assert_eq!(state_of_agent(&v, "w4"), "active");
+    }
+
+    #[test]
+    fn roles_view_subtree_holder_covers_descendants() {
+        let tree = json!({"id": "pl", "children": [
+            {"id": "sub", "children": [{"id": "kid", "children": []}]},
+            {"id": "other", "children": []}]});
+        let tasks = json!({"tasks": [
+            {"id": "a", "source": "s", "holder": {"subtree": "sub"}, "status": "paused"}
+        ]});
+        let v = roles_view(&json!({}), &json!({}), &tree, &tasks);
+        assert_eq!(state_of_agent(&v, "sub"), "paused");
+        assert_eq!(state_of_agent(&v, "kid"), "paused");
+        assert_eq!(state_of_agent(&v, "other"), "active");
+    }
+
+    #[test]
+    fn roles_view_lists_tasks_with_source_holder_status() {
+        let tasks = json!({"tasks": [
+            {"id": "t1", "source": "issue 7", "holder": "w1", "status": "running", "history": [1]},
+            {"id": "t2", "source": "chat", "holder": {"subtree": "sub"}, "status": "waiting", "history": []}
+        ]});
+        let v = roles_view(&fleet_pl(), &json!({}), &tree_pl(), &tasks);
+        assert_eq!(
+            v["roles"]["tasks"],
+            json!([
+                {"id": "t1", "source": "issue 7", "holder": "w1", "status": "running"},
+                {"id": "t2", "source": "chat", "holder": {"subtree": "sub"}, "status": "waiting"}
+            ])
+        );
+    }
+
+    #[test]
+    fn roles_view_fleet_is_the_registrys_count_as_is() {
+        let v = roles_view(
+            &json!({}),
+            &json!({"running": 3, "max": 5}),
+            &Value::Null,
+            &json!({}),
+        );
+        assert_eq!(v["roles"]["fleet"], json!({"running": 3, "max": 5}));
+        let v = roles_view(
+            &json!({}),
+            &json!({"error": "no"}),
+            &Value::Null,
+            &json!({}),
+        );
+        assert!(v["roles"]["fleet"].is_null());
+    }
+
+    #[tokio::test]
+    async fn roles_state_reads_through_public_verbs() {
+        let peers = roles_peers();
+        let v = roles_state(&peers, "roles").await;
+        let calls: Vec<(String, String)> = peers
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(to, p)| (to.clone(), p["type"].as_str().unwrap_or("").to_string()))
+            .collect();
+        let want = [
+            ("roles", "fleet"),
+            ("roles", "get_count"),
+            ("kernel", "reflect"),
+            ("tasks", "list"),
+        ];
+        assert_eq!(
+            calls,
+            want.iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            peers.calls.lock().unwrap()[2].1["show_subtrees"],
+            json!(["pl"])
+        );
+        assert_eq!(v["roles"]["tree"]["id"], "pl");
+        assert_eq!(v["roles"]["fleet"], json!({"running": 3, "max": 5}));
+        assert_eq!(v["roles"]["tasks"][0]["id"], "t1");
+    }
+
+    #[tokio::test]
+    async fn roles_state_survives_errors() {
+        let e = json!({"error": "down"});
+        let peers = RolesPeers {
+            fleet: e.clone(),
+            count: e.clone(),
+            reflect: e.clone(),
+            tasks: e,
+            calls: Mutex::new(Vec::new()),
+        };
+        let v = roles_state(&peers, "roles").await;
+        assert!(v["roles"]["tree"].is_null());
+        assert!(v["roles"]["lead"].is_null());
+        assert_eq!(v["roles"]["agents"], json!([]));
+        assert_eq!(v["roles"]["tasks"], json!([]));
+    }
+
+    fn fake() -> Fake {
+        Fake {
+            files: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn board_verb_without_roles_keeps_the_old_snapshot() {
+        let peers = fake();
+        let got = dispatch(&peers, &cfg(), "board", &json!({})).await;
+        assert_eq!(got, Board::default().snapshot());
+        assert!(got.get("roles").is_none());
+    }
+
+    #[tokio::test]
+    async fn board_verb_with_roles_adds_the_roles_section_and_keeps_the_old_keys() {
+        let peers = roles_peers();
+        let mut c = cfg();
+        c.roles = Some("roles".into());
+        let got = dispatch(&peers, &c, "board", &json!({})).await;
+        assert!(got.get("tasks").is_some());
+        assert!(got.get("agents").is_some());
+        assert_eq!(got["roles"]["tasks"][0]["id"], "t1");
+        assert_eq!(got["roles"]["agents"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn cfg_of_reads_roles_from_the_board_record() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        let mut answers = Vec::new();
+        for (id, roles) in [("board_r", Some("roles")), ("board_n", None)] {
+            let mut rec = json!({
+                "type": "create_agent", "id": id, "parent_id": "kernel_state",
+                "handler_module": HANDLER_MODULE, "github": "gh", "store": "store"
+            });
+            if let Some(r) = roles {
+                rec["roles"] = json!(r);
+            }
+            let made = kernel
+                .send(vec![fantastic_kernel::Item::new("kernel", rec)])
+                .await;
+            assert!(
+                matches!(made[0].status, fantastic_kernel::Status::Completed),
+                "{:?}",
+                made[0].result
+            );
+            let got = kernel
+                .send(vec![fantastic_kernel::Item::new(
+                    id,
+                    json!({"type": "board"}),
+                )])
+                .await;
+            answers.push(got[0].result.clone());
+        }
+        assert!(answers[0].get("roles").is_some(), "{}", answers[0]);
+        assert!(answers[1].get("roles").is_none(), "{}", answers[1]);
+        kernel.shutdown().await;
+        crate::bootstrap::shutdown(dir.path()).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -1713,6 +2120,7 @@ mod load_tests {
             ask_to: "user".into(),
             stale_secs: 1800,
             groups: token_groups(),
+            roles: None,
         };
         let out = dispatch(&TokenPeers, &cfg, "rows", &json!({"type": "rows"})).await;
         assert_eq!(out["load"]["tokens_total"], 500);
