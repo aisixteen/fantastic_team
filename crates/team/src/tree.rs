@@ -236,8 +236,8 @@ fn roles_plan(cfg: &TeamConfig, lead: &str, r: &config::RolesCfg, team_dir: &Pat
     }
 }
 
-/// The task registry (fantastic `task_registry`), a child of the lead so the lead
-/// can admit a spawned project_lead on it (the card's admit step). It keeps its
+/// The task registry (fantastic `task_registry`), a child of the lead so spawn
+/// opens it to a project_lead through the card's grants. It keeps its
 /// rows in the team's one store agent, which keys them apart from the conversations.
 fn tasks_plan(cfg: &TeamConfig, lead: &str) -> Planned {
     Planned {
@@ -2853,21 +2853,13 @@ mod tests {
             json!(PROJECT_LEAD_TASK_VERBS),
             "the card's grant reached the spawned agent"
         );
-        // not admitted yet: refused by the gate
+        // spawn opened `tasks` to the project_lead (fantastic#436): no admit step
+        assert_eq!(
+            meta_value(&kernel, "tasks")["callable_by"][pl.as_str()],
+            json!(PROJECT_LEAD_TASK_VERBS),
+            "the card's grant reached the tool's callable_by"
+        );
         let add = json!({"type": "add", "id": "o/r#7", "source": "gh:o/r#7", "holder": w});
-        let denied = call_as(&kernel, &pl, "tasks", add.clone()).await;
-        assert_eq!(denied["reason"], "unauthorized", "{denied}");
-        // the admit step is an update_agent of `tasks`.callable_by; the lead's template
-        // grant for it is team config, so the operator does it here
-        let mut by = meta_value(&kernel, "tasks")["callable_by"].clone();
-        by[pl.as_str()] = json!("*");
-        let up = ask(
-            &kernel,
-            "kernel_state",
-            json!({"type": "update_agent", "id": "tasks", "callable_by": by}),
-        )
-        .await;
-        assert!(up.get("error").is_none(), "{up}");
         let e = call_as(&kernel, &pl, "tasks", add).await;
         assert!(e.get("error").is_none(), "{e}");
         assert_eq!(e["source"], "gh:o/r#7", "{e}");
@@ -2904,6 +2896,55 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_spawn_does_not_open_the_credential_store() {
+        // The tier's `credentials` ref is not a card grant: spawn leaves the store's
+        // `callable_by` alone, so the team still has to name a spawned agent that
+        // reads a key (the README says so).
+        let dir = roles_team_dir();
+        let yaml = roles_yaml("caller.tools", ROLES_LIMITS).replacen(
+            "  small:\n    handler_module: ram_store.tools\n",
+            "  small:\n    handler_module: ram_store.tools\n    credentials: {store: credentials, ref: k/e}\n",
+            1,
+        ) + "credentials:\n  id: credentials\n  backend: env\n";
+        let kernel = caller_team_yaml(dir.path(), &yaml).await;
+        let (_pl, w) = lead_with_project_lead(&kernel).await;
+        let wm = meta_value(&kernel, &w);
+        assert_eq!(wm["credentials"]["store"], "credentials", "{wm}");
+        let store = meta_value(&kernel, "credentials");
+        assert!(store["callable_by"].get(w.as_str()).is_none(), "{store}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delete_of_a_spawned_agent_drops_it_from_the_tools_callable_by() {
+        let dir = roles_team_dir();
+        let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
+        let (pl, w) = lead_with_project_lead(&kernel).await;
+        assert_eq!(meta_value(&kernel, "queue")["callable_by"][w.as_str()], "*");
+        assert!(meta_value(&kernel, "tasks")["callable_by"]
+            .get(pl.as_str())
+            .is_some());
+        let del = ask(
+            &kernel,
+            "kernel_state",
+            json!({"type": "delete_agent", "id": w}),
+        )
+        .await;
+        assert!(del.get("error").is_none(), "{del}");
+        for t in ["queue", "worker_exec", "worker_files"] {
+            let tool = meta_value(&kernel, t);
+            assert!(tool["callable_by"].get(w.as_str()).is_none(), "{t}: {tool}");
+        }
+        // the other spawned agent keeps its entry
+        assert!(meta_value(&kernel, "tasks")["callable_by"]
+            .get(pl.as_str())
+            .is_some());
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_worker_cannot_write_the_task_registry() {
         let dir = roles_team_dir();
         let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
@@ -2914,12 +2955,34 @@ mod tests {
         assert!(meta_value(&kernel, "tasks")["callable_by"]
             .get(w.as_str())
             .is_none());
-        // a project_lead the lead has not admitted is refused by the gate
+        // an agent no card grants `tasks` to is refused by the gate
+        let made = ask(
+            &kernel,
+            "kernel_state",
+            json!({"type": "create_agent", "id": "stray", "parent_id": "lead",
+                "handler_module": "caller.tools",
+                "can_call": {"tasks": "*"}}),
+        )
+        .await;
+        assert!(made.get("error").is_none(), "{made}");
         let add = json!({"type": "add", "id": "o/r#8", "source": "gh:o/r#8", "holder": w});
-        let denied = call_as(&kernel, &pl, "tasks", add).await;
+        let denied = call_as(&kernel, "stray", "tasks", add.clone()).await;
         assert_eq!(denied["reason"], "unauthorized", "{denied}");
+        // the spawned project_lead's own add goes through
+        let ok = call_as(&kernel, &pl, "tasks", add).await;
+        assert!(ok.get("error").is_none(), "{ok}");
         let got = call_as(&kernel, "lead", "tasks", json!({"type": "list"})).await;
-        assert!(!got.to_string().contains("o/r#8"), "{got}");
+        assert!(got.to_string().contains("o/r#8"), "{got}");
+        let strayed = call_as(
+            &kernel,
+            "stray",
+            "tasks",
+            json!({"type": "add", "id": "o/r#9", "source": "gh:o/r#9", "holder": w}),
+        )
+        .await;
+        assert_eq!(strayed["reason"], "unauthorized", "{strayed}");
+        let got = call_as(&kernel, "lead", "tasks", json!({"type": "list"})).await;
+        assert!(!got.to_string().contains("o/r#9"), "{got}");
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
@@ -3031,6 +3094,10 @@ mod tests {
 
     /// The roles team on a kernel whose first agent is a caller.
     async fn caller_team(dir: &Path, roles: &str) -> Arc<Kernel> {
+        caller_team_yaml(dir, &roles_yaml("caller.tools", roles)).await
+    }
+
+    async fn caller_team_yaml(dir: &Path, yaml: &str) -> Arc<Kernel> {
         let mut reg = crate::registry();
         reg.register("caller.tools", CallerBundle);
         let mut booted =
@@ -3039,7 +3106,7 @@ mod tests {
         booted.write_seed().unwrap();
         let kernel = booted.kernel.clone();
         crate::boot_kernel(&kernel).await.unwrap();
-        let cfg = parse(&roles_yaml("caller.tools", roles)).unwrap();
+        let cfg = parse(yaml).unwrap();
         apply(&kernel, &plan(&cfg, dir).unwrap()).await.unwrap();
         kernel
     }
@@ -3101,9 +3168,14 @@ mod tests {
         assert!(!kernel
             .agents
             .contains_key(&fantastic_kernel::AgentId::from("sneak")));
-        // a spawn does not open the tools to the child: the lead admits it
+        // a spawn opens the card's tools to the child (fantastic#436): the worker
+        // card grants the queue "*", the exec and file tools too
         let q = meta_value(&kernel, "queue");
-        assert!(q["callable_by"].get(id.as_str()).is_none(), "{q}");
+        assert_eq!(q["callable_by"][id.as_str()], "*", "{q}");
+        for t in ["worker_exec", "worker_files"] {
+            let tool = meta_value(&kernel, t);
+            assert_eq!(tool["callable_by"][id.as_str()], "*", "{t}: {tool}");
+        }
         // another caller cannot spawn
         let denied = call_as(
             &kernel,

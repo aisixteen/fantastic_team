@@ -120,7 +120,6 @@ mod tests {
             "<type>read</type>",
             "<type>write</type>",
             "delete_agent",
-            "update_agent",
             "wait_s",
             "generating",
             "fantastic#227",
@@ -176,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn lead_card_spawns_and_asks_roles() {
+    fn lead_card_spawns_and_asks_roles_without_an_admit_step() {
         let l = card("lead.md").directive;
         let start = l.find("## Starting an agent").unwrap();
         let end = l.find("## Workers that serve themselves").unwrap();
@@ -185,8 +184,9 @@ mod tests {
         assert!(section.contains("<type>spawn</type>"));
         assert!(section.contains("get_count"));
         assert!(!section.contains("create_agent"));
-        assert!(section.contains("update_agent"), "the admit step");
-        assert!(section.contains("WHOLE"));
+        assert!(!section.contains("Admit it"));
+        assert!(!section.contains("callable_by"));
+        assert!(!section.contains("update_agent"));
         assert!(section.contains("fleet"));
         assert!(section.contains("The queue is QUEUE. Your id is the id in your own reflect."));
         assert!(section.contains("error:\"limit\""));
@@ -239,6 +239,18 @@ mod tests {
             "get_count",
         ] {
             assert!(c.directive.contains(s), "project_lead card lacks {s}");
+        }
+    }
+
+    #[test]
+    fn project_lead_card_does_not_talk_of_an_admit() {
+        // spawn opens the card's tools on both ends (fantastic#436): no card tells an
+        // agent to wait for, or to perform, an admit
+        for file in ["project_lead.md", "lead.md"] {
+            let d = card(file).directive;
+            for s in ["admit", "not admitted", "Admit it"] {
+                assert!(!d.contains(s), "{file} still says `{s}`");
+            }
         }
     }
 

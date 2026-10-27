@@ -40,6 +40,10 @@ Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from tw
 
 `Cargo.lock` now pins fantastic `7bf494e`. It brings the generic roles registry `agentic_resources` (fantastic#424), fork points (#425), `await_set` (#426) and spawn from a fork point (#431). Team configures the registry for the coder role set (#185).
 
+## Pin at `3535af5`
+
+`Cargo.lock` now pins fantastic `3535af5`. It brings #436 (`spawn` opens the tool's `callable_by` for every grant on the card, on both ends, all or nothing; a card may only grant what the spawner itself holds, else `not_allowed`; `delete_agent` takes the child out again) and #437 (`task_registry` rows carry `versions`, `source_version`, `fork_from` and `usage`; `report` takes `usage`; `list` sums it per batch). Team code change: the lead's `can_call` now holds `board [board, rows]` (when the team has a board) and `kernel_state [await_set, await_cancel]` (unless its template grants `kernel_state`), the verbs the `project_lead` card hands on. The manual admit is gone from the cards. The credential store is still not opened by a spawn: a tier's `credentials` ref is no card grant.
+
 ## What Team gets from the bump
 
 `Cargo.lock` now pins fantastic `bab97de` (aisixteen/fantastic main, 11 commits past `df64468`, which was 40 commits past `ef6f9a7`, which was 11 commits past `717765e`, which was 24 commits past `e7ede96`). Only the fantastic crates moved (the 11 newest commits are e2e and CI fixes, no API change), after the earlier bump added the transitive crates that `fantastic-system-agents` needs (`zbus` and its family, from the fantastic lock entries). The build and tests pass with no Team code change. Features the bump brings to Team:
