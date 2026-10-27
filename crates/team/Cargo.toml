@@ -21,6 +21,7 @@ fantastic-bundle.workspace = true
 fantastic-core.workspace = true
 fantastic-file.workspace = true
 fantastic-ram-store.workspace = true
+fantastic-sqlite-store.workspace = true
 fantastic-agentic-resources.workspace = true
 fantastic-task-registry.workspace = true
 fantastic-user.workspace = true

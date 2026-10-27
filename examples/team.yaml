@@ -80,6 +80,12 @@ connectors:
       directive: Push a work branch and open a draft pull request. Never the default branch, never a force, never a merge.
 queue:
   id: queue
+# The one store agent every AI agent keeps its memory in, and `tasks` its rows
+# (a sqlite_store, one file under this directory). These are the defaults; leave
+# the section out to take them. The path is relative, no `..`.
+store:
+  id: memory
+  path: .fantastic/memory.db
 # The roles registry (fantastic's agentic_resources): the role cards in `roles/`
 # (the folder next to this file; copy it from the repo) and the default limits,
 # set at every start. total: agents running at once; per_role: per role name.
