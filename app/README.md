@@ -79,7 +79,7 @@ also shows the cost per hour: ` · digests N B/h · driver N tok/h`. Above the f
 workers; stalled worker rows are marked.
 
 The page talks to the dispatcher through fantastic's html connector
-(`fantastic.send('dispatcher', …)`), with the `sidebar`, `open` and `control` verbs.
+(`fantastic.send('dispatcher', …)`), with the `sidebar`, `open` and `control` verbs. The sidebar's Team section lists the queue, the board, the github connector and the dispatcher (`services`); opening one shows a text-only view of it in the right pane, refreshed every five seconds. The github view never shows a token or a key, and the TUI shows these agents in its generic panel.
 Served from a handle on a port, the page gets the same two calls from a small
 shim over the team's `web_ws` leg (`team_ws`). Without
 that connection it says so on one line instead of failing.

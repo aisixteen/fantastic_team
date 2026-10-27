@@ -1211,3 +1211,139 @@ async fn project_field_set_graphql_errors_are_named_without_the_token() {
     assert_eq!(r["field"], "PVTF_9", "{r}");
     assert!(!r.to_string().contains(&token()), "{r}");
 }
+
+async fn mock_issue(f: &Fx, n: u64, status: u16) {
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/acme/widgets/issues/{n}")))
+        .respond_with(
+            ResponseTemplate::new(status)
+                .set_body_json(json!({"number": n, "title": "t", "state": "open", "body": "b", "labels": [], "message": "Not Found"})),
+        )
+        .mount(&f.gh)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/acme/widgets/issues/{n}/comments")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&f.gh)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reflect_lists_recent_calls_with_verb_target_result() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    mock_issue(&f, 3, 200).await;
+    let r = f
+        .call(json!({"type": "issue_view", "repo": "acme/widgets", "number": 3}))
+        .await;
+    assert_eq!(r["number"], 3, "{r}");
+    let _ = f.call(json!({"type": "directive"})).await;
+    let rf = f.call(json!({"type": "reflect"})).await;
+    assert_eq!(
+        rf["recent_calls"],
+        json!([{"verb": "issue_view", "target": "acme/widgets#3", "result": "ok"}]),
+        "{rf}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reflect_logs_a_refused_repo_as_refused_without_a_request() {
+    let f = fx(json!({})).await;
+    let r = f
+        .call(json!({"type": "issues", "repo": "evil/other"}))
+        .await;
+    assert!(r.get("error").is_some(), "{r}");
+    let rf = f.call(json!({"type": "reflect"})).await;
+    assert_eq!(
+        rf["recent_calls"],
+        json!([{"verb": "issues", "target": "evil/other", "result": "refused"}])
+    );
+    assert!(f.gh.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reflect_logs_http_error_as_error_status() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    mock_issue(&f, 99, 404).await;
+    let _ = f
+        .call(json!({"type": "issue_view", "repo": "acme/widgets", "number": 99}))
+        .await;
+    let rf = f.call(json!({"type": "reflect"})).await;
+    assert_eq!(rf["recent_calls"][0]["result"], "error 404", "{rf}");
+    assert_eq!(rf["recent_calls"][0]["target"], "acme/widgets#99");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reflect_recent_calls_are_capped_at_fifty() {
+    let f = fx(json!({})).await;
+    for _ in 0..60 {
+        let _ = f
+            .call(json!({"type": "issues", "repo": "evil/other"}))
+            .await;
+    }
+    let _ = f.call(json!({"type": "issues", "repo": "evil/last"})).await;
+    let rf = f.call(json!({"type": "reflect"})).await;
+    let calls = rf["recent_calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 50);
+    assert_eq!(calls[49]["target"], "evil/last");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reflect_reports_rate_from_response_headers() {
+    let f = fx(json!({})).await;
+    assert_eq!(
+        f.call(json!({"type": "reflect"})).await["rate"],
+        Value::Null
+    );
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/installation"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-ratelimit-limit", "5000")
+                .insert_header("x-ratelimit-remaining", "4990")
+                .insert_header("x-ratelimit-reset", "1760000000")
+                .set_body_json(json!({"id": 42})),
+        )
+        .mount(&f.gh)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/app/installations/42/access_tokens"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "token": token(), "expires_at": "2099-01-01T00:00:00Z"
+        })))
+        .mount(&f.gh)
+        .await;
+    mock_issue(&f, 3, 200).await;
+    let _ = f
+        .call(json!({"type": "issue_view", "repo": "acme/widgets", "number": 3}))
+        .await;
+    let rf = f.call(json!({"type": "reflect"})).await;
+    assert_eq!(
+        rf["rate"],
+        json!({"limit": 5000, "remaining": 4990, "reset": 1760000000u64}),
+        "{rf}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reflect_after_calls_holds_no_token_or_key() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    mock_issue(&f, 3, 200).await;
+    let _ = f
+        .call(json!({"type": "issue_view", "repo": "acme/widgets", "number": 3}))
+        .await;
+    let rf = f.call(json!({"type": "reflect"})).await.to_string();
+    let (pem, _, _) = test_key();
+    assert!(!rf.contains(&token()));
+    assert!(!rf.contains("BEGIN"));
+    assert!(!rf.contains(pem.lines().nth(1).unwrap()));
+    for r in f.gh.received_requests().await.unwrap() {
+        if let Some(a) = r.headers.get("authorization").and_then(|h| h.to_str().ok()) {
+            if let Some(j) = a.strip_prefix("Bearer ") {
+                assert!(!rf.contains(j));
+            }
+        }
+    }
+}

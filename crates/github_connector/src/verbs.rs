@@ -19,7 +19,7 @@ const LABEL_TEXT: &str =
 const DRAFT_TEXT: &str =
     "team_github pr_create: pull requests are opened as drafts only — a person marks one ready";
 
-/// Route one verb to its handler.
+/// Route one verb to its handler, and log the call for `reflect`.
 pub(crate) async fn dispatch(
     t: &str,
     id: &AgentId,
@@ -27,6 +27,20 @@ pub(crate) async fn dispatch(
     kernel: &Arc<Kernel>,
     cfg: &Cfg,
 ) -> Value {
+    let reply = route(t, id, p, kernel, cfg).await;
+    if !matches!(t, "reflect" | "directive" | "boot") {
+        crate::callog::push(
+            &id.to_string(),
+            &cfg.api_url,
+            t,
+            crate::callog::target_of(p),
+            crate::callog::result_of(&reply),
+        );
+    }
+    reply
+}
+
+async fn route(t: &str, id: &AgentId, p: &Value, kernel: &Arc<Kernel>, cfg: &Cfg) -> Value {
     match t {
         "reflect" => json!({
             "id": id.to_string(),
@@ -35,6 +49,8 @@ pub(crate) async fn dispatch(
             "api_url": cfg.api_url,
             "git": cfg.git,
             "directive": cfg.directive,
+            "recent_calls": crate::callog::recent(&id.to_string(), &cfg.api_url),
+            "rate": crate::callog::rate(&cfg.api_url),
         }),
         "directive" => json!({"directive": cfg.directive}),
         "whoami" => whoami(id, kernel, cfg).await,

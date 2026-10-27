@@ -109,7 +109,6 @@ function makeRuntime(handler) {
   const idRe = /<[a-z0-9]+[^>]*\sid="([^"]+)"/g;
   let m;
   while ((m = idRe.exec(html))) { byId[m[1]] = new El('div'); byId[m[1]].id = m[1]; }
-  byId.back.hidden = true;
   byId.pane.hidden = true;
   const document = {
     getElementById: (id) => byId[id] || null,
@@ -187,7 +186,175 @@ const base = (extra) => (id, p) => {
   return (extra && extra(id, p)) || {};
 };
 
+const AGENTS = [
+  { id: 'pl', role: 'project_lead', state: 'active', depth: 0, indent: 0, guides: 0, lead: true, label: 'Lead' },
+  { id: 'sub', role: 'project_lead', state: 'paused', depth: 1, indent: 1, guides: 1, lead: false, label: 'project_lead' },
+  { id: 'w1', role: 'worker', state: 'done', depth: 2, indent: 2, guides: 2, lead: false, label: 'worker' },
+];
+const roleReply = (status) => ({
+  team: 't', groups: [], ungrouped: [], agents: AGENTS,
+  plan: { lead: 'pl', fleet: { running: 3, max: 8 }, tasks: [{ id: 'o/r#1', source: 'gh:o/r#1', holder: 'subtree:sub', status }] },
+});
+const roleRuntime = async (status) => {
+  const state = { status };
+  const rt = makeRuntime(base((id, p) => (p.type === 'open' ? { view: 'chat', target: p.node, cell: { label: 'x', kind: 'chat', target: p.node } } : null)));
+  rt.state = state;
+  rt.stub = () => roleReply(state.status);
+  await rt.flush(); // the page's own first sidebar load
+  return rt;
+};
+
 const scenarios = {
+  async lead_layout() {
+    const rt = await roleRuntime('in_work');
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    const rows = rt.byId.sidebar.all('.agent');
+    return {
+      rows: rows.map((r) => ({ cls: r.className, indent: r.dataset.indent, node: r.dataset.node, text: r.textContent })),
+      title: rt.byId.sidebar.all('.agents-title').map((x) => x.textContent),
+      first: rt.byId.sidebar.children[0].className,
+    };
+  },
+
+  async two_columns() {
+    const rt = await roleRuntime('in_work');
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    const row = rt.byId.sidebar.all('.agent')[1];
+    rt.byId.sidebar.dispatch('click', { target: row });
+    await rt.flush();
+    return { sidebarHidden: rt.byId.sidebar.hidden, paneHidden: rt.byId.pane.hidden, selected: rt.byId.sidebar.all('.agent').filter((r) => r.classList.contains('selected')).map((r) => r.dataset.node), hasBack: !!rt.byId.back, opened: rt.sent('open').map((x) => x.payload.node) };
+  },
+
+  async lead_plan() {
+    const rt = await roleRuntime('in_work');
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    const c = await rt.open('pl');
+    const text = () => c.view.textContent;
+    const out = { first: text(), viewHidden: c.view.hidden };
+    const row = c.view.all('.plan-task')[0];
+    rt.state.status = 'done';
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    out.second = text();
+    out.sameRow = c.view.all('.plan-task')[0] === row;
+    out.rows = c.view.all('.plan-task').length;
+    out.watchers = rt.watchers.map((w) => w.node);
+    return out;
+  },
+
+  async lead_live() {
+    const rt = await roleRuntime('in_work');
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    await rt.open('pl');
+    const before = rt.sent('sidebar').length;
+    await rt.emit({ type: 'done', source: 'pl' });
+    await rt.emit({ type: 'status', phase: 'streaming' });
+    const immediate = rt.sent('sidebar').length - before;
+    const timers = Array.from(rt.timers.values()).map((t) => t.ms).sort((a, b) => a - b);
+    await rt.runTimers();
+    const afterTimers = rt.sent('sidebar').length - before;
+    rt.js('dropChat()');
+    return { immediate, afterTimers, timers, left: rt.timers.size, watchers: rt.watchers.length };
+  },
+
+  async plain_agent() {
+    const rt = await roleRuntime('in_work');
+    rt.js(`renderSidebar(${JSON.stringify(rt.stub())})`);
+    const c = await rt.open('w1');
+    return { viewHidden: c.view.hidden, viewText: c.view.textContent, tasks: c.view.all('.plan-task').length, hasChat: rt.byId.pane.all('.transcript').length, watchers: rt.watchers.map((w) => w.node) };
+  },
+
+  async panel_click_on_queue_draws_sections_in_the_pane() {
+    const model = { kind: 'queue', title: 'Queue', summary: ['1 queued, 0 taken, 0 done, 0 failed'],
+      sections: [{ name: 'queued', columns: ['title', 'holder', 'age'], rows: [['first', '-', '10s']] },
+                 { name: 'taken', columns: ['title', 'holder', 'age'], rows: [] }] };
+    const rt = makeRuntime(base((id, p) => (p.type === 'open' ? { view: 'panel', kind: 'queue', target: p.node, model } : null)));
+    await rt.flush();
+    rt.js(`renderSidebar(${JSON.stringify({ team: 't', groups: [], ungrouped: [], services: [{ id: 'queue', kind: 'queue', label: 'Queue' }, { id: 'board', kind: 'board', label: 'Board' }] })})`);
+    const rowsIn = rt.byId.sidebar.all('.service');
+    rt.byId.sidebar.dispatch('click', { target: rowsIn[0] });
+    await rt.flush();
+    const pane = rt.byId.pane;
+    return {
+      services: rowsIn.map((r) => ({ node: r.dataset.node, kind: r.dataset.kind, text: r.textContent })),
+      heading: rt.byId.sidebar.all('.team-title').map((x) => x.textContent),
+      paneHidden: pane.hidden,
+      title: pane.all('.panel-title').map((x) => x.textContent),
+      summary: pane.all('.panel-summary').map((x) => x.textContent),
+      sections: pane.all('.panel-section').map((x) => x.textContent),
+      heads: pane.all('.panel-head').map((x) => x.textContent),
+      cells: pane.all('.panel-row').map((x) => x.children.map((c) => c.textContent)),
+      selected: rt.byId.sidebar.all('.service').filter((r) => r.classList.contains('selected')).map((r) => r.dataset.node),
+      transcripts: pane.all('.transcript').length,
+    };
+  },
+
+  async panel_text_with_markup_is_shown_literally() {
+    const model = { title: '<i>t</i>', summary: ['<b>x</b>'], sections: [{ name: '<u>n</u>', columns: ['<c>'], rows: [['<b>x</b>', 7]] }] };
+    const rt = makeRuntime(base((id, p) => (p.type === 'open' ? { view: 'panel', kind: 'board', target: p.node, model } : null)));
+    await rt.flush();
+    await rt.js("openNode('board')");
+    await rt.flush();
+    const cell = rt.byId.pane.all('.panel-row')[0].children;
+    return { cell: cell[0].textContent, num: cell[1].textContent, kids: cell[0].children.length, title: rt.byId.pane.all('.panel-title')[0].textContent, summary: rt.byId.pane.all('.panel-summary')[0].textContent, section: rt.byId.pane.all('.panel-section')[0].textContent };
+  },
+
+  async panel_refreshes_and_stops_when_a_chat_is_opened() {
+    const state = { n: 1 };
+    const rt = makeRuntime(base((id, p) => {
+      if (p.type !== 'open') return null;
+      if (p.node === 'queue') return { view: 'panel', kind: 'queue', target: 'queue', model: { title: 'Queue', summary: ['n=' + state.n], sections: [] } };
+      return { view: 'chat', target: p.node, cell: { label: 'x', kind: 'chat', target: p.node } };
+    }));
+    await rt.flush();
+    await rt.js("openNode('queue')");
+    await rt.flush();
+    const first = rt.byId.pane.all('.panel-summary')[0].textContent;
+    const timers = Array.from(rt.timers.values()).map((t) => t.ms);
+    state.n = 2;
+    await rt.runTimers();
+    const second = rt.byId.pane.all('.panel-summary')[0].textContent;
+    const opens = rt.sent('open').length;
+    const timersAfterRefresh = rt.timers.size;
+    await rt.js("openNode('w1')");
+    await rt.flush();
+    const left = rt.timers.size;
+    const hasChat = rt.byId.pane.all('.transcript').length;
+    const panelGone = rt.byId.pane.all('.panel-table').length + rt.byId.pane.all('.panel-title').length;
+    await rt.runTimers();
+    return { first, second, timers, opens, timersAfterRefresh, left, hasChat, panelGone, opensAfter: rt.sent('open').length };
+  },
+
+  async panel_stale_reply_is_ignored() {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let first = true;
+    const rt = makeRuntime(base((id, p) => {
+      if (p.type !== 'open') return null;
+      if (p.node === 'queue') {
+        if (first) { first = false; return { view: 'panel', kind: 'queue', target: 'queue', model: { title: 'Queue', summary: ['one'], sections: [] } }; }
+        return gate.then(() => ({ view: 'panel', kind: 'queue', target: 'queue', model: { title: 'Queue', summary: ['stale'], sections: [] } }));
+      }
+      return { view: 'panel', kind: 'board', target: 'board', model: { title: 'Board', summary: ['board'], sections: [] } };
+    }));
+    await rt.flush();
+    await rt.js("openNode('queue')");
+    await rt.flush();
+    await rt.runTimers(); // the refresh of the queue is now waiting on the gate
+    await rt.js("openNode('board')");
+    await rt.flush();
+    release();
+    await rt.flush();
+    return { title: rt.byId.pane.all('.panel-title')[0].textContent, summary: rt.byId.pane.all('.panel-summary').map((x) => x.textContent), timers: rt.timers.size };
+  },
+
+  async panel_not_shown_when_open_replies_with_error() {
+    const rt = makeRuntime(base((id, p) => (p.type === 'open' ? { error: 'nope' } : null)));
+    await rt.flush();
+    await rt.js("openNode('queue')");
+    await rt.flush();
+    return { paneHidden: rt.byId.pane.hidden, tables: rt.byId.pane.all('.panel-table').length, error: rt.byId.error.textContent, timers: rt.timers.size };
+  },
+
   async text_once() {
     const rt = makeRuntime(base());
     await rt.open('w1');
