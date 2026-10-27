@@ -28,6 +28,10 @@ Not verified. The esbuild call is `"$ESBUILD" "$ENTRY" --bundle ... --sourcemap 
 
 Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from two builds. The steps landed in fantastic #409, the pin in `Cargo.lock` was bumped (`scripts/update-fantastic.sh`), and `strict` is on by default: a difference fails the job (`-f strict=false` only warns).
 
+## Pin at `b980705`
+
+`Cargo.lock` now pins fantastic `b980705`. It brings the durable store `sqlite_store` (fantastic#432, crate `fantastic-sqlite-store`, handler `sqlite_store.tools`: ram_store's verbs over one SQLite file per store agent, record field `path` required and relative to the project directory, `close_all` after the kernel's shutdown) and the #424 active-count fix (`get_count` counts the agents that are running). The build and tests pass with no Team code change.
+
 ## Pin at `69971e5`
 
 `Cargo.lock` now pins fantastic `69971e5`. It brings the task registry `task_registry` (fantastic#429) and drops the #424 task lines: spawn `task` is a string only, `fleet` entries are `{id}` without a state, and `get_count` counts every spawned agent that still exists.
