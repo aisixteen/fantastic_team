@@ -86,14 +86,44 @@ fn named_e2e_tests_exist() {
     assert!(seen > 0, "the table cites no e2e test");
 }
 
+/// The GitHub build is the general tree plus patches/github-exec.patch (#136); the CI
+/// github leg runs these tests inside that copy, where the patch renames the
+/// general-build exec tests, so those citations cannot be checked there.
+fn is_patched_copy() -> bool {
+    fs::read_to_string(root().join("crates/team/src/worker_exec.rs"))
+        .is_ok_and(|t| t.contains("WORKER_ALLOWED: &str = r#\"(?!"))
+}
+
+/// Files the exec patch rewrites, whose citations are skipped in the patched copy.
+fn skipped_in_patched_copy(file: &str, patched: bool) -> bool {
+    patched && file.ends_with("worker_exec.rs")
+}
+
+#[test]
+fn patched_copy_skips_only_the_exec_files() {
+    assert!(skipped_in_patched_copy(
+        "crates/team/tests/worker_exec.rs",
+        true
+    ));
+    assert!(!skipped_in_patched_copy(
+        "crates/team/tests/worker_exec.rs",
+        false
+    ));
+    assert!(!skipped_in_patched_copy("crates/team/src/config.rs", true));
+}
+
 #[test]
 fn named_unit_tests_exist() {
+    let patched = is_patched_copy();
     let mut seen = 0;
     for row in rows(&doc()) {
         for span in code_spans(&row[2]) {
             let Some((file, name)) = span.split_once("::") else {
                 continue;
             };
+            if skipped_in_patched_copy(file, patched) {
+                continue;
+            }
             seen += 1;
             let text = fs::read_to_string(root().join(file))
                 .unwrap_or_else(|_| panic!("{} cites `{span}`, but {file} is missing", row[0]));
