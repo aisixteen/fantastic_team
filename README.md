@@ -84,6 +84,8 @@ With `roles:` the team also gets the agent `tasks` (fantastic's `task_registry`,
 
 The memory of every AI agent (the lead, the tiers of the roles registry, workers added from the dispatcher) and the rows of `tasks` live in ONE store agent: a `sqlite_store` with one file per team directory, `.fantastic/memory.db`, so the history and the task rows survive a restart. It is config, not enforced in code: the optional `store:` section of `team.yaml` renames it or moves its file (`store: {id: memory, path: .fantastic/memory.db}`; the path is relative to the team directory, no `..`, and the id must not be another agent's). The kernel's own bookkeeping (`kernel_memory`) stays a RAM store. A worker added from the dispatcher is granted on the store when it is made; removing it leaves its rows.
 
+With `roles:` the `board` verb also returns a `roles` section: the tree below the `project_lead` (each agent's role and active/paused/done state, from the `fleet` and the tasks it holds), the registry's `get_count` as `fleet`, and the `tasks` rows (source, holder, status). A team without `roles:` keeps the old rows only.
+
 The `project_lead` waits for its children with the kernel's `await_set`; each start names the agents below the root for `await_set` and `await_cancel` in the root's `callable_by`.
 
 Not done yet (#185, later): the chat entry for the `project_lead` in the dispatcher, the plan shown and updated in place, and the approval gate. `spawn` does not open a tool's `callable_by` to the new agent: the lead names each spawned agent on the tools its card lists (the lead card says how), and the credential store must name it too.
