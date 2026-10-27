@@ -58,6 +58,40 @@ pub struct TeamConfig {
     /// the default limits. Absent: the team has no registry.
     #[serde(default)]
     pub roles: Option<RolesCfg>,
+    /// The ONE store agent every AI agent keeps its memory in and the task registry
+    /// keeps its rows in: a `sqlite_store` with one file under the team directory.
+    /// Config, not code: a `team.yaml` may name a different store.
+    #[serde(default)]
+    pub store: StoreCfg,
+}
+
+/// The `store:` section: the id of the team's one memory store and its file.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoreCfg {
+    /// The store agent's id.
+    #[serde(default = "default_memory_id")]
+    pub id: String,
+    /// The database file, relative to the team's directory.
+    #[serde(default = "default_memory_path")]
+    pub path: String,
+}
+
+impl Default for StoreCfg {
+    fn default() -> Self {
+        StoreCfg {
+            id: default_memory_id(),
+            path: default_memory_path(),
+        }
+    }
+}
+
+fn default_memory_id() -> String {
+    "memory".into()
+}
+
+fn default_memory_path() -> String {
+    ".fantastic/memory.db".into()
 }
 
 /// The roles section: where the registry lives, which folders hold the role cards,
@@ -387,7 +421,23 @@ pub fn validate(cfg: &TeamConfig) -> Result<(), String> {
             return Err("roles.limits.per_role has an empty role name".into());
         }
     }
-    let mut ids: Vec<&str> = vec![cfg.first_agent.id.as_str(), cfg.queue.id.as_str()];
+    if cfg.store.id.trim().is_empty() {
+        return Err("store.id is empty".into());
+    }
+    let sp = &cfg.store.path;
+    let climbs = Path::new(sp)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir));
+    if sp.trim().is_empty() || Path::new(sp).is_absolute() || climbs {
+        return Err(format!(
+            "store.path `{sp}` must be a file path inside the team directory (relative, no `..`)"
+        ));
+    }
+    let mut ids: Vec<&str> = vec![
+        cfg.first_agent.id.as_str(),
+        cfg.queue.id.as_str(),
+        cfg.store.id.as_str(),
+    ];
     if let Some(r) = &cfg.roles {
         ids.push(r.id.as_str());
         ids.push(TASKS_ID);
@@ -431,14 +481,10 @@ pub fn group_settings(cfg: &TeamConfig) -> Value {
     Value::Object(out)
 }
 
-/// The memory store id for an agent.
-pub fn memory_id(agent_id: &str) -> String {
-    format!("{agent_id}_memory")
-}
-
-/// A fantastic `create_agent` payload for an agent made from `tpl`.
-pub fn agent_record(tpl: &Template, id: &str) -> Value {
-    let mem = memory_id(id);
+/// A fantastic `create_agent` payload for an agent made from `tpl`, keeping its
+/// memory in the team's one store agent `store_id`.
+pub fn agent_record(tpl: &Template, id: &str, store_id: &str) -> Value {
+    let mem = store_id.to_string();
     let mut m = Map::new();
     m.insert("type".into(), json!("create_agent"));
     m.insert("parent_id".into(), json!(DEFAULT_ROOT_ID));
@@ -502,16 +548,22 @@ pub fn tier_fields(tpl: &Template, memory_store: &str) -> Value {
     Value::Object(m)
 }
 
-/// A `create_agent` payload for the memory store of `agent_id`.
-pub fn memory_record(agent_id: &str) -> Value {
+/// A `create_agent` payload for the team's ONE store agent: a `sqlite_store` with
+/// one file (`store.path`, relative to the team directory). `callable` are the agents
+/// that may call it besides itself; each keeps its own rows (the store keys rows by
+/// the caller).
+pub fn store_agent_record(store: &StoreCfg, callable: &[String]) -> Value {
     let mut callable_by = Map::new();
     callable_by.insert("$self".into(), json!("*"));
-    callable_by.insert(agent_id.into(), json!("*"));
+    for c in callable {
+        callable_by.insert(c.clone(), json!("*"));
+    }
     json!({
         "type": "create_agent",
         "parent_id": DEFAULT_ROOT_ID,
-        "id": memory_id(agent_id),
-        "handler_module": "ram_store.tools",
+        "id": store.id,
+        "handler_module": "sqlite_store.tools",
+        "path": store.path,
         "callable_by": Value::Object(callable_by),
     })
 }
@@ -781,7 +833,7 @@ mod tests {
 
     #[test]
     fn agent_record_is_exact() {
-        let r = agent_record(&tpl(json!({"max_tokens": 8000})), "w1");
+        let r = agent_record(&tpl(json!({"max_tokens": 8000})), "w1", "memory");
         assert_eq!(
             r,
             json!({
@@ -794,8 +846,8 @@ mod tests {
                 "credentials": {"store": "credentials", "ref": "x/127.0.0.1"},
                 "price_input_per_mtok": 0.1,
                 "price_output_per_mtok": 0.5,
-                "memory_store_id": "w1_memory",
-                "can_call": {"$self": "*", "$subtree": "*", "w1_memory": "*", "exec": "*", "queue": "*"},
+                "memory_store_id": "memory",
+                "can_call": {"$self": "*", "$subtree": "*", "memory": "*", "exec": "*", "queue": "*"},
                 "callable_by": {"$self": "*", "$parent": "*"},
                 "max_tokens": 8000
             })
@@ -809,28 +861,92 @@ mod tests {
         t.price_input_per_mtok = None;
         t.price_output_per_mtok = None;
         t.can_call.clear();
-        let r = agent_record(&t, "w2");
+        let r = agent_record(&t, "w2", "memory");
         assert!(r.get("credentials").is_none());
         assert!(r.get("price_input_per_mtok").is_none());
         assert!(r.get("price_output_per_mtok").is_none());
         assert_eq!(
             r["can_call"],
-            json!({"$self": "*", "$subtree": "*", "w2_memory": "*"})
+            json!({"$self": "*", "$subtree": "*", "memory": "*"})
         );
     }
 
     #[test]
-    fn memory_store_and_connector_records_are_exact() {
+    fn store_agent_record_is_exact() {
+        let st = StoreCfg::default();
         assert_eq!(
-            memory_record("w1"),
+            store_agent_record(&st, &["lead".to_string(), "tasks".to_string()]),
             json!({
                 "type": "create_agent",
                 "parent_id": "kernel_state",
-                "id": "w1_memory",
-                "handler_module": "ram_store.tools",
-                "callable_by": {"$self": "*", "w1": "*"}
+                "id": "memory",
+                "handler_module": "sqlite_store.tools",
+                "path": ".fantastic/memory.db",
+                "callable_by": {"$self": "*", "lead": "*", "tasks": "*"}
             })
         );
+    }
+
+    #[test]
+    fn agent_record_points_memory_at_the_store() {
+        let r = agent_record(&tpl(json!({})), "w1", "s2");
+        assert_eq!(r["memory_store_id"], "s2");
+        assert_eq!(r["can_call"]["s2"], "*");
+        assert!(r["can_call"].get("w1_memory").is_none());
+        assert!(!r.to_string().contains("w1_memory"));
+    }
+
+    #[test]
+    fn store_defaults_to_memory_and_dot_fantastic_path() {
+        let cfg = parse(MIN).unwrap();
+        assert_eq!(cfg.store.id, "memory");
+        assert_eq!(cfg.store.path, ".fantastic/memory.db");
+        assert_eq!(cfg.store, StoreCfg::default());
+    }
+
+    #[test]
+    fn store_section_names_a_different_store() {
+        let cfg = parse(&format!(
+            "{MIN}store:\n  id: s2\n  path: .fantastic/other.db\n"
+        ))
+        .unwrap();
+        assert_eq!(cfg.store.id, "s2");
+        assert_eq!(cfg.store.path, ".fantastic/other.db");
+        let only_id = parse(&format!("{MIN}store:\n  id: s3\n")).unwrap();
+        assert_eq!(only_id.store.path, ".fantastic/memory.db");
+        let e = parse(&format!("{MIN}store:\n  colour: red\n")).unwrap_err();
+        assert!(e.contains("unknown field `colour`"), "{e}");
+    }
+
+    #[test]
+    fn store_refuses_bad_path_and_reserved_id() {
+        for (path, shown) in [
+            ("/tmp/x.db", "/tmp/x.db"),
+            ("../x.db", "../x.db"),
+            (".fantastic/../../x.db", ".fantastic/../../x.db"),
+            ("\"\"", ""),
+        ] {
+            let e = parse(&format!("{MIN}store:\n  path: {path}\n")).unwrap_err();
+            assert_eq!(
+                e,
+                format!("store.path `{shown}` must be a file path inside the team directory (relative, no `..`)")
+            );
+        }
+        let e = parse(&format!("{MIN}store:\n  id: \"\"\n")).unwrap_err();
+        assert_eq!(e, "store.id is empty");
+        for id in ["lead", "q"] {
+            let e = parse(&format!("{MIN}store:\n  id: {id}\n")).unwrap_err();
+            assert_eq!(e, format!("agent id `{id}` is used twice"));
+        }
+        let with_roles = format!("{MIN}roles:\n  id: reg\n");
+        for id in ["tasks", "reg"] {
+            let e = parse(&format!("{with_roles}store:\n  id: {id}\n")).unwrap_err();
+            assert_eq!(e, format!("agent id `{id}` is used twice"));
+        }
+    }
+
+    #[test]
+    fn connector_and_credential_records_are_exact() {
         let s = CredentialStore {
             id: "credentials".into(),
             backend: "env".into(),
@@ -996,7 +1112,7 @@ mod tests {
     fn tier_fields_carry_the_template_and_no_can_call() {
         let t = tpl(json!({"max_tokens": 4000}));
         assert_eq!(
-            tier_fields(&t, "roles_memory"),
+            tier_fields(&t, "memory"),
             json!({
                 "handler_module": "x_backend.tools",
                 "model": "m-small",
@@ -1004,7 +1120,7 @@ mod tests {
                 "credentials": {"store": "credentials", "ref": "x/127.0.0.1"},
                 "price_input_per_mtok": 0.1,
                 "price_output_per_mtok": 0.5,
-                "memory_store_id": "roles_memory",
+                "memory_store_id": "memory",
                 "max_tokens": 4000,
             })
         );

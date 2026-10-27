@@ -84,7 +84,7 @@ pub enum Role {
     Lead,
     /// The dispatcher: the main view, created under the root.
     Dispatcher,
-    /// The lead's memory store, under the root.
+    /// The team's one store agent (a `sqlite_store`), under the root.
     Memory,
     /// The credential store, under the root.
     Store,
@@ -94,7 +94,7 @@ pub enum Role {
     Board,
     /// The cadencer: the digests to the group drivers, under the root.
     Cadencer,
-    /// The roles registry (`agentic_resources`) its shared memory store (both under the root), or the task registry (under the lead).
+    /// The roles registry (`agentic_resources`, under the root), or the task registry (under the lead).
     Registry,
 }
 
@@ -192,59 +192,45 @@ fn role_dirs(r: &config::RolesCfg, team_dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The roles registry and its shared memory store, under the root. The registry
-/// holds the tiers (one per template, keyed by the template's name), the card
-/// folders and nothing else: the limits are set at start (`apply_limits`). The
-/// memory store is the one every spawned agent keeps its conversation in; the
-/// store keys each agent's history by its own id.
-fn roles_plan(cfg: &TeamConfig, r: &config::RolesCfg, team_dir: &Path) -> [Planned; 2] {
+/// The roles registry, under the root. The registry holds the tiers (one per
+/// template, keyed by the template's name), the card folders and nothing else: the
+/// limits are set at start (`apply_limits`). Every tier names the team's one store
+/// agent (`cfg.store`) as its `memory_store_id`; the store keys each agent's history
+/// by its own id. The store itself is planned by [`plan`], not here.
+fn roles_plan(cfg: &TeamConfig, r: &config::RolesCfg, team_dir: &Path) -> Planned {
     let lead = cfg.first_agent.id.as_str();
-    let mem = config::memory_id(&r.id);
+    let mem = cfg.store.id.as_str();
     let tiers: serde_json::Map<String, Value> = cfg
         .templates
         .iter()
-        .map(|(n, t)| (n.clone(), config::tier_fields(t, &mem)))
+        .map(|(n, t)| (n.clone(), config::tier_fields(t, mem)))
         .collect();
-    [
-        Planned {
-            id: mem.clone(),
-            parent: DEFAULT_ROOT_ID.into(),
-            role: Role::Registry,
-            record: json!({
-                "type": "create_agent",
-                "id": mem,
-                "parent_id": DEFAULT_ROOT_ID,
-                "handler_module": "ram_store.tools",
-                "callable_by": {"$self": "*", (lead): "*", (TASKS_ID): "*"},
-            }),
-        },
-        Planned {
-            id: r.id.clone(),
-            parent: DEFAULT_ROOT_ID.into(),
-            role: Role::Registry,
-            record: json!({
-                "type": "create_agent",
-                "id": r.id,
-                "parent_id": DEFAULT_ROOT_ID,
-                "handler_module": fantastic_agentic_resources::HANDLER_MODULE,
-                "role_dirs": role_dirs(r, team_dir),
-                "tiers": tiers,
-                "can_call": {(mem.as_str()): "*"},
-                "callable_by": {
-                    "$self": "*",
-                    "$parent": "*",
-                    (lead): LEAD_ROLES_VERBS,
-                    (DISPATCHER_ID): DISPATCHER_ROLES_VERBS,
-                },
-            }),
-        },
-    ]
+    Planned {
+        id: r.id.clone(),
+        parent: DEFAULT_ROOT_ID.into(),
+        role: Role::Registry,
+        record: json!({
+            "type": "create_agent",
+            "id": r.id,
+            "parent_id": DEFAULT_ROOT_ID,
+            "handler_module": fantastic_agentic_resources::HANDLER_MODULE,
+            "role_dirs": role_dirs(r, team_dir),
+            "tiers": tiers,
+            "can_call": {(mem): "*"},
+            "callable_by": {
+                "$self": "*",
+                "$parent": "*",
+                (lead): LEAD_ROLES_VERBS,
+                (DISPATCHER_ID): DISPATCHER_ROLES_VERBS,
+            },
+        }),
+    }
 }
 
 /// The task registry (fantastic `task_registry`), a child of the lead so the lead
 /// can admit a spawned project_lead on it (the card's admit step). It keeps its
-/// rows in the roles memory store, which keys them apart from the conversations.
-fn tasks_plan(cfg: &TeamConfig, r: &config::RolesCfg) -> Planned {
+/// rows in the team's one store agent, which keys them apart from the conversations.
+fn tasks_plan(cfg: &TeamConfig) -> Planned {
     Planned {
         id: TASKS_ID.into(),
         parent: cfg.first_agent.id.clone(),
@@ -254,11 +240,50 @@ fn tasks_plan(cfg: &TeamConfig, r: &config::RolesCfg) -> Planned {
             "id": TASKS_ID,
             "parent_id": cfg.first_agent.id,
             "handler_module": fantastic_task_registry::HANDLER_MODULE,
-            "task_store_id": config::memory_id(&r.id),
-            "can_call": {(config::memory_id(&r.id).as_str()): "*"},
+            "task_store_id": cfg.store.id,
+            "can_call": {(cfg.store.id.as_str()): "*"},
             "callable_by": {"$self": "*", "$parent": "*"},
         }),
     }
+}
+
+/// The team's ONE store agent (a `sqlite_store`, one file under the team directory).
+/// The lead, the task registry (when the team has roles) and every group driver and
+/// member may call it; each keeps its own rows, since the store keys rows by the
+/// caller. An agent spawned later is added to its `callable_by` when it starts.
+/// This is config: a `team.yaml` `store:` section may name another id or file.
+fn store_plan(cfg: &TeamConfig) -> Planned {
+    Planned {
+        id: cfg.store.id.clone(),
+        parent: DEFAULT_ROOT_ID.into(),
+        role: Role::Memory,
+        record: config::store_agent_record(&cfg.store, &store_callers(cfg)),
+    }
+}
+
+/// The agents the plan lets call the store: the lead, `tasks` (with `roles:`) and every
+/// group driver and member.
+fn store_callers(cfg: &TeamConfig) -> Vec<String> {
+    let mut callable = vec![cfg.first_agent.id.clone()];
+    if cfg.roles.is_some() {
+        callable.push(TASKS_ID.to_string());
+    }
+    for g in cfg.groups.values() {
+        callable.extend(g.driver.iter().cloned());
+        callable.extend(g.members.iter().cloned());
+    }
+    callable
+}
+
+/// Make sure the store agent admits everyone the plan names, also when the store was
+/// there before this start (the shell seeds its own `memory`, which `apply` reuses as it
+/// is): merge the missing callers into its `callable_by` and keep every other key. An
+/// operator write made at each start, so it is idempotent.
+pub fn grant_store_callers(kernel: &Arc<Kernel>, cfg: &TeamConfig) -> Result<(), String> {
+    for caller in store_callers(cfg) {
+        grant_store(kernel, &cfg.store.id, &caller)?;
+    }
+    Ok(())
 }
 
 /// The plan, lead first. Validates the config and the grants.
@@ -273,14 +298,9 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
             id: lead.clone(),
             parent: DEFAULT_ROOT_ID.into(),
             role: Role::Lead,
-            record: config::agent_record(tpl, &lead),
+            record: config::agent_record(tpl, &lead, &cfg.store.id),
         },
-        Planned {
-            id: config::memory_id(&lead),
-            parent: DEFAULT_ROOT_ID.into(),
-            role: Role::Memory,
-            record: config::memory_record(&lead),
-        },
+        store_plan(cfg),
     ];
     if let Some(s) = &cfg.credentials {
         out.push(Planned {
@@ -435,8 +455,8 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
             d.record["can_call"][r.id.as_str()] = json!(DISPATCHER_ROLES_VERBS);
             d.record["roles"] = json!(r.id);
         }
-        out.extend(roles_plan(cfg, r, team_dir));
-        out.push(tasks_plan(cfg, r));
+        out.push(roles_plan(cfg, r, team_dir));
+        out.push(tasks_plan(cfg));
     }
     Ok(out)
 }
@@ -890,6 +910,28 @@ pub fn grant_control(kernel: &Arc<Kernel>, workers: &[String]) -> usize {
     granted
 }
 
+/// Let `agent` call the team's store agent `store` (every verb): the store's
+/// `callable_by` names it, merged under the record's lock so the other callers stay.
+/// The worker's own `can_call` already names the store (`config::agent_record`). An
+/// operator write, idempotent. `Err` when the store is not live or refuses the edit.
+pub fn grant_store(kernel: &Arc<Kernel>, store: &str, agent: &str) -> Result<(), String> {
+    if !exists(kernel, store) {
+        return Err(format!("the store agent `{store}` does not exist"));
+    }
+    kernel
+        .edit_callable_by(&fantastic_kernel::AgentId::from(store), |cb| {
+            let all =
+                |v: &Value| v == "*" || v.as_array().is_some_and(|a| a.iter().any(|x| x == "*"));
+            if cb.get(agent).is_some_and(all) {
+                return false;
+            }
+            cb.insert(agent.into(), json!("*"));
+            true
+        })
+        .map(|_| ())
+        .map_err(|e| format!("store grant for `{agent}`: {e}"))
+}
+
 /// Name the dispatcher in the root's `callable_by` with the agent verbs
 /// ([`DISPATCHER_KERNEL_VERBS`]), the other end of the dispatcher's `can_call` on
 /// the root. An operator write made at each start, so it is idempotent. Only
@@ -977,6 +1019,9 @@ pub fn run_at_start(
             if let Err(e) = grant_await(&kernel, &cfg) {
                 eprintln!("{e}");
             }
+            if let Err(e) = grant_store_callers(&kernel, &cfg) {
+                eprintln!("{e}");
+            }
             if let Some(text) = instructions {
                 if instructions_due(&applied, &cfg.first_agent.id, resend) {
                     deliver_instructions(&kernel, &cfg.first_agent.id, text).await?;
@@ -986,6 +1031,7 @@ pub fn run_at_start(
         }
         .await;
         kernel.shutdown().await;
+        fantastic_sqlite_store::close_all(&kernel);
         bootstrap::shutdown(dir).map_err(|e| e.to_string())?;
         res.map(Some)
     })
@@ -1039,7 +1085,7 @@ mod tests {
             ids(&tree),
             [
                 "lead",
-                "lead_memory",
+                "memory",
                 "dispatcher",
                 "worker_view",
                 "worker_exec",
@@ -2104,6 +2150,7 @@ mod tests {
         assert!(!ids(&tree)
             .iter()
             .any(|i| i == ROLES_ID || i == "roles_memory"));
+        assert_eq!(ids(&tree).iter().filter(|i| *i == "memory").count(), 1);
         assert!(planned(&tree, "dispatcher").record.get("roles").is_none());
         assert!(planned(&tree, "dispatcher").record["can_call"]
             .get(ROLES_ID)
@@ -2115,14 +2162,15 @@ mod tests {
     }
 
     #[test]
-    fn plan_with_roles_adds_registry_memory_and_grants() {
+    fn plan_with_roles_adds_registry_and_grants() {
         let dir = roles_team_dir();
         let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
         let ids = ids(&tree);
-        assert_eq!(&ids[ids.len() - 3..], ["roles_memory", "roles", "tasks"]);
-        let mem = planned(&tree, "roles_memory");
+        assert_eq!(&ids[ids.len() - 2..], ["roles", "tasks"]);
+        assert!(!ids.iter().any(|i| i == "roles_memory"), "{ids:?}");
+        let mem = planned(&tree, "memory");
         assert_eq!(mem.parent, DEFAULT_ROOT_ID);
-        assert_eq!(mem.record["handler_module"], "ram_store.tools");
+        assert_eq!(mem.record["handler_module"], "sqlite_store.tools");
         assert_eq!(
             mem.record["callable_by"],
             json!({"$self": "*", "lead": "*", "tasks": "*"})
@@ -2141,14 +2189,14 @@ mod tests {
         assert_eq!(keys, ["issue_keeper", "small", "strong"]);
         assert_eq!(
             tiers["small"],
-            config::tier_fields(&roles_cfg("roles: {}\n").templates["small"], "roles_memory")
+            config::tier_fields(&roles_cfg("roles: {}\n").templates["small"], "memory")
         );
-        assert_eq!(tiers["small"]["memory_store_id"], "roles_memory");
+        assert_eq!(tiers["small"]["memory_store_id"], "memory");
         assert!(
             reg.record.get("limits").is_none(),
             "limits are set at start"
         );
-        assert_eq!(reg.record["can_call"], json!({"roles_memory": "*"}));
+        assert_eq!(reg.record["can_call"], json!({"memory": "*"}));
         assert_eq!(
             reg.record["callable_by"],
             json!({
@@ -2168,7 +2216,7 @@ mod tests {
         // another id comes from the config
         let other = plan(&roles_cfg("roles:\n  id: reg\n"), dir.path()).unwrap();
         assert_eq!(planned(&other, "dispatcher").record["roles"], "reg");
-        assert!(other.iter().any(|p| p.id == "reg_memory"));
+        assert!(!other.iter().any(|p| p.id.ends_with("_memory")));
     }
 
     #[test]
@@ -2237,20 +2285,17 @@ mod tests {
             t.record["handler_module"],
             fantastic_task_registry::HANDLER_MODULE
         );
-        assert_eq!(t.record["task_store_id"], "roles_memory");
-        assert_eq!(t.record["can_call"], json!({"roles_memory": "*"}));
+        assert_eq!(t.record["task_store_id"], "memory");
+        assert_eq!(t.record["can_call"], json!({"memory": "*"}));
         assert_eq!(
             t.record["callable_by"],
             json!({"$self": "*", "$parent": "*"})
         );
         let at = |i: &str| ids(&tree).iter().position(|x| x == i).unwrap();
         assert!(at("lead") < at("tasks"), "the lead exists first");
-        // another registry id names its own store
+        // another registry id still names the team's one store
         let other = plan(&roles_cfg("roles:\n  id: reg\n"), dir.path()).unwrap();
-        assert_eq!(
-            planned(&other, "tasks").record["task_store_id"],
-            "reg_memory"
-        );
+        assert_eq!(planned(&other, "tasks").record["task_store_id"], "memory");
     }
 
     #[test]
@@ -2267,6 +2312,221 @@ mod tests {
             e,
             "role card `project_lead` grants `nope`, which team.yaml does not define"
         );
+    }
+
+    // ---- one store agent for the whole team (#185) ----
+
+    /// The planned agents whose handler is the durable store.
+    fn stores(tree: &[Planned]) -> Vec<&Planned> {
+        tree.iter()
+            .filter(|p| p.record["handler_module"] == "sqlite_store.tools")
+            .collect()
+    }
+
+    const GROUPS: &str =
+        "groups:\n  g1:\n    driver: lead\n    members: [w1, w2]\n  g2:\n    members: [w3]\n";
+
+    #[test]
+    fn plan_has_exactly_one_store_agent() {
+        let dir = roles_team_dir();
+        let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
+        let s = stores(&tree);
+        assert_eq!(s.len(), 1, "{:?}", ids(&tree));
+        assert_eq!(s[0].id, "memory");
+        assert_eq!(s[0].parent, DEFAULT_ROOT_ID);
+        assert_eq!(s[0].role, Role::Memory);
+        // no per-agent memory any more, and no RAM store but the queue (the lead's handler here is a stand-in)
+        assert!(!ids(&tree).iter().any(|i| i.ends_with("_memory")));
+        let ram: Vec<&str> = tree
+            .iter()
+            .filter(|p| p.record["handler_module"] == "ram_store.tools" && p.role != Role::Lead)
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(ram, ["queue"]);
+        // the store is created right after the lead
+        assert_eq!(ids(&tree)[..2], ["lead", "memory"]);
+    }
+
+    #[test]
+    fn every_ai_agent_and_tasks_use_the_one_store() {
+        let dir = roles_team_dir();
+        let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
+        assert_eq!(planned(&tree, "lead").record["memory_store_id"], "memory");
+        assert_eq!(planned(&tree, "lead").record["can_call"]["memory"], "*");
+        let reg = planned(&tree, "roles");
+        let tiers = reg.record["tiers"].as_object().unwrap();
+        assert_eq!(tiers.len(), 3);
+        for (n, t) in tiers {
+            assert_eq!(t["memory_store_id"], "memory", "tier {n}");
+        }
+        assert_eq!(reg.record["can_call"], json!({"memory": "*"}));
+        let tasks = planned(&tree, "tasks");
+        assert_eq!(tasks.record["task_store_id"], "memory");
+        assert_eq!(tasks.record["can_call"], json!({"memory": "*"}));
+        // every planned record that names a memory or task store names the one store
+        for p in &tree {
+            for key in ["memory_store_id", "task_store_id"] {
+                if let Some(v) = p.record.get(key) {
+                    assert_eq!(v, "memory", "{}.{key}", p.id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn store_callable_by_names_lead_tasks_and_group_members() {
+        let dir = roles_team_dir();
+        let text = format!("{}{GROUPS}", roles_yaml("ram_store.tools", ROLES_LIMITS));
+        let tree = plan(&parse(&text).unwrap(), dir.path()).unwrap();
+        assert_eq!(
+            planned(&tree, "memory").record["callable_by"],
+            json!({"$self": "*", "lead": "*", "tasks": "*", "w1": "*", "w2": "*", "w3": "*"})
+        );
+        // without roles: no `tasks`
+        let text = format!("{}{GROUPS}", sample_yaml());
+        let tree = plan(&parse(&text).unwrap(), dir.path()).unwrap();
+        assert_eq!(
+            planned(&tree, "memory").record["callable_by"],
+            json!({"$self": "*", "lead": "*", "w1": "*", "w2": "*", "w3": "*"})
+        );
+    }
+
+    #[test]
+    fn plan_without_roles_has_one_store_and_no_registry() {
+        let tree = plan(&sample(), Path::new("/team")).unwrap();
+        assert_eq!(stores(&tree).len(), 1);
+        assert_eq!(planned(&tree, "lead").record["memory_store_id"], "memory");
+        assert!(!ids(&tree).iter().any(|i| i == ROLES_ID || i == TASKS_ID));
+        assert_eq!(
+            planned(&tree, "memory").record["callable_by"],
+            json!({"$self": "*", "lead": "*"})
+        );
+    }
+
+    #[test]
+    fn a_team_yaml_may_name_a_different_store() {
+        let dir = roles_team_dir();
+        let text = format!(
+            "{}store:\n  id: s2\n  path: .fantastic/other.db\n",
+            roles_yaml("ram_store.tools", ROLES_LIMITS)
+        );
+        let tree = plan(&parse(&text).unwrap(), dir.path()).unwrap();
+        assert_eq!(stores(&tree).len(), 1);
+        let s = planned(&tree, "s2");
+        assert_eq!(s.record["path"], ".fantastic/other.db");
+        assert!(!ids(&tree).iter().any(|i| i == "memory"));
+        assert_eq!(planned(&tree, "lead").record["memory_store_id"], "s2");
+        let tiers = planned(&tree, "roles").record["tiers"].clone();
+        for (n, t) in tiers.as_object().unwrap() {
+            assert_eq!(t["memory_store_id"], "s2", "tier {n}");
+        }
+        assert_eq!(planned(&tree, "tasks").record["task_store_id"], "s2");
+        assert_eq!(
+            planned(&tree, "tasks").record["can_call"],
+            json!({"s2": "*"})
+        );
+        assert_eq!(
+            planned(&tree, "roles").record["can_call"],
+            json!({"s2": "*"})
+        );
+    }
+
+    #[test]
+    fn store_path_is_one_file_per_team_dir() {
+        let tree = plan(&sample(), Path::new("/team")).unwrap();
+        // relative: the kernel resolves it under the team directory it runs in
+        assert_eq!(
+            planned(&tree, "memory").record["path"],
+            ".fantastic/memory.db"
+        );
+        assert_eq!(stores(&tree).len(), 1);
+        let dir = roles_team_dir();
+        let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
+        let paths: Vec<&Value> = tree.iter().filter_map(|p| p.record.get("path")).collect();
+        assert_eq!(paths, [&json!(".fantastic/memory.db")]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn history_and_registry_rows_survive_a_restart() {
+        let dir = roles_team_dir();
+        let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
+        let rows = json!([
+            {"kind": "user", "content": "plan the release"},
+            {"kind": "assistant", "content": "spawning a worker"},
+        ]);
+        let appended = call_as(
+            &kernel,
+            "lead",
+            "memory",
+            json!({"type": "append", "rows": rows}),
+        )
+        .await;
+        assert_eq!(appended["appended"], 2, "{appended}");
+        let add = json!({"type": "add", "id": "o/r#9", "source": "gh:o/r#9", "holder": "lead"});
+        let task = call_as(&kernel, "lead", "tasks", add).await;
+        assert!(task.get("error").is_none(), "{task}");
+        let read = json!({"type": "read"});
+        let hist_before = call_as(&kernel, "lead", "memory", read.clone()).await;
+        let list = json!({"type": "list"});
+        let tasks_before = call_as(&kernel, "lead", "tasks", list.clone()).await;
+        assert!(tasks_before.to_string().contains("o/r#9"), "{tasks_before}");
+        kernel.flush_records().await;
+        kernel.shutdown().await;
+        fantastic_sqlite_store::close_all(&kernel);
+        bootstrap::shutdown(dir.path()).unwrap();
+        assert!(dir.path().join(".fantastic/memory.db").is_file());
+        drop(kernel);
+
+        let kernel = caller_team(dir.path(), ROLES_LIMITS).await;
+        let hist_after = call_as(&kernel, "lead", "memory", read).await;
+        assert_eq!(hist_after["rows"], hist_before["rows"], "{hist_after}");
+        let contents: Vec<&str> = hist_after["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["content"].as_str())
+            .collect();
+        assert!(contents.contains(&"plan the release"), "{hist_after}");
+        assert!(contents.contains(&"spawning a worker"), "{hist_after}");
+        let tasks_after = call_as(&kernel, "lead", "tasks", list).await;
+        assert_eq!(tasks_after, tasks_before);
+        kernel.shutdown().await;
+        fantastic_sqlite_store::close_all(&kernel);
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_store_that_was_there_before_still_admits_the_plans_callers() {
+        let dir = roles_team_dir();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        // the shell seeds its own `memory`; the plan reuses it as it is
+        let seeded = ask(
+            &kernel,
+            DEFAULT_ROOT_ID,
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "memory",
+                   "handler_module": "sqlite_store.tools", "path": ".fantastic/memory.db",
+                   "callable_by": {"user": ["*"]}}),
+        )
+        .await;
+        assert!(seeded.get("error").is_none(), "{seeded}");
+        let cfg = roles_cfg(ROLES_LIMITS);
+        let applied = apply(&kernel, &plan(&cfg, dir.path()).unwrap())
+            .await
+            .unwrap();
+        assert!(applied.reused.iter().any(|i| i == "memory"));
+        let before = meta_value(&kernel, "memory")["callable_by"].clone();
+        assert!(before.get("tasks").is_none(), "{before}");
+        grant_store_callers(&kernel, &cfg).unwrap();
+        let by = meta_value(&kernel, "memory")["callable_by"].clone();
+        assert_eq!(by["lead"], "*", "{by}");
+        assert_eq!(by["tasks"], "*", "{by}");
+        assert_eq!(by["user"], json!(["*"]), "the seeded key stays: {by}");
+        // idempotent
+        grant_store_callers(&kernel, &cfg).unwrap();
+        assert_eq!(meta_value(&kernel, "memory")["callable_by"], by);
+        kernel.shutdown().await;
+        fantastic_sqlite_store::close_all(&kernel);
+        bootstrap::shutdown(dir.path()).unwrap();
     }
 
     /// Spawn a project_lead and a worker as the lead, and admit the project_lead on `tasks`.
@@ -2341,8 +2601,8 @@ mod tests {
         )
         .await;
         assert!(list.to_string().contains("o/r#7"), "{list}");
-        // the rows live in the roles memory store
-        let dump = ask(&kernel, "roles_memory", json!({"type": "dump"})).await;
+        // the rows live in the team's one store
+        let dump = ask(&kernel, "memory", json!({"type": "dump"})).await;
         assert!(dump.to_string().contains("o/r#7"), "{dump}");
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
@@ -2510,7 +2770,7 @@ mod tests {
         assert_eq!(m["spawned_by"], "roles");
         assert_eq!(m["role"], "worker");
         assert_eq!(m["tier"], "small");
-        assert_eq!(m["memory_store_id"], "roles_memory");
+        assert_eq!(m["memory_store_id"], "memory");
         let card =
             fantastic_agentic_resources::cards::parse_card(roles::WORKER, "worker.md").unwrap();
         assert_eq!(m["system_prompt"], json!(card.directive));
@@ -2522,9 +2782,12 @@ mod tests {
             .clone();
         assert_eq!(child.unwrap().as_str(), "lead", "a child of the lead");
         // the card's grants: the exec and file tools and the queue, plus the shared store
-        for t in ["worker_exec", "worker_files", "queue", "roles_memory"] {
+        for t in ["worker_exec", "worker_files", "queue", "memory"] {
             assert_eq!(m["can_call"][t], "*", "{t}");
         }
+        // and the store admits it, so it keeps its own rows there
+        let store = meta_value(&kernel, "memory");
+        assert_eq!(store["callable_by"][id.as_str()], "*", "{store}");
         // the lead holds pause/resume/stop on it, and the child admits only that
         let verbs = json!(["pause", "resume", "stop"]);
         let lead = meta_value(&kernel, "lead");
