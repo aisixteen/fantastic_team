@@ -319,8 +319,77 @@ pub async fn pull(peers: &dyn Peers, cfg: &PullerCfg) -> PullReport {
     report
 }
 
+/// What the puller has done since the process started: the figures its `status`
+/// reports. Counts and times only; no issue text and no token.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullState {
+    /// Passes run.
+    pub pulls: u64,
+    /// Unix seconds of the last pass; 0 before the first.
+    pub last_pull_s: u64,
+    /// Task files written by the last pass.
+    pub last_created: u64,
+    /// Issues skipped by the last pass.
+    pub last_skipped: u64,
+    /// Task files written by every pass.
+    pub total_created: u64,
+}
+
+impl PullState {
+    /// Fold one finished pass into the state.
+    pub fn record(&mut self, report: &PullReport, now_s: u64) {
+        self.pulls += 1;
+        self.last_pull_s = now_s;
+        self.last_created = report.created.len() as u64;
+        self.last_skipped = report.skipped.len() as u64;
+        self.total_created += self.last_created;
+    }
+}
+
+fn now_s() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The `status` reply: the source (repos, connector, store) from the record and the
+/// figures from the state. Never the maintainer or app login.
+pub fn status_of(cfg: &PullerCfg, state: &PullState) -> serde_json::Value {
+    serde_json::json!({
+        "repos": cfg.repos,
+        "github": cfg.github,
+        "store": cfg.store,
+        "pulls": state.pulls,
+        "last_pull_s": state.last_pull_s,
+        "last_created": state.last_created,
+        "last_skipped": state.last_skipped,
+        "total_created": state.total_created,
+    })
+}
+
 /// The puller bundle: `pull` and `status`.
-pub struct PullerBundle;
+#[derive(Default)]
+pub struct PullerBundle {
+    state: std::sync::Mutex<PullState>,
+}
+
+impl PullerBundle {
+    /// One pass through `peers`, remembered for `status`.
+    pub async fn pull_and_record(&self, peers: &dyn Peers, cfg: &PullerCfg) -> PullReport {
+        let report = pull(peers, cfg).await;
+        self.state
+            .lock()
+            .expect("puller state")
+            .record(&report, now_s());
+        report
+    }
+
+    /// The `status` reply now.
+    pub fn status(&self, cfg: &PullerCfg) -> serde_json::Value {
+        status_of(cfg, &self.state.lock().expect("puller state"))
+    }
+}
 
 #[async_trait::async_trait]
 impl fantastic_kernel::bundle::Bundle for PullerBundle {
@@ -331,7 +400,7 @@ impl fantastic_kernel::bundle::Bundle for PullerBundle {
     fn verb_docs(&self) -> serde_json::Value {
         serde_json::json!({
             "pull": "pull → {created: [repo#n], skipped: [[repo#n, reason]]}",
-            "status": "status → {}",
+            "status": "status → {repos, github, store, pulls, last_pull_s, last_created, last_skipped, total_created}; the figures count passes since the process started (last_pull_s is unix seconds, 0 before the first); no login and no token",
         })
     }
 
@@ -348,10 +417,12 @@ impl fantastic_kernel::bundle::Bundle for PullerBundle {
         let out = match (t, cfg_of(kernel, agent_id)) {
             (_, Err(e)) => serde_json::json!({"error": e}),
             ("pull", Ok(cfg)) => {
-                let r = pull(&KernelPeers(kernel.clone()), &cfg).await;
+                let r = self
+                    .pull_and_record(&KernelPeers(kernel.clone()), &cfg)
+                    .await;
                 serde_json::json!({"created": r.created, "skipped": r.skipped})
             }
-            ("status", Ok(_)) => serde_json::json!({}),
+            ("status", Ok(cfg)) => self.status(&cfg),
             (other, Ok(_)) => {
                 serde_json::json!({"error": format!("team_puller: unknown type '{other}'")})
             }
@@ -579,6 +650,81 @@ mod tests {
                 .get("queue/aisixteen-fantastic_team-25.md")
                 .map(String::as_str),
             Some("## SPEC\ndo it")
+        );
+    }
+
+    #[tokio::test]
+    async fn puller_view_renders_status_after_a_pull() {
+        let bundle = PullerBundle::default();
+        let fake = Fake {
+            files: Mutex::new(BTreeMap::new()),
+        };
+        let before = bundle.status(&cfg());
+        assert_eq!(before["pulls"], 0, "{before}");
+        assert_eq!(before["last_pull_s"], 0);
+        let r = bundle.pull_and_record(&fake, &cfg()).await;
+        assert_eq!(r.created.len(), 1, "{r:?}");
+        let after = bundle.status(&cfg());
+        assert_eq!(after["pulls"], 1, "{after}");
+        assert_eq!(after["last_created"], 1);
+        assert_eq!(after["total_created"], 1);
+        assert!(after["last_pull_s"].as_u64().unwrap() > 0, "{after}");
+        // A second pass finds the state file: nothing new, the total stays.
+        bundle.pull_and_record(&fake, &cfg()).await;
+        let again = bundle.status(&cfg());
+        assert_eq!(again["pulls"], 2);
+        assert_eq!(again["last_created"], 0);
+        assert_eq!(again["last_skipped"], 1);
+        assert_eq!(again["total_created"], 1);
+        // The declared view shows them.
+        let d = crate::declared_views::decl_for(HANDLER_MODULE).unwrap();
+        let m = crate::declared_views::model_of(&d, &[again]);
+        let text = m.to_string();
+        assert!(
+            text.contains("total_created") || text.contains("created"),
+            "{m}"
+        );
+        let rows = m["sections"][0]["rows"].as_array().unwrap();
+        let find = |k: &str| {
+            rows.iter()
+                .find(|r| r[0] == k)
+                .unwrap_or_else(|| panic!("no row {k}: {m}"))[1]
+                .clone()
+        };
+        assert_eq!(find("pulls"), "2");
+        assert_eq!(find("total_created"), "1");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn puller_status_names_the_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        let mk = serde_json::json!({"type": "create_agent", "id": "puller",
+            "parent_id": fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
+            "handler_module": HANDLER_MODULE,
+            "repos": ["o/a", "o/b"], "maintainer": "m", "app": "a",
+            "github": "gh1", "store": "st1"});
+        kernel
+            .send(vec![fantastic_kernel::Item::new(
+                fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
+                mk,
+            )])
+            .await;
+        let out = kernel
+            .send(vec![fantastic_kernel::Item::new(
+                "puller",
+                serde_json::json!({"type": "status"}),
+            )])
+            .await;
+        let r = &out[0].result;
+        assert_eq!(r["repos"], serde_json::json!(["o/a", "o/b"]), "{r}");
+        assert_eq!(r["github"], "gh1");
+        assert_eq!(r["store"], "st1");
+        assert_eq!(r["pulls"], 0);
+        let text = r.to_string();
+        assert!(
+            !text.contains("\"m\"") && !text.contains("maintainer"),
+            "{r}"
         );
     }
 }

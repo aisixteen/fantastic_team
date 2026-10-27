@@ -4,6 +4,15 @@
 //! `{kind, title, summary: [text], sections: [{name, columns: [text], rows: [[text]]}]}`.
 //! The page draws every value as text (`textContent`), never as markup.
 //!
+//! These stay page code, not declarations (`declared_views`): the queue, board and
+//! dispatcher views read nested object-of-arrays replies (`tasks.pending[]`, the sidebar's
+//! `groups[].items[]`) and compute ages from `now`, which the declared `table` (a
+//! top-level list of rows) and `kv` cannot express, and the github view whitelists
+//! and sanitizes each field (`is_target`, `is_result`, `leaks`) instead of printing
+//! what the connector answers. The kinds a declaration can express (cadencer, puller,
+//! webhook, packs, pack, git) are built by `declared_views::model_of`, and every
+//! kind, these four included, declares its `view.tui` there.
+//!
 //! The github view is built from a whitelist of the connector's `reflect` reply, never
 //! from unknown keys, and the finished model is scanned for secrets.
 
@@ -232,11 +241,11 @@ fn is_result(s: &str) -> bool {
 
 /// True when the text looks like a credential: the secrets guard's rules, plus the
 /// GitHub token prefixes for installation, user, refresh and OAuth tokens.
-fn leaks(s: &str) -> bool {
+pub(crate) fn leaks(s: &str) -> bool {
     if !secrets_guard::scan::scan_text(s).is_empty() {
         return true;
     }
-    ["ghs_", "ghu_", "ghr_", "gho_", "Bearer ", "eyJ"]
+    ["ghs_", "ghu_", "ghr_", "gho_", "ghp_", "Bearer ", "eyJ"]
         .iter()
         .any(|p| s.contains(p))
 }

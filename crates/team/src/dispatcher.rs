@@ -979,6 +979,14 @@ pub fn services_of(kernel: &fantastic_kernel::Kernel, me: &str, board: &str) -> 
     for id in gh {
         out.push(json!({"id": id, "kind": "github", "label": format!("GitHub ({id})")}));
     }
+    // The kinds a declaration draws (`declared_views`): cadencer, puller, webhook,
+    // packs, pack and git, in that order, each by id.
+    let declared = crate::declared_views::declared_agents(kernel);
+    for kind in crate::declared_views::WEB_KINDS {
+        for (id, d) in declared.iter().filter(|(_, d)| d.kind == kind) {
+            out.push(json!({"id": id.0, "kind": kind, "label": format!("{} ({})", d.title, id.0)}));
+        }
+    }
     out
 }
 
@@ -1019,7 +1027,7 @@ async fn panel_reply(
                 v::unavailable(kind, "GitHub")
             }
         }
-        _ => {
+        "dispatcher" => {
             let sb = sidebar_reply(
                 kernel,
                 peers,
@@ -1034,6 +1042,19 @@ async fn panel_reply(
             .await;
             v::dispatcher_view(&sb)
         }
+        other => match crate::declared_views::decl_by_kind(other) {
+            Some(d) if crate::declared_views::WEB_KINDS.contains(&other) => {
+                // A declared kind: ask each section's read verb, draw the one model.
+                let mut replies = Vec::new();
+                for s in &d.sections {
+                    let mut ask = s.args.clone().unwrap_or_else(|| json!({}));
+                    ask["type"] = json!(s.verb);
+                    replies.push(peers.ask(node, ask).await);
+                }
+                crate::declared_views::model_of(&d, &replies)
+            }
+            _ => v::unavailable(other, other),
+        },
     };
     json!({"view": "panel", "kind": kind, "target": node, "model": model})
 }
@@ -1050,7 +1071,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
-            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher, label}], the team's own agents that exist",
+            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher|cadencer|puller|webhook|packs|pack|git, label}], the team's own agents that exist",
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
             "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher; a node in the sidebar's services → {view: panel, kind, target, model: {kind, title, summary, sections}} drawn as text in the right pane)",
             "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker from the team.yaml template, its memory in the team's one store agent, in the working directory and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start; team.yaml is not rewritten). remove_worker {node: worker, confirm} deletes the worker (its rows stay in the store) and drops it from its group",
@@ -4119,5 +4140,179 @@ mod tests {
         let rec = json!({"id": "preview", "handler_module": "html.tools",
             "view": {"kind": "html", "bytes_file": "p.html", "calls": ["get_html", "watch"]}});
         assert!(is_sidecar(&rec));
+    }
+
+    #[test]
+    fn a_sidecar_check_ignores_tui_only_views() {
+        let tui = crate::declared_views::tui_of(
+            &crate::declared_views::decl_for(crate::cadencer::HANDLER_MODULE).unwrap(),
+        );
+        // A tui-only view has no kind: never a sidecar, even on a non-team module.
+        let rec = json!({"id": "preview", "handler_module": "html.tools", "view": {"tui": tui}});
+        assert!(!is_sidecar(&rec));
+        // A html view that also declares a tui is still a sidecar.
+        let both = json!({"id": "preview", "handler_module": "html.tools",
+            "view": {"kind": "html", "tui": tui}});
+        assert!(is_sidecar(&both));
+    }
+
+    /// A stand-in for a team module: answers every verb with the `reply` its meta holds,
+    /// or with an error carrying a secret when its `fail` field is set.
+    struct StubDeclared(&'static str);
+
+    #[async_trait::async_trait]
+    impl fantastic_kernel::bundle::Bundle for StubDeclared {
+        fn name(&self) -> &str {
+            self.0
+        }
+
+        async fn handle(
+            &self,
+            agent_id: &fantastic_kernel::AgentId,
+            payload: &Value,
+            kernel: &Arc<fantastic_kernel::Kernel>,
+        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
+        {
+            if payload["type"] == "boot" {
+                return Ok(None);
+            }
+            let m = kernel
+                .agents
+                .get(agent_id)
+                .map(|a| a.meta.read().unwrap().clone())
+                .unwrap_or_default();
+            if m.contains_key("fail") {
+                return Ok(Some(json!({"error": format!("boom {}", secret_text())})));
+            }
+            Ok(Some(m.get("reply").cloned().unwrap_or(json!({}))))
+        }
+    }
+
+    /// A kernel with a dispatcher and the given `(id, handler_module, reply)` agents, whose
+    /// modules are stand-ins; the dispatcher may call each of them.
+    async fn kernel_with_declared(
+        dir: &std::path::Path,
+        agents: &[(&str, &'static str, Value)],
+    ) -> Arc<fantastic_kernel::Kernel> {
+        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+        use fantastic_kernel::Item;
+        let mut reg = crate::registry();
+        for (_, module, _) in agents {
+            reg.register(module, StubDeclared(module));
+        }
+        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir)).unwrap();
+        fantastic_kernel::lock::acquire(dir).unwrap();
+        booted.write_seed().unwrap();
+        let kernel = booted.kernel.clone();
+        crate::boot_kernel(&kernel).await.unwrap();
+        let can_call: serde_json::Map<String, Value> = agents
+            .iter()
+            .map(|(id, _, _)| (id.to_string(), json!("*")))
+            .collect();
+        kernel
+            .send(vec![Item::new(
+                DEFAULT_ROOT_ID,
+                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
+                    "handler_module": HANDLER_MODULE, "can_call": can_call}),
+            )])
+            .await;
+        for (id, module, reply) in agents {
+            kernel
+                .send(vec![Item::new(
+                    DEFAULT_ROOT_ID,
+                    json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": id,
+                        "handler_module": module, "reply": reply,
+                        "callable_by": {"dispatcher": "*"}}),
+                )])
+                .await;
+        }
+        kernel
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn services_list_the_new_kinds_when_live() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_declared(
+            dir.path(),
+            &[
+                ("cad", "team_cadencer.tools", json!({})),
+                ("pk", "team_packs.tools", json!({})),
+                ("g1", "team_git.tools", json!({})),
+            ],
+        )
+        .await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert_eq!(
+            ids_of(&sb["services"]),
+            vec![
+                pair("dispatcher", "dispatcher"),
+                pair("cad", "cadencer"),
+                pair("pk", "packs"),
+                pair("g1", "git")
+            ],
+            "{sb}"
+        );
+        assert_eq!(sb["services"][1]["label"], "Cadencer (cad)");
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+
+        // Without the agents, none is listed.
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_with_declared(dir.path(), &[]).await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert_eq!(
+            ids_of(&sb["services"]),
+            vec![pair("dispatcher", "dispatcher")],
+            "{sb}"
+        );
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn panel_reply_for_a_declared_kind_returns_the_model() {
+        let status = json!({"settings": {"enabled": true, "cadence": 300, "stall_after": 1800},
+            "ticks": 7, "last_beat_s": 100, "next_beat_s": 400, "digests_sent": 3,
+            "load": {"workers": {"busy": 1, "idle": 0, "stalled": 2}}});
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel =
+            kernel_with_declared(dir.path(), &[("cad", "team_cadencer.tools", status)]).await;
+        let out = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "open", "node": "cad"}),
+        )
+        .await;
+        assert_eq!(out["view"], "panel", "{out}");
+        assert_eq!(out["kind"], "cadencer");
+        assert_eq!(out["target"], "cad");
+        let m = &out["model"];
+        assert_eq!(m["kind"], "cadencer", "{out}");
+        assert_eq!(m["sections"][0]["rows"][0], json!(["on", "true"]), "{out}");
+        assert_eq!(
+            m["sections"][1]["rows"][0],
+            json!(["stalled", "2"]),
+            "{out}"
+        );
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn panel_reply_for_a_refusing_declared_kind_is_unavailable_without_the_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel =
+            kernel_with_declared(dir.path(), &[("wh", "team_webhook.tools", json!({}))]).await;
+        kernel.update(&fantastic_kernel::AgentId::from("wh"), {
+            let mut m = serde_json::Map::new();
+            m.insert("fail".into(), json!(true));
+            m
+        });
+        let out = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": "wh"})).await;
+        assert_eq!(out["view"], "panel", "{out}");
+        assert_eq!(out["model"]["summary"], json!(["unavailable"]), "{out}");
+        assert!(!out.to_string().contains(&secret_text()), "{out}");
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
     }
 }

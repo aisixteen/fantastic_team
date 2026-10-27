@@ -127,9 +127,78 @@ fn cfg_of(kernel: &Arc<fantastic_kernel::Kernel>, id: &fantastic_kernel::AgentId
     }
 }
 
-/// The webhook bundle: `receive {headers, body}`.
+/// How many events the receiver remembers for `status`.
+pub const EVENT_RING: usize = 20;
+
+/// One remembered event: only the event name, the action word, the outcome and
+/// the time. Never a header, the body or the secret.
+fn event_row(headers: &Value, body: &str, reply: &Value, at: u64) -> Value {
+    let word = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+            .take(40)
+            .collect()
+    };
+    let event = word(header(headers, EVENT_HEADER).unwrap_or(""));
+    let action = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|p| p["action"].as_str().map(word))
+        .unwrap_or_default();
+    let refusal = reply["refused"].as_str();
+    json!({
+        "event": event,
+        "action": action,
+        "outcome": if refusal.is_some() { "refused" } else { "accepted" },
+        "reason": refusal.unwrap_or(""),
+        "at": at,
+    })
+}
+
+/// The `status` reply: whether the receiver is on, whether a secret is set (never
+/// its value) and the last events, oldest first.
+pub fn status_of(cfg: &WebhookCfg, events: &[Value]) -> Value {
+    json!({
+        "enabled": cfg.enabled,
+        "secret_set": cfg.secret.is_some(),
+        "events": events,
+    })
+}
+
+/// The webhook bundle: `receive {headers, body}` and `status`.
 #[derive(Default)]
-pub struct WebhookBundle;
+pub struct WebhookBundle {
+    events: std::sync::Mutex<std::collections::VecDeque<Value>>,
+}
+
+impl WebhookBundle {
+    /// [`receive`], remembering the outcome in the ring of the last [`EVENT_RING`].
+    pub async fn receive_and_record(
+        &self,
+        peers: &dyn Peers,
+        cfg: &WebhookCfg,
+        headers: &Value,
+        body: &str,
+    ) -> Value {
+        let reply = receive(peers, cfg, headers, body).await;
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut ring = self.events.lock().expect("webhook events");
+        ring.push_back(event_row(headers, body, &reply, at));
+        while ring.len() > EVENT_RING {
+            ring.pop_front();
+        }
+        reply
+    }
+
+    /// The `status` reply now.
+    pub fn status(&self, cfg: &WebhookCfg) -> Value {
+        let ring = self.events.lock().expect("webhook events");
+        let events: Vec<Value> = ring.iter().cloned().collect();
+        status_of(cfg, &events)
+    }
+}
 
 #[async_trait::async_trait]
 impl fantastic_kernel::bundle::Bundle for WebhookBundle {
@@ -140,6 +209,7 @@ impl fantastic_kernel::bundle::Bundle for WebhookBundle {
     fn verb_docs(&self) -> Value {
         json!({
             "receive": "receive {headers, body} → accepted {board_call} | refused {reason}",
+            "status": "status → {enabled, secret_set, events: [{event, action, outcome: accepted|refused, reason, at}]} (the last 20, oldest first; no header, body or secret)",
         })
     }
 
@@ -158,8 +228,10 @@ impl fantastic_kernel::bundle::Bundle for WebhookBundle {
                 let cfg = cfg_of(kernel, agent_id);
                 let headers = payload.get("headers").cloned().unwrap_or(json!({}));
                 let body = payload["body"].as_str().unwrap_or("");
-                receive(&KernelPeers(kernel.clone()), &cfg, &headers, body).await
+                self.receive_and_record(&KernelPeers(kernel.clone()), &cfg, &headers, body)
+                    .await
             }
+            "status" => self.status(&cfg_of(kernel, agent_id)),
             other => json!({"error": format!("team_webhook: unknown type '{other}'")}),
         };
         Ok(Some(out))
@@ -297,5 +369,75 @@ mod tests {
         let mut reg = fantastic_kernel::BundleRegistry::new();
         crate::register_team(&mut reg);
         assert!(reg.get(HANDLER_MODULE).is_some());
+    }
+
+    #[tokio::test]
+    async fn webhook_status_lists_recent_events_without_secrets() {
+        let fake = Fake::default();
+        let bundle = WebhookBundle::default();
+        let secret = "top-secret-value";
+        let c = cfg(Some(secret), true);
+        let body = r#"{"action":"opened","note":"BODYTEXT"}"#;
+        let good_sig = sign(secret, body);
+        let good = headers(Some(&good_sig), "issues");
+        let bad = headers(Some("sha256=deadbeef"), "issues");
+        bundle.receive_and_record(&fake, &c, &good, body).await;
+        bundle.receive_and_record(&fake, &c, &bad, body).await;
+        let st = bundle.status(&c);
+        let events = st["events"].as_array().unwrap();
+        assert_eq!(events.len(), 2, "{st}");
+        assert_eq!(events[0]["outcome"], "accepted");
+        assert_eq!(events[0]["event"], "issues");
+        assert_eq!(events[0]["action"], "opened");
+        assert_eq!(events[1]["outcome"], "refused");
+        assert_eq!(events[1]["reason"], "bad or missing signature");
+        assert_eq!(st["enabled"], true);
+        assert_eq!(st["secret_set"], true);
+        let text = st.to_string();
+        for leak in [secret, good_sig.as_str(), "sha256=deadbeef", "BODYTEXT"] {
+            assert!(!text.contains(leak), "{leak} in {text}");
+        }
+        // The ring keeps the last 20.
+        for _ in 0..25 {
+            bundle.receive_and_record(&fake, &c, &good, body).await;
+        }
+        assert_eq!(bundle.status(&c)["events"].as_array().unwrap().len(), 20);
+    }
+
+    #[tokio::test]
+    async fn webhook_status_without_a_secret_says_so_and_event_words_are_clean() {
+        let fake = Fake::default();
+        let bundle = WebhookBundle::default();
+        let c = cfg(None, true);
+        let h = json!({ EVENT_HEADER: "iss<ue>s; drop" });
+        bundle.receive_and_record(&fake, &c, &h, "not json").await;
+        let st = bundle.status(&c);
+        assert_eq!(st["secret_set"], false);
+        assert_eq!(st["events"][0]["event"], "issuesdrop");
+        assert_eq!(st["events"][0]["outcome"], "refused");
+    }
+
+    #[tokio::test]
+    async fn webhook_view_renders_events() {
+        let fake = Fake::default();
+        let bundle = WebhookBundle::default();
+        let c = cfg(Some("s"), true);
+        let body = r#"{"action":"opened"}"#;
+        for _ in 0..3 {
+            let h = headers(Some(&sign("s", body)), "issues");
+            bundle.receive_and_record(&fake, &c, &h, body).await;
+        }
+        let d = crate::declared_views::decl_for(HANDLER_MODULE).unwrap();
+        let st = bundle.status(&c);
+        let m = crate::declared_views::model_of(&d, &[st.clone(), st]);
+        let table = m["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["columns"].as_array().is_some_and(|c| c.len() > 2))
+            .unwrap_or_else(|| panic!("no table: {m}"));
+        assert_eq!(table["rows"].as_array().unwrap().len(), 3, "{m}");
+        assert_eq!(table["rows"][0][0], "issues");
+        assert_eq!(table["rows"][0][2], "accepted");
     }
 }

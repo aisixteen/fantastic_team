@@ -1223,6 +1223,7 @@ impl fantastic_kernel::bundle::Bundle for BoardBundle {
         json!({
             "pull": "pull → {tasks: n, errors: [..]}",
             "board": "board → {tasks: {pending, in_work, done, failed}, agents: {..}, roles?}; roles (roles mode) = {lead, fleet, tree, agents: [{id, role, state, parent}], tasks: [{id, source, holder, status}]}",
+            "rows": "rows {stall_after_s?} → {rows: [{id, parent, has_ai, driver, state, task, idle_s, time_on_task_s, cost, cache_hit, new_results}], load: {workers, groups, tasks, done_last_hour, tokens_total}}; read only (the cadencer and the declared TUI view ask it)",
             "task": "task {id} → the task",
             "report": "report {task, status, note?, pr?, author?} → {ok}",
             "agent": "agent {name, state, cost} → {ok}",

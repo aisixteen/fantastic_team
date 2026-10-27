@@ -11,6 +11,7 @@ pub mod board;
 pub mod cadence_feed;
 pub mod cadencer;
 pub mod config;
+pub mod declared_views;
 pub mod dispatcher;
 pub mod driver;
 pub mod driver_config;
@@ -73,11 +74,11 @@ pub fn register_team(reg: &mut BundleRegistry) {
         fantastic_task_registry::HANDLER_MODULE,
         fantastic_task_registry::TaskRegistryBundle::default(),
     );
-    reg.register(puller::HANDLER_MODULE, puller::PullerBundle);
+    reg.register(puller::HANDLER_MODULE, puller::PullerBundle::default());
     // The dispatcher page, for the web UI that `--port` persists (`app_control::persist_web`).
     reg.register(page::HANDLER_MODULE, page::PageBundle);
     reg.register(pack_listing::HANDLER_MODULE, pack_listing::ListingBundle);
-    reg.register(webhook::HANDLER_MODULE, webhook::WebhookBundle);
+    reg.register(webhook::HANDLER_MODULE, webhook::WebhookBundle::default());
     reg.register(board::HANDLER_MODULE, board::BoardBundle);
     reg.register(pack_bundle::HANDLER_MODULE, pack_bundle::PackBundle);
     reg.register(dispatcher::HANDLER_MODULE, dispatcher::DispatcherBundle);
