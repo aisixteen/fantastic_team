@@ -39,7 +39,7 @@ list; `open` answers the chat for one agent (`view: chat`, `target`, `fullscreen
 `examples/team.yaml` is the reference. Copy it into the team's directory and edit it. Its sections:
 
 - `templates`: one per agent kind. Each has `handler_module`, `model`, `endpoint`, `credentials` (a store and a ref), prices, `can_call` (what the agent may reach) and `extra`.
-- `first_agent`: `id`, `template`, `directive_file`.
+- `first_agent` (optional; `roles` needs it): `id`, `template`, `directive_file`. The caller defines the agents: with no `first_agent` and no `templates` only the system agents start. The app's preset is `crates/team/preset/app_team.yaml`.
 - `connectors`: for example `git` (`kind: team_git.tools`, with `repo_dir`, `workspace_root`, `remote`, `default_branch`) and a `directive` that says what its agents may do.
 - `queue`: the queue agent's id.
 - `groups` (optional): the team's groups by name. Each has `members` (worker ids) and an optional `driver` (the agent that gets the group's digest; none means the group has no AI). The dispatcher shows these groups; the board reads them too.

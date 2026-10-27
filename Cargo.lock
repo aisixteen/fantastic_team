@@ -1658,6 +1658,7 @@ dependencies = [
 name = "fantastic-team-app"
 version = "0.1.0"
 dependencies = [
+ "fantastic-team",
  "serde_json",
  "tauri",
  "tauri-build",

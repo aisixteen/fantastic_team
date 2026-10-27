@@ -351,6 +351,17 @@ pub struct Launched {
     pub url: String,
 }
 
+/// The app creates a team: for a `Start` target with a team directory, write the
+/// roles-mode preset (`team.yaml` and the role cards) unless the directory already
+/// has a `team.yaml`, which is never overwritten. Attach, tunnel and setup targets
+/// write nothing. Returns whether it wrote the preset. The CLI never calls this.
+pub fn prepare_team_dir(target: &Target, dir: Option<&Path>) -> Result<bool, String> {
+    match (target, dir) {
+        (Target::Start { .. }, Some(d)) => fantastic_team::preset::write_app_preset(d),
+        _ => Ok(false),
+    }
+}
+
 /// Start the headless binary (or attach to a URL) and wait until its web UI
 /// answers 200. If the child exits first, the error carries its exit status.
 pub async fn launch(
@@ -374,6 +385,7 @@ pub async fn launch(
         }
         Target::Setup { .. } => return Err("setup is started with start_setup".to_string()),
     };
+    prepare_team_dir(target, dir)?;
     let binary = program;
     let mut cmd = Command::new(binary);
     cmd.args(args)
@@ -573,6 +585,38 @@ mod tests {
             Target::Start { port, .. } => assert_eq!(port, DEFAULT_PORT),
             other => panic!("expected Start, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn start_with_dir_writes_the_preset_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = Target::Start {
+            binary: "x".into(),
+            port: 1,
+        };
+        assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(true));
+        let yaml = dir.path().join("team.yaml");
+        let first = std::fs::read_to_string(&yaml).unwrap();
+        assert!(dir.path().join("roles/project_lead.md").is_file());
+        assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(false));
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), first);
+        // no directory: nothing to write
+        assert_eq!(prepare_team_dir(&start, None), Ok(false));
+        // attach and tunnel write nothing
+        let other = tempfile::tempdir().unwrap();
+        let attach = Target::Attach {
+            url: "http://127.0.0.1:1/".into(),
+        };
+        let tunnel = Target::Tunnel {
+            ssh: "ssh".into(),
+            host: "h".into(),
+            remote_port: 1,
+            local_port: 2,
+        };
+        for t in [&attach, &tunnel] {
+            assert_eq!(prepare_team_dir(t, Some(other.path())), Ok(false));
+        }
+        assert!(!other.path().join("team.yaml").exists());
     }
 
     #[test]
