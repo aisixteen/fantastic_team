@@ -363,7 +363,11 @@ async fn prepare_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
 /// itself: the binary's `--port` hands the records to fantastic's shell, which
 /// hydrates and boots them. Runs an offline kernel on its own runtime and
 /// releases the directory lock before it returns, on failure too. Safe to repeat.
+/// A fresh directory is seeded first (`fantastic_tui::seed_dir`: the shell's `user`
+/// and page loader), so the page is served on the first start; one that already holds
+/// a kernel is left as it is.
 pub fn persist_web(dir: &Path, port: u16) -> Result<(), String> {
+    fantastic_tui::seed_dir(dir)?;
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async {
         let kernel = start(dir).await.map_err(|e| e.to_string())?;
@@ -859,6 +863,56 @@ mod tests {
         bootstrap::shutdown(dir.path()).unwrap();
     }
 
+    /// The shell's first-run records: the `user` and, under it, the blueprint's store.
+    const SEEDED_USER: &str = ".fantastic/agents/user/agent.yaml";
+    const SEEDED_STORE: &str = ".fantastic/agents/user/agents/store/agent.yaml";
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_web_seeds_a_fresh_directory() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        persist(dir.path(), free_port()).await.unwrap();
+        assert!(dir.path().join(SEEDED_USER).is_file(), "the user record");
+        assert!(dir.path().join(SEEDED_STORE).is_file(), "the blueprint");
+        bootstrap::shutdown(dir.path()).ok();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_fresh_directory_serves_team_page_on_the_first_start() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let port = free_port();
+        persist(dir.path(), port).await.unwrap();
+        let k = start(dir.path()).await.unwrap();
+        let resp = http_get(port, page::PAGE_PATH).await;
+        assert_eq!(status_of(&resp), 200, "{resp}");
+        assert!(resp.contains("function renderSidebar("), "{resp}");
+        assert_eq!(
+            status_of(&http_get(port, "/team_page/file/other.txt").await),
+            404
+        );
+        assert!(
+            dir.path().join(SEEDED_STORE).is_file(),
+            "the seed was not taken away"
+        );
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_web_keeps_an_existing_seeded_kernel() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(fantastic_tui::seed_dir(dir.path()).unwrap());
+        let user = dir.path().join(SEEDED_USER);
+        let mut text = std::fs::read_to_string(&user).unwrap();
+        text.push_str("# marker\n");
+        std::fs::write(&user, &text).unwrap();
+        persist(dir.path(), free_port()).await.unwrap();
+        persist(dir.path(), free_port()).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&user).unwrap(), text);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn persist_web_socket_reaches_the_dispatcher() {
         let _web = WEB.lock().await;
@@ -941,6 +995,27 @@ mod tests {
             .unwrap()["port"]
             .clone();
         assert_eq!(port, json!(p2));
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// The binary's order: `run_at_start` (a `team.yaml`), then `--port`'s records.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_at_start_then_persist_web_serves_the_page_on_the_first_start() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(crate::config::FILE_NAME), "{}\n").unwrap();
+        let d = dir.path().to_path_buf();
+        std::thread::spawn(move || crate::tree::run_at_start(&d, None, false))
+            .join()
+            .unwrap()
+            .unwrap();
+        let port = free_port();
+        persist(dir.path(), port).await.unwrap();
+        assert!(dir.path().join(SEEDED_STORE).is_file(), "the seed");
+        let k = start(dir.path()).await.unwrap();
+        let resp = http_get(port, page::PAGE_PATH).await;
+        assert_eq!(status_of(&resp), 200, "{resp}");
         k.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }

@@ -104,17 +104,12 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     // `--port`: write the page and socket records (with their grants) before the
-    // shell boots, so its host serves them. Same code as the app's `serve_web`. Only
-    // into a directory that already holds a kernel: a kernel started here in a fresh
-    // directory would take the shell's first-run seeding (its `user`, its page
-    // loader) away, so the first run there seeds first and serves the page from the
-    // next start.
+    // shell boots, so its host serves them. Same code as the app's `serve_web`; it
+    // seeds a fresh directory first, so the page is served on the first start.
     if let Surface::Port(p) = args.surface {
-        if fantastic_team::web_records_due(std::path::Path::new(".")) {
-            if let Err(e) = fantastic_team::app_control::persist_web(std::path::Path::new("."), p) {
-                eprintln!("fantastic_team: {e}");
-                return ExitCode::from(1);
-            }
+        if let Err(e) = fantastic_team::app_control::persist_web(std::path::Path::new("."), p) {
+            eprintln!("fantastic_team: {e}");
+            return ExitCode::from(1);
         }
     }
     // The graceful stop can wait on an agent mid-model-call; bound it (#119).

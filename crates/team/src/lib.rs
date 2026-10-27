@@ -135,15 +135,6 @@ pub fn registry() -> BundleRegistry {
 /// by `fantastic_team ai-readme`.
 pub const AI_README: &str = include_str!("../../../docs/ai-readme.md");
 
-/// Whether the binary's `--port` may write the web records into `dir` before the
-/// shell boots: only once the directory holds a kernel (`.fantastic`). A kernel
-/// started in a fresh directory would take fantastic's first-run seeding away (its
-/// `user`, its page loader), so the first run there seeds first and the team page
-/// is served from the next start.
-pub fn web_records_due(dir: &std::path::Path) -> bool {
-    dir.join(".fantastic").exists()
-}
-
 /// Usage text, printed on `--help` and on bad arguments.
 pub const USAGE: &str = "usage: fantastic_team [--dir PATH] [--port N | --tui]\n  no surface flag: fully headless (no port, no terminal UI)\n  --port N: serve the web UI on 127.0.0.1:N (the dispatcher page at /team_page/file/index.html, its socket at /team_ws/ws)\n  --tui: the terminal UI (needs a terminal)\n  (`mcp`, `send` and `readme` as the first word run fantastic's own commands)\n  (`packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)\n  (`packs install` run from a terminal asks for the agent id of each port first; an empty answer skips it)\n  packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]";
 
@@ -242,7 +233,9 @@ pub fn parse_args(argv: &[String]) -> Result<Args, String> {
 /// execution rows, and a file-bridge store so records persist. The file
 /// bridge is open only to the kernel and its persistence loader
 /// (`kernel_state`). The root is pointed at the memory store. A root that
-/// already names a `memory_store_id` is left alone. Returns `Ok(true)` when
+/// already names a `memory_store_id` is left alone. A directory seeded by
+/// `fantastic_tui::seed_dir` already holds the two stores (its blueprint has
+/// `kernel_memory`): then only the root is pointed at the memory store. Returns `Ok(true)` when
 /// it seeded, `Ok(false)` when there was nothing to do. Mirrors the blueprint
 /// in fantastic's terminal app.
 pub async fn seed_base_tree(kernel: &Arc<Kernel>) -> Result<bool, String> {
@@ -283,7 +276,12 @@ pub async fn seed_base_tree(kernel: &Arc<Kernel>) -> Result<bool, String> {
                    "memory_store_id": "kernel_memory"}),
         ),
     ];
-    for (target, payload) in steps {
+    // The shell's blueprint wrote the stores: keep them, point the root at the memory.
+    let shell_seeded = kernel
+        .agents
+        .contains_key(&fantastic_kernel::AgentId::from("kernel_memory"));
+    let skip = if shell_seeded { 2 } else { 0 };
+    for (target, payload) in steps.into_iter().skip(skip) {
         for o in kernel.send(vec![Item::new(target, payload)]).await {
             if !matches!(o.status, Status::Completed) {
                 return Err(format!("base tree seeding failed: {}", o.result));
@@ -434,14 +432,6 @@ mod tests {
     }
 
     #[test]
-    fn web_records_are_due_only_once_a_kernel_exists() {
-        let d = tempfile::TempDir::new().unwrap();
-        assert!(!web_records_due(d.path()), "fresh directory: seed first");
-        std::fs::create_dir(d.path().join(".fantastic")).unwrap();
-        assert!(web_records_due(d.path()));
-    }
-
-    #[test]
     fn args_default_to_the_current_directory() {
         let a = parse_args(&[]).unwrap();
         assert_eq!(a.dir, std::env::current_dir().unwrap());
@@ -563,6 +553,18 @@ mod tests {
         assert!(seed_base_tree(&kernel).await.is_ok());
         let after = reflect_of(&kernel, DEFAULT_ROOT_ID).await;
         assert_eq!(before, after);
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_directory_seeded_by_the_shell_takes_the_base_tree() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(fantastic_tui::seed_dir(dir.path()).unwrap());
+        let kernel = boot_unstarted(dir.path());
+        assert!(seed_base_tree(&kernel).await.unwrap());
+        let root = reflect_of(&kernel, DEFAULT_ROOT_ID).await;
+        assert_eq!(root["memory_store_id"], "kernel_memory", "{root}");
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
