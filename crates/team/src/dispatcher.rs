@@ -497,7 +497,7 @@ pub const INDENT_CAP: usize = 4;
 /// The agents of roles mode as one flat depth-first list for the page, from the board's
 /// `roles` section: the lead first (`lead: true`, label "Lead"), then every node of the
 /// tree in its child order. Each item is {id, role, state, depth, indent, guides, lead,
-/// label}; `indent` and `guides` stop at [`INDENT_CAP`], `depth` keeps counting. With no
+/// label, has_children}; `indent` and `guides` stop at [`INDENT_CAP`], `depth` keeps counting. With no
 /// tree but a lead id, just the lead; with neither, nothing.
 pub fn agent_list(roles: &Value) -> Vec<Value> {
     fn item(node: &Value, depth: usize, lead: bool) -> Value {
@@ -554,7 +554,83 @@ pub fn agent_list(roles: &Value) -> Vec<Value> {
             out.insert(0, a);
         }
     }
+    // Derived from the list itself: a row has children when the next row is deeper.
+    // The page uses it to collapse a subtree; it is not a record field.
+    let depths: Vec<u64> = out
+        .iter()
+        .map(|a| a["depth"].as_u64().unwrap_or(0))
+        .collect();
+    for (i, a) in out.iter_mut().enumerate() {
+        let deeper = depths.get(i + 1).is_some_and(|d| *d > depths[i]);
+        a["has_children"] = json!(deeper);
+    }
     out
+}
+
+/// The node id fantastic gives a canvas named `name` (`new_canvas {name}`): `canvas_<slug>`,
+/// the slug the lower-cased letters and digits (other characters `_`, the ends trimmed).
+/// None for a name with no letter or digit.
+pub fn canvas_slug(name: &str) -> Option<String> {
+    let slug: String = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let slug = slug.trim_matches('_');
+    (!slug.is_empty()).then(|| format!("canvas_{slug}"))
+}
+
+/// The handler module of a fantastic canvas.
+pub const CANVAS_MODULE: &str = "canvas.tools";
+
+/// The canvas that belongs to `node`, by name only (no record field, no verb): the agent
+/// `canvas_<node slug>` when it exists and is a canvas.
+pub fn canvas_of(node: &str, agents: &BTreeMap<String, Member>) -> Option<String> {
+    let id = canvas_slug(node)?;
+    agents
+        .get(&id)
+        .filter(|m| m.kind == CANVAS_MODULE)
+        .map(|_| id)
+}
+
+/// Where the canvas page of the team's web host serves a canvas: the same origin and
+/// port, relative, with `?canvas=<id>` (the id percent-encoded).
+pub fn canvas_url(id: &str) -> String {
+    let mut q = String::new();
+    for b in id.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            q.push(b as char);
+        } else {
+            q.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!("/{}/file/index.html?canvas={q}", crate::tree::CANVAS_ID)
+}
+
+/// Team-owned agent ids: never a sidecar, whatever their record holds.
+pub const TEAM_AGENT_IDS: [&str; 9] = [
+    crate::tree::DISPATCHER_ID,
+    crate::tree::DISPATCHER_VIEW_ID,
+    crate::tree::PACKS_VIEW_ID,
+    crate::tree::WORKER_VIEW_ID,
+    crate::tree::BOARD_ID,
+    crate::tree::CADENCER_ID,
+    crate::tree::ROLES_ID,
+    crate::tree::TASKS_ID,
+    crate::page::PAGE_ID,
+];
+
+/// May this record be put on a canvas? A sidecar is a plain panel an agent made for the
+/// person to look at: a record with an html `view` that is not one of the team's own
+/// agents (the dispatcher, its views, the board, the cadencer, the roles, the task
+/// store: by id, and anything on a `team_*` module). A worker, a lead or a service has
+/// no panel record of its own kind and is refused here as well.
+pub fn is_sidecar(record: &Value) -> bool {
+    let id = record["id"].as_str().unwrap_or("");
+    let module = record["handler_module"].as_str().unwrap_or("");
+    let html_view = record["view"]["kind"].as_str() == Some("html");
+    html_view && !id.is_empty() && !TEAM_AGENT_IDS.contains(&id) && !module.starts_with("team_")
 }
 
 /// The plan the lead's pane draws, from the board's `roles` section: {lead, fleet,
@@ -1064,6 +1140,13 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                 }
                 let mut out = open_target(&node, kind);
                 out["kind"] = json!(kind);
+                if kind == "worker" {
+                    // Cards the chat shows are callable by the page's leg, and only those.
+                    crate::tree::grant_cards(kernel, crate::page::WS_ID, &node).await;
+                    if let Some(id) = canvas_of(&node, &agent_table(kernel)) {
+                        out["canvas"] = json!({"url": canvas_url(&id), "id": id});
+                    }
+                }
                 out
             }
             "control" => {
@@ -3046,9 +3129,9 @@ mod tests {
             "showChat touches the sidebar"
         );
         assert!(!js_fn("openNode").contains("sidebar"));
-        assert!(HTML.contains("#sidebar { width: 280px; flex: none; }"));
-        assert!(HTML.contains("#pane { flex: 1; min-width: 0; }"));
-        assert!(HTML.contains("max-width: 430px"));
+        assert!(HTML.contains("#sidebar { width: 280px; flex: none;"));
+        assert!(HTML.contains("#pane { flex: 1; min-width: 0; display: flex"));
+        assert!(HTML.contains("max-width: 600px"));
         assert!(HTML.contains("'Lead'") || HTML.contains("a.label"));
         for n in 0..=4 {
             assert!(
@@ -3579,5 +3662,462 @@ mod tests {
         assert_eq!(v["tables"], 0);
         assert_eq!(v["error"], "nope");
         assert_eq!(v["timers"], 0);
+    }
+
+    // ---- the right pane, cards, canvas, tree and phone ----
+
+    fn tests_member(kind: &str) -> Member {
+        Member {
+            parent: "kernel".into(),
+            kind: kind.into(),
+            status: "ok".into(),
+        }
+    }
+
+    #[test]
+    fn html_chat_cell_has_no_locked_height() {
+        assert!(!HTML.contains("calc(100vh - 120px)"));
+        assert!(!HTML.contains("min-height: 320px; margin"));
+        assert!(HTML.contains("#pane { flex: 1; min-width: 0; display: flex"));
+        let rule = HTML
+            .split(".cell.chat {")
+            .nth(1)
+            .expect("the chat cell rule");
+        let rule = &rule[..rule.find('}').unwrap()];
+        assert!(rule.contains("flex: 1"), "{rule}");
+        assert!(rule.contains("min-height: 0"), "{rule}");
+        assert!(rule.contains("width: 100%"), "{rule}");
+        assert!(!rule.contains("height: calc"), "{rule}");
+    }
+
+    #[test]
+    fn html_pane_fills_the_viewport_and_transcript_scrolls_inside() {
+        let body = HTML.split("body {").nth(1).unwrap();
+        let body = &body[..body.find('}').unwrap()];
+        assert!(body.contains("height: 100vh"), "{body}");
+        let transcript = HTML.split(".transcript {").nth(1).unwrap();
+        assert!(transcript[..transcript.find('}').unwrap()].contains("overflow-y: auto"));
+        let pane = HTML.split("#pane {").nth(1).unwrap();
+        let pane = &pane[..pane.find('}').unwrap()];
+        assert!(pane.contains("min-height: 0"), "{pane}");
+        assert!(pane.contains("flex-direction: column"), "{pane}");
+        assert!(HTML.contains("#pane[hidden] { display: none; }"));
+    }
+
+    #[test]
+    fn html_tree_indent_is_small_with_connector_lines() {
+        assert!(HTML.contains("data-indent=\"1\"] { padding-left: 14px"));
+        assert!(HTML.contains("data-indent=\"4\"] { padding-left: 38px"));
+        assert!(HTML.contains("repeating-linear-gradient"));
+        assert!(HTML.contains("transparent 1px 8px"));
+    }
+
+    #[test]
+    fn html_phone_layout_is_two_snap_panels() {
+        let phone = HTML
+            .split("@media (max-width: 600px) {")
+            .nth(1)
+            .expect("phone block");
+        let phone = &phone[..phone.find("\n  }\n").unwrap()];
+        assert!(phone.contains("scroll-snap-type: x mandatory"), "{phone}");
+        assert!(phone.contains("overflow-x: auto"), "{phone}");
+        assert!(
+            phone.contains("#sidebar, #pane { width: 100vw; flex: none;"),
+            "{phone}"
+        );
+        assert!(phone.contains("scroll-snap-align: start"), "{phone}");
+        assert!(!phone.contains("flex-wrap"), "{phone}");
+    }
+
+    #[test]
+    fn html_phone_has_no_swipe_to_next_agent() {
+        for gone in ["touchstart", "touchend", "touchmove", "swipe("] {
+            assert!(!HTML.contains(gone), "{gone}");
+        }
+    }
+
+    #[test]
+    fn html_card_text_goes_through_textcontent() {
+        assert!(!HTML.contains("innerHTML"));
+        assert!(!HTML.contains("insertAdjacentHTML"));
+        for f in [
+            "cardEl",
+            "fillCard",
+            "syncCards",
+            "toggleCanvas",
+            "agentRow",
+        ] {
+            let body = js_fn(f);
+            assert!(!body.contains("innerHTML"), "{f}");
+        }
+        assert!(js_fn("fillCard").contains("sandbox"));
+        assert!(js_fn("fillCard").contains("allow-scripts"));
+        assert!(!js_fn("fillCard").contains("allow-same-origin"));
+    }
+
+    #[test]
+    fn page_chat_draws_a_card_for_an_embed_row_not_a_bubble() {
+        let Some(v) = run_node("chat_card_rows") else {
+            return;
+        };
+        let order: Vec<(&str, Option<&str>)> = v["order"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| (m["cls"].as_str().unwrap(), m["agent"].as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("msg user", None),
+                ("chat-card", Some("H")),
+                ("msg assistant", None)
+            ]
+        );
+        assert_eq!(v["frame"]["sandbox"], "allow-scripts");
+        assert!(v["frame"]["srcdoc"]
+            .as_str()
+            .unwrap()
+            .starts_with("<p>hi</p>"));
+        assert_eq!(v["getHtml"], json!(["H"]));
+        // the card's text is never a bubble holding the agent id
+        assert!(v["order"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["cls"] != "msg assistant" || m["text"] != "H"));
+        assert_eq!(v["cardsOf"], json!(["a"]));
+    }
+
+    #[test]
+    fn page_chat_unembed_removes_the_card() {
+        let Some(v) = run_node("chat_card_rows") else {
+            return;
+        };
+        let cards = |k: &str| {
+            v[k].as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["cls"] == "chat-card")
+                .count()
+        };
+        assert_eq!(cards("unembedded"), 0);
+        assert_eq!(v["unembedded"].as_array().unwrap().len(), 1);
+        // embedded again after the first place: one card, at the last place
+        assert_eq!(cards("again"), 1);
+        assert_eq!(v["again"][1]["cls"], "chat-card");
+    }
+
+    #[test]
+    fn page_chat_card_survives_reload_in_the_same_place() {
+        let Some(v) = run_node("chat_card_rows") else {
+            return;
+        };
+        assert_eq!(v["order"], v["reload"]);
+    }
+
+    #[test]
+    fn page_chat_card_height_is_clamped() {
+        let Some(v) = run_node("chat_card_rows") else {
+            return;
+        };
+        assert_eq!(v["box"], json!([1200, 120, 200, 200, 301]));
+    }
+
+    #[test]
+    fn page_card_text_goes_through_textcontent() {
+        let Some(v) = run_node("chat_card_rows") else {
+            return;
+        };
+        assert_eq!(v["markup"]["name"], "<b>x</b>");
+        assert_eq!(v["markup"]["kids"], 0);
+        assert_eq!(v["gone"], json!(["deleted"]));
+    }
+
+    #[test]
+    fn page_card_x_hides_it_in_the_page_only() {
+        let Some(v) = run_node("chat_card_rows") else {
+            return;
+        };
+        assert_eq!(v["hidden"], true);
+        assert_eq!(v["sentAfterHide"], 0);
+    }
+
+    #[test]
+    fn page_card_follows_the_history_after_a_turn() {
+        let Some(v) = run_node("chat_card_sync") else {
+            return;
+        };
+        assert_eq!(v["before"], 0);
+        assert_eq!(v["afterEmbed"], json!(["H"]));
+        // `open` ran once so the new host became callable, not again for the same card
+        assert_eq!(v["opens"], json!(["w1"]));
+        assert_eq!(v["cardsAfterSecondDone"], 1);
+        assert_eq!(v["openedAgain"], 0);
+        assert_eq!(v["afterUnembed"], 0);
+    }
+
+    #[test]
+    fn page_shows_a_canvas_button_only_when_the_open_reply_has_a_canvas() {
+        let Some(v) = run_node("canvas_button") else {
+            return;
+        };
+        assert_eq!(v["noneButtons"], 0);
+        assert_eq!(v["buttons"], json!(["Canvas"]));
+    }
+
+    #[test]
+    fn page_canvas_click_mounts_an_iframe_at_the_reply_url_in_the_pane() {
+        let Some(v) = run_node("canvas_button") else {
+            return;
+        };
+        assert_eq!(v["framesBefore"], 0);
+        let frames = v["frames"].as_array().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            frames[0]["src"],
+            "/canvas_page/file/index.html?canvas=canvas_w1"
+        );
+        assert_eq!(frames[0]["title"], "Canvas");
+        assert_eq!(frames[0]["sandbox"], true, "no sandbox attribute is set");
+        assert_eq!(frames[0]["width"], "100%");
+        assert_eq!(frames[0]["height"], "100%");
+        assert_eq!(v["chatHiddenOnCanvas"], true);
+        assert_eq!(v["label"], "Chat");
+        // the second click is back to the chat
+        assert_eq!(v["framesAfter"], 0);
+        assert_eq!(v["chatHiddenAfter"], false);
+        assert_eq!(v["labelAfter"], "Canvas");
+    }
+
+    #[test]
+    fn page_tree_collapse_hides_the_subtree_rows() {
+        let Some(v) = run_node("tree_collapse") else {
+            return;
+        };
+        assert_eq!(v["all"], json!(["pl", "a", "b", "c", "d"]));
+        assert_eq!(v["twisties"], json!(["pl", "b"]));
+        assert_eq!(v["expanded"], "true");
+        assert_eq!(v["afterB"], json!(["pl", "a", "b", "d"]));
+        assert_eq!(v["expandedB"], "false");
+        // folding is not opening
+        assert_eq!(v["opened"], 0);
+        assert_eq!(v["afterLead"], json!(["pl"]));
+        assert_eq!(v["afterLeadOpen"], json!(["pl", "a", "b", "d"]));
+        assert_eq!(v["afterBOpen"], json!(["pl", "a", "b", "c", "d"]));
+    }
+
+    #[test]
+    fn page_tree_collapse_is_remembered_across_redraw() {
+        let Some(v) = run_node("tree_collapse") else {
+            return;
+        };
+        assert_eq!(v["redraw"], json!(["pl", "a", "b", "d"]));
+        let Some(m) = run_node("tree_memory") else {
+            return;
+        };
+        assert_eq!(m["rows"], json!(["pl", "b"]));
+    }
+
+    #[test]
+    fn page_tree_column_collapse_toggles_class() {
+        let Some(v) = run_node("tree_collapse") else {
+            return;
+        };
+        assert_eq!(v["col0"], false);
+        assert_eq!(v["col1"], true);
+        assert_eq!(v["colAria"], "false");
+        assert_eq!(v["col2"], false);
+    }
+
+    #[test]
+    fn page_open_on_phone_scrolls_the_pane_into_view() {
+        let Some(v) = run_node("phone_open_shows_pane") else {
+            return;
+        };
+        let seen = v["afterOpen"].as_array().unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0]["el"], "pane");
+        assert_eq!(seen[0]["o"]["inline"], "start");
+        assert_eq!(v["touchHandlers"], json!([]));
+    }
+
+    #[test]
+    fn page_back_on_phone_scrolls_the_list_into_view() {
+        let Some(v) = run_node("phone_open_shows_pane") else {
+            return;
+        };
+        assert_eq!(v["hasBack"], true);
+        let seen = v["afterBack"].as_array().unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0]["el"], "sidebar");
+    }
+
+    #[test]
+    fn agent_list_marks_rows_with_children() {
+        let roles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
+            node("a", "worker", "active", vec![]),
+            node("b", "project_lead", "active", vec![node("c", "worker", "active", vec![])]),
+        ])});
+        let list = agent_list(&roles);
+        let flags: Vec<(&str, bool)> = list
+            .iter()
+            .map(|a| {
+                (
+                    a["id"].as_str().unwrap(),
+                    a["has_children"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            flags,
+            [("pl", true), ("a", false), ("b", true), ("c", false)]
+        );
+    }
+
+    #[test]
+    fn agent_list_has_children_follows_depth_not_order() {
+        // Two siblings in a row: neither has children, though one follows the other.
+        let roles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
+            node("a", "worker", "active", vec![]),
+            node("b", "worker", "active", vec![]),
+        ])});
+        let list = agent_list(&roles);
+        assert_eq!(list[1]["has_children"], false);
+        assert_eq!(list[2]["has_children"], false);
+        // A deep row that is last, and a lead alone.
+        let deep = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
+            node("s", "project_lead", "active", vec![node("t", "project_lead", "active", vec![node("u", "worker", "active", vec![])])]),
+        ])});
+        let flags: Vec<bool> = agent_list(&deep)
+            .iter()
+            .map(|a| a["has_children"].as_bool().unwrap())
+            .collect();
+        assert_eq!(flags, [true, true, true, false]);
+        let alone = agent_list(&json!({"lead": "pl"}));
+        assert_eq!(alone[0]["has_children"], false);
+    }
+
+    #[test]
+    fn canvas_of_finds_the_canvas_named_after_the_node() {
+        let mut agents = BTreeMap::new();
+        agents.insert("canvas_w1".to_string(), tests_member(CANVAS_MODULE));
+        agents.insert("canvas_w2".to_string(), tests_member("ram_store.tools"));
+        assert_eq!(canvas_of("w1", &agents), Some("canvas_w1".to_string()));
+        assert_eq!(canvas_of("w3", &agents), None);
+        // an agent of that id that is not a canvas is not one
+        assert_eq!(canvas_of("w2", &agents), None);
+        assert_eq!(canvas_of("  ", &agents), None);
+    }
+
+    #[test]
+    fn canvas_of_slugs_odd_ids_like_new_canvas() {
+        let mut agents = BTreeMap::new();
+        agents.insert("canvas_lead_1".to_string(), tests_member(CANVAS_MODULE));
+        agents.insert("canvas_a_b".to_string(), tests_member(CANVAS_MODULE));
+        assert_eq!(canvas_of("Lead-1", &agents), Some("canvas_lead_1".into()));
+        assert_eq!(canvas_of("a b", &agents), Some("canvas_a_b".into()));
+        assert_eq!(canvas_of("-a.b-", &agents), Some("canvas_a_b".into()));
+        assert_eq!(
+            canvas_slug("Research Team!"),
+            Some("canvas_research_team".into())
+        );
+        assert_eq!(canvas_slug("--"), None);
+    }
+
+    #[test]
+    fn canvas_url_is_relative_with_the_canvas_query() {
+        assert_eq!(
+            canvas_url("canvas_w1"),
+            "/canvas_page/file/index.html?canvas=canvas_w1"
+        );
+        assert_eq!(
+            canvas_url("canvas_a&b"),
+            "/canvas_page/file/index.html?canvas=canvas_a%26b"
+        );
+    }
+
+    async fn open_with_canvas(canvas: Option<&str>) -> Value {
+        use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
+        use fantastic_kernel::Item;
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        let mut recs = vec![
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
+            "handler_module": HANDLER_MODULE, "can_call": {"worker_view": "*"}}),
+        ];
+        if let Some(id) = canvas {
+            recs.push(
+                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": id,
+                "handler_module": "canvas.tools"}),
+            );
+        }
+        for r in recs {
+            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, r)]).await;
+        }
+        let out = kernel
+            .send(vec![Item::new(
+                "dispatcher",
+                json!({"type": "open", "node": "w1"}),
+            )])
+            .await
+            .remove(0)
+            .result;
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+        out
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_reply_carries_the_canvas_url_with_the_canvas_query() {
+        let out = open_with_canvas(Some("canvas_w1")).await;
+        assert_eq!(out["view"], "chat");
+        assert_eq!(out["canvas"]["id"], "canvas_w1");
+        let url = out["canvas"]["url"].as_str().unwrap();
+        assert!(url.starts_with("/canvas_page/file/index.html"), "{url}");
+        assert!(url.ends_with("?canvas=canvas_w1"), "{url}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_reply_has_no_canvas_when_none_exists() {
+        let out = open_with_canvas(None).await;
+        assert_eq!(out["view"], "chat");
+        assert!(out.get("canvas").is_none(), "{out}");
+    }
+
+    #[test]
+    fn is_sidecar_refuses_workers_leads_and_services() {
+        let rec = |id: &str, module: &str, view: Value| json!({"id": id, "handler_module": module, "view": view});
+        let html = json!({"kind": "html", "bytes_file": "p.html", "calls": ["get_html"]});
+        for id in TEAM_AGENT_IDS {
+            assert!(!is_sidecar(&rec(id, "html.tools", html.clone())), "{id}");
+        }
+        for module in [
+            HANDLER_MODULE,
+            crate::worker_view::HANDLER_MODULE,
+            crate::board::HANDLER_MODULE,
+            crate::cadencer::HANDLER_MODULE,
+            crate::page::HANDLER_MODULE,
+            "team_github.tools",
+        ] {
+            assert!(!is_sidecar(&rec("x", module, html.clone())), "{module}");
+        }
+        // a worker or lead: a chat view, or no view at all
+        assert!(!is_sidecar(&rec(
+            "w1",
+            "ram_store.tools",
+            json!({"kind": "chat"})
+        )));
+        assert!(!is_sidecar(&rec("pl", "ram_store.tools", Value::Null)));
+        assert!(!is_sidecar(
+            &json!({"handler_module": "html.tools", "view": html})
+        ));
+    }
+
+    #[test]
+    fn is_sidecar_accepts_a_plain_html_view() {
+        let rec = json!({"id": "preview", "handler_module": "html.tools",
+            "view": {"kind": "html", "bytes_file": "p.html", "calls": ["get_html", "watch"]}});
+        assert!(is_sidecar(&rec));
     }
 }

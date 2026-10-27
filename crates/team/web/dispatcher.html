@@ -5,12 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dispatcher</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 12px; box-sizing: border-box; height: 100vh; display: flex; flex-direction: column; overflow-y: auto; }
+  body > * { flex: none; }
   .bar { display: flex; gap: 8px; align-items: center; }
+  .bar h2 { margin: 0 0 8px; }
   .bar button { font: inherit; padding: 4px 10px; }
-  #layout { display: flex; gap: 16px; align-items: flex-start; }
-  #sidebar { width: 280px; flex: none; }
-  #pane { flex: 1; min-width: 0; }
+  #layout { display: flex; gap: 16px; align-items: stretch; height: calc(100vh - 84px); min-height: 320px; }
+  #layout.collapsed #sidebar { display: none; }
+  #sidebar { width: 280px; flex: none; overflow-y: auto; }
+  #pane { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  #pane[hidden] { display: none; }
+  .pane-head { display: flex; gap: 8px; align-items: center; flex: none; margin: 0 0 6px; }
+  .pane-head button { font: inherit; padding: 2px 10px; min-height: 28px; }
+  .pane-back { display: none; }
+  #pane iframe.canvas-frame { flex: 1; width: 100%; height: 100%; min-height: 0; border: 1px solid #ddd; border-radius: 6px; }
+  .twisty { display: inline-block; width: 1em; text-align: center; cursor: pointer; color: #6b7280; }
   .group-title { font-weight: 600; margin: 12px 0 4px; color: #374151; }
   .group-load { font-size: 12px; color: #6b7280; margin: 0 0 4px; }
   .team-load { font-size: 12px; color: #6b7280; margin: 12px 0 0; padding-top: 8px; border-top: 1px solid #e5e7eb; }
@@ -27,7 +36,7 @@
   .state-done { color: #15803d; }
   .state-paused { color: #b45309; }
   .agents-title { font-weight: 600; margin: 0 0 4px; color: #374151; }
-  .agent { background-repeat: no-repeat; background-image: repeating-linear-gradient(to right, #d1d5db 0 1px, transparent 1px 12px); background-size: 0 100%; }
+  .agent { background-repeat: no-repeat; background-image: repeating-linear-gradient(to right, #d1d5db 0 1px, transparent 1px 8px); background-size: 0 100%; }
   .team-title { font-weight: 600; margin: 8px 0 4px; color: #374151; }
   .service.selected { background-color: #e5e7eb; }
   .panel-summary { color: #6b7280; margin: 2px 0; }
@@ -36,12 +45,12 @@
   .agent.lead { font-weight: 700; }
   .agent.selected { background-color: #e5e7eb; }
   .agent[data-indent="0"] { padding-left: 6px; }
-  .agent[data-indent="1"] { padding-left: 18px; background-size: 12px 100%; }
-  .agent[data-indent="2"] { padding-left: 30px; background-size: 24px 100%; }
-  .agent[data-indent="3"] { padding-left: 42px; background-size: 36px 100%; }
-  .agent[data-indent="4"] { padding-left: 54px; background-size: 48px 100%; }
+  .agent[data-indent="1"] { padding-left: 14px; background-size: 8px 100%; }
+  .agent[data-indent="2"] { padding-left: 22px; background-size: 16px 100%; }
+  .agent[data-indent="3"] { padding-left: 30px; background-size: 24px 100%; }
+  .agent[data-indent="4"] { padding-left: 38px; background-size: 32px 100%; }
   .agent .mark { font-size: 0.85em; color: #6b7280; }
-  .agent-view { margin: 0 0 8px; padding: 6px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9em; }
+  .agent-view { flex: none; max-height: 40%; overflow: auto; margin: 0 0 8px; padding: 6px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9em; }
   .agent-view[hidden] { display: none; }
   .plan-task { display: flex; gap: 8px; flex-wrap: wrap; padding: 2px 0; overflow-wrap: anywhere; }
   .plan-task .status { margin-left: auto; font-weight: 600; }
@@ -59,7 +68,15 @@
   .controls { display: inline-flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
   .controls button { font: inherit; font-size: 0.9em; min-height: 32px; min-width: 52px; padding: 4px 10px; }
   .cell { border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin: 8px 0; }
-  .cell.chat { display: flex; flex-direction: column; height: calc(100vh - 120px); min-height: 320px; margin: 0; box-sizing: border-box; }
+  .cell.chat { display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%; margin: 0; box-sizing: border-box; }
+  .cell.chat[hidden], .agent-view[hidden] { display: none; }
+  .cell.panel { flex: 1; min-height: 0; overflow: auto; margin: 0; }
+  .chat-head { display: flex; gap: 6px; align-items: baseline; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-card { margin: 8px 0; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; }
+  .chat-card .card-head { display: flex; gap: 8px; align-items: center; padding: 2px 8px; background: #f3f4f6; font-size: 0.85em; }
+  .chat-card .card-head button { margin-left: auto; font: inherit; min-height: 24px; padding: 0 8px; }
+  .chat-card iframe { display: block; width: 100%; border: 0; }
+  .chat-card .card-note { padding: 8px; color: #6b7280; }
   .transcript { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 4px 0; }
   .msg { margin: 6px 0; padding: 6px 8px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .msg.user { background: #e0e7ff; margin-left: 24px; }
@@ -95,11 +112,15 @@
     .item:hover { background: #222; }
     .agent.selected { background-color: #333; }
     .agent-view { border-color: #444; }
-    #packs .card, #packs .detail, .cell { border-color: #444; }
+    #packs .card, #packs .detail, .cell, .chat-card { border-color: #444; }
+    .chat-card .card-head { background: #222; }
   }
-  @media (max-width: 430px) {
-    #layout { flex-direction: column; gap: 8px; }
-    #sidebar { width: 100%; }
+  @media (max-width: 600px) {
+    #layout { gap: 0; overflow-x: auto; scroll-snap-type: x mandatory; }
+    #sidebar, #pane { width: 100vw; flex: none; scroll-snap-align: start; box-sizing: border-box; }
+    #layout.collapsed #sidebar { display: block; }
+    #collapse-tree { display: none; }
+    .pane-back { display: inline-block; }
     .sub { padding-left: 16px; }
   }
 </style>
@@ -108,6 +129,7 @@
 <div class="bar"><h2 id="title">Team</h2>
   <label class="cadencer"><input type="checkbox" id="cadencer-switch" disabled> Digests (cadencer)</label>
   <span id="cadencer-state" class="task" aria-live="polite"></span>
+  <button id="collapse-tree" type="button" aria-expanded="true" aria-label="Collapse the tree">Tree</button>
 </div>
 <div id="error" class="error"></div>
 <div id="layout">
@@ -171,6 +193,13 @@
 // open drops the watch and the drafts. Kernel values and streamed text go in as
 // text only (textContent), never as markup. A worker row also shows the minutes
 // since its task last moved and the number of its pull request.
+// The pane fills the height beside the tree: the chat is a flex column whose transcript
+// scrolls inside. An `embed` row of the chat's history is a card, drawn where the row sits:
+// a sandboxed iframe of the host agent's `get_html`, which may call that agent only (the
+// team grants the page's leg that agent's panel verbs). An `unembed` row removes it. When
+// the `open` reply carries `canvas` {id, url}, a Canvas button swaps the chat for that
+// canvas page in an iframe. Each agent row with children folds its subtree (remembered);
+// the tree column folds as a whole; on a phone the list and the pane are two snap panels.
 const expanded = new Set();   // workers whose subagents are shown
 const seen = new Set();       // workers already checked against the remembered state
 let lastReply = null;        // the newest sidebar reply: the agents and the plan are drawn from it
@@ -190,6 +219,43 @@ function remember(worker, on) {
     if (on) localStorage.setItem(keyOf(worker), '1');
     else localStorage.removeItem(keyOf(worker));
   } catch (e) { /* the expansion still holds for this page */ }
+}
+
+// Folded subtrees of the agent list and the folded tree column, remembered the same way.
+const collapsedAgents = new Set();
+const seenAgents = new Set();    // agents already checked against the remembered state
+const TREE_KEY = 'fantastic.team.tree.collapsed';
+function agentKeyOf(id) { return 'fantastic.team.agents.' + id; }
+function agentCollapsed(id) {
+  if (!seenAgents.has(id)) {
+    seenAgents.add(id);
+    try {
+      if (localStorage.getItem(agentKeyOf(id)) === '1') collapsedAgents.add(id);
+    } catch (e) { /* no memory: the fold only holds for this page */ }
+  }
+  return collapsedAgents.has(id);
+}
+function toggleAgent(id) {
+  const on = !agentCollapsed(id);
+  if (on) collapsedAgents.add(id);
+  else collapsedAgents.delete(id);
+  try {
+    if (on) localStorage.setItem(agentKeyOf(id), '1');
+    else localStorage.removeItem(agentKeyOf(id));
+  } catch (e) { /* the fold still holds for this page */ }
+  if (lastReply) renderSidebar(lastReply);
+}
+function setTreeCollapsed(on, keep) {
+  const layout = document.getElementById('layout');
+  if (on) layout.classList.add('collapsed');
+  else layout.classList.remove('collapsed');
+  const btn = document.getElementById('collapse-tree');
+  btn.setAttribute('aria-expanded', on ? 'false' : 'true');
+  if (!keep) return;
+  try {
+    if (on) localStorage.setItem(TREE_KEY, '1');
+    else localStorage.removeItem(TREE_KEY);
+  } catch (e) { /* the fold still holds for this page */ }
 }
 
 function showError(msg) {
@@ -336,6 +402,14 @@ function agentRow(a) {
   row.dataset.kind = 'agent';
   row.dataset.indent = String(indent);
   row.dataset.depth = String(num(a.depth));
+  if (a.has_children) {
+    const folded = agentCollapsed(a.id);
+    const tw = el('span', 'twisty', folded ? '\u25B8' : '\u25BE');
+    tw.dataset.toggle = a.id;
+    tw.setAttribute('role', 'button');
+    tw.setAttribute('aria-expanded', folded ? 'false' : 'true');
+    row.appendChild(tw);
+  }
   row.appendChild(el('span', 'name', a.label || a.role || a.id));
   if (!a.lead && a.role && a.label !== a.role) row.appendChild(el('span', 'task', a.role));
   row.appendChild(el('span', 'mark ' + stateClass(a.state), a.state || 'active'));
@@ -346,7 +420,17 @@ function renderAgents(nav, reply) {
   const list = reply && Array.isArray(reply.agents) ? reply.agents : [];
   if (!list.length) return;
   nav.appendChild(el('div', 'agents-title', 'Agents'));
-  list.forEach(function (a) { nav.appendChild(agentRow(a)); });
+  // A folded row hides every row below it that is deeper (the list is depth-first).
+  let hideBelow = null;
+  list.forEach(function (a) {
+    const depth = num(a.depth);
+    if (hideBelow !== null) {
+      if (depth > hideBelow) return;
+      hideBelow = null;
+    }
+    nav.appendChild(agentRow(a));
+    if (a.has_children && agentCollapsed(a.id)) hideBelow = depth;
+  });
 }
 
 function markSelected() {
@@ -642,6 +726,51 @@ function stopLive(c) {
   if (l.poll != null) clearTimeout(l.poll);
 }
 
+// The strip at the top of the pane. On a phone its Back button brings the list back into
+// view (the list and the pane are two panels side by side); elsewhere it is not shown.
+function paneHead() {
+  const head = el('div', 'pane-head');
+  const back = el('button', 'pane-back', 'Back');
+  back.type = 'button';
+  back.addEventListener('click', showList);
+  head.appendChild(back);
+  return head;
+}
+
+// Bring the pane (or the list) into view; a no-op where the page does not scroll sideways.
+function revealPane() {
+  const pane = document.getElementById('pane');
+  if (pane && typeof pane.scrollIntoView === 'function') pane.scrollIntoView({ inline: 'start', block: 'nearest' });
+}
+function showList() {
+  const list = document.getElementById('sidebar');
+  if (list && typeof list.scrollIntoView === 'function') list.scrollIntoView({ inline: 'start', block: 'nearest' });
+}
+
+// The Canvas button swaps the chat for the agent's canvas page in an iframe, and back.
+function toggleCanvas(c) {
+  if (chat !== c || !c.canvas) return;
+  const pane = document.getElementById('pane');
+  if (c.frame) {
+    c.frame.remove();
+    c.frame = null;
+    c.box.hidden = false;
+    c.canvasBtn.textContent = 'Canvas';
+    drawAgentView(c);
+    return;
+  }
+  const f = el('iframe', 'canvas-frame');
+  f.src = c.canvas.url;
+  f.setAttribute('title', 'Canvas');
+  f.setAttribute('width', '100%');
+  f.setAttribute('height', '100%');
+  c.box.hidden = true;
+  c.view.hidden = true;
+  pane.appendChild(f);
+  c.frame = f;
+  c.canvasBtn.textContent = 'Chat';
+}
+
 // The chat for one agent: the pane is the second column beside the sidebar. A top
 // region holds the agent's view (the plan for the lead), then the chat box holds the
 // agent's chat cell label, the transcript and the composer. A new
@@ -650,16 +779,27 @@ function showChat(reply, node) {
   dropChat();
   const pane = document.getElementById('pane');
   pane.textContent = '';
+  const head = paneHead();
+  const canvas = reply.canvas && typeof reply.canvas.url === 'string' ? reply.canvas : null;
+  let canvasBtn = null;
+  if (canvas) {
+    canvasBtn = el('button', 'canvas-btn', 'Canvas');
+    canvasBtn.type = 'button';
+    head.appendChild(canvasBtn);
+  }
+  pane.appendChild(head);
   const view = el('div', 'agent-view');
   view.id = 'agent-view';
   view.hidden = true;
   pane.appendChild(view);
   const cell = reply.cell || {};
   const box = el('div', 'cell chat');
-  box.appendChild(el('strong', '', cell.label || 'Chat'));
-  box.appendChild(el('span', '', ' ' + (cell.kind || 'chat') + ' → ' + (cell.target || node)));
+  const title = el('div', 'chat-head');
+  title.appendChild(el('strong', '', cell.label || 'Chat'));
+  title.appendChild(el('span', '', (cell.kind || 'chat') + ' → ' + (cell.target || node)));
   const stats = el('span', 'stats');
-  box.appendChild(stats);
+  title.appendChild(stats);
+  box.appendChild(title);
   const transcript = el('div', 'transcript');
   transcript.setAttribute('aria-live', 'polite');
   box.appendChild(transcript);
@@ -696,9 +836,12 @@ function showChat(reply, node) {
     node: node, transcript: transcript, input: input, send: send, stop: stop,
     drafts: new Map(), tools: new Map(), inquiries: new Set(), attached: null,
     stats: stats, chip: chip, file: file, timer: null, live: false,
-    off: null, busy: false
+    off: null, busy: false,
+    box: box, cards: new Map(), canvas: canvas, canvasBtn: canvasBtn, frame: null
   };
   chat = c;
+  if (canvasBtn) canvasBtn.addEventListener('click', function () { toggleCanvas(c); });
+  revealPane();
   drawAgentView(c);
   markSelected();
   form.addEventListener('submit', function (e) { e.preventDefault(); sendChat(); });
@@ -721,6 +864,7 @@ function dropChat() {
   if (typeof c.off === 'function') {
     try { c.off(); } catch (e) { /* the watch is gone already */ }
   }
+  disposeCards(c);
   c.drafts.clear();
   c.tools.clear();
   c.inquiries.clear();
@@ -735,6 +879,7 @@ function dropChat() {
 function drawPanel(model) {
   const pane = document.getElementById('pane');
   pane.textContent = '';
+  pane.appendChild(paneHead());
   const box = el('div', 'cell panel');
   const m = model && typeof model === 'object' ? model : {};
   box.appendChild(el('strong', 'panel-title', m.title || 'Panel'));
@@ -766,6 +911,7 @@ function showPanel(reply, node) {
   panel = p;
   drawPanel(reply.model);
   markSelected();
+  revealPane();
   const tick = function () {
     p.timer = null;
     if (panel !== p) return;
@@ -798,13 +944,13 @@ function watchNode(c) {
 // The rows of a chat are read page by page, oldest first; the newest are drawn
 // above anything that streamed in while they loaded. Notice rows are the agent's
 // own turns to its model, not chat, and are left out.
-async function loadHistory(c) {
+async function readRows(c) {
   let rows = [];
   let args = { type: 'history' };
   try {
     for (let page = 0; page < HISTORY_PAGES; page++) {
       const r = await askNode(c.node, args);
-      if (chat !== c) return;
+      if (chat !== c) return null;
       if (!r || r.error) {
         showError(r && r.error ? String(r.error) : 'the history was not answered');
         break;
@@ -816,15 +962,186 @@ async function loadHistory(c) {
     }
   } catch (err) {
     if (chat === c) showError(String(err && err.message ? err.message : err));
-    return;
+    return null;
   }
-  if (chat !== c) return;
+  return chat === c ? rows : null;
+}
+
+async function loadHistory(c) {
+  const rows = await readRows(c);
+  if (!rows) return;
+  // A card sits where its embed row sits (the last one of an agent still on show).
+  const at = new Map();
+  rows.forEach(function (m, i) {
+    if (!m || typeof m.head !== 'string' || m.head === '') return;
+    if (m.kind === 'embed') at.set(m.head, i);
+    else if (m.kind === 'unembed') at.delete(m.head);
+  });
   const frag = document.createDocumentFragment();
-  rows.forEach(function (m) {
+  rows.forEach(function (m, i) {
     if (!m || m.kind === 'notice') return;
+    if (m.kind === 'embed' || m.kind === 'unembed') {
+      if (m.kind === 'embed' && at.get(m.head) === i && !c.cards.has(m.head)) frag.appendChild(cardEl(c, m.head));
+      return;
+    }
     frag.appendChild(bubble(m.role === 'user' ? 'user' : 'assistant', m.head));
   });
   c.transcript.prepend(frag);
+  scrollChat(c);
+}
+
+// ---- chat cards: an `embed {id}` row of the history is the panel of that agent, drawn
+// in the chat where the row sits. Pure parts first.
+const CARD_MIN = 120;        // the shortest a card gets, in px
+const CARD_MAX = 1200;       // the tallest (fantastic's CHAT_CARD_MAX_HEIGHT); more scrolls inside
+const CARD_START = 200;      // until the panel reports its height
+
+// The agent ids on show, oldest first: an embed adds its agent once, an unembed removes it.
+// A row without a string id is ignored. The same rule as ai_core's embed::cards.
+function cardsOf(rows) {
+  const out = [];
+  (Array.isArray(rows) ? rows : []).forEach(function (m) {
+    if (!m || (m.kind !== 'embed' && m.kind !== 'unembed')) return;
+    if (typeof m.head !== 'string' || m.head === '') return;
+    const at = out.indexOf(m.head);
+    if (at >= 0) out.splice(at, 1);
+    if (m.kind === 'embed') out.push(m.head);
+  });
+  return out;
+}
+
+// The height of a card around a panel that measured `measured` px.
+function cardBox(measured) {
+  if (typeof measured !== 'number' || !isFinite(measured)) return CARD_START;
+  return Math.min(Math.max(Math.ceil(measured), CARD_MIN), CARD_MAX);
+}
+
+// What runs inside a card's iframe: `fantastic.send` and `fantastic.watch` that go to the
+// page by postMessage, and the height the panel wants.
+const CARD_CONNECTOR = '<' + 'script>(function () {' +
+  'var seq = 0, pending = {}, watchers = {};' +
+  'window.addEventListener("message", function (e) {' +
+  'var m = e.data || {};' +
+  'if (m.t === "reply" && pending[m.n]) { var p = pending[m.n]; delete pending[m.n]; if (m.error) p.reject(new Error(m.error)); else p.resolve(m.reply); }' +
+  'else if (m.t === "event" && watchers[m.n]) { watchers[m.n](m.ev); }' +
+  '});' +
+  'window.fantastic = {' +
+  'send: function (id, payload) { return new Promise(function (resolve, reject) { var n = ++seq; pending[n] = { resolve: resolve, reject: reject }; parent.postMessage({ t: "send", n: n, id: id, payload: payload }, "*"); }); },' +
+  'watch: function (id, cb) { var n = ++seq; watchers[n] = cb; parent.postMessage({ t: "watch", n: n, id: id }, "*"); return function () { delete watchers[n]; parent.postMessage({ t: "unwatch", n: n }, "*"); }; }' +
+  '};' +
+  'function size() { parent.postMessage({ t: "size", h: document.documentElement.scrollHeight }, "*"); }' +
+  'window.addEventListener("load", size);' +
+  'if (window.ResizeObserver) new ResizeObserver(size).observe(document.documentElement);' +
+  '})();<' + '/script>';
+
+// One card: a header (the agent id, an X that hides it in this page only) and the body.
+function cardEl(c, id) {
+  const k = { id: id, el: el('div', 'chat-card'), body: null, frame: null, offs: new Map() };
+  k.el.dataset.agent = id;
+  const head = el('div', 'card-head');
+  head.appendChild(el('span', 'name', id));
+  const x = el('button', '', '\u00d7');
+  x.type = 'button';
+  x.title = 'Hide this card';
+  x.setAttribute('aria-label', 'Hide the card of ' + id);
+  x.addEventListener('click', function () { k.el.hidden = true; });
+  head.appendChild(x);
+  k.body = el('div', 'card-note', 'loading\u2026');
+  k.el.appendChild(head);
+  k.el.appendChild(k.body);
+  c.cards.set(id, k);
+  fillCard(c, k);
+  return k.el;
+}
+
+// The host's own `get_html` is the card's panel; a host that is gone says so.
+async function fillCard(c, k) {
+  let r;
+  try {
+    r = await askNode(k.id, { type: 'get_html' });
+  } catch (err) {
+    r = { error: String(err && err.message ? err.message : err) };
+  }
+  if (chat !== c || c.cards.get(k.id) !== k) return;
+  if (!r || r.error || typeof r.html !== 'string') {
+    const err = r && r.error ? String(r.error) : '';
+    const gone = (r && r.reason === 'not_found') || /not[ _]found|no such agent|unknown agent/i.test(err);
+    k.body.textContent = gone ? 'deleted' : (err || 'no panel');
+    return;
+  }
+  const f = el('iframe', '');
+  f.setAttribute('sandbox', 'allow-scripts');
+  f.setAttribute('title', k.id);
+  f.setAttribute('height', String(cardBox(CARD_START)));
+  f.srcdoc = r.html + CARD_CONNECTOR;
+  k.body.remove();
+  k.body = null;
+  k.el.appendChild(f);
+  k.frame = f;
+}
+
+function postToCard(k, msg) {
+  try {
+    if (k.frame && k.frame.contentWindow) k.frame.contentWindow.postMessage(msg, '*');
+  } catch (e) { /* the card is gone */ }
+}
+
+// A card's panel asks the page for `send` / `watch`: only for its own host agent; the
+// team's grant on the leg (the panel's verbs and watch) is what the host lets through.
+function onCardMessage(e) {
+  const c = chat;
+  const m = e && e.data;
+  if (!c || !c.cards || !m || typeof m !== 'object') return;
+  let k = null;
+  c.cards.forEach(function (x) { if (x.frame && x.frame.contentWindow === e.source) k = x; });
+  if (!k) return;
+  if (m.t === 'size') {
+    k.frame.setAttribute('height', String(cardBox(Number(m.h))));
+  } else if (m.t === 'send') {
+    if (m.id !== k.id || !m.payload || typeof m.payload.type !== 'string') {
+      postToCard(k, { t: 'reply', n: m.n, error: 'a card may only call its own agent' });
+      return;
+    }
+    askNode(k.id, m.payload).then(
+      function (r) { postToCard(k, { t: 'reply', n: m.n, reply: r }); },
+      function (err) { postToCard(k, { t: 'reply', n: m.n, error: String(err && err.message ? err.message : err) }); });
+  } else if (m.t === 'watch') {
+    if (m.id !== k.id || typeof fantastic === 'undefined' || !fantastic || typeof fantastic.watch !== 'function') return;
+    k.offs.set(m.n, fantastic.watch(k.id, function (ev) { postToCard(k, { t: 'event', n: m.n, ev: ev }); }));
+  } else if (m.t === 'unwatch') {
+    const off = k.offs.get(m.n);
+    k.offs.delete(m.n);
+    if (typeof off === 'function') off();
+  }
+}
+window.addEventListener('message', onCardMessage);
+
+function dropCard(c, k) {
+  k.offs.forEach(function (off) { try { if (typeof off === 'function') off(); } catch (e) { /* gone */ } });
+  k.offs.clear();
+  k.el.remove();
+  c.cards.delete(k.id);
+}
+
+function disposeCards(c) {
+  if (!c.cards) return;
+  Array.from(c.cards.values()).forEach(function (k) { dropCard(c, k); });
+}
+
+// After a turn the history is read again: a new embed gets its card (after `open` made
+// the host callable by this page), an unembedded one loses it.
+async function syncCards(c) {
+  const rows = await readRows(c);
+  if (!rows || chat !== c) return;
+  const live = cardsOf(rows);
+  Array.from(c.cards.values()).forEach(function (k) {
+    if (live.indexOf(k.id) < 0) dropCard(c, k);
+  });
+  const fresh = live.filter(function (id) { return !c.cards.has(id); });
+  if (!fresh.length) return;
+  try { await ask({ type: 'open', node: c.node }); } catch (err) { /* the cards say what failed */ }
+  if (chat !== c) return;
+  fresh.forEach(function (id) { c.transcript.appendChild(cardEl(c, id)); });
   scrollChat(c);
 }
 
@@ -844,6 +1161,7 @@ function onChatEvent(c, ev) {
     if ((!ev.client_id || ev.client_id === chatClient) && (!ev.source || ev.source === c.node)) {
       finishTurn(c);
       scheduleInquiries(c);
+      syncCards(c);
     }
     return;
   }
@@ -1206,6 +1524,8 @@ document.getElementById('sidebar').addEventListener('click', function (e) {
     else control(ctl.dataset.node, ctl.dataset.control, false);
     return;
   }
+  const tog = e.target && e.target.closest ? e.target.closest('[data-toggle]') : null;
+  if (tog) { toggleAgent(tog.dataset.toggle); return; }
   const exp = e.target && e.target.closest ? e.target.closest('[data-expander]') : null;
   if (exp) { toggleWorker(exp.dataset.expander); return; }
   const node = e.target && e.target.closest ? e.target.closest('[data-node]') : null;
@@ -1360,6 +1680,13 @@ document.getElementById('packs-detail').addEventListener('click', function (e) {
     if (pack && worker) packAction('pack', { type: 'eval', pack: pack, worker: worker });
   }
 });
+
+document.getElementById('collapse-tree').addEventListener('click', function () {
+  setTreeCollapsed(!document.getElementById('layout').classList.contains('collapsed'), true);
+});
+try {
+  if (localStorage.getItem(TREE_KEY) === '1') setTreeCollapsed(true, false);
+} catch (e) { /* not remembered */ }
 
 loadSidebar();
 loadPacks();
