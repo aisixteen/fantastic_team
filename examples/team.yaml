@@ -107,6 +107,11 @@ roles:
 #     stall_after: 900    # seconds a member holding a task may sit still
 #     quiet: true         # send only changes (plus a heartbeat, see README)
 #     enabled: true       # false: this group gets no digest
+# The cadencer (digests to each lead, `STALLED` flags, the quiet heartbeat) is created in
+# every team, with or without a board, and is on by default. Uncomment to create it
+# switched off; the dispatcher page's "Digests (cadencer)" switch turns it on or off live.
+# cadencer:
+#   enabled: false
 # The board caches these repos (owner/name) through a connector above. The
 # project_lead card reads it.
 board:

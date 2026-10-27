@@ -105,7 +105,10 @@
 </style>
 </head>
 <body>
-<div class="bar"><h2 id="title">Team</h2></div>
+<div class="bar"><h2 id="title">Team</h2>
+  <label class="cadencer"><input type="checkbox" id="cadencer-switch" disabled> Digests (cadencer)</label>
+  <span id="cadencer-state" class="task" aria-live="polite"></span>
+</div>
 <div id="error" class="error"></div>
 <div id="layout">
   <nav id="sidebar" aria-label="Workers and subagents"></nav>
@@ -430,7 +433,53 @@ async function loadSidebar() {
   } catch (err) {
     showError(String(err && err.message ? err.message : err));
   }
+  loadCadencer();
 }
+
+// The cadencer's on/off switch. The state is the cadencer's own `settings.enabled`
+// (persisted by its `set`), asked at page start and after each sidebar load, so a
+// restart shows it. A team with no cadencer, or one that refuses `status`, leaves the
+// control disabled.
+async function loadCadencer() {
+  let reply;
+  try {
+    reply = await askNode('cadencer', { type: 'status' });
+  } catch (err) {
+    reply = { error: String(err && err.message ? err.message : err) };
+  }
+  const box = document.getElementById('cadencer-switch');
+  const note = document.getElementById('cadencer-state');
+  const s = reply && !reply.error ? reply.settings : null;
+  if (!s || typeof s.enabled !== 'boolean') {
+    box.disabled = true;
+    note.textContent = 'no cadencer';
+    return;
+  }
+  box.disabled = false;
+  box.checked = s.enabled;
+  note.textContent = s.enabled ? 'on' : 'off';
+}
+
+// A click sends `set {enabled}` and reloads the state. A refusal is shown as an error
+// and the box goes back to what it was.
+async function switchCadencer() {
+  const box = document.getElementById('cadencer-switch');
+  const want = box.checked;
+  let reply;
+  try {
+    reply = await askNode('cadencer', { type: 'set', enabled: want });
+  } catch (err) {
+    reply = { error: String(err && err.message ? err.message : err) };
+  }
+  if (!reply || reply.error) {
+    box.checked = !want;
+    showError(reply && reply.error ? String(reply.error) : 'the cadencer did not answer');
+    return;
+  }
+  showError('');
+  await loadCadencer();
+}
+document.getElementById('cadencer-switch').addEventListener('change', switchCadencer);
 
 // Start, pause, stop, hand a task to, add or remove a worker. A stop and a
 // remove ask first: the team's question is shown with window.confirm, and only a

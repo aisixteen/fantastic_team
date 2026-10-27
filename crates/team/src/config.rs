@@ -54,6 +54,9 @@ pub struct TeamConfig {
     /// The board: the repos it caches and the GitHub connector that reads them.
     #[serde(default)]
     pub board: Option<BoardCfg>,
+    /// The cadencer: on by default; `cadencer: {enabled: false}` creates it switched off.
+    #[serde(default)]
+    pub cadencer: Option<CadencerCfg>,
     /// The roles registry (fantastic's `agentic_resources`): the card folders and
     /// the default limits. Absent: the team has no registry.
     #[serde(default)]
@@ -144,6 +147,24 @@ pub struct GroupCfg {
     /// Whether the cadencer digests this group at all. Unset: the default (on).
     #[serde(default)]
     pub enabled: Option<bool>,
+}
+
+/// The `cadencer:` section: only the switch. The digests' timing lives in the groups.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CadencerCfg {
+    /// False creates the cadencer switched off (the UI can switch it on). Unset: on.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+/// Whether the cadencer starts switched on: off when `cadencer.enabled` is false, or
+/// when the team has groups and every one sets `enabled: false`; otherwise on.
+pub fn cadencer_enabled(cfg: &TeamConfig) -> bool {
+    if cfg.cadencer.as_ref().and_then(|c| c.enabled) == Some(false) {
+        return false;
+    }
+    cfg.groups.is_empty() || cfg.groups.values().any(|g| g.enabled != Some(false))
 }
 
 /// The board section: what it caches and through which connector.
@@ -637,6 +658,41 @@ mod tests {
         assert_eq!(cfg.connectors["git"].record["remote"], json!("origin"));
         assert_eq!(cfg.queue.id, "queue");
         assert_eq!(cfg.credentials.as_ref().unwrap().backend, "env");
+    }
+
+    #[test]
+    fn cadencer_section_parses_enabled_false() {
+        let cfg = parse(&format!("{MIN}cadencer:\n  enabled: false\n")).unwrap();
+        assert_eq!(cfg.cadencer.as_ref().unwrap().enabled, Some(false));
+        assert!(!cadencer_enabled(&cfg));
+        let on = parse(&format!("{MIN}cadencer:\n  enabled: true\n")).unwrap();
+        assert!(cadencer_enabled(&on));
+    }
+
+    #[test]
+    fn cadencer_defaults_to_on_without_a_section() {
+        let cfg = parse(MIN).unwrap();
+        assert!(cfg.cadencer.is_none());
+        assert!(cadencer_enabled(&cfg));
+        let empty = parse(&format!("{MIN}cadencer: {{}}\n")).unwrap();
+        assert!(cadencer_enabled(&empty));
+    }
+
+    #[test]
+    fn cadencer_off_when_every_group_is_disabled() {
+        let both_off = format!(
+            "{MIN}groups:\n  g:\n    members: [a]\n    enabled: false\n  h:\n    members: [b]\n    enabled: false\n"
+        );
+        assert!(!cadencer_enabled(&parse(&both_off).unwrap()));
+        let one_on = format!(
+            "{MIN}groups:\n  g:\n    members: [a]\n    enabled: false\n  h:\n    members: [b]\n"
+        );
+        assert!(cadencer_enabled(&parse(&one_on).unwrap()));
+    }
+
+    #[test]
+    fn cadencer_section_rejects_unknown_keys() {
+        assert!(parse(&format!("{MIN}cadencer:\n  cadence: 5\n")).is_err());
     }
 
     #[test]
