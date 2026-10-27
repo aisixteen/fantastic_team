@@ -690,14 +690,17 @@ mod tests {
         let status = status_of(&resp);
         assert!(status == 200 || (300..400).contains(&status), "{resp}");
         assert_eq!(status, 200, "{resp}");
+        let js = http_get(port, "/team_page/file/page.js").await;
         assert!(
-            resp.contains("function renderSidebar("),
+            js.contains("function renderSidebar("),
             "the dispatcher page is served"
         );
+        let shim = http_get(port, "/team_page/file/shim.js").await;
         assert!(
-            resp.contains("window.fantastic = {"),
+            shim.contains("window.fantastic = {"),
             "with the socket shim"
         );
+        assert!(resp.contains("src=\"shim.js\""), "the page loads the shim");
         // A file the page does not serve is a 404.
         assert_eq!(
             status_of(&http_get(port, "/team_page/file/other.txt").await),
@@ -847,14 +850,14 @@ mod tests {
         let k = start(dir.path()).await.unwrap();
         let resp = http_get(port, page::PAGE_PATH).await;
         assert_eq!(status_of(&resp), 200, "{resp}");
+        let js = http_get(port, "/team_page/file/page.js").await;
+        assert!(js.contains("function renderSidebar("), "the page is served");
+        let shim = http_get(port, "/team_page/file/shim.js").await;
         assert!(
-            resp.contains("function renderSidebar("),
-            "the page is served"
-        );
-        assert!(
-            resp.contains("window.fantastic = {"),
+            shim.contains("window.fantastic = {"),
             "with the socket shim"
         );
+        assert!(resp.contains("src=\"shim.js\""), "the page loads the shim");
         assert_eq!(
             status_of(&http_get(port, "/team_page/file/other.txt").await),
             404
@@ -886,7 +889,8 @@ mod tests {
         let k = start(dir.path()).await.unwrap();
         let resp = http_get(port, page::PAGE_PATH).await;
         assert_eq!(status_of(&resp), 200, "{resp}");
-        assert!(resp.contains("function renderSidebar("), "{resp}");
+        let js = http_get(port, "/team_page/file/page.js").await;
+        assert!(js.contains("function renderSidebar("), "{js}");
         assert_eq!(
             status_of(&http_get(port, "/team_page/file/other.txt").await),
             404

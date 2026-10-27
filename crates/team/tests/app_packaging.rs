@@ -31,12 +31,207 @@ fn bundle_targets_cover_three_desktop_platforms() {
         .iter()
         .map(|t| t.as_str().unwrap_or_default().to_string())
         .collect();
-    for required in ["app", "dmg", "msi", "nsis", "deb", "appimage"] {
+    for required in ["app", "dmg", "msi", "nsis", "deb"] {
         assert!(
             targets.iter().any(|t| t == required),
             "bundle target missing: {required} (targets: {targets:?})"
         );
     }
+    assert!(
+        !targets.iter().any(|t| t.eq_ignore_ascii_case("appimage")),
+        "appimage must not be a target: {targets:?}"
+    );
+}
+
+#[test]
+fn bundle_targets_drop_appimage() {
+    let conf = load_conf();
+    let targets: Vec<String> = conf["bundle"]["targets"]
+        .as_array()
+        .expect("bundle.targets is an array")
+        .iter()
+        .map(|t| t.as_str().unwrap_or_default().to_lowercase())
+        .collect();
+    assert!(!targets.iter().any(|t| t == "appimage"), "{targets:?}");
+    for t in &targets {
+        assert!(
+            ["app", "dmg", "msi", "nsis", "deb"].contains(&t.as_str()),
+            "unexpected bundle target {t:?}"
+        );
+    }
+}
+
+#[test]
+fn descriptions_describe_the_agent_tree_app() {
+    let conf = load_conf();
+    let short = conf["bundle"]["shortDescription"].as_str().unwrap_or("");
+    let long = conf["bundle"]["longDescription"].as_str().unwrap_or("");
+    assert!(!short.is_empty() && !long.is_empty());
+    for d in [short, long] {
+        let d = d.to_lowercase();
+        assert!(!d.contains("every folder"), "{d}");
+        assert!(!d.contains("live canvas for"), "{d}");
+    }
+    assert!(long.to_lowercase().contains("agent"), "{long}");
+}
+
+/// The CSP as directive -> sources.
+fn csp() -> std::collections::BTreeMap<String, Vec<String>> {
+    let conf = load_conf();
+    let text = conf["app"]["security"]["csp"]
+        .as_str()
+        .expect("a csp string");
+    text.split(';')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(|d| {
+            let mut it = d.split_whitespace();
+            let name = it.next().unwrap().to_string();
+            (name, it.map(str::to_string).collect())
+        })
+        .collect()
+}
+
+/// Every `<name ...>` start tag in `html` as its attribute text (no regex crate).
+fn tags<'a>(html: &'a str, name: &str) -> Vec<&'a str> {
+    let open = format!("<{name}");
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(i) = html[at..].find(&open) {
+        let s = at + i + open.len();
+        at = s;
+        if !html[s..].starts_with(|c: char| c.is_whitespace() || c == '>') {
+            continue;
+        }
+        let e = s + html[s..].find('>').expect("tag closes");
+        out.push(&html[s..e]);
+    }
+    out
+}
+
+fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let key = format!("{name}=\"");
+    let i = tag.find(&key)?;
+    let v = &tag[i + key.len()..];
+    Some(&v[..v.find('"')?])
+}
+
+#[test]
+fn csp_allows_every_source_the_served_page_uses() {
+    let csp = csp();
+    let style = csp.get("style-src").expect("style-src");
+    assert_eq!(style, &["'self'"]);
+    assert!(csp["default-src"] == ["'self'"]);
+    for bad in ["unsafe-inline", "unsafe-eval", "data:", "blob:", "https:"] {
+        assert!(
+            !csp.values().flatten().any(|s| s.contains(bad)),
+            "csp allows {bad}"
+        );
+    }
+    let html = fantastic_team::page::index_html();
+    assert!(!html.contains("<style"), "inline <style>");
+    for t in tags(&html, "script") {
+        assert!(attr(t, "src").is_some(), "script without src: {t}");
+    }
+    let mut at = 0;
+    while let Some(i) = html[at..].find("<script") {
+        let s = at + i;
+        let gt = s + html[s..].find('>').unwrap() + 1;
+        let end = gt + html[gt..].find("</script>").expect("script closes");
+        assert!(html[gt..end].trim().is_empty(), "inline script body");
+        at = end;
+    }
+    for tag in html.split('<').skip(1) {
+        let tag = tag.split('>').next().unwrap();
+        assert!(attr(tag, "style").is_none(), "style attribute: {tag}");
+        for a in tag.split_whitespace().skip(1) {
+            let n = a.split('=').next().unwrap();
+            assert!(
+                !(n.len() > 2 && n.starts_with("on") && a.contains('=')),
+                "handler {a}"
+            );
+        }
+    }
+    let files = fantastic_team::page::FILES;
+    let mut refs = Vec::new();
+    for t in tags(&html, "link") {
+        refs.push(attr(t, "href").expect("link href"));
+    }
+    for t in tags(&html, "script") {
+        refs.push(attr(t, "src").unwrap());
+    }
+    for t in tags(&html, "iframe") {
+        refs.push(attr(t, "src").expect("iframe src"));
+    }
+    assert!(refs.len() >= 3, "{refs:?}");
+    for r in refs {
+        assert!(
+            !r.contains("://") && !r.starts_with("//"),
+            "cross-origin {r}"
+        );
+        let name = r.strip_prefix("/team_page/file/").unwrap_or(r);
+        assert!(files.contains(&name), "{r} is not a served file");
+    }
+}
+
+#[test]
+fn served_css_and_js_have_no_csp_violations() {
+    let page = fantastic_team::page::file_bytes;
+    let text = |f: &str| String::from_utf8(page(f).unwrap()).unwrap();
+    for f in ["page.js", "shim.js", "card.js"] {
+        let js = text(f);
+        for bad in [
+            "setAttribute('style'",
+            "setAttribute(\"style\"",
+            ".cssText",
+            "eval(",
+            "new Function(",
+        ] {
+            assert!(!js.contains(bad), "{f} uses {bad}");
+        }
+    }
+    let shim = text("shim.js");
+    assert!(shim.contains("location.host"));
+    assert!(shim.contains("/team_ws/ws"));
+    for lit in ["http://", "https://", "ws://", "wss://"] {
+        assert!(!shim.contains(lit), "shim has a {lit} literal");
+    }
+    let url = fantastic_team::dispatcher::canvas_url("a");
+    assert!(url.starts_with('/') || url.starts_with('?'), "{url}");
+    let d = fantastic_team::dispatcher::HTML;
+    assert!(d.contains("setAttribute('sandbox', 'allow-scripts')"));
+    assert!(!d.contains("allow-same-origin"));
+    let js = text("page.js");
+    assert_eq!(
+        js.matches("'script src=\"/team_page/file/card.js\"></'")
+            .count(),
+        1
+    );
+    assert!(!text("card.js").contains("<script"));
+}
+
+#[test]
+fn csp_stays_limited_to_the_one_port() {
+    let conf = load_conf();
+    let dist = conf["build"]["frontendDist"].as_str().unwrap();
+    let port = dist.rsplit(':').next().unwrap();
+    let csp = csp();
+    assert_eq!(
+        csp["connect-src"],
+        [
+            "'self'".to_string(),
+            format!("http://127.0.0.1:{port}"),
+            format!("ws://127.0.0.1:{port}")
+        ]
+    );
+    for s in csp.values().flatten() {
+        assert!(s != "*" && !s.contains("localhost"), "{s}");
+        if s.contains("://") {
+            assert!(s.ends_with(&format!("127.0.0.1:{port}")), "other port {s}");
+        }
+    }
+    assert!(!csp.contains_key("script-src"));
+    assert!(!csp.contains_key("frame-src"));
 }
 
 #[test]

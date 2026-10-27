@@ -138,7 +138,7 @@ Build the packaged app from the repository root with the Tauri CLI:
 
 - macOS (.app, .dmg): `cargo tauri build --bundles app,dmg`
 - Windows (.msi, NSIS .exe): `cargo tauri build --bundles msi,nsis`
-- Linux (.deb, AppImage): `cargo tauri build --bundles deb,appimage`
+- Linux (.deb): `cargo tauri build --bundles deb`
 
 Artifacts land under `target/release/bundle/`.
 
