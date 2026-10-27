@@ -29,6 +29,7 @@ pub mod page;
 pub mod peer_envelope;
 pub mod peer_transport;
 pub mod peers;
+pub mod preset;
 pub mod puller;
 pub mod repo_config;
 pub mod setup_github;

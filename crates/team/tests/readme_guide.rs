@@ -474,3 +474,38 @@ fn install_help_block_matches_usage() {
         );
     }
 }
+
+#[test]
+fn readme_minimal_examples_parse() {
+    let text = readme();
+    let blocks = readme_yaml_blocks(&text);
+    let by = |tag: &str| {
+        blocks
+            .iter()
+            .find(|b| b.lines().next() == Some(tag))
+            .unwrap_or_else(|| panic!("README must show the `{tag}` example"))
+            .clone()
+    };
+    let worker = fantastic_team::config::parse(&by("# worker-only"))
+        .unwrap_or_else(|e| panic!("worker-only example must parse: {e}"));
+    assert_eq!(worker.first_agent.as_ref().unwrap().id, "w1");
+    assert!(worker.roles.is_none());
+    assert!(worker
+        .first_agent
+        .as_ref()
+        .unwrap()
+        .directive_file
+        .is_none());
+
+    let roles = fantastic_team::config::parse(&by("# roles mode"))
+        .unwrap_or_else(|e| panic!("roles example must parse: {e}"));
+    assert!(roles.roles.is_some());
+    let dir = tempfile::TempDir::new().unwrap();
+    for (file, card) in fantastic_team::roles::ALL {
+        let p = dir.path().join("roles").join(file);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, card).unwrap();
+    }
+    fantastic_team::tree::plan(&roles, dir.path())
+        .unwrap_or_else(|e| panic!("roles example must plan with the cards: {e}"));
+}

@@ -19,6 +19,7 @@ path = "src/main.rs"
 tauri = ["dep:tauri", "dep:tauri-build"]
 
 [dependencies]
+fantastic-team = { path = "../team" }
 tokio.workspace = true
 tauri = { version = "=2.12.1", optional = true }
 
