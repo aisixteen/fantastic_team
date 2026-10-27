@@ -73,6 +73,19 @@ pub struct TeamConfig {
     /// Config, not code: a `team.yaml` may name a different store.
     #[serde(default)]
     pub store: StoreCfg,
+    /// The canvases (sidecars an agent makes for the person): `canvases: {persist: false}`
+    /// asks that they write nothing to disk. Absent: they persist.
+    #[serde(default)]
+    pub canvases: Option<CanvasesCfg>,
+}
+
+/// The `canvases:` section: only the persistence switch.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanvasesCfg {
+    /// False asks that no canvas folder or page record is written. Unset: true.
+    #[serde(default)]
+    pub persist: Option<bool>,
 }
 
 /// The `store:` section: the id of the team's one memory store and its file.
@@ -283,6 +296,15 @@ impl TeamConfig {
     /// The first agent's id, when the file defines one.
     pub fn lead_id(&self) -> Option<&str> {
         self.first_agent.as_ref().map(|f| f.id.as_str())
+    }
+
+    /// Whether canvases persist (`canvases.persist`, default true). The team exposes the
+    /// choice; writing nothing is fantastic's to honour (see `tree::run_at_start`).
+    pub fn canvases_persist(&self) -> bool {
+        self.canvases
+            .as_ref()
+            .and_then(|c| c.persist)
+            .unwrap_or(true)
     }
 }
 
@@ -1259,5 +1281,39 @@ mod tests {
         bare.price_output_per_mtok = None;
         let v = tier_fields(&bare, "m");
         assert!(v.get("credentials").is_none() && v.get("price_input_per_mtok").is_none());
+    }
+
+    #[test]
+    fn canvases_persist_defaults_to_true() {
+        assert!(parse("{}").unwrap().canvases_persist());
+        assert!(parse("canvases: {}").unwrap().canvases_persist());
+        assert!(parse("canvases: {persist: true}")
+            .unwrap()
+            .canvases_persist());
+    }
+
+    #[test]
+    fn canvases_persist_false_parses() {
+        let cfg = parse("canvases:\n  persist: false\n").unwrap();
+        assert_eq!(
+            cfg.canvases,
+            Some(CanvasesCfg {
+                persist: Some(false)
+            })
+        );
+        assert!(!cfg.canvases_persist());
+    }
+
+    #[test]
+    fn canvases_section_rejects_unknown_keys() {
+        let e = parse("canvases: {persits: false}").unwrap_err();
+        assert!(e.contains("persits"), "{e}");
+    }
+
+    #[test]
+    fn examples_team_yaml_still_parses() {
+        let cfg = parse(include_str!("../../../examples/team.yaml")).unwrap();
+        assert!(cfg.canvases_persist());
+        assert!(cfg.canvases.is_none());
     }
 }

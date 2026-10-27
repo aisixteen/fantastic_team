@@ -50,6 +50,14 @@ pub const LEAD_ROLES_VERBS: [&str; 5] = ["roles", "role", "spawn", "get_count", 
 /// The kernel verbs a spawned agent may call on the root to wait for its children
 /// (`await_set`, `await_cancel`): the project_lead card lists them.
 pub const AWAIT_VERBS: [&str; 2] = ["await_set", "await_cancel"];
+
+/// The root verbs a spawned worker, lead or project_lead holds to make and remove its
+/// own sidecars (their cards grant them). The lead holds them too, since a spawn grants
+/// only what the spawner holds (fantastic #436).
+pub const SIDECAR_ROOT_VERBS: [&str; 2] = ["create_agent", "delete_agent"];
+
+/// The canvas verb those cards grant; held by the lead for the same reason.
+pub const SIDECAR_CANVAS_VERBS: [&str; 1] = ["new_canvas"];
 /// What the board may call on the roles registry (roles mode): who runs (`fleet`) and
 /// the count (`get_count`).
 pub const BOARD_ROLES_VERBS: [&str; 2] = ["fleet", "get_count"];
@@ -167,6 +175,8 @@ pub fn check_cards(cfg: &TeamConfig, team_dir: &Path) -> Result<(), String> {
     known.insert(fantastic_agentic_resources::cards::REGISTRY_TOKEN);
     known.insert(cfg.queue.id.as_str());
     known.insert(TASKS_ID);
+    // the canvas host the web boot makes: a card may grant its `new_canvas`
+    known.insert(CANVAS_ID);
     known.extend(cfg.connectors.keys().map(String::as_str));
     if cfg.board.is_some() {
         known.insert(BOARD_ID);
@@ -340,12 +350,11 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
             "handler_module": dispatcher::HANDLER_MODULE,
             "board": BOARD_ID,
             "groups": dispatcher_groups(cfg),
-            // The dispatcher may place itself on the canvas and open worker views;
-            // nothing else is granted.
+            // The dispatcher opens worker views; it puts nothing on the canvas (the
+            // canvas lists sidecars only).
             // It may also ask the cadencer for its status (the cost per hour) and add or
             // remove a worker through the root's agent verbs.
             "can_call": {
-                (CANVAS_ID): "*",
                 (WORKER_VIEW_ID): "*",
                 (CADENCER_ID): ["status"],
                 (DEFAULT_ROOT_ID): DISPATCHER_KERNEL_VERBS,
@@ -513,7 +522,13 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
         // The lead holds the await verbs on the root: the project_lead card grants
         // them, and a spawner may only grant what it holds (fantastic #436). The
         // root's end is `grant_await`.
-        planned_mut(&mut out, l).record["can_call"][DEFAULT_ROOT_ID] = json!(AWAIT_VERBS);
+        let lead_root: Vec<&str> = AWAIT_VERBS
+            .iter()
+            .chain(SIDECAR_ROOT_VERBS.iter())
+            .copied()
+            .collect();
+        planned_mut(&mut out, l).record["can_call"][DEFAULT_ROOT_ID] = json!(lead_root);
+        planned_mut(&mut out, l).record["can_call"][CANVAS_ID] = json!(SIDECAR_CANVAS_VERBS);
         if let Some(d) = out.iter_mut().find(|p| p.id == DISPATCHER_ID) {
             d.record["can_call"][r.id.as_str()] = json!(DISPATCHER_ROLES_VERBS);
             d.record["roles"] = json!(r.id);
@@ -770,10 +785,9 @@ pub async fn deliver_instructions(
     }
 }
 
-/// Put the dispatcher's view on the canvas: the first start only, since the
-/// dispatcher is created only then. The team (not the dispatcher) creates the
-/// view under the canvas, so the canvas needs no grant to the dispatcher. Best
-/// effort: a canvas that is not there is reported, not fatal, so the team still starts.
+/// Make the dispatcher's html view: the first start only, since the dispatcher is created
+/// only then. It lives under the root, never on the canvas: a canvas lists sidecars only,
+/// and the team's own views are not that. Best effort: a refusal is reported, not fatal.
 async fn place_dispatcher(kernel: &Arc<Kernel>) {
     let view = DISPATCHER_VIEW_ID;
     if exists(kernel, view) {
@@ -785,7 +799,7 @@ async fn place_dispatcher(kernel: &Arc<Kernel>) {
             json!({
                 "type": "create_agent",
                 "id": view,
-                "parent_id": CANVAS_ID,
+                "parent_id": DEFAULT_ROOT_ID,
                 "handler_module": "html.tools",
                 "html": dispatcher::HTML,
             }),
@@ -793,7 +807,7 @@ async fn place_dispatcher(kernel: &Arc<Kernel>) {
         .await;
     if let Some(o) = outs.pop() {
         if o.result.get("error").is_some() || !matches!(o.status, Status::Completed) {
-            eprintln!("dispatcher not placed on `{CANVAS_ID}`: {}", o.result);
+            eprintln!("dispatcher view not made: {}", o.result);
         }
     }
 }
@@ -802,8 +816,8 @@ async fn place_dispatcher(kernel: &Arc<Kernel>) {
 /// that the agents a pack is bound to are live before it is enabled.
 pub const PACK_ROOT_VERBS: [&str; 1] = ["list_agents"];
 
-/// Put the pack browser panel on the canvas, like [`place_dispatcher`]: an
-/// `html.tools` view that may call the two pack agents. Best effort.
+/// Make the pack browser panel, like [`place_dispatcher`] (under the root, not on the
+/// canvas): an `html.tools` view that may call the two pack agents. Best effort.
 async fn place_packs_panel(kernel: &Arc<Kernel>) {
     let view = PACKS_VIEW_ID;
     if exists(kernel, view) {
@@ -815,7 +829,7 @@ async fn place_packs_panel(kernel: &Arc<Kernel>) {
             json!({
                 "type": "create_agent",
                 "id": view,
-                "parent_id": CANVAS_ID,
+                "parent_id": DEFAULT_ROOT_ID,
                 "handler_module": "html.tools",
                 "html": pack_panel::HTML,
                 "can_call": { (PACK_ID): "*", (PACK_LISTING_ID): "*" },
@@ -824,7 +838,7 @@ async fn place_packs_panel(kernel: &Arc<Kernel>) {
         .await;
     if let Some(o) = outs.pop() {
         if o.result.get("error").is_some() || !matches!(o.status, Status::Completed) {
-            eprintln!("packs panel not placed on `{CANVAS_ID}`: {}", o.result);
+            eprintln!("packs panel not made: {}", o.result);
         }
     }
 }
@@ -1019,6 +1033,117 @@ pub fn grant_chat_to(kernel: &Arc<Kernel>, workers: &[String], principal: &str) 
         }
     }
     granted
+}
+
+/// The agent ids whose cards a chat shows, from its history digests (rows of kind `embed`
+/// and `unembed` with the agent id as `head`, or `content` in a full row), oldest first:
+/// an embed adds its agent once, an unembed removes it. The rule of ai_core's
+/// `embed::cards`; a row without a string id is ignored.
+pub fn card_ids(rows: &[Value]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for r in rows {
+        let kind = r.get("kind").and_then(Value::as_str);
+        if kind != Some("embed") && kind != Some("unembed") {
+            continue;
+        }
+        let Some(id) = r
+            .get("content")
+            .or_else(|| r.get("head"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        out.retain(|c| c != id);
+        if kind == Some("embed") {
+            out.push(id.to_string());
+        }
+    }
+    out
+}
+
+/// Let `principal` (the page's `web_ws` leg) call the agents of `ids` that have a `view`
+/// record, on both ends: the agent's `callable_by` and the leg's `can_call` name the
+/// verbs of its panel (`view.calls`) plus `get_html` and `watch`, never `*`. An id that is
+/// not live or has no `view` is skipped. Idempotent. Returns how many agents got the grant.
+pub fn grant_card_ids(kernel: &Arc<Kernel>, principal: &str, ids: &[String]) -> usize {
+    if !exists(kernel, principal) {
+        return 0;
+    }
+    let leg = fantastic_kernel::AgentId::from(principal);
+    let mut granted = 0;
+    for id in ids {
+        let agent = fantastic_kernel::AgentId::from(id.as_str());
+        let calls: Option<Vec<String>> = kernel.agents.get(&agent).and_then(|e| {
+            let meta = e.meta.read().ok()?;
+            let view = meta.get("view")?.as_object()?;
+            let mut verbs: Vec<String> = view
+                .get("calls")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for v in ["get_html", "watch"] {
+                if !verbs.iter().any(|x| x == v) {
+                    verbs.push(v.to_string());
+                }
+            }
+            verbs.retain(|v| v != "*");
+            Some(verbs)
+        });
+        let Some(verbs) = calls else { continue };
+        let verbs = json!(verbs);
+        let by_agent = kernel.edit_callable_by(&agent, |cb| {
+            if cb.get(principal) == Some(&verbs) {
+                return false;
+            }
+            cb.insert(principal.into(), verbs.clone());
+            true
+        });
+        let by_leg = kernel.edit_can_call(&leg, |cc| {
+            if cc.get(id) == Some(&verbs) {
+                return false;
+            }
+            cc.insert(id.clone(), verbs.clone());
+            true
+        });
+        match (by_agent, by_leg) {
+            (Ok(_), Ok(_)) => granted += 1,
+            (Err(e), _) | (_, Err(e)) => eprintln!("dispatcher cards: `{id}`: {e}"),
+        }
+    }
+    granted
+}
+
+/// How many history pages [`grant_cards`] follows.
+const CARD_HISTORY_PAGES: usize = 50;
+
+/// [`grant_card_ids`] for the cards one chat agent shows: its history is read (all pages,
+/// as the operator) and the embedded hosts that are on show get the grant. A chat that
+/// does not answer `history` grants nothing.
+pub async fn grant_cards(kernel: &Arc<Kernel>, principal: &str, chat_agent: &str) -> usize {
+    if !exists(kernel, principal) || !exists(kernel, chat_agent) {
+        return 0;
+    }
+    let mut rows: Vec<Value> = Vec::new();
+    let mut args = json!({"type": "history"});
+    for _ in 0..CARD_HISTORY_PAGES {
+        let mut outs = kernel.send(vec![Item::new(chat_agent, args.clone())]).await;
+        let Some(reply) = outs.pop().map(|o| o.result) else {
+            break;
+        };
+        if reply.get("error").is_some() {
+            break;
+        }
+        rows.extend(reply["rows"].as_array().cloned().unwrap_or_default());
+        match reply["next"].as_u64() {
+            Some(n) => args = json!({"type": "history", "after": n}),
+            None => break,
+        }
+    }
+    grant_card_ids(kernel, principal, &card_ids(&rows))
 }
 
 /// The verbs the dispatcher relays to a worker: `send` (hand_task) and the `control`
@@ -1259,6 +1384,13 @@ pub fn run_at_start(
         );
     }
     let tree = plan(&cfg, dir)?;
+    if !cfg.canvases_persist() {
+        // fantastic has no switch for it yet: its web host always makes the canvas
+        // folder and writes the page records. Said at the start, not hidden.
+        eprintln!(
+            "team.yaml: canvases.persist is false, but this fantastic always writes canvas records"
+        );
+    }
     fantastic_tui::seed_dir(dir)?;
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async {
@@ -2401,53 +2533,6 @@ mod tests {
         assert_eq!(d.record["groups"], json!({}));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn place_dispatcher_puts_view_on_the_canvas() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let tree = plan(&sample(), dir.path()).unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        apply(&kernel, &tree).await.unwrap();
-        if !exists(&kernel, CANVAS_ID) {
-            let outs = kernel
-                .send(vec![Item::new(
-                    DEFAULT_ROOT_ID,
-                    json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"}),
-                )])
-                .await;
-            assert!(
-                matches!(outs[0].status, Status::Completed),
-                "{}",
-                outs[0].result
-            );
-        }
-        place_dispatcher(&kernel).await;
-        let view = kernel
-            .agents
-            .get(&fantastic_kernel::AgentId::from("dispatcher_view"))
-            .expect("the dispatcher view is on the canvas");
-        assert_eq!(view.handler_module.as_deref(), Some("html.tools"));
-        assert_eq!(
-            view.parent_id.as_ref().map(|p| p.0.as_str()),
-            Some(CANVAS_ID)
-        );
-        drop(view);
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn place_dispatcher_without_canvas_leaves_no_view_and_no_panic() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let tree = plan(&sample(), dir.path()).unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        apply(&kernel, &tree).await.unwrap();
-        assert!(!exists(&kernel, CANVAS_ID));
-        place_dispatcher(&kernel).await;
-        assert!(!exists(&kernel, "dispatcher_view"));
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-    }
-
     #[test]
     fn pack_agent_can_list_agents_on_the_kernel() {
         let cfg = parse(&sample_yaml()).unwrap();
@@ -2478,53 +2563,6 @@ mod tests {
         assert_eq!(by(&kernel)[PACK_ID], json!(["list_agents"]));
         assert!(grant_agent_listing(&kernel), "idempotent");
         assert_eq!(by(&kernel)[PACK_ID], json!(["list_agents"]));
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn place_packs_panel_puts_view_on_the_canvas() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let tree = plan(&sample(), dir.path()).unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        apply(&kernel, &tree).await.unwrap();
-        let canvas = json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
-        let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, canvas)]).await;
-        assert!(
-            matches!(outs[0].status, Status::Completed),
-            "{}",
-            outs[0].result
-        );
-        place_packs_panel(&kernel).await;
-        let view = kernel
-            .agents
-            .get(&fantastic_kernel::AgentId::from("packs_view"))
-            .expect("the packs view is on the canvas");
-        assert_eq!(view.handler_module.as_deref(), Some("html.tools"));
-        assert_eq!(
-            view.parent_id.as_ref().map(|p| p.0.as_str()),
-            Some(CANVAS_ID)
-        );
-        let meta = view.meta.read().unwrap().clone();
-        assert_eq!(meta["can_call"][PACK_ID], "*");
-        assert_eq!(meta["can_call"][PACK_LISTING_ID], "*");
-        assert_eq!(meta["html"], pack_panel::HTML);
-        drop(view);
-        // a second call leaves the one view
-        place_packs_panel(&kernel).await;
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn place_packs_panel_without_canvas_is_not_fatal() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let tree = plan(&sample(), dir.path()).unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        apply(&kernel, &tree).await.unwrap();
-        assert!(!exists(&kernel, CANVAS_ID));
-        place_packs_panel(&kernel).await;
-        assert!(!exists(&kernel, "packs_view"));
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
@@ -2841,7 +2879,12 @@ mod tests {
         let tree = plan(&roles_cfg(ROLES_LIMITS), dir.path()).unwrap();
         let can = &planned(&tree, "lead").record["can_call"];
         assert_eq!(can[BOARD_ID], json!(["board", "rows"]), "{can}");
-        assert_eq!(can[DEFAULT_ROOT_ID], json!(AWAIT_VERBS), "{can}");
+        assert_eq!(
+            can[DEFAULT_ROOT_ID],
+            json!(["await_set", "await_cancel", "create_agent", "delete_agent"]),
+            "{can}"
+        );
+        assert_eq!(can[CANVAS_ID], json!(["new_canvas"]), "{can}");
     }
 
     #[test]
@@ -3591,6 +3634,12 @@ mod tests {
         for t in ["worker_exec", "worker_files", "queue", "memory"] {
             assert_eq!(m["can_call"][t], "*", "{t}");
         }
+        // the sidecar grants of its card, exact verbs and never `*`
+        assert_eq!(
+            m["can_call"]["kernel_state"],
+            json!(["create_agent", "delete_agent"]),
+            "{m}"
+        );
         // and the store admits it, so it keeps its own rows there
         let store = meta_value(&kernel, "memory");
         assert_eq!(store["callable_by"][id.as_str()], "*", "{store}");
@@ -3792,6 +3841,195 @@ mod tests {
         .await;
         let e = apply_limits(&kernel, &cfg).await.unwrap_err();
         assert!(e.starts_with("limits: `roles` refused"), "{e}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// A canvas with the team started on it, as `run_at_start` leaves it.
+    async fn started_with_canvas(dir: &Path) -> Arc<Kernel> {
+        let tree = plan(&sample(), dir).unwrap();
+        let kernel = crate::start(dir).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        let canvas = json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
+        let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, canvas)]).await;
+        assert!(
+            matches!(outs[0].status, Status::Completed),
+            "{}",
+            outs[0].result
+        );
+        place_dispatcher(&kernel).await;
+        place_packs_panel(&kernel).await;
+        kernel
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_places_no_team_view_on_the_canvas() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = started_with_canvas(dir.path()).await;
+        for view in [DISPATCHER_VIEW_ID, PACKS_VIEW_ID] {
+            let a = kernel
+                .agents
+                .get(&fantastic_kernel::AgentId::from(view))
+                .unwrap_or_else(|| panic!("{view} is made"));
+            assert_eq!(a.handler_module.as_deref(), Some("html.tools"));
+            assert_ne!(
+                a.parent_id.as_ref().map(|p| p.0.as_str()),
+                Some(CANVAS_ID),
+                "{view} is on the canvas"
+            );
+        }
+        let on_canvas: Vec<String> = kernel
+            .agents
+            .iter()
+            .filter(|e| e.parent_id.as_ref().is_some_and(|p| p.0 == CANVAS_ID))
+            .map(|e| e.id.0.clone())
+            .collect();
+        assert!(on_canvas.is_empty(), "{on_canvas:?}");
+        // the packs view keeps its two pack grants; a second call leaves the one view
+        let meta = kernel
+            .agents
+            .get(&fantastic_kernel::AgentId::from(PACKS_VIEW_ID))
+            .unwrap()
+            .meta
+            .read()
+            .unwrap()
+            .clone();
+        assert_eq!(meta["can_call"][PACK_ID], "*");
+        assert_eq!(meta["can_call"][PACK_LISTING_ID], "*");
+        assert_eq!(meta["html"], pack_panel::HTML);
+        place_packs_panel(&kernel).await;
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn the_dispatcher_is_not_granted_the_canvas() {
+        let tree = plan(&sample(), Path::new("/team")).unwrap();
+        let d = tree.iter().find(|p| p.id == DISPATCHER_ID).unwrap();
+        assert!(d.record["can_call"].get(CANVAS_ID).is_none());
+        assert_eq!(d.record["can_call"][WORKER_VIEW_ID], "*");
+    }
+
+    fn rows_of_cards(spec: &[(&str, &str)]) -> Vec<Value> {
+        let mut rows = vec![json!({"role": "user", "head": "hi"})];
+        rows.extend(spec.iter().map(|(k, h)| json!({"kind": k, "head": h})));
+        rows
+    }
+
+    /// A host with an html panel that calls `get_html` and `x`.
+    async fn panel_host(kernel: &Arc<Kernel>, id: &str, view: Value) {
+        let mut rec = json!({"type": "create_agent", "id": id, "parent_id": DEFAULT_ROOT_ID,
+            "handler_module": "ram_store.tools"});
+        if !view.is_null() {
+            rec["view"] = view;
+        }
+        let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, rec)]).await;
+        assert!(
+            matches!(outs[0].status, Status::Completed),
+            "{}",
+            outs[0].result
+        );
+    }
+
+    fn field_of(kernel: &Arc<Kernel>, id: &str, f: &str) -> Value {
+        kernel
+            .agents
+            .get(&fantastic_kernel::AgentId::from(id))
+            .map(|a| a.meta.read().unwrap()[f].clone())
+            .unwrap_or(Value::Null)
+    }
+
+    const CARD_VIEW: &str =
+        r#"{"kind": "html", "bytes_file": "p.html", "calls": ["get_html", "x"]}"#;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_cards_lets_the_page_call_an_embedded_view_and_nothing_else() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = started_with_canvas(dir.path()).await;
+        let leg = DISPATCHER_VIEW_ID; // any live principal stands for the ws leg
+        panel_host(&kernel, "h", serde_json::from_str(CARD_VIEW).unwrap()).await;
+        panel_host(&kernel, "other", serde_json::from_str(CARD_VIEW).unwrap()).await;
+        let ids = card_ids(&rows_of_cards(&[("embed", "h")]));
+        assert_eq!(grant_card_ids(&kernel, leg, &ids), 1);
+        assert_eq!(
+            field_of(&kernel, "h", "callable_by")[leg],
+            json!(["get_html", "x", "watch"])
+        );
+        assert_eq!(
+            field_of(&kernel, leg, "can_call")["h"],
+            json!(["get_html", "x", "watch"])
+        );
+        assert_ne!(field_of(&kernel, "h", "callable_by")[leg], json!("*"));
+        // a host that is not embedded is not granted
+        assert!(field_of(&kernel, "other", "callable_by").get(leg).is_none());
+        assert!(field_of(&kernel, leg, "can_call").get("other").is_none());
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_cards_skips_an_unembedded_card() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = started_with_canvas(dir.path()).await;
+        panel_host(&kernel, "h", serde_json::from_str(CARD_VIEW).unwrap()).await;
+        let ids = card_ids(&rows_of_cards(&[("embed", "h"), ("unembed", "h")]));
+        assert!(ids.is_empty());
+        assert_eq!(grant_card_ids(&kernel, DISPATCHER_VIEW_ID, &ids), 0);
+        assert!(field_of(&kernel, "h", "callable_by")
+            .get(DISPATCHER_VIEW_ID)
+            .is_none());
+        // a row with no string id is ignored
+        let odd = vec![
+            json!({"kind": "embed"}),
+            json!({"kind": "embed", "head": 3}),
+        ];
+        assert!(card_ids(&odd).is_empty());
+        // an embed again after the unembed shows it once
+        let again = card_ids(&rows_of_cards(&[
+            ("embed", "h"),
+            ("unembed", "h"),
+            ("embed", "h"),
+            ("embed", "h"),
+        ]));
+        assert_eq!(again, ["h"]);
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_cards_skips_an_agent_without_a_view() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = started_with_canvas(dir.path()).await;
+        panel_host(&kernel, "plain", Value::Null).await;
+        let ids = vec!["plain".to_string(), "missing".to_string()];
+        assert_eq!(grant_card_ids(&kernel, DISPATCHER_VIEW_ID, &ids), 0);
+        assert!(field_of(&kernel, "plain", "callable_by")
+            .get(DISPATCHER_VIEW_ID)
+            .is_none());
+        // a chat agent that does not answer history grants nothing and does not panic
+        assert_eq!(grant_cards(&kernel, DISPATCHER_VIEW_ID, "plain").await, 0);
+        assert_eq!(grant_cards(&kernel, DISPATCHER_VIEW_ID, "missing").await, 0);
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_cards_is_idempotent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = started_with_canvas(dir.path()).await;
+        panel_host(&kernel, "h", serde_json::from_str(CARD_VIEW).unwrap()).await;
+        let ids = vec!["h".to_string()];
+        grant_card_ids(&kernel, DISPATCHER_VIEW_ID, &ids);
+        let first = (
+            field_of(&kernel, "h", "callable_by"),
+            field_of(&kernel, DISPATCHER_VIEW_ID, "can_call"),
+        );
+        grant_card_ids(&kernel, DISPATCHER_VIEW_ID, &ids);
+        let second = (
+            field_of(&kernel, "h", "callable_by"),
+            field_of(&kernel, DISPATCHER_VIEW_ID, "can_call"),
+        );
+        assert_eq!(first, second);
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }

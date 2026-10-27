@@ -186,6 +186,9 @@ const base = (extra) => (id, p) => {
   return (extra && extra(id, p)) || {};
 };
 
+// a handler that answers everything itself (history included)
+const own = (f) => (id, p) => (p.type === 'sidebar' ? {} : f(id, p) || {});
+
 const AGENTS = [
   { id: 'pl', role: 'project_lead', state: 'active', depth: 0, indent: 0, guides: 0, lead: true, label: 'Lead' },
   { id: 'sub', role: 'project_lead', state: 'paused', depth: 1, indent: 1, guides: 1, lead: false, label: 'project_lead' },
@@ -599,6 +602,188 @@ const scenarios = {
     out.refused = view(refused);
     const none = await start({ status: { error: 'no agent cadencer' } }, () => ({}));
     out.none = view(none);
+    return out;
+  },
+
+  async chat_card_rows() {
+    const hist = { rows: [] };
+    const panels = { H: { html: '<p>hi</p>' }, GONE: { error: 'no such agent', reason: 'not_found' } };
+    const rt = makeRuntime(own((id, p) => {
+      if (p.type === 'history') return hist;
+      if (p.type === 'get_html') return panels[id] || { html: '<i>x</i>' };
+      return null;
+    }));
+    await rt.flush();
+    const view = (c) => c.transcript.children.map((x) => ({ cls: x.className, agent: x.dataset.agent || null, text: x.textContent }));
+    hist.rows = [
+      { role: 'user', head: 'hello' },
+      { kind: 'embed', head: 'H' },
+      { role: 'assistant', head: 'there' },
+    ];
+    const out = {};
+    let c = await rt.open('w1');
+    out.order = view(c);
+    out.cardsOf = rt.js("cardsOf([{kind:'embed',head:'a'},{kind:'embed',head:'b'},{kind:'embed',head:'a'},{kind:'unembed',head:'b'},{kind:'embed'},{kind:'embed',head:3},{role:'user',head:'a'}])");
+    const f = c.transcript.all('iframe')[0];
+    out.frame = f ? { sandbox: f.attrs.sandbox, srcdoc: f.srcdoc, title: f.attrs.title } : null;
+    out.getHtml = rt.sent('get_html').map((x) => x.id);
+    // a reload gives the same places
+    c = await rt.open('w1');
+    out.reload = view(c);
+    // an unembed takes the card away
+    hist.rows = [{ kind: 'embed', head: 'H' }, { kind: 'unembed', head: 'H' }, { role: 'user', head: 'x' }];
+    c = await rt.open('w1');
+    out.unembedded = view(c);
+    // an embed that is then embedded again sits at its last place
+    hist.rows = [{ kind: 'embed', head: 'H' }, { role: 'user', head: 'x' }, { kind: 'embed', head: 'H' }];
+    c = await rt.open('w1');
+    out.again = view(c);
+    // a deleted host
+    hist.rows = [{ kind: 'embed', head: 'GONE' }];
+    c = await rt.open('w1');
+    out.gone = c.transcript.all('.card-note').map((x) => x.textContent);
+    // the X hides the card in the page only
+    hist.rows = [{ kind: 'embed', head: 'H' }];
+    c = await rt.open('w1');
+    const card = c.transcript.all('.chat-card')[0];
+    card.all('button')[0].click();
+    out.hidden = card.hidden;
+    out.sentAfterHide = rt.calls.filter((x) => x.payload.type === 'unembed').length;
+    // sizes
+    out.box = [rt.js('cardBox(5000)'), rt.js('cardBox(10)'), rt.js('cardBox(NaN)'), rt.js('cardBox(undefined)'), rt.js('cardBox(300.2)')];
+    // markup in an id is text
+    hist.rows = [{ kind: 'embed', head: '<b>x</b>' }];
+    c = await rt.open('w1');
+    const mk = c.transcript.all('.chat-card')[0];
+    out.markup = { name: mk.all('.name')[0].textContent, kids: mk.all('.name')[0].children.length };
+    return out;
+  },
+
+  async chat_card_sync() {
+    const hist = { rows: [{ role: 'user', head: 'hi' }] };
+    const rt = makeRuntime(own((id, p) => {
+      if (p.type === 'history') return hist;
+      if (p.type === 'get_html') return { html: '<p>' + id + '</p>' };
+      return null;
+    }));
+    await rt.flush();
+    const c = await rt.open('w1');
+    const out = { before: c.transcript.all('.chat-card').length };
+    hist.rows = [{ role: 'user', head: 'hi' }, { kind: 'embed', head: 'H' }];
+    await rt.emit({ type: 'done', source: 'w1' });
+    out.afterEmbed = c.transcript.all('.chat-card').map((x) => x.dataset.agent);
+    out.opens = rt.sent('open').map((x) => x.payload.node);
+    const opensBefore = rt.sent('open').length;
+    await rt.emit({ type: 'done', source: 'w1' });
+    out.cardsAfterSecondDone = c.transcript.all('.chat-card').length;
+    out.openedAgain = rt.sent('open').length - opensBefore;
+    hist.rows = [{ role: 'user', head: 'hi' }, { kind: 'embed', head: 'H' }, { kind: 'unembed', head: 'H' }];
+    await rt.emit({ type: 'done', source: 'w1' });
+    out.afterUnembed = c.transcript.all('.chat-card').length;
+    return out;
+  },
+
+  async canvas_button() {
+    const mk = (canvas) => makeRuntime(base((id, p) => (p.type === 'open'
+      ? Object.assign({ view: 'chat', target: p.node, cell: { label: 'x', kind: 'chat', target: p.node } }, canvas ? { canvas } : {})
+      : null)));
+    const out = {};
+    const none = mk(null);
+    await none.flush();
+    await none.js("openNode('w1')");
+    await none.flush();
+    out.noneButtons = none.byId.pane.all('.canvas-btn').length;
+    const rt = mk({ id: 'canvas_w1', url: '/canvas_page/file/index.html?canvas=canvas_w1' });
+    await rt.flush();
+    await rt.js("openNode('w1')");
+    await rt.flush();
+    const pane = rt.byId.pane;
+    out.buttons = pane.all('.canvas-btn').map((b) => b.textContent);
+    out.framesBefore = pane.all('iframe').length;
+    pane.all('.canvas-btn')[0].click();
+    const frames = pane.all('iframe');
+    out.frames = frames.map((f) => ({ src: f.src, title: f.attrs.title, sandbox: f.attrs.sandbox === undefined, width: f.attrs.width, height: f.attrs.height }));
+    out.chatHiddenOnCanvas = pane.all('.cell').filter((x) => x.classList.contains('chat'))[0].hidden;
+    out.label = pane.all('.canvas-btn')[0].textContent;
+    pane.all('.canvas-btn')[0].click();
+    out.framesAfter = pane.all('iframe').length;
+    out.chatHiddenAfter = pane.all('.cell').filter((x) => x.classList.contains('chat'))[0].hidden;
+    out.labelAfter = pane.all('.canvas-btn')[0].textContent;
+    return out;
+  },
+
+  async tree_collapse() {
+    const rt = makeRuntime(base());
+    await rt.flush();
+    const agents = [
+      { id: 'pl', role: 'project_lead', state: 'active', depth: 0, indent: 0, lead: true, label: 'Lead', has_children: true },
+      { id: 'a', role: 'worker', state: 'active', depth: 1, indent: 1, lead: false, label: 'worker', has_children: false },
+      { id: 'b', role: 'project_lead', state: 'active', depth: 1, indent: 1, lead: false, label: 'project_lead', has_children: true },
+      { id: 'c', role: 'worker', state: 'active', depth: 2, indent: 2, lead: false, label: 'worker', has_children: false },
+      { id: 'd', role: 'worker', state: 'active', depth: 1, indent: 1, lead: false, label: 'worker', has_children: false },
+    ];
+    const reply = { team: 't', groups: [], ungrouped: [], agents };
+    const nodes = () => rt.byId.sidebar.all('.agent').map((r) => r.dataset.node);
+    const twisty = (id) => rt.byId.sidebar.all('.agent').filter((r) => r.dataset.node === id)[0].querySelector('.twisty');
+    rt.ctx.__r = reply;
+    rt.js('renderSidebar(__r)');
+    const out = { all: nodes(), twisties: rt.byId.sidebar.all('.twisty').map((t) => t.dataset.toggle), label: twisty('b').textContent, expanded: twisty('b').getAttribute('aria-expanded') };
+    rt.byId.sidebar.dispatch('click', { target: twisty('b') });
+    out.afterB = nodes();
+    out.labelB = twisty('b').textContent;
+    out.expandedB = twisty('b').getAttribute('aria-expanded');
+    out.opened = rt.sent('open').length;
+    // remembered across a redraw (and a new page reading the memory)
+    rt.js('renderSidebar(__r)');
+    out.redraw = nodes();
+    // the lead folds everything below it
+    rt.byId.sidebar.dispatch('click', { target: twisty('pl') });
+    out.afterLead = nodes();
+    rt.byId.sidebar.dispatch('click', { target: twisty('pl') });
+    out.afterLeadOpen = nodes();
+    rt.byId.sidebar.dispatch('click', { target: twisty('b') });
+    out.afterBOpen = nodes();
+    // the column
+    const layout = rt.byId.layout;
+    const btn = rt.byId['collapse-tree'];
+    out.col0 = layout.classList.contains('collapsed');
+    btn.click();
+    out.col1 = layout.classList.contains('collapsed');
+    out.colAria = btn.getAttribute('aria-expanded');
+    btn.click();
+    out.col2 = layout.classList.contains('collapsed');
+    return out;
+  },
+
+  async tree_memory() {
+    const rt = makeRuntime(base());
+    await rt.flush();
+    rt.js("localStorage.setItem('fantastic.team.agents.b', '1'); localStorage.setItem('fantastic.team.tree.collapsed', '1')");
+    // a fresh page reads the memory: here the same page, which has not looked at `b` yet
+    rt.ctx.__r = { team: 't', groups: [], ungrouped: [], agents: [
+      { id: 'pl', depth: 0, indent: 0, lead: true, label: 'Lead', has_children: true },
+      { id: 'b', depth: 1, indent: 1, label: 'b', has_children: true },
+      { id: 'c', depth: 2, indent: 2, label: 'c', has_children: false },
+    ] };
+    rt.js('renderSidebar(__r)');
+    return { rows: rt.byId.sidebar.all('.agent').map((r) => r.dataset.node), keys: rt.js("localStorage.getItem('fantastic.team.agents.b')") };
+  },
+
+  async phone_open_shows_pane() {
+    const rt = makeRuntime(base((id, p) => (p.type === 'open'
+      ? { view: 'chat', target: p.node, cell: { label: 'x', kind: 'chat', target: p.node } } : null)));
+    await rt.flush();
+    const seen = [];
+    rt.byId.pane.scrollIntoView = (o) => seen.push({ el: 'pane', o });
+    rt.byId.sidebar.scrollIntoView = (o) => seen.push({ el: 'sidebar', o });
+    await rt.js("openNode('w1')");
+    await rt.flush();
+    const out = { afterOpen: seen.slice() };
+    const back = rt.byId.pane.all('.pane-back')[0];
+    out.hasBack = !!back;
+    back.click();
+    out.afterBack = seen.slice(out.afterOpen.length);
+    out.touchHandlers = Object.keys(rt.byId.sidebar.listeners).concat(Object.keys(rt.byId.pane.listeners)).filter((k) => /touch/.test(k));
     return out;
   },
 

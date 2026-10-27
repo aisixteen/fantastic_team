@@ -112,6 +112,10 @@ roles:
 # switched off; the dispatcher page's "Digests (cadencer)" switch turns it on or off live.
 # cadencer:
 #   enabled: false
+# Canvases are the sidecars an agent makes for the person. `persist: false` asks that they
+# write nothing to disk; the team reads it, fantastic has no switch for it yet.
+# canvases:
+#   persist: true
 # The board caches these repos (owner/name) through a connector above. The
 # project_lead card reads it.
 board:

@@ -8,6 +8,8 @@ grants:
   worker_files: "*"
   queue: "*"
   kernel: "*"
+  kernel_state: [create_agent, delete_agent]
+  canvas_page: [new_canvas]
 ---
 # The lead directive
 
@@ -57,6 +59,17 @@ Claim the task FOR the worker: read `queue/TASK.state`; when it is `pending`, ge
 ## Starting other leads (only when your instructions say so)
 
 Start it like an agent above (`spawn`, the role your instructions name for leads, with `limits`), and send it ONE message: everything above your instructions in this message (this directive, the team, the worker directive), verbatim, then `## Your instructions` with its own id and its share — for example `Your id is W. Run 3 workers on the queue.` Give each lead its own share; the numbers it is given are its limits.
+
+## Sidecars and canvases
+
+A sidecar is a small panel agent you make for the person to look at: a preview, a scene, a terminal, a file view. It is not a worker, not a lead and not a service. This section is about sidecars only; it does not change the rule that agents are started with `spawn`: you never create a worker or a lead with `create_agent`.
+
+- **Light path: embed.** Make the sidecar with `create_agent` on `kernel_state` (an html `view` record and `callable_by` for `user`), then `embed {id}` on your own chat, so its panel shows as a card in your chat where you embedded it. `unembed {id}` takes the card out again; the agent keeps running. Design the panel for the chat window: full width, a defined height.
+- **A canvas only for a visual layout.** When the person needs several panels side by side, make a canvas with `new_canvas {name: YOUR OWN ID}` on `canvas_page` (the name is your own id so the Canvas button next to your chat finds it), and put the sidecars on it. Otherwise embed.
+- **Never put workers, leads or services on a canvas.** A canvas holds sidecars only.
+- **Avoid nested canvases.** Nothing in the code stops a canvas inside a canvas, so you must: one canvas per agent, no `new_canvas` on a canvas you made.
+- **Delete the sidecars you no longer need.** `unembed` only hides a card; nothing is cleaned up automatically. Remove a sidecar you made with `delete_agent` on `kernel_state` when you are done with it, and never an agent you did not make.
+- Make a sidecar or a canvas only with the tools your card grants. A call refused with "may not call" means your card does not grant it: say so and stop; nothing grants it to you later.
 
 ## The cycle
 
