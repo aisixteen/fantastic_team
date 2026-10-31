@@ -87,11 +87,10 @@ that connection it says so on one line instead of failing.
 The chat talks to the agent itself, with the verbs and events fantastic's chat
 cell uses: `history`, `send {text, client_id}`, `stop`, and `watch` for the
 part events (`part_start`, `part_delta`, `part_end`, `part_abort`) and `done`
-of this page's client. Only text parts are drawn. The page's agent
-(`dispatcher_view`) may use those five verbs on each worker of a group and on
-their subagents: `tree::grant_chat` writes both ends (the view's `can_call`, the
-agent's `callable_by`) at each start, and no `*` is granted. The same view may
-call `inquiries` and `answer_inquiry` on the `user` agent (`tree::grant_inquiries`).
+of this page's client. Only text parts are drawn. The page's principal is the
+`web_ws` leg `team_ws`; it may use those five verbs on each worker of a group and
+on their subagents: `tree::grant_chat_to` writes both ends (the leg's `can_call`,
+the agent's `callable_by`), and no `*` is granted.
 
 ## Build locally
 

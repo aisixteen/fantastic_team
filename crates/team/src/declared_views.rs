@@ -622,13 +622,13 @@ fn merged(existing: Option<&Value>, want: &[&str]) -> Option<Value> {
     }
 }
 
-/// Grant the page's agent and the dispatcher the read verbs each declared agent's
+/// Grant the dispatcher the read verbs each declared agent's
 /// declaration names, on both ends (the agent's `callable_by`, the caller's
 /// `can_call`), never `*`. Verbs another grant put there stay. Idempotent. Returns
 /// how many grants were written.
 pub fn grant_views(kernel: &Arc<Kernel>) -> usize {
     let mut written = 0;
-    for principal in [crate::tree::DISPATCHER_VIEW_ID, crate::tree::DISPATCHER_ID] {
+    for principal in [crate::tree::DISPATCHER_ID] {
         let who = AgentId::from(principal);
         if !kernel.agents.contains_key(&who) {
             continue;
@@ -1314,18 +1314,12 @@ mod tests {
         let kernel = crate::start(dir.path()).await.unwrap();
         mk(
             &kernel,
-            json!({"id": "dispatcher_view", "handler_module": "ram_store.tools"}),
-        )
-        .await;
-        mk(
-            &kernel,
             json!({"id": "dispatcher", "handler_module": crate::dispatcher::HANDLER_MODULE}),
         )
         .await;
         mk(
             &kernel,
-            json!({"id": "cad", "handler_module": crate::cadencer::HANDLER_MODULE,
-                "callable_by": {"dispatcher_view": ["status", "set"]}}),
+            json!({"id": "cad", "handler_module": crate::cadencer::HANDLER_MODULE}),
         )
         .await;
         mk(
@@ -1343,16 +1337,11 @@ mod tests {
         .await;
         assert!(grant_views(&kernel) > 0);
         let cb = field_of(&kernel, "web", "callable_by");
-        assert_eq!(cb["dispatcher_view"], json!(["status"]), "{cb}");
         assert_eq!(cb["dispatcher"], json!(["status"]), "{cb}");
-        assert_ne!(cb["dispatcher_view"], json!("*"));
+        assert_ne!(cb["dispatcher"], json!("*"));
         let cc = field_of(&kernel, "dispatcher", "can_call");
         assert_eq!(cc["web"], json!(["status"]), "{cc}");
-        let cc = field_of(&kernel, "dispatcher_view", "can_call");
-        assert_eq!(cc["web"], json!(["status"]), "{cc}");
-        // The page's switch grant (status + set) is kept, not narrowed.
         let cad = field_of(&kernel, "cad", "callable_by");
-        assert_eq!(cad["dispatcher_view"], json!(["status", "set"]), "{cad}");
         assert_eq!(cad["dispatcher"], json!(["status"]), "{cad}");
         // A star the operator wrote is never narrowed.
         assert_eq!(
@@ -1361,5 +1350,38 @@ mod tests {
         );
         // Idempotent.
         assert_eq!(grant_views(&kernel), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_views_does_not_grant_the_removed_view() {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        mk(
+            &kernel,
+            json!({"id": "dispatcher_view", "handler_module": "ram_store.tools"}),
+        )
+        .await;
+        mk(
+            &kernel,
+            json!({"id": "dispatcher", "handler_module": crate::dispatcher::HANDLER_MODULE}),
+        )
+        .await;
+        mk(
+            &kernel,
+            json!({"id": "web", "handler_module": crate::webhook::HANDLER_MODULE}),
+        )
+        .await;
+        assert!(grant_views(&kernel) > 0);
+        for entry in kernel.agents.iter() {
+            let meta = entry.meta.read().unwrap().clone();
+            assert!(
+                meta["callable_by"].get("dispatcher_view").is_none(),
+                "{}: {meta:?}",
+                entry.id.0
+            );
+        }
+        assert!(field_of(&kernel, "dispatcher_view", "can_call")
+            .get("web")
+            .is_none());
     }
 }

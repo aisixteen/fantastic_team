@@ -753,18 +753,13 @@ fn restart_timer(shared: &Arc<Mutex<Inner>>, inner: &mut Inner) {
     inner.next_beat_s = Some(now + inner.settings.cadence_s);
 }
 
-/// Only the parent, `maintainer`, `user`, the CLI leg (`mcp`) or the dispatcher page's
-/// view (the on/off switch) may steer the cadencer. A send with no origin is an
+/// Only the parent, `maintainer`, `user` or the CLI leg (`mcp`) may steer the cadencer. A send with no origin is an
 /// operator send, which is trusted.
 fn allowed(inner: &Inner, origin: Option<&str>) -> bool {
     match origin {
         None => true,
         Some(s) => {
-            s == "maintainer"
-                || s == "user"
-                || s == "mcp"
-                || s == crate::tree::DISPATCHER_VIEW_ID
-                || inner.parent.as_deref() == Some(s)
+            s == "maintainer" || s == "user" || s == "mcp" || inner.parent.as_deref() == Some(s)
         }
     }
 }
@@ -1931,11 +1926,17 @@ mod tests {
     }
 
     #[test]
-    fn allowed_accepts_the_dispatcher_page() {
-        let g = Inner::default();
-        assert!(allowed(&g, Some(crate::tree::DISPATCHER_VIEW_ID)));
+    fn allowed_refuses_the_removed_dispatcher_view() {
+        let g = Inner {
+            parent: Some("boss".into()),
+            ..Inner::default()
+        };
+        assert!(!allowed(&g, Some("dispatcher_view")));
         assert!(!allowed(&g, Some("stranger")));
-        assert!(!allowed(&g, Some("dispatcher_view_2")));
+        for who in ["maintainer", "user", "mcp", "boss"] {
+            assert!(allowed(&g, Some(who)), "{who}");
+        }
+        assert!(allowed(&g, None));
     }
 
     #[tokio::test(start_paused = true)]
