@@ -800,7 +800,7 @@ async fn place_dispatcher(kernel: &Arc<Kernel>) {
                 "type": "create_agent",
                 "id": view,
                 "parent_id": DEFAULT_ROOT_ID,
-                "handler_module": "html.tools",
+                "handler_module": TREE_VIEW_MODULE,
                 "html": dispatcher::HTML,
             }),
         )])
@@ -811,6 +811,11 @@ async fn place_dispatcher(kernel: &Arc<Kernel>) {
         }
     }
 }
+
+/// Known gap, aisixteen/fantastic_team#212: [`place_dispatcher`] and
+/// [`place_packs_panel`] create agents with this module, and no Rust bundle at
+/// the pinned fantastic rev answers it, so the kernel skips them at boot.
+const TREE_VIEW_MODULE: &str = "html.tools";
 
 /// The one root (kernel) verb the pack agent may call: `list_agents`, to check
 /// that the agents a pack is bound to are live before it is enabled.
@@ -830,7 +835,7 @@ async fn place_packs_panel(kernel: &Arc<Kernel>) {
                 "type": "create_agent",
                 "id": view,
                 "parent_id": DEFAULT_ROOT_ID,
-                "handler_module": "html.tools",
+                "handler_module": TREE_VIEW_MODULE,
                 "html": pack_panel::HTML,
                 "can_call": { (PACK_ID): "*", (PACK_LISTING_ID): "*" },
             }),
@@ -1485,6 +1490,27 @@ mod tests {
             let v = git.record[key].as_str().expect(key);
             assert!(Path::new(v).is_absolute(), "{key} = {v}");
         }
+    }
+
+    #[test]
+    fn plan_handler_modules_all_resolve_in_the_registry() {
+        let reg = crate::registry();
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(crate::preset::write_app_preset(dir.path()).unwrap());
+        let app = config::load(&dir.path().join(config::FILE_NAME)).unwrap();
+        for (name, cfg, d) in [("app", app, dir.path()), ("sample", sample(), dir.path())] {
+            let planned = plan(&cfg, d).unwrap();
+            let missing: Vec<String> = planned
+                .iter()
+                .filter_map(|p| p.record["handler_module"].as_str())
+                .filter(|m| reg.get(m).is_none())
+                .map(String::from)
+                .collect();
+            assert!(missing.is_empty(), "{name}: not registered: {missing:?}");
+        }
+        // The views placed outside `plan()` use only the known-gap module.
+        assert_eq!(TREE_VIEW_MODULE, "html.tools");
+        assert!(reg.get(TREE_VIEW_MODULE).is_none());
     }
 
     fn ids(t: &[Planned]) -> Vec<String> {

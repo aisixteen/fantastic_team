@@ -124,6 +124,7 @@ impl Bundle for WorkerViewBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
+            "boot": "No-op; the kernel sends it at start.",
             "open": "open {worker, group?} → view (creates it, or returns the existing one)",
             "cells": "cells {worker} → {cells} (the default cell set)",
             "place": "place {worker, cell: {kind, label}} → view (adds a cell to the top part)",
@@ -139,6 +140,9 @@ impl Bundle for WorkerViewBundle {
         _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if t == "boot" {
+            return Ok(Some(json!({})));
+        }
         let mut views = self.views.lock().expect("worker view state");
         let out = match t {
             "open" => match arg(payload, "worker") {
@@ -188,6 +192,39 @@ impl Bundle for WorkerViewBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn send(b: &WorkerViewBundle, p: Value) -> Value {
+        let kernel = Arc::new(Kernel::new());
+        b.handle(&AgentId::from("worker_view"), &p, &kernel)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn worker_view_answers_boot_with_no_error() {
+        let r = send(&WorkerViewBundle::default(), json!({"type": "boot"})).await;
+        assert!(r.get("error").is_none(), "{r}");
+    }
+
+    #[tokio::test]
+    async fn worker_view_boot_leaves_the_views_untouched() {
+        let b = WorkerViewBundle::default();
+        let before = send(&b, json!({"type": "open", "worker": "w1"})).await;
+        send(&b, json!({"type": "boot"})).await;
+        let after = send(&b, json!({"type": "open", "worker": "w1"})).await;
+        assert_eq!(before, after);
+        assert_eq!(b.views.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn worker_view_unknown_verb_still_errors() {
+        let r = send(&WorkerViewBundle::default(), json!({"type": "nope"})).await;
+        assert!(
+            r["error"].as_str().unwrap().contains("unknown type 'nope'"),
+            "{r}"
+        );
+    }
 
     fn view(worker: &str, group: &str) -> View {
         View {

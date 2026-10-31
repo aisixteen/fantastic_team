@@ -275,12 +275,13 @@ pub fn start_args(port: u16) -> Vec<String> {
     vec!["--port".to_string(), port.to_string()]
 }
 
-/// The web UI URL the window should show.
+/// The web UI URL the window should show: the served page for `Start` and
+/// `Tunnel` (the web host answers 404 at `/`), the user's URL for `Attach`.
 pub fn web_url(target: &Target) -> String {
     match target {
-        Target::Start { port, .. } => format!("http://127.0.0.1:{port}/"),
+        Target::Start { port, .. } => format!("http://127.0.0.1:{port}{READY_PATH}"),
         Target::Attach { url } => url.clone(),
-        Target::Tunnel { local_port, .. } => format!("http://127.0.0.1:{local_port}/"),
+        Target::Tunnel { local_port, .. } => format!("http://127.0.0.1:{local_port}{READY_PATH}"),
         // the setup flow prints its own page URL; there is none to wait for here
         Target::Setup { .. } => String::new(),
     }
@@ -288,7 +289,7 @@ pub fn web_url(target: &Target) -> String {
 
 /// The page the headless binary's `--port` serves since #181 (the team crate's
 /// `PAGE_PATH`). The web host answers 404 at `/`, so this is what the launcher
-/// waits for; the window URL is still [`web_url`].
+/// waits for; the window URL ([`web_url`]) is the same page.
 pub const READY_PATH: &str = "/team_page/file/index.html";
 
 /// The URL the launcher polls for a 200. `Attach` is the URL the user named.
@@ -817,7 +818,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(l.url, web_url(&target));
-        assert!(l.url.ends_with('/'));
+        assert!(l.url.ends_with(READY_PATH));
         assert!(l.child.is_some());
         l.stop().await.unwrap();
     }
@@ -874,7 +875,7 @@ mod tests {
             ready_url(&start),
             "http://127.0.0.1:9123/team_page/file/index.html"
         );
-        assert!(web_url(&start).ends_with('/'));
+        assert_eq!(web_url(&start), ready_url(&start));
         let tunnel = Target::Tunnel {
             ssh: "ssh".into(),
             host: "h".into(),
@@ -897,6 +898,59 @@ mod tests {
             }),
             ""
         );
+    }
+
+    #[test]
+    fn web_url_for_start_and_tunnel_is_the_served_page() {
+        let start = Target::Start {
+            binary: "b".into(),
+            port: 9123,
+        };
+        let u = web_url(&start);
+        assert_eq!(u, "http://127.0.0.1:9123/team_page/file/index.html");
+        assert!(u.ends_with("/team_page/file/index.html"));
+        let tunnel = Target::Tunnel {
+            ssh: "ssh".into(),
+            host: "h".into(),
+            remote_port: 1,
+            local_port: 9100,
+        };
+        assert_eq!(
+            web_url(&tunnel),
+            "http://127.0.0.1:9100/team_page/file/index.html"
+        );
+    }
+
+    #[test]
+    fn web_url_for_attach_is_the_url_the_user_named_and_setup_is_empty() {
+        let attach = Target::Attach {
+            url: "http://127.0.0.1:1/x".into(),
+        };
+        assert_eq!(web_url(&attach), "http://127.0.0.1:1/x");
+        assert_eq!(
+            web_url(&Target::Setup {
+                binary: "b".into(),
+                name: "n".into(),
+                org: None
+            }),
+            ""
+        );
+    }
+
+    #[test]
+    fn web_url_is_ready_url_for_start_and_tunnel() {
+        let start = Target::Start {
+            binary: "b".into(),
+            port: 9123,
+        };
+        assert_eq!(web_url(&start), ready_url(&start));
+        let tunnel = Target::Tunnel {
+            ssh: "ssh".into(),
+            host: "h".into(),
+            remote_port: 1,
+            local_port: 9100,
+        };
+        assert_eq!(web_url(&tunnel), ready_url(&tunnel));
     }
 
     #[test]
@@ -1022,7 +1076,7 @@ mod tests {
         let mut l = launch(&target, None, Duration::from_secs(10))
             .await
             .unwrap();
-        assert_eq!(l.url, format!("http://127.0.0.1:{local_port}/"));
+        assert_eq!(l.url, format!("http://127.0.0.1:{local_port}{READY_PATH}"));
         // the stand-in may not have run yet when the server already answers
         let mut text = String::new();
         for _ in 0..100 {

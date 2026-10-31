@@ -83,7 +83,7 @@ mod tests {
             port: 9123,
         });
         let spec = window_spec(&url).unwrap();
-        assert_eq!(spec.url, "http://127.0.0.1:9123/");
+        assert_eq!(spec.url, "http://127.0.0.1:9123/team_page/file/index.html");
         assert_eq!(spec.label, "main");
         assert_eq!(spec.title, TITLE);
     }
@@ -116,6 +116,9 @@ mod tests {
             port: DEFAULT_PORT,
         });
         let conf_url = w["url"].as_str().expect("window url");
-        assert_eq!(url.trim_end_matches('/'), conf_url.trim_end_matches('/'));
+        assert!(
+            url.starts_with(conf_url.trim_end_matches('/')),
+            "{url} vs {conf_url}"
+        );
     }
 }
