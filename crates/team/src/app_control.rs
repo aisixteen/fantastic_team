@@ -14,6 +14,16 @@ use crate::{page, start, tree};
 /// The dispatcher verbs the web page's socket leg may call.
 const PAGE_VERBS: [&str; 4] = ["sidebar", "tree", "open", "control"];
 
+/// The other tool agents `dispatcher.html` sends to, with exactly the verbs it sends
+/// (cadencer toggle, the user's inquiry panel, the Packs section). Granted to the page
+/// leg only when the target is live.
+const PAGE_GRANTS: [(&str, &[&str]); 4] = [
+    (tree::CADENCER_ID, &["status", "set"]),
+    (tree::USER_ID, &["inquiries", "answer_inquiry"]),
+    (tree::PACK_ID, &["install", "eval"]),
+    (tree::PACK_LISTING_ID, &["browser", "show", "fetch"]),
+];
+
 /// Where the team is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -353,6 +363,20 @@ async fn prepare_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
             })
             .unwrap_or_default();
         tree::grant_chat_to(kernel, &workers, page::WS_ID);
+    }
+    for (target, verbs) in PAGE_GRANTS {
+        if !live(target) {
+            continue;
+        }
+        let verbs = json!(verbs);
+        kernel.edit_can_call(&leg, |cc| {
+            cc.insert(target.into(), verbs.clone());
+            true
+        })?;
+        kernel.edit_callable_by(&fantastic_kernel::AgentId::from(target), |cb| {
+            cb.insert(page::WS_ID.into(), verbs.clone());
+            true
+        })?;
     }
     kernel.flush_records().await;
     Ok(())
@@ -914,7 +938,19 @@ mod tests {
         std::fs::write(&user, &text).unwrap();
         persist(dir.path(), free_port()).await.unwrap();
         persist(dir.path(), free_port()).await.unwrap();
-        assert_eq!(std::fs::read_to_string(&user).unwrap(), text);
+        // The seeded `user` is kept (not re-seeded); the one change is the page leg's
+        // grant for the inquiry panel, which rewrites the record without its comment.
+        let after = std::fs::read_to_string(&user).unwrap();
+        assert!(after.contains("handler_module: user.tools"), "{after}");
+        assert!(
+            after.contains("exec: '*'") && after.contains("files: '*'"),
+            "{after}"
+        );
+        assert!(
+            after.contains("team_ws:\n  - inquiries\n  - answer_inquiry"),
+            "{after}"
+        );
+        assert_eq!(after.matches("team_ws").count(), 1, "{after}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -968,6 +1004,105 @@ mod tests {
             Some(&json!(crate::tree::CHAT_VERBS)),
             "{cc:?}"
         );
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// Create a bare agent so the page leg has something to be granted on.
+    async fn stub(k: &Arc<Kernel>, id: &str) {
+        let mk = json!({"type": "create_agent", "id": id, "parent_id": DEFAULT_ROOT_ID,
+            "handler_module": "ram_store.tools"});
+        send_one(k, DEFAULT_ROOT_ID, mk).await.unwrap();
+    }
+
+    fn meta_of(k: &Kernel, a: &str, key: &str) -> Value {
+        let id = fantastic_kernel::AgentId::from(a);
+        let v = k.agents.get(&id).unwrap().meta.read().unwrap()[key].clone();
+        v
+    }
+
+    /// Every `(target, verb)` the page sends through `askNode` or `packAction`
+    /// with a literal id and verb.
+    fn page_sends() -> Vec<(String, String)> {
+        let re =
+            regex::Regex::new(r#"(?:askNode|packAction)\('([a-z_]+)',\s*\{\s*type:\s*'([a-z_]+)'"#)
+                .unwrap();
+        re.captures_iter(include_str!("../web/dispatcher.html"))
+            .map(|c| (c[1].to_string(), c[2].to_string()))
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn page_leg_may_call_every_verb_dispatcher_html_sends() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let k = start(dir.path()).await.unwrap();
+        for id in ["cadencer", "user", "pack", "pack_listing"] {
+            stub(&k, id).await;
+        }
+        make_dispatcher(&k, json!({})).await;
+        k.flush_records().await;
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+        persist(dir.path(), free_port()).await.unwrap();
+        let k = start(dir.path()).await.unwrap();
+        let sends = page_sends();
+        for t in ["cadencer", "user", "pack", "pack_listing"] {
+            assert!(sends.iter().any(|(a, _)| a == t), "page sends to {t}");
+        }
+        let cc = meta_of(&k, page::WS_ID, "can_call");
+        for (target, verb) in sends.iter().filter(|(t, _)| t != "dispatcher") {
+            let may = |v: &Value| v.as_array().is_some_and(|a| a.contains(&json!(verb)));
+            assert!(may(&cc[target]), "can_call {target} {verb}: {cc}");
+            let cb = meta_of(&k, target, "callable_by");
+            assert!(may(&cb[page::WS_ID]), "callable_by {target} {verb}: {cb}");
+            assert_ne!(cb[page::WS_ID], json!("*"));
+            assert_ne!(cc[target], json!("*"));
+        }
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn page_leg_grants_are_idempotent_and_skip_missing_targets() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let k = start(dir.path()).await.unwrap();
+        stub(&k, "cadencer").await;
+        prepare_web(&k, free_port()).await.unwrap();
+        let first = meta_of(&k, page::WS_ID, "can_call");
+        let first_cb = meta_of(&k, "cadencer", "callable_by");
+        prepare_web(&k, free_port()).await.unwrap();
+        assert_eq!(meta_of(&k, page::WS_ID, "can_call"), first);
+        assert_eq!(meta_of(&k, "cadencer", "callable_by"), first_cb);
+        assert_eq!(first["cadencer"], json!(["status", "set"]));
+        for missing in ["pack", "pack_listing", "user"] {
+            assert!(first.get(missing).is_none(), "{missing}: {first}");
+        }
+        drop_web(&k).await;
+        k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn page_leg_cannot_call_verbs_the_page_does_not_send() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let k = start(dir.path()).await.unwrap();
+        for id in ["cadencer", "user", "pack", "pack_listing", "queue", "tasks"] {
+            stub(&k, id).await;
+        }
+        prepare_web(&k, free_port()).await.unwrap();
+        let cc = meta_of(&k, page::WS_ID, "can_call");
+        let pack = cc["pack"].as_array().unwrap();
+        assert!(pack.contains(&json!("install")));
+        for verb in ["revoke", "enable", "uninstall"] {
+            assert!(!pack.contains(&json!(verb)), "{verb}");
+        }
+        for id in ["kernel", "kernel_state", "queue", "tasks"] {
+            assert!(cc.get(id).is_none(), "{id}: {cc}");
+        }
+        drop_web(&k).await;
         k.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
