@@ -17,8 +17,7 @@ use serde_json::{json, Value};
 
 use crate::config::{self, TeamConfig};
 use crate::{
-    board, cadencer, dispatcher, pack_bundle, pack_listing, pack_panel, roles, worker_exec,
-    worker_view,
+    board, cadencer, dispatcher, pack_bundle, pack_listing, roles, worker_exec, worker_view,
 };
 
 /// The dispatcher's agent id: the team's main view, created at start.
@@ -70,12 +69,8 @@ pub const DISPATCHER_ROLES_VERBS: [&str; 1] = ["get_count"];
 /// The kernel verbs the dispatcher may call on the root to add and remove a worker
 /// (`control` with `add_worker` / `remove_worker`) and to keep the groups lists current.
 pub const DISPATCHER_KERNEL_VERBS: [&str; 3] = ["create_agent", "update_agent", "delete_agent"];
-/// The page's agent: the dispatcher's html view on the canvas, made at the first start.
-pub const DISPATCHER_VIEW_ID: &str = "dispatcher_view";
-/// The pack browser panel's agent: an html view on the canvas, made at the first start.
-pub const PACKS_VIEW_ID: &str = pack_panel::VIEW_ID;
 /// The verbs the page uses on a worker or a subagent: its chat (`history`, `send`,
-/// `stop`, `status`) and its events (`watch`). Granted by [`grant_chat`]; never `*`.
+/// `stop`, `status`) and its events (`watch`). Granted by [`grant_chat_to`]; never `*`.
 pub const CHAT_VERBS: [&str; 5] = ["history", "send", "stop", "status", "watch"];
 
 /// Tools the binary always knows; a template may grant them without a definition.
@@ -615,8 +610,8 @@ fn board_plan(cfg: &TeamConfig, b: &config::BoardCfg) -> Planned {
 /// the spawned tree (a team with `roles:`) and sends each lead's digest. The groups'
 /// own `cadence`, `stall_after`, `quiet` and `enabled` from `team.yaml` ride in
 /// `group_settings`. It may call the board's `rows`, the registries' reads and the
-/// `send` of the lead and of every group driver; the dispatcher may ask `status`, and
-/// the page's view `status` and `set` (the switch, [`grant_cadencer_switch`]). `cadencer: {enabled: false}` creates it switched off.
+/// `send` of the lead and of every group driver; the dispatcher may ask `status`.
+/// `cadencer: {enabled: false}` creates it switched off.
 fn cadencer_plan(cfg: &TeamConfig) -> Planned {
     let mut can_call = serde_json::Map::new();
     if cfg.board.is_some() {
@@ -683,8 +678,7 @@ fn tool_plan(id: &str, parent: &str, mut rec: Value) -> Planned {
 /// replaces the tool default, so the dispatcher is named too.
 fn pack_plan(id: &str, parent: &str, rec: Value) -> Planned {
     let mut p = tool_plan(id, parent, rec);
-    p.record["callable_by"] =
-        json!({"$self": "*", "$parent": "*", "dispatcher": "*", (PACKS_VIEW_ID): "*"});
+    p.record["callable_by"] = json!({"$self": "*", "$parent": "*", "dispatcher": "*"});
     p
 }
 
@@ -785,68 +779,9 @@ pub async fn deliver_instructions(
     }
 }
 
-/// Make the dispatcher's html view: the first start only, since the dispatcher is created
-/// only then. It lives under the root, never on the canvas: a canvas lists sidecars only,
-/// and the team's own views are not that. Best effort: a refusal is reported, not fatal.
-async fn place_dispatcher(kernel: &Arc<Kernel>) {
-    let view = DISPATCHER_VIEW_ID;
-    if exists(kernel, view) {
-        return;
-    }
-    let mut outs = kernel
-        .send(vec![Item::new(
-            DEFAULT_ROOT_ID,
-            json!({
-                "type": "create_agent",
-                "id": view,
-                "parent_id": DEFAULT_ROOT_ID,
-                "handler_module": TREE_VIEW_MODULE,
-                "html": dispatcher::HTML,
-            }),
-        )])
-        .await;
-    if let Some(o) = outs.pop() {
-        if o.result.get("error").is_some() || !matches!(o.status, Status::Completed) {
-            eprintln!("dispatcher view not made: {}", o.result);
-        }
-    }
-}
-
-/// Known gap, aisixteen/fantastic_team#212: [`place_dispatcher`] and
-/// [`place_packs_panel`] create agents with this module, and no Rust bundle at
-/// the pinned fantastic rev answers it, so the kernel skips them at boot.
-const TREE_VIEW_MODULE: &str = "html.tools";
-
 /// The one root (kernel) verb the pack agent may call: `list_agents`, to check
 /// that the agents a pack is bound to are live before it is enabled.
 pub const PACK_ROOT_VERBS: [&str; 1] = ["list_agents"];
-
-/// Make the pack browser panel, like [`place_dispatcher`] (under the root, not on the
-/// canvas): an `html.tools` view that may call the two pack agents. Best effort.
-async fn place_packs_panel(kernel: &Arc<Kernel>) {
-    let view = PACKS_VIEW_ID;
-    if exists(kernel, view) {
-        return;
-    }
-    let mut outs = kernel
-        .send(vec![Item::new(
-            DEFAULT_ROOT_ID,
-            json!({
-                "type": "create_agent",
-                "id": view,
-                "parent_id": DEFAULT_ROOT_ID,
-                "handler_module": TREE_VIEW_MODULE,
-                "html": pack_panel::HTML,
-                "can_call": { (PACK_ID): "*", (PACK_LISTING_ID): "*" },
-            }),
-        )])
-        .await;
-    if let Some(o) = outs.pop() {
-        if o.result.get("error").is_some() || !matches!(o.status, Status::Completed) {
-            eprintln!("packs panel not made: {}", o.result);
-        }
-    }
-}
 
 /// Let the pack agent call `list_agents` on the root: the root's end of the edge
 /// the pack's `can_call` names. An operator write made at each start, so it is
@@ -875,128 +810,13 @@ pub const USER_ID: &str = "user";
 pub const PACK_USER_VERBS: [&str; 1] = ["import_subtree"];
 /// The one `board` verb the pack agent may call (`eval {from_shifts}`).
 pub const PACK_BOARD_VERBS: [&str; 1] = ["board"];
-/// The one `pack` verb the dispatcher page may call (its Pack install panel).
-pub const PAGE_PACK_VERBS: [&str; 1] = ["install"];
-
-/// Grant the page's agent the `install` verb on the pack agent, on both ends (the
-/// view's `can_call` and the pack's `callable_by`). Idempotent. Returns whether
-/// both ends hold the grant; false when the view or the pack agent is not live.
-pub fn grant_pack_install(kernel: &Arc<Kernel>) -> bool {
-    if !exists(kernel, DISPATCHER_VIEW_ID) || !exists(kernel, PACK_ID) {
-        return false;
-    }
-    let verbs = json!(PAGE_PACK_VERBS);
-    let by_pack = kernel.edit_callable_by(&fantastic_kernel::AgentId::from(PACK_ID), |cb| {
-        if cb.get(DISPATCHER_VIEW_ID) == Some(&verbs) {
-            return false;
-        }
-        cb.insert(DISPATCHER_VIEW_ID.into(), verbs.clone());
-        true
-    });
-    let by_view =
-        kernel.edit_can_call(&fantastic_kernel::AgentId::from(DISPATCHER_VIEW_ID), |cc| {
-            if cc.get(PACK_ID) == Some(&verbs) {
-                return false;
-            }
-            cc.insert(PACK_ID.into(), verbs.clone());
-            true
-        });
-    match (by_pack, by_view) {
-        (Ok(_), Ok(_)) => true,
-        (Err(e), _) | (_, Err(e)) => {
-            eprintln!("dispatcher pack install: {e}");
-            false
-        }
-    }
-}
-
-/// The verbs the page uses on the cadencer: its state and the on/off switch (`set`).
-pub const PAGE_CADENCER_VERBS: [&str; 2] = ["status", "set"];
-
-/// Grant the page's agent `status` and `set` on the cadencer, on both ends (the view's
-/// `can_call` and the cadencer's `callable_by`), for the digests switch. Idempotent.
-/// Returns whether both ends hold the grant; false when the view or the cadencer is
-/// not live.
-pub fn grant_cadencer_switch(kernel: &Arc<Kernel>) -> bool {
-    if !exists(kernel, DISPATCHER_VIEW_ID) || !exists(kernel, CADENCER_ID) {
-        return false;
-    }
-    let verbs = json!(PAGE_CADENCER_VERBS);
-    let by_cadencer =
-        kernel.edit_callable_by(&fantastic_kernel::AgentId::from(CADENCER_ID), |cb| {
-            if cb.get(DISPATCHER_VIEW_ID) == Some(&verbs) {
-                return false;
-            }
-            cb.insert(DISPATCHER_VIEW_ID.into(), verbs.clone());
-            true
-        });
-    let by_view =
-        kernel.edit_can_call(&fantastic_kernel::AgentId::from(DISPATCHER_VIEW_ID), |cc| {
-            if cc.get(CADENCER_ID) == Some(&verbs) {
-                return false;
-            }
-            cc.insert(CADENCER_ID.into(), verbs.clone());
-            true
-        });
-    match (by_cadencer, by_view) {
-        (Ok(_), Ok(_)) => true,
-        (Err(e), _) | (_, Err(e)) => {
-            eprintln!("dispatcher cadencer switch: {e}");
-            false
-        }
-    }
-}
-
-/// The two `user` verbs the page uses for the chat's questions: the open
-/// `inquiries` of an asker and `answer_inquiry`. Granted by [`grant_inquiries`].
-pub const INQUIRY_VERBS: [&str; 2] = ["inquiries", "answer_inquiry"];
-
-/// Grant the page's agent the inquiry verbs on the `user` agent, on both ends like
-/// [`grant_chat`]: the view's `can_call` names `user` and `user`'s `callable_by`
-/// names the view. Idempotent; never `*`. Skipped when `user` or the view is not
-/// live. Returns true when a grant was written.
-pub fn grant_inquiries(kernel: &Arc<Kernel>) -> bool {
-    if !exists(kernel, DISPATCHER_VIEW_ID) || !exists(kernel, USER_ID) {
-        return false;
-    }
-    let verbs = json!(INQUIRY_VERBS);
-    let view = fantastic_kernel::AgentId::from(DISPATCHER_VIEW_ID);
-    let user = fantastic_kernel::AgentId::from(USER_ID);
-    let by_user = kernel.edit_callable_by(&user, |cb| {
-        if cb.get(DISPATCHER_VIEW_ID) == Some(&verbs) {
-            return false;
-        }
-        cb.insert(DISPATCHER_VIEW_ID.into(), verbs.clone());
-        true
-    });
-    let by_view = kernel.edit_can_call(&view, |cc| {
-        if cc.get(USER_ID) == Some(&verbs) {
-            return false;
-        }
-        cc.insert(USER_ID.into(), verbs.clone());
-        true
-    });
-    match (by_user, by_view) {
-        (Ok(a), Ok(b)) => a || b,
-        (Err(e), _) | (_, Err(e)) => {
-            eprintln!("dispatcher inquiries: `{USER_ID}`: {e}");
-            false
-        }
-    }
-}
-
-/// Grant the page's agent the chat verbs on each worker in `workers` and on every
-/// agent whose parent is one of them (its subagents), on both ends: the view's
-/// `can_call` names the agent and the agent's `callable_by` names the view. An
-/// operator write made at each start, so it is idempotent. An agent that is not
-/// live is skipped; a refusal is reported, not fatal. Returns how many agents got
-/// the grant. An agent made after the start gets it at the next start.
-pub fn grant_chat(kernel: &Arc<Kernel>, workers: &[String]) -> usize {
-    grant_chat_to(kernel, workers, DISPATCHER_VIEW_ID)
-}
-
-/// [`grant_chat`] for any principal that carries the page: the canvas view, or the
-/// `web_ws` leg that serves the page on a port.
+/// Grant the page's principal (the `web_ws` leg that serves the page) the chat verbs on
+/// each worker in `workers` and on every agent whose parent is one of them (its
+/// subagents), on both ends: the principal's `can_call` names the agent and the
+/// agent's `callable_by` names the principal. An operator write made at each start, so
+/// it is idempotent. An agent that is not live is skipped; a refusal is reported, not
+/// fatal. Returns how many agents got the grant. An agent made after the start gets it
+/// at the next start.
 pub fn grant_chat_to(kernel: &Arc<Kernel>, workers: &[String], principal: &str) -> usize {
     if !exists(kernel, principal) {
         return 0;
@@ -1402,20 +1222,13 @@ pub fn run_at_start(
         let kernel = crate::start(dir).await.map_err(|e| e.to_string())?;
         let res: Result<Applied, String> = async {
             let applied = apply(&kernel, &tree).await?;
-            if applied.created.iter().any(|c| c == DISPATCHER_ID) {
-                place_dispatcher(&kernel).await;
-                place_packs_panel(&kernel).await;
-            }
             grant_agent_listing(&kernel);
             let workers: Vec<String> = cfg
                 .groups
                 .values()
                 .flat_map(|g| g.members.iter().cloned())
                 .collect();
-            grant_chat(&kernel, &workers);
             grant_control(&kernel, &workers);
-            grant_pack_install(&kernel);
-            grant_cadencer_switch(&kernel);
             // Declared views (#207): `view.tui` on each declared agent, and the read
             // grants the page and the dispatcher need to ask the verbs they name.
             crate::declared_views::sync_views(&kernel);
@@ -1423,7 +1236,6 @@ pub fn run_at_start(
             if let Err(e) = grant_agent_verbs(&kernel) {
                 eprintln!("{e}");
             }
-            grant_inquiries(&kernel);
             apply_limits(&kernel, &cfg).await?;
             if let Err(e) = grant_await(&kernel, &cfg) {
                 eprintln!("{e}");
@@ -1508,9 +1320,6 @@ mod tests {
                 .collect();
             assert!(missing.is_empty(), "{name}: not registered: {missing:?}");
         }
-        // The views placed outside `plan()` use only the known-gap module.
-        assert_eq!(TREE_VIEW_MODULE, "html.tools");
-        assert!(reg.get(TREE_VIEW_MODULE).is_none());
     }
 
     fn ids(t: &[Planned]) -> Vec<String> {
@@ -1838,7 +1647,7 @@ mod tests {
         );
         assert_eq!(
             pack.record["callable_by"],
-            json!({"$self": "*", "$parent": "*", "dispatcher": "*", "packs_view": "*"}),
+            json!({"$self": "*", "$parent": "*", "dispatcher": "*"}),
         );
 
         let listing = find(PACK_LISTING_ID);
@@ -1857,7 +1666,7 @@ mod tests {
         );
         assert_eq!(
             listing.record["callable_by"],
-            json!({"$self": "*", "$parent": "*", "dispatcher": "*", "packs_view": "*"}),
+            json!({"$self": "*", "$parent": "*", "dispatcher": "*"}),
         );
     }
 
@@ -2404,44 +2213,6 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn grant_cadencer_switch_names_both_ends_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        assert!(!grant_cadencer_switch(&kernel), "nothing live yet");
-        apply(&kernel, &plan(&sample(), dir.path()).unwrap())
-            .await
-            .unwrap();
-        let mk = json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
-        kernel.send(vec![Item::new(DEFAULT_ROOT_ID, mk)]).await;
-        place_dispatcher(&kernel).await;
-        assert!(grant_cadencer_switch(&kernel));
-        assert!(grant_cadencer_switch(&kernel), "idempotent");
-        let field = |id: &str, f: &str| {
-            kernel
-                .agents
-                .get(&fantastic_kernel::AgentId::from(id))
-                .map(|a| a.meta.read().unwrap()[f].clone())
-                .unwrap_or(Value::Null)
-        };
-        assert_eq!(
-            field(CADENCER_ID, "callable_by")[DISPATCHER_VIEW_ID],
-            json!(["status", "set"])
-        );
-        assert_eq!(
-            field(DISPATCHER_VIEW_ID, "can_call")[CADENCER_ID],
-            json!(["status", "set"])
-        );
-        // The page's own origin may now switch it, through the kernel's checks.
-        let off = kernel
-            .send(vec![Item::new(
-                CADENCER_ID,
-                json!({"type": "set", "enabled": false}),
-            )])
-            .await;
-        assert!(off[0].result.get("error").is_none(), "{}", off[0].result);
-    }
-
     #[test]
     fn digest_leads_lists_project_leads_and_leads_only() {
         let fleet = json!({"roles": {
@@ -2598,78 +2369,9 @@ mod tests {
     }
 
     #[test]
-    fn plan_pack_agents_name_the_packs_view() {
-        let cfg = parse(&sample_yaml()).unwrap();
-        let tree = plan(&cfg, Path::new("/team")).unwrap();
-        assert_eq!(PACKS_VIEW_ID, "packs_view");
-        for id in [PACK_ID, PACK_LISTING_ID] {
-            let a = tree.iter().find(|p| p.id == id).unwrap();
-            assert_eq!(a.record["callable_by"][PACKS_VIEW_ID], "*", "{id}");
-        }
-    }
-
-    #[test]
     fn chat_verbs_are_the_chat_ones_only() {
         assert_eq!(CHAT_VERBS, ["history", "send", "stop", "status", "watch"]);
         assert!(!CHAT_VERBS.contains(&"*"));
-        assert_eq!(DISPATCHER_VIEW_ID, "dispatcher_view");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn dispatcher_view_may_chat_with_workers() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let tree = plan(&sample(), dir.path()).unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        apply(&kernel, &tree).await.unwrap();
-        let canvas = json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
-        let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, canvas)]).await;
-        assert!(
-            matches!(outs[0].status, Status::Completed),
-            "{}",
-            outs[0].result
-        );
-        place_dispatcher(&kernel).await;
-        // a worker and one of its subagents, made as the lead makes them
-        for rec in [
-            json!({"type": "create_agent", "id": "w1", "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"}),
-            json!({"type": "create_agent", "id": "w1_sub", "parent_id": "w1", "handler_module": "ram_store.tools"}),
-        ] {
-            let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, rec)]).await;
-            assert!(
-                matches!(outs[0].status, Status::Completed),
-                "{}",
-                outs[0].result
-            );
-        }
-        let granted = grant_chat(&kernel, &["w1".to_string(), "nobody".to_string()]);
-        assert_eq!(granted, 2);
-        let grants = |id: &str, field: &str| {
-            kernel
-                .agents
-                .get(&fantastic_kernel::AgentId::from(id))
-                .map(|a| a.meta.read().unwrap()[field].clone())
-                .unwrap_or(Value::Null)
-        };
-        for worker in ["w1", "w1_sub"] {
-            assert_eq!(
-                grants(worker, "callable_by")[DISPATCHER_VIEW_ID],
-                json!(CHAT_VERBS),
-                "{worker}"
-            );
-            assert_eq!(
-                grants(DISPATCHER_VIEW_ID, "can_call")[worker],
-                json!(CHAT_VERBS),
-                "{worker}"
-            );
-        }
-        // a second start is idempotent: the same grants, the same count (w1 and its subagent)
-        assert_eq!(grant_chat(&kernel, &["w1".to_string()]), 2);
-        assert_eq!(
-            grants("w1", "callable_by")[DISPATCHER_VIEW_ID],
-            json!(CHAT_VERBS)
-        );
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
     }
 
     /// A kernel with a bare dispatcher and workers `w1` and `w2`, none of them granted.
@@ -2763,77 +2465,6 @@ mod tests {
             )])
             .await;
         assert_eq!(grant_control(&kernel, &ids), 0);
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn the_page_may_call_install_on_the_pack_agent_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        assert!(!grant_pack_install(&kernel), "nothing live yet");
-        let tree = plan(&sample(), dir.path()).unwrap();
-        apply(&kernel, &tree).await.unwrap();
-        for rec in [
-            json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"}),
-        ] {
-            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, rec)]).await;
-        }
-        place_dispatcher(&kernel).await;
-        assert!(grant_pack_install(&kernel));
-        assert!(grant_pack_install(&kernel), "idempotent");
-        let field = |id: &str, f: &str| {
-            kernel
-                .agents
-                .get(&fantastic_kernel::AgentId::from(id))
-                .map(|a| a.meta.read().unwrap()[f].clone())
-                .unwrap_or(Value::Null)
-        };
-        assert_eq!(
-            field(PACK_ID, "callable_by")[DISPATCHER_VIEW_ID],
-            json!(["install"])
-        );
-        assert_eq!(
-            field(DISPATCHER_VIEW_ID, "can_call")[PACK_ID],
-            json!(["install"])
-        );
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn grant_inquiries_writes_both_ends_without_star() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let tree = plan(&sample(), dir.path()).unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        apply(&kernel, &tree).await.unwrap();
-        let canvas = json!({"type": "create_agent", "id": CANVAS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
-        kernel.send(vec![Item::new(DEFAULT_ROOT_ID, canvas)]).await;
-        // no page agent yet: nothing is written
-        assert!(!exists(&kernel, DISPATCHER_VIEW_ID));
-        assert!(!grant_inquiries(&kernel));
-        place_dispatcher(&kernel).await;
-        assert!(
-            exists(&kernel, USER_ID),
-            "the team kernel has a `user` agent"
-        );
-        assert!(grant_inquiries(&kernel));
-        let grants = |id: &str, field: &str| {
-            kernel
-                .agents
-                .get(&fantastic_kernel::AgentId::from(id))
-                .map(|a| a.meta.read().unwrap()[field].clone())
-                .unwrap_or(Value::Null)
-        };
-        let want = json!(["inquiries", "answer_inquiry"]);
-        assert_eq!(grants(DISPATCHER_VIEW_ID, "can_call")[USER_ID], want);
-        assert_eq!(grants(USER_ID, "callable_by")[DISPATCHER_VIEW_ID], want);
-        assert!(!serde_json::to_string(&want).unwrap().contains('*'));
-        assert!(!grants(DISPATCHER_VIEW_ID, "can_call")
-            .as_object()
-            .unwrap()
-            .contains_key("*"));
-        assert!(!grant_inquiries(&kernel), "idempotent");
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
@@ -3957,8 +3588,14 @@ mod tests {
             "{}",
             outs[0].result
         );
-        place_dispatcher(&kernel).await;
-        place_packs_panel(&kernel).await;
+        // a live principal for the page's ws leg
+        let leg = json!({"type": "create_agent", "id": crate::page::WS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
+        let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, leg)]).await;
+        assert!(
+            matches!(outs[0].status, Status::Completed),
+            "{}",
+            outs[0].result
+        );
         kernel
     }
 
@@ -3966,18 +3603,19 @@ mod tests {
     async fn start_places_no_team_view_on_the_canvas() {
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = started_with_canvas(dir.path()).await;
-        for view in [DISPATCHER_VIEW_ID, PACKS_VIEW_ID] {
-            let a = kernel
-                .agents
-                .get(&fantastic_kernel::AgentId::from(view))
-                .unwrap_or_else(|| panic!("{view} is made"));
-            assert_eq!(a.handler_module.as_deref(), Some("html.tools"));
-            assert_ne!(
-                a.parent_id.as_ref().map(|p| p.0.as_str()),
-                Some(CANVAS_ID),
-                "{view} is on the canvas"
+        for view in ["dispatcher_view", "packs_view"] {
+            assert!(
+                !exists(&kernel, view),
+                "{view} must not be made (aisixteen/fantastic_team#212)"
             );
         }
+        let html_tools: Vec<String> = kernel
+            .agents
+            .iter()
+            .filter(|e| e.handler_module.as_deref() == Some("html.tools"))
+            .map(|e| e.id.0.clone())
+            .collect();
+        assert!(html_tools.is_empty(), "{html_tools:?}");
         let on_canvas: Vec<String> = kernel
             .agents
             .iter()
@@ -3985,19 +3623,72 @@ mod tests {
             .map(|e| e.id.0.clone())
             .collect();
         assert!(on_canvas.is_empty(), "{on_canvas:?}");
-        // the packs view keeps its two pack grants; a second call leaves the one view
-        let meta = kernel
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn first_start_creates_no_html_tools_agent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        assert!(tree
+            .iter()
+            .all(|p| p.record["handler_module"].as_str() != Some("html.tools")));
+        let kernel = crate::start(dir.path()).await.unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        let html_tools: Vec<String> = kernel
             .agents
-            .get(&fantastic_kernel::AgentId::from(PACKS_VIEW_ID))
-            .unwrap()
-            .meta
-            .read()
-            .unwrap()
-            .clone();
-        assert_eq!(meta["can_call"][PACK_ID], "*");
-        assert_eq!(meta["can_call"][PACK_LISTING_ID], "*");
-        assert_eq!(meta["html"], pack_panel::HTML);
-        place_packs_panel(&kernel).await;
+            .iter()
+            .filter(|e| e.handler_module.as_deref() == Some("html.tools"))
+            .map(|e| e.id.0.clone())
+            .collect();
+        assert!(html_tools.is_empty(), "{html_tools:?}");
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn plan_pack_agents_are_not_callable_by_a_packs_view() {
+        let tree = plan(&sample(), Path::new("/team")).unwrap();
+        for id in [PACK_ID, PACK_LISTING_ID] {
+            let a = tree.iter().find(|p| p.id == id).unwrap();
+            let cb = a.record["callable_by"].as_object().unwrap();
+            assert!(!cb.contains_key("packs_view"), "{id}: {cb:?}");
+            for k in ["$self", "$parent", "dispatcher"] {
+                assert_eq!(cb[k], "*", "{id} {k}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_page_leg_keeps_its_chat_grant() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = started_with_canvas(dir.path()).await;
+        for rec in [
+            json!({"type": "create_agent", "id": "w1", "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"}),
+            json!({"type": "create_agent", "id": "w1_sub", "parent_id": "w1", "handler_module": "ram_store.tools"}),
+        ] {
+            let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, rec)]).await;
+            assert!(
+                matches!(outs[0].status, Status::Completed),
+                "{}",
+                outs[0].result
+            );
+        }
+        let granted = grant_chat_to(&kernel, &["w1".to_string()], crate::page::WS_ID);
+        assert_eq!(granted, 2);
+        for worker in ["w1", "w1_sub"] {
+            assert_eq!(
+                field_of(&kernel, worker, "callable_by")[crate::page::WS_ID],
+                json!(CHAT_VERBS),
+                "{worker}"
+            );
+            assert_eq!(
+                field_of(&kernel, crate::page::WS_ID, "can_call")[worker],
+                json!(CHAT_VERBS),
+                "{worker}"
+            );
+        }
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
@@ -4046,7 +3737,7 @@ mod tests {
     async fn grant_cards_lets_the_page_call_an_embedded_view_and_nothing_else() {
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = started_with_canvas(dir.path()).await;
-        let leg = DISPATCHER_VIEW_ID; // any live principal stands for the ws leg
+        let leg = crate::page::WS_ID;
         panel_host(&kernel, "h", serde_json::from_str(CARD_VIEW).unwrap()).await;
         panel_host(&kernel, "other", serde_json::from_str(CARD_VIEW).unwrap()).await;
         let ids = card_ids(&rows_of_cards(&[("embed", "h")]));
@@ -4074,9 +3765,9 @@ mod tests {
         panel_host(&kernel, "h", serde_json::from_str(CARD_VIEW).unwrap()).await;
         let ids = card_ids(&rows_of_cards(&[("embed", "h"), ("unembed", "h")]));
         assert!(ids.is_empty());
-        assert_eq!(grant_card_ids(&kernel, DISPATCHER_VIEW_ID, &ids), 0);
+        assert_eq!(grant_card_ids(&kernel, crate::page::WS_ID, &ids), 0);
         assert!(field_of(&kernel, "h", "callable_by")
-            .get(DISPATCHER_VIEW_ID)
+            .get(crate::page::WS_ID)
             .is_none());
         // a row with no string id is ignored
         let odd = vec![
@@ -4102,13 +3793,13 @@ mod tests {
         let kernel = started_with_canvas(dir.path()).await;
         panel_host(&kernel, "plain", Value::Null).await;
         let ids = vec!["plain".to_string(), "missing".to_string()];
-        assert_eq!(grant_card_ids(&kernel, DISPATCHER_VIEW_ID, &ids), 0);
+        assert_eq!(grant_card_ids(&kernel, crate::page::WS_ID, &ids), 0);
         assert!(field_of(&kernel, "plain", "callable_by")
-            .get(DISPATCHER_VIEW_ID)
+            .get(crate::page::WS_ID)
             .is_none());
         // a chat agent that does not answer history grants nothing and does not panic
-        assert_eq!(grant_cards(&kernel, DISPATCHER_VIEW_ID, "plain").await, 0);
-        assert_eq!(grant_cards(&kernel, DISPATCHER_VIEW_ID, "missing").await, 0);
+        assert_eq!(grant_cards(&kernel, crate::page::WS_ID, "plain").await, 0);
+        assert_eq!(grant_cards(&kernel, crate::page::WS_ID, "missing").await, 0);
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
@@ -4119,15 +3810,15 @@ mod tests {
         let kernel = started_with_canvas(dir.path()).await;
         panel_host(&kernel, "h", serde_json::from_str(CARD_VIEW).unwrap()).await;
         let ids = vec!["h".to_string()];
-        grant_card_ids(&kernel, DISPATCHER_VIEW_ID, &ids);
+        grant_card_ids(&kernel, crate::page::WS_ID, &ids);
         let first = (
             field_of(&kernel, "h", "callable_by"),
-            field_of(&kernel, DISPATCHER_VIEW_ID, "can_call"),
+            field_of(&kernel, crate::page::WS_ID, "can_call"),
         );
-        grant_card_ids(&kernel, DISPATCHER_VIEW_ID, &ids);
+        grant_card_ids(&kernel, crate::page::WS_ID, &ids);
         let second = (
             field_of(&kernel, "h", "callable_by"),
-            field_of(&kernel, DISPATCHER_VIEW_ID, "can_call"),
+            field_of(&kernel, crate::page::WS_ID, "can_call"),
         );
         assert_eq!(first, second);
         kernel.shutdown().await;

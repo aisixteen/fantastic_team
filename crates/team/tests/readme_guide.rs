@@ -334,9 +334,17 @@ fn readme_describes_the_packs_panel() {
         text.contains("**Packs panel.**"),
         "README must describe the panel"
     );
+    let para = text
+        .lines()
+        .find(|l| l.starts_with("**Packs panel.**"))
+        .expect("README must keep the packs panel paragraph");
     assert!(
-        text.contains("`packs_view`"),
-        "README must name the panel's agent"
+        para.contains("`team_page`"),
+        "README must say the team page serves it"
+    );
+    assert!(
+        !para.contains("`packs_view`"),
+        "README must not name a packs_view agent"
     );
     assert!(
         text.contains("**Enabling.**"),

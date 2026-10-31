@@ -321,7 +321,7 @@ pub fn fleet_of(count: &Value) -> Option<Value> {
 
 /// The full-screen chat for one agent (a worker or a subagent). The chat targets
 /// that agent alone; Back returns to the sidebar. The page streams the chat
-/// itself, over the chat verbs granted by `tree::grant_chat`: it loads the history,
+/// itself, over the chat verbs granted by `tree::grant_chat_to`: it loads the history,
 /// sends, stops and watches the parts. This reply only names the target and the
 /// cell that is drawn.
 pub fn chat_open(node: &str) -> Value {
@@ -609,10 +609,8 @@ pub fn canvas_url(id: &str) -> String {
 }
 
 /// Team-owned agent ids: never a sidecar, whatever their record holds.
-pub const TEAM_AGENT_IDS: [&str; 9] = [
+pub const TEAM_AGENT_IDS: [&str; 7] = [
     crate::tree::DISPATCHER_ID,
-    crate::tree::DISPATCHER_VIEW_ID,
-    crate::tree::PACKS_VIEW_ID,
     crate::tree::WORKER_VIEW_ID,
     crate::tree::BOARD_ID,
     crate::tree::CADENCER_ID,
@@ -666,7 +664,6 @@ fn grant_agents(kernel: &Arc<fantastic_kernel::Kernel>, agents: &[Value]) {
         return;
     }
     crate::tree::grant_chat_to(kernel, &ids, crate::page::WS_ID);
-    crate::tree::grant_chat_to(kernel, &ids, crate::tree::DISPATCHER_VIEW_ID);
 }
 
 /// The kernel's agent table as the sidebar reads it: every agent with a parent.
@@ -3110,10 +3107,7 @@ mod tests {
             assert_eq!(ws["can_call"][id], chat, "team_ws -> {id}");
             let m = meta_of(&kernel, id);
             assert_eq!(m["callable_by"]["team_ws"], chat, "{id}");
-            assert_eq!(
-                m["callable_by"][crate::tree::DISPATCHER_VIEW_ID],
-                json!(null)
-            );
+            assert_eq!(m["callable_by"]["dispatcher_view"], json!(null));
         }
         assert!(ws["can_call"].get("*").is_none());
         kernel.shutdown().await;
@@ -4104,6 +4098,13 @@ mod tests {
         let out = open_with_canvas(None).await;
         assert_eq!(out["view"], "chat");
         assert!(out.get("canvas").is_none(), "{out}");
+    }
+
+    #[test]
+    fn team_agent_ids_do_not_name_the_removed_views() {
+        assert!(!TEAM_AGENT_IDS.contains(&"dispatcher_view"));
+        assert!(!TEAM_AGENT_IDS.contains(&"packs_view"));
+        assert_eq!(TEAM_AGENT_IDS.len(), 7);
     }
 
     #[test]
