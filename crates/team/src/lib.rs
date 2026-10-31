@@ -24,7 +24,6 @@ pub mod pack_hosted;
 pub mod pack_listing;
 pub mod pack_manifest;
 pub mod pack_page;
-pub mod pack_panel;
 pub mod pack_record;
 pub mod pack_scan;
 pub mod page;

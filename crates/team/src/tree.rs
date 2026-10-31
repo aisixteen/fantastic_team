@@ -378,7 +378,10 @@ pub fn plan(cfg: &TeamConfig, team_dir: &Path) -> Result<Vec<Planned>, String> {
     out.push(tool_plan(
         "worker_files",
         lead,
-        json!({"handler_module": "file_bridge.tools", "root": work, "allow": ["."]}),
+        // `allow_all_ingress` lets the kernel's own boot message through, as for
+        // `worker_exec`; `callable_by` still names who may call.
+        json!({"handler_module": "file_bridge.tools", "root": work, "allow": ["."],
+            "ingress_rule": "allow_all_ingress"}),
     ));
     // Only the pack agents may reach the files peer; the lead's own grants do not name it.
     // `allow_all_ingress` opens the edge (as the base `store` does); `callable_by` still
@@ -1288,6 +1291,44 @@ mod tests {
 
     fn sample() -> TeamConfig {
         parse(&sample_yaml()).unwrap()
+    }
+
+    #[test]
+    fn worker_files_opens_ingress_like_worker_exec() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        let files = planned(&tree, "worker_files");
+        assert_eq!(files.record["ingress_rule"], "allow_all_ingress");
+        assert_eq!(
+            files.record["ingress_rule"],
+            planned(&tree, "worker_exec").record["ingress_rule"]
+        );
+        let cb = files.record["callable_by"].as_object().unwrap();
+        assert_eq!(cb.get("$self"), Some(&json!("*")));
+        assert_eq!(cb.get("$parent"), Some(&json!("*")));
+        assert!(!cb.contains_key(PACK_ID), "{cb:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn first_start_boots_every_tool_without_an_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = crate::start(dir.path()).await.unwrap();
+        let tree = plan(&sample(), dir.path()).unwrap();
+        apply(&kernel, &tree).await.unwrap();
+        for id in ["worker_files", "worker_exec", FILES_ID] {
+            let agent = kernel
+                .agents
+                .get(&fantastic_kernel::AgentId::from(id))
+                .unwrap()
+                .value()
+                .clone();
+            let out = kernel
+                .bookkeeping(&agent, json!({"type": "boot"}), None)
+                .await;
+            assert!(out.result.get("error").is_none(), "{id}: {}", out.result);
+        }
+        kernel.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
     }
 
     #[test]
