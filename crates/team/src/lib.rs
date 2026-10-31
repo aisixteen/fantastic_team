@@ -74,6 +74,15 @@ pub fn register_team(reg: &mut BundleRegistry) {
         fantastic_task_registry::HANDLER_MODULE,
         fantastic_task_registry::TaskRegistryBundle::default(),
     );
+    // The model backend and the credential store the app preset's templates and `store_record` name.
+    reg.register(
+        fantastic_anthropic_backend::HANDLER_MODULE,
+        fantastic_anthropic_backend::AnthropicBundle,
+    );
+    reg.register(
+        fantastic_credential_store::HANDLER_MODULE,
+        fantastic_credential_store::CredentialStoreBundle::default(),
+    );
     reg.register(puller::HANDLER_MODULE, puller::PullerBundle::default());
     // The dispatcher page, for the web UI that `--port` persists (`app_control::persist_web`).
     reg.register(page::HANDLER_MODULE, page::PageBundle);
@@ -364,6 +373,14 @@ pub mod roles;
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn register_team_registers_the_anthropic_backend_and_the_credential_store() {
+        let mut reg = BundleRegistry::new();
+        register_team(&mut reg);
+        assert!(reg.get("anthropic_backend.tools").is_some());
+        assert!(reg.get("credential_store.tools").is_some());
+    }
 
     #[test]
     fn register_team_registers_the_task_registry() {

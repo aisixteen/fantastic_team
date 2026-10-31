@@ -53,6 +53,22 @@ mod tests {
     }
 
     #[test]
+    fn app_preset_handler_modules_all_resolve_in_the_registry() {
+        let cfg = config::parse(APP_TEAM_YAML).unwrap();
+        let mut modules: Vec<String> = cfg
+            .templates
+            .values()
+            .map(|t| t.handler_module.clone())
+            .collect();
+        modules.extend(cfg.connectors.values().map(|c| c.kind.clone()));
+        modules.push("credential_store.tools".into());
+        modules.push("sqlite_store.tools".into());
+        let reg = crate::registry();
+        let missing: Vec<&String> = modules.iter().filter(|m| reg.get(m).is_none()).collect();
+        assert!(missing.is_empty(), "not registered: {missing:?}");
+    }
+
+    #[test]
     fn app_preset_plans_with_the_shipped_cards() {
         let dir = tempfile::TempDir::new().unwrap();
         assert!(write_app_preset(dir.path()).unwrap());

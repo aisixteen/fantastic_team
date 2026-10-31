@@ -34,6 +34,7 @@ fantastic-ai-core = { git = "https://github.com/aisixteen/fantastic", branch = "
 fantastic-core = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-file = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-credential-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
+fantastic-anthropic-backend = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-user = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-agentic-resources = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-task-registry = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
