@@ -198,7 +198,7 @@ fn served_css_and_js_have_no_csp_violations() {
     }
     let url = fantastic_team::dispatcher::canvas_url("a");
     assert!(url.starts_with('/') || url.starts_with('?'), "{url}");
-    let d = fantastic_team::dispatcher::HTML;
+    let d = fantastic_team::page::HTML;
     assert!(d.contains("setAttribute('sandbox', 'allow-scripts')"));
     assert!(!d.contains("allow-same-origin"));
     let js = text("page.js");

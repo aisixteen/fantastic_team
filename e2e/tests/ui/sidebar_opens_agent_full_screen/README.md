@@ -1,6 +1,6 @@
 # ui/sidebar_opens_agent_full_screen (free)
 
-The dispatcher page, driven end to end against the real binary: one group `fantastic` (no driver, no board) with two workers, `w1` and `w2`, and two subagents of `w2` (`sub_a`, `sub_b`: kernel agents whose parent is `w2`), all on the scripted model. The model's script is two `done` turns, one per message sent.
+The team page, driven end to end against the real binary: one group `fantastic` (no driver, no board) with two workers, `w1` and `w2`, and two subagents of `w2` (`sub_a`, `sub_b`: kernel agents whose parent is `w2`), all on the scripted model. The model's script is two `done` turns, one per message sent.
 
 There is no browser: `helpers/page_driver.js` (node >= 22, a global WebSocket) fetches the served page, runs the page's own script on a small stub DOM, and bridges its `fantastic.send` and `fantastic.watch` to the team's live `/team_ws/ws` with the frames of `web/page_shim.js`. Clicks go through the page's own handlers. The page's socket leg has only the grants of the app (the dispatcher's `sidebar`, `tree`, `open`, `control`, and the chat verbs `history`, `send`, `stop`, `status`, `watch` on the workers and subagents). Without node >= 22 the test prints `SKIP` and passes.
 

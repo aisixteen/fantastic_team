@@ -33,7 +33,7 @@ def run(ctx):
         ok = app.wait_http(page, 20)
         v.check("the page answers 200", ok)
         status, body = web.http_get(page) if ok else (0, b"")
-        v.check("it is the dispatcher page with the socket shim",
+        v.check("it is the team page with the socket shim",
                 b"<title>Dispatcher</title>" in body and b"window.fantastic = {" in body, str(status))
         v.check("another file of the page is a 404",
                 web.http_get(f"http://127.0.0.1:{port}/team_page/file/other.txt")[0] == 404)

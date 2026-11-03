@@ -100,10 +100,10 @@ def run(ctx):
     page = page.decode(errors="replace")
     v.check("the web UI page is served on --port", status == 200 and "<html" in page.lower(),
             f"{status}")
-    # the dispatcher page and its socket are the same ones the app serves (`serve_web`)
+    # the team page and its socket are the same ones the app serves (`serve_web`)
     status, tpage = http_get(f"http://127.0.0.1:{port}{TEAM_PAGE}")
     tpage = tpage.decode(errors="replace")
-    v.check("the binary serves the dispatcher page (/team_page)",
+    v.check("the binary serves the team page (/team_page)",
             status == 200 and "function renderSidebar(" in tpage, f"{status}")
 
     ws = WsClient(port, WS)

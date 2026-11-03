@@ -1,6 +1,6 @@
-// Runs the dispatcher page's script against a stub DOM and a scripted `fantastic`,
+// Runs the team page's script against a stub DOM and a scripted `fantastic`,
 // and prints one JSON object for the Rust unit tests to assert on.
-//   node chat_harness.js <path/to/dispatcher.html> <scenario>
+//   node chat_harness.js <path/to/team.html> <scenario>
 'use strict';
 const fs = require('fs');
 const vm = require('vm');

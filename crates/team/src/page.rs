@@ -1,7 +1,7 @@
-//! The page agent (`team_page.tools`): the dispatcher's html served by the `web`
-//! host on `--port`, the way the canvas page is. The host's `GET /<id>/file/<path>`
-//! route pipes any agent that answers `read_stream`, so `index.html` is the
-//! dispatcher page with a small shim that gives it the `fantastic.send` and
+//! The page agent (`team_page.tools`): the team page (`web/team.html`, the whole web
+//! UI) served by the `web` host on `--port`, the way the canvas page is. The host's
+//! `GET /<id>/file/<path>` route pipes any agent that answers `read_stream`, so
+//! `index.html` is the team page with a small shim that gives it the `fantastic.send` and
 //! `fantastic.watch` calls over the team's `web_ws` leg. Read-only.
 
 use std::sync::Arc;
@@ -11,10 +11,11 @@ use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
 use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Value};
 
-use crate::dispatcher;
-
 /// The handler module this bundle registers under.
 pub const HANDLER_MODULE: &str = "team_page.tools";
+
+/// The team page: the whole web UI (agent tree, agent views, packs), served on `--port`.
+pub const HTML: &str = include_str!("../web/team.html");
 /// The page agent's id, under the `web` host.
 pub const PAGE_ID: &str = "team_page";
 /// The web_ws leg's id, under the `web` host; the page's shim connects to `/team_ws/ws`.
@@ -31,7 +32,7 @@ const CARD_JS: &str = include_str!("../web/card_connector.js");
 pub const FILES: [&str; 5] = ["index.html", "page.css", "shim.js", "page.js", "card.js"];
 
 /// What `read_stream` declares on the record, so the host serves the page.
-pub const READ_STREAM_DOC: &str = "args: path:str (req), offset:int?, length:int?. The dispatcher page (index.html, page.css, shim.js, page.js, card.js) as a BINARY reply: the bytes as the body, {path, offset, next_offset, eof, size} as the head.";
+pub const READ_STREAM_DOC: &str = "args: path:str (req), offset:int?, length:int?. The team page (index.html, page.css, shim.js, page.js, card.js) as a BINARY reply: the bytes as the body, {path, offset, next_offset, eof, size} as the head.";
 
 /// Cut the first `<tag>...</tag>` body out of `html`; the html gets `replacement` in its place.
 fn cut(html: &str, open: &str, close: &str, replacement: &str) -> (String, String) {
@@ -48,7 +49,7 @@ fn cut(html: &str, open: &str, close: &str, replacement: &str) -> (String, Strin
     (out, body)
 }
 
-/// The dispatcher html cut into the page, its stylesheet and its script, so the page
+/// The team html cut into the page, its stylesheet and its script, so the page
 /// has no inline style or script (the app's CSP allows `'self'` only).
 fn split_page(html: &str) -> (String, String, String) {
     let (html, css) = cut(
@@ -66,13 +67,11 @@ fn split_page(html: &str) -> (String, String, String) {
     (html, css, js)
 }
 
-/// The page served as `index.html`: the dispatcher html with the shim script in its head.
+/// The page served as `index.html`: the team html with the shim script in its head.
 pub fn index_html() -> String {
-    split_page(dispatcher::HTML).0.replacen(
-        "</head>",
-        "<script src=\"shim.js\"></script>\n</head>",
-        1,
-    )
+    split_page(HTML)
+        .0
+        .replacen("</head>", "<script src=\"shim.js\"></script>\n</head>", 1)
 }
 
 /// The bytes of one served file, or `None` for a path the page does not serve.
@@ -80,9 +79,9 @@ pub fn file_bytes(path: &str) -> Option<Vec<u8>> {
     Some(
         match path {
             "index.html" => index_html(),
-            "page.css" => split_page(dispatcher::HTML).1,
+            "page.css" => split_page(HTML).1,
             "shim.js" => SHIM.to_string(),
-            "page.js" => split_page(dispatcher::HTML).2,
+            "page.js" => split_page(HTML).2,
             "card.js" => CARD_JS.to_string(),
             _ => return None,
         }
@@ -180,7 +179,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn index_is_the_dispatcher_with_the_shim_in_its_head() {
+    fn index_is_the_team_page_with_the_shim_in_its_head() {
         let html = index_html();
         let shim_at = html.find("<script src=\"shim.js\">").expect("the shim tag");
         let head_end = html.find("</head>").unwrap();
@@ -232,7 +231,7 @@ mod tests {
 
     #[test]
     fn split_page_moves_style_and_script_out() {
-        let (html, css, js) = split_page(dispatcher::HTML);
+        let (html, css, js) = split_page(HTML);
         assert!(!html.contains("<style>") && !html.contains("</style>"));
         assert_eq!(
             html.matches("<link rel=\"stylesheet\" href=\"page.css\">")
@@ -251,7 +250,7 @@ mod tests {
                 "<script src=\"page.js\"></script>",
                 &format!("<script>{js}</script>"),
             );
-        assert_eq!(rebuilt, dispatcher::HTML);
+        assert_eq!(rebuilt, HTML);
     }
 
     fn whole(path: &str) -> (Value, Vec<u8>) {
@@ -291,7 +290,7 @@ mod tests {
         assert!(CARD_JS.contains("t: \"send\""));
         assert!(CARD_JS.contains("t: \"watch\""));
         assert!(CARD_JS.contains("postMessage"));
-        assert!(dispatcher::HTML.contains("/team_page/file/card.js"));
-        assert!(!dispatcher::HTML.contains("postMessage({ t: \"send\""));
+        assert!(HTML.contains("/team_page/file/card.js"));
+        assert!(!HTML.contains("postMessage({ t: \"send\""));
     }
 }

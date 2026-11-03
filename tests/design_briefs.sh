@@ -176,7 +176,7 @@ if [ -f "$f" ] && grep -q '^<!-- template: design-briefs' "$f" && ! grep -qiE 'l
     && has "$f" 'design/html/' && has "$f" 'scripts/design-sync.sh' \
     && has "$f" 'CHECK=sh scripts/design-sync.sh --check design' \
     && has "$f" '## Purpose and audience' && has "$f" 'For #96.' \
-    && has "$f" 'crates/team/web/dispatcher.html' && has "$f" 'crates/team/src/board.rs' \
+    && has "$f" 'crates/team/web/team.html' && has "$f" 'crates/team/src/board.rs' \
     && has "$f" '07-phone' && has "$f" 'WRITE:'; then
     ok template_names_the_rules_and_screens
 else bad template_names_the_rules_and_screens "template missing or incomplete: $f"; fi

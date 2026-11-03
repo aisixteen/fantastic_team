@@ -14,7 +14,7 @@ use crate::{page, start, tree};
 /// The dispatcher verbs the web page's socket leg may call.
 const PAGE_VERBS: [&str; 4] = ["sidebar", "tree", "open", "control"];
 
-/// The other tool agents `dispatcher.html` sends to, with exactly the verbs it sends
+/// The other tool agents `team.html` sends to, with exactly the verbs it sends
 /// (cadencer toggle, the user's inquiry panel, the Packs section). Granted to the page
 /// leg only when the target is live.
 const PAGE_GRANTS: [(&str, &[&str]); 4] = [
@@ -42,7 +42,7 @@ pub enum State {
 /// Options for [`TeamHandle::start`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TeamOptions {
-    /// A web UI port on 127.0.0.1. `Some(p)`: the handle serves the dispatcher page
+    /// A web UI port on 127.0.0.1. `Some(p)`: the handle serves the team page
     /// there (see [`TeamHandle::url`]) until it is stopped; a port that is taken is
     /// an error and leaves nothing running. `None` is headless.
     pub port: Option<u16>,
@@ -66,7 +66,7 @@ pub struct TeamHandle {
 
 impl TeamHandle {
     /// Boot the team in `workdir` and start it. With `opts.port` it also serves
-    /// the dispatcher page on that port; when that fails the kernel is shut down
+    /// the team page on that port; when that fails the kernel is shut down
     /// and the directory lock released before the error is returned.
     pub async fn start(workdir: &Path, opts: TeamOptions) -> Result<TeamHandle, String> {
         let kernel = start(workdir).await.map_err(|e| e.to_string())?;
@@ -275,7 +275,7 @@ impl Drop for TeamHandle {
     }
 }
 
-/// Serve the dispatcher page on `127.0.0.1:port`: a `web` host under the root, the
+/// Serve the team page on `127.0.0.1:port`: a `web` host under the root, the
 /// page agent and the socket leg under it ([`prepare_web`]), then boot the host (it
 /// mounts the children, then listens). A taken port makes the boot fail. Safe to
 /// repeat: what exists is kept, and the host's port is set.
@@ -717,7 +717,7 @@ mod tests {
         let js = http_get(port, "/team_page/file/page.js").await;
         assert!(
             js.contains("function renderSidebar("),
-            "the dispatcher page is served"
+            "the team page is served"
         );
         let shim = http_get(port, "/team_page/file/shim.js").await;
         assert!(
@@ -1027,13 +1027,13 @@ mod tests {
         let re =
             regex::Regex::new(r#"(?:askNode|packAction)\('([a-z_]+)',\s*\{\s*type:\s*'([a-z_]+)'"#)
                 .unwrap();
-        re.captures_iter(include_str!("../web/dispatcher.html"))
+        re.captures_iter(include_str!("../web/team.html"))
             .map(|c| (c[1].to_string(), c[2].to_string()))
             .collect()
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn page_leg_may_call_every_verb_dispatcher_html_sends() {
+    async fn page_leg_may_call_every_verb_the_team_page_sends() {
         let _web = WEB.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         let k = start(dir.path()).await.unwrap();

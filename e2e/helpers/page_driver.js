@@ -1,4 +1,4 @@
-// Drives the team's served dispatcher page without a browser: it fetches the page
+// Drives the team's served team page without a browser: it fetches the page
 // from a running team, runs the page's own script in a vm on a small stub DOM, and
 // bridges `fantastic.send` and `fantastic.watch` to the live /team_ws/ws socket with
 // the same frames as web/page_shim.js. The stub DOM is the El pattern of
