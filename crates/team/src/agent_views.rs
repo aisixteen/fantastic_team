@@ -1,5 +1,5 @@
 //! The views of the team's own service agents (the queue, the board, the github
-//! connector and the dispatcher) for the dispatcher page's right pane. Each function
+//! connector and the dispatcher) for the team page's right pane. Each function
 //! is pure: it takes a reply a service already gave and returns one model
 //! `{kind, title, summary: [text], sections: [{name, columns: [text], rows: [[text]]}]}`.
 //! The page draws every value as text (`textContent`), never as markup.

@@ -109,7 +109,7 @@ roles:
 #     enabled: true       # false: this group gets no digest
 # The cadencer (digests to each lead, `STALLED` flags, the quiet heartbeat) is created in
 # every team, with or without a board, and is on by default. Uncomment to create it
-# switched off; the dispatcher page's "Digests (cadencer)" switch turns it on or off live.
+# switched off; the team page's "Digests (cadencer)" switch turns it on or off live.
 # cadencer:
 #   enabled: false
 # Canvases are the sidecars an agent makes for the person. `persist: false` asks that they

@@ -19,9 +19,6 @@ use crate::puller::{KernelPeers, Peers};
 /// The bundle's handler module name.
 pub const HANDLER_MODULE: &str = "team_dispatcher.tools";
 
-/// The dispatcher's html cell, served on `--port`.
-pub const HTML: &str = include_str!("../web/dispatcher.html");
-
 /// One worker as the dispatcher shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Row {
@@ -1234,6 +1231,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::page::HTML;
 
     fn board() -> Value {
         json!({
@@ -1886,7 +1884,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_page_streams_chat() {
+    fn team_page_streams_chat() {
         // The chat runs over the chat verbs and the part events of the target agent.
         for needle in [
             "type: 'history'",
@@ -1909,7 +1907,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_page_chat_uses_textcontent() {
+    fn team_page_chat_uses_textcontent() {
         // Streamed and history text is data: it is drawn as text, never as markup.
         assert!(!HTML.contains("innerHTML"));
         assert!(!HTML.contains("insertAdjacentHTML"));
@@ -1918,7 +1916,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_page_unwatches_on_drop() {
+    fn team_page_unwatches_on_drop() {
         // Dropping the chat drops the watch, the lead's live watch and the drafts.
         let drop = js_fn("dropChat");
         assert!(drop.contains("c.off()"), "{drop}");
@@ -1927,7 +1925,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_page_reopen_drops_the_old_chat_first() {
+    fn team_page_reopen_drops_the_old_chat_first() {
         // A second open must not stack a second watch or draw the stream twice.
         let show = js_fn("showChat");
         let drop_at = show
@@ -1938,7 +1936,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_page_ask_node_is_generic_and_ask_is_unchanged() {
+    fn team_page_ask_node_is_generic_and_ask_is_unchanged() {
         assert!(js_fn("askNode").contains("fantastic.send(id, payload)"));
         assert!(js_fn("ask").contains("fantastic.send('dispatcher', payload)"));
     }
@@ -2643,7 +2641,7 @@ mod tests {
         let root = env!("CARGO_MANIFEST_DIR");
         let out = match std::process::Command::new("node")
             .arg(format!("{root}/tests/js/chat_harness.js"))
-            .arg(format!("{root}/web/dispatcher.html"))
+            .arg(format!("{root}/web/team.html"))
             .arg(scenario)
             .output()
         {

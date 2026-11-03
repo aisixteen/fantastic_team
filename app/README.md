@@ -175,7 +175,7 @@ Not in this slice:
 - Row status: the row carries `minutes` and `pr` from the board snapshot (the
   claimed task, else the worker's newest done task with a link).
 - In-process home kernel through `TeamHandle` (#87 merged): `TeamHandle::start`
-  with `TeamOptions.port` serves the dispatcher page on `127.0.0.1:<port>`
+  with `TeamOptions.port` serves the team page on `127.0.0.1:<port>`
   (`TeamHandle::url()` names it: `/team_page/file/index.html`, since the host
   serves no `/`). The window still talks to the headless binary run as a child
   process; the host's record is removed at `stop`.

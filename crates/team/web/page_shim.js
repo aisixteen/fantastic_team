@@ -1,4 +1,4 @@
-// The dispatcher page outside the canvas has no `fantastic` object: this makes
+// The team page outside the canvas has no `fantastic` object: this makes
 // the two calls the page uses (`send` and `watch`) over the web_ws leg of the
 // team that serves it. Frames: {type:'call', target, payload, id} answered by
 // {type:'reply', id, data}; {type:'watch', src} answered by {type:'event', src,
