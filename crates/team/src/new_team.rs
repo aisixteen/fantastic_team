@@ -281,6 +281,59 @@ pub fn write_cards(dir: &Path) -> Result<usize, String> {
     Ok(wrote)
 }
 
+/// The agent the key mode is asked and set through: fantastic's `setup.tools`, the agent its
+/// set-up page talks to. It exists only for these calls.
+pub const KEY_MODE_AGENT: &str = "key_mode_setup";
+
+/// Fantastic makes its credential store (the agent `credentials`) only once a key mode is
+/// chosen, and the team's grants name that store. When no mode is chosen yet, choose `plain`
+/// (fantastic's own mode: the keys in one private file in the home's keys folder) through
+/// fantastic's `set_key_mode`, the call its set-up page makes, on a `setup.tools` agent made
+/// for it and deleted after. A mode the user chose stays as it is. Run it before [`apply`].
+/// Returns whether it chose `plain`.
+pub async fn choose_key_mode<S, F>(mut send: S) -> Result<bool, String>
+where
+    S: FnMut(&'static str, Value) -> F,
+    F: Future<Output = Result<Value, String>>,
+{
+    fn failed(what: &str, r: &Value) -> Result<(), String> {
+        match r.get("error") {
+            Some(e) => Err(format!("{what}: {e}")),
+            None => Ok(()),
+        }
+    }
+    let made = send(
+        ROOT_ID,
+        json!({"type": "create_agent", "parent_id": PARENT, "id": KEY_MODE_AGENT,
+               "handler_module": "setup.tools"}),
+    )
+    .await?;
+    failed("the key mode could not be asked", &made)?;
+    let chosen: Result<bool, String> = async {
+        let now = send(KEY_MODE_AGENT, json!({"type": "key_mode"})).await?;
+        failed("the key mode could not be read", &now)?;
+        if !now["mode"].is_null() {
+            return Ok(false);
+        }
+        let set = send(
+            KEY_MODE_AGENT,
+            json!({"type": "set_key_mode", "mode": "plain"}),
+        )
+        .await?;
+        failed("the key mode could not be set to plain", &set)?;
+        Ok(true)
+    }
+    .await;
+    let gone = send(
+        ROOT_ID,
+        json!({"type": "delete_agent", "id": KEY_MODE_AGENT}),
+    )
+    .await;
+    let chosen = chosen?;
+    failed("the key mode agent could not be removed", &gone?)?;
+    Ok(chosen)
+}
+
 /// True when `list_agents`'s reply holds an agent with this id.
 pub fn has_agent(list: &Value, id: &str) -> bool {
     list["agents"]

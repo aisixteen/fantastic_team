@@ -391,6 +391,7 @@ async fn send_item(
 }
 
 /// Make the team in `dir` when the running kernel has none: if no agent `lead` exists,
+/// choose the key mode when none is chosen ([`fantastic_team::new_team::choose_key_mode`]), then
 /// run the steps of [`fantastic_team::new_team::steps`] with `<binary> send`
 /// (`create_agent` under fixed ids, then the grants on the home agents). A directory that
 /// has its `lead` already is left as it is. Returns whether it made the team.
@@ -406,6 +407,9 @@ pub async fn create_team(binary: &str, dir: &Path) -> Result<bool, String> {
     if new_team::has_agent(&list, new_team::LEAD) {
         return Ok(false);
     }
+    new_team::choose_key_mode(|target, payload| send_item(binary, dir, target, payload))
+        .await
+        .map_err(|e| format!("the new team was not made: {e}"))?;
     new_team::apply(&new_team::steps(dir), |target, payload| {
         send_item(binary, dir, target, payload)
     })
@@ -688,11 +692,18 @@ mod tests {
     /// agents (and `lead` when `LEAD=1`), any other item with `{id}`.
     #[cfg(unix)]
     fn fake_send(dir: &std::path::Path, with_lead: bool) -> String {
+        fake_send_mode(dir, with_lead, "null")
+    }
+
+    /// As [`fake_send`], and the kernel's key mode is `mode` (a JSON value: `null` is not chosen).
+    #[cfg(unix)]
+    fn fake_send_mode(dir: &std::path::Path, with_lead: bool, mode: &str) -> String {
         let lead = if with_lead { r#"{"id":"lead"},"# } else { "" };
         let body = format!(
             r#"echo "$2" >> "{log}"
 case "$2" in
   *list_agents*) echo '{{"status":"completed","result":{{"agents":[{lead}{{"id":"kernel_state","callable_by":{{"$self":"*"}}}},{{"id":"memory","callable_by":{{"$self":"*","user":"*"}}}},{{"id":"files","callable_by":{{"$self":"*"}}}},{{"id":"credentials","callable_by":{{"$self":"*"}}}}]}}}}' ;;
+  *'"type":"key_mode"'*) echo '{{"status":"completed","result":{{"mode":{mode}}}}}' ;;
   *) echo '{{"status":"completed","result":{{"id":"made"}}}}' ;;
 esac"#,
             log = dir.join("items.log").display()
@@ -720,6 +731,7 @@ esac"#,
         let made: Vec<&str> = items
             .iter()
             .filter(|i| i["payload"]["type"] == "create_agent")
+            .filter(|i| i["payload"]["id"] != fantastic_team::new_team::KEY_MODE_AGENT)
             .map(|i| i["payload"]["id"].as_str().unwrap())
             .collect();
         assert_eq!(
@@ -746,6 +758,81 @@ esac"#,
         assert_eq!(up["payload"]["callable_by"]["lead"], "*");
     }
 
+    /// The `type`s of the logged items, with the id of a create/delete/update.
+    #[cfg(unix)]
+    fn steps_of(items: &[serde_json::Value]) -> Vec<String> {
+        items
+            .iter()
+            .map(|i| match i["payload"]["id"].as_str() {
+                Some(id) => format!("{} {id}", i["payload"]["type"].as_str().unwrap()),
+                None => i["payload"]["type"].as_str().unwrap().to_string(),
+            })
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_team_chooses_plain_before_it_creates_an_agent_when_no_mode_is_chosen() {
+        let _exec = EXEC_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_send_mode(dir.path(), false, "null");
+        assert_eq!(create_team(&bin, dir.path()).await, Ok(true));
+        let items = logged(dir.path());
+        let set = items
+            .iter()
+            .position(|i| i["payload"]["type"] == "set_key_mode")
+            .expect("the mode is set");
+        assert_eq!(items[set]["target"], "key_mode_setup");
+        assert_eq!(items[set]["payload"]["mode"], "plain");
+        let first_team = items
+            .iter()
+            .position(|i| i["payload"]["id"] == "lead")
+            .expect("the lead");
+        assert!(set < first_team, "{:?}", steps_of(&items));
+        // the helper agent is gone again
+        let last = items
+            .iter()
+            .rposition(|i| i["payload"]["id"] == "key_mode_setup")
+            .unwrap();
+        assert_eq!(items[last]["payload"]["type"], "delete_agent");
+        assert!(last < first_team, "{:?}", steps_of(&items));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_team_leaves_a_chosen_mode_as_it_is() {
+        let _exec = EXEC_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_send_mode(dir.path(), false, r#""secure""#);
+        assert_eq!(create_team(&bin, dir.path()).await, Ok(true));
+        let items = logged(dir.path());
+        assert!(
+            !items.iter().any(|i| i["payload"]["type"] == "set_key_mode"),
+            "{:?}",
+            steps_of(&items)
+        );
+        assert!(items.iter().any(|i| i["payload"]["id"] == "lead"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_team_reports_a_mode_that_could_not_be_set() {
+        let _exec = EXEC_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(
+            dir.path(),
+            "nomode",
+            r#"case "$2" in
+  *list_agents*) echo '{"status":"completed","result":{"agents":[]}}' ;;
+  *'"type":"key_mode"'*) echo '{"status":"completed","result":{"mode":null}}' ;;
+  *set_key_mode*) echo '{"status":"completed","result":{"error":"no home"}}' ;;
+  *) echo '{"status":"completed","result":{"id":"made"}}' ;;
+esac"#,
+        );
+        let e = create_team(&bin, dir.path()).await.unwrap_err();
+        assert!(e.contains("plain") && e.contains("no home"), "{e}");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn create_team_leaves_a_directory_that_has_its_lead() {
@@ -768,6 +855,7 @@ esac"#,
             "refuse",
             r#"case "$2" in
   *list_agents*) echo '{"status":"completed","result":{"agents":[]}}' ;;
+  *key_mode*) echo '{"status":"completed","result":{"mode":"plain"}}' ;;
   *) echo '{"status":"completed","result":{"error":"no such parent"}}' ;;
 esac"#,
         );

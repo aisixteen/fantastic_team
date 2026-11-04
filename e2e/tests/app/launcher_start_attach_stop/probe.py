@@ -24,6 +24,14 @@ def seed_dir(ctx, folder, name, procs, v, setup):
     return team
 
 
+def key_mode(team):
+    """The key mode fantastic's set-up agent reports for the running kernel (None: not chosen)."""
+    records.create(team, {"id": "mode_probe", "parent_id": "user", "handler_module": "setup.tools"})
+    m = team.send("mode_probe", {"type": "key_mode"})["result"].get("mode")
+    team.send("kernel", {"type": "delete_agent", "id": "mode_probe"})
+    return m
+
+
 def run(ctx):
     v = Verdict("app/launcher_start_attach_stop")
     app.app_binary(ctx)  # a Skip when the app is not built next to --bin
@@ -93,13 +101,20 @@ def run(ctx):
         v.check("the port refuses connections after stop", app.wait_refused(p, 10))
         v.check("stop did not touch the attached server", web.up(q, "/canvas_page/file/index.html"))
 
-        # --- start in a folder with no team: the app makes it with create_agent, under fixed ids
-        # (no blueprint, no import); the home's credential store is the one thing it needs there
+        # --- start in an empty folder on a fresh home: the app chooses fantastic's plain key mode
+        # (so the credential store exists), then makes the team with create_agent under fixed ids
+        # (no blueprint, no import)
         new_dir = os.path.join(ctx.run_dir, "new_team_dir")
         os.makedirs(new_dir)
-        seed_dir(ctx, new_dir, "seed_new", procs, v, lambda t: records.create(
-            t, {"id": "credentials", "parent_id": "user", "handler_module": "credential_store.tools",
-                "backend": "env", "refs": {}}))
+        before = {}
+
+        def look(t):
+            before["agents"], before["mode"] = t.agents(), key_mode(t)
+
+        seed_dir(ctx, new_dir, "seed_new", procs, v, look)
+        v.check("the fresh home has no credential store and no key mode before the app starts",
+                "credentials" not in before.get("agents", {"credentials": 1}) and before.get("mode", 1) is None,
+                str(before.get("mode")))
         n = app.free_port()
         s2 = app.run_app(ctx, ["--binary", ctx.binary, "--port", n, "--dir", new_dir], name="start_new")
         procs.append(s2)
@@ -107,7 +122,9 @@ def run(ctx):
         v.check("start in a folder with no team prints the web UI URL", bool(line), s2.log())
         t2 = team_mod.Team(ctx.binary, new_dir, app.env_of(ctx.team))
         agents = t2.agents() if line else {}
-        want_ids = {"lead", "queue", "github", "board", "roles", "tasks", "worker_exec", "worker_files"}
+        v.check("the app chose fantastic's plain key mode on the fresh home",
+                bool(line) and key_mode(t2) == "plain")
+        want_ids = {"credentials", "lead", "queue", "github", "board", "roles", "tasks", "worker_exec", "worker_files"}
         v.check("the app made the team under the fixed ids the role cards name",
                 want_ids <= set(agents), str(sorted(set(agents))))
         v.check("no id carries an import's suffix", not [i for i in agents if i.endswith("_1")],
