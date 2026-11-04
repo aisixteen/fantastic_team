@@ -473,6 +473,65 @@ mod tests {
         }
     }
 
+    /// aisixteen/fantastic_team#223: who grants keys, how, and the rule that `update_agent`
+    /// replaces the whole `callable_by`. The sub-leads' cards send them to the main lead.
+    #[test]
+    fn the_cards_tell_who_grants_keys_and_how() {
+        let section = |file: &str| {
+            let d = card(file).directive;
+            let at = d
+                .find("\n## Keys")
+                .unwrap_or_else(|| panic!("{file} has no Keys"));
+            let rest = &d[at + 4..];
+            rest[..rest.find("\n## ").unwrap_or(rest.len())].to_string()
+        };
+        let lead = section("lead.md");
+        for s in [
+            "`update_agent`",
+            "`list_agents`",
+            "`kernel_state`",
+            "`credentials`",
+            "REPLACES",
+            "WHOLE map",
+            "Never send only the new entry",
+            "WITHOUT `task`",
+            "need_key: W",
+            "`W: [\"get\"]`",
+            "`credentials: [\"get\"]`",
+            "starts with `$`",
+            "`$self` is the agent's own id",
+            "If your id is `lead`",
+            "a sub-lead",
+        ] {
+            assert!(lead.contains(s), "lead.md Keys lacks {s}");
+        }
+        let project = section("project_lead.md");
+        for s in [
+            "only the main lead",
+            "ask",
+            "WITHOUT `task`",
+            "need_key: W",
+            "`send` to `lead`",
+        ] {
+            assert!(project.contains(s), "project_lead.md Keys lacks {s}");
+        }
+        assert!(
+            !project.contains("list_agents"),
+            "a project_lead holds no update_agent"
+        );
+        // the cards that spawn nobody carry no procedure, only the pointer
+        for file in [
+            "worker.md",
+            "issue_keeper.md",
+            "issue_writer.md",
+            "spec_reviewer.md",
+        ] {
+            let d = card(file).directive;
+            assert!(!d.contains("\n## Keys"), "{file}");
+            assert!(d.contains("the agent that starts you asks it"), "{file}");
+        }
+    }
+
     #[test]
     fn lead_card_starting_an_agent_section_still_has_no_create_agent() {
         let l = card("lead.md").directive;

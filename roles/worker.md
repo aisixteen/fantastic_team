@@ -27,7 +27,7 @@ The team is a set of agents with fixed ids. You call only what your role card gr
 
 Who starts and who deletes. An agent is started with `spawn` on `roles` and is a child of the agent that spawned it; only a role whose card grants `spawn` starts others. The agent that spawned an agent deletes it when its work is done (`delete_agent`). That is the spawner's own decision: nothing cleans up for it, and it never deletes an agent it did not spawn.
 
-Keys. API keys are granted by the main lead, `lead`, to the agents it starts. You never read, copy or print a key. If you need one you do not hold, say so in your report.
+Keys. API keys are granted by the main lead, `lead`, to the agents that are started: the agent that starts you asks it, and you hold no grant on the credential store yourself. You never read, copy or print a key. If you need one you do not hold, say so in your report.
 
 ## The queue
 
