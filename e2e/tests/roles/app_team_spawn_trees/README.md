@@ -8,7 +8,7 @@ trees with a scripted model (#227):
 - the main lead spawns a `project_lead`, which spawns a worker.
 
 Each parent deletes what it spawned (a worker by its parent, the sub-leads by the main lead).
-The probe only points the model at the plug: the lead's `model`, `endpoint` and credential
+The app chooses the `plain` key mode and makes the `credentials` store (#222); the probe keeps the model's key in it with the store's `set` (the ref declared first), as the set-up page does. The probe then only points the model at the plug: the lead's `model`, `endpoint` and credential
 ref, and the registry's tiers (model and endpoint, no `credentials`, as in `cli/` fact 2). No
 card or grant is touched. The one record change besides that is `limits.total` of the registry,
 raised from the app's 3 to 6 with `update_agent`: the two sub-leads and their two workers are
