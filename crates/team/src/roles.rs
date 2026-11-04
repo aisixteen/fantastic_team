@@ -1,7 +1,8 @@
 //! The role cards of the coder team, as files in `roles/` and embedded here.
 //! A card is a `---` header (name, purpose, tier, grants) and the directive text;
 //! fantastic's roles registry (`agentic_resources`) reads them from the folders
-//! `team.yaml` names. A card names a tier KEY (a template of `team.yaml`), never
+//! the registry record's `role_dirs` names. A card names a tier KEY (a key of the
+//! registry record's `tiers`), never
 //! a provider or a model; the text names none either.
 
 /// The worker card (`roles/worker.md`).

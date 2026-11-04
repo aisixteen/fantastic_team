@@ -1,5 +1,5 @@
-//! Per-group driver settings from `team.yaml` (`groups.<name>.driver`) and an
-//! hourly counter for wakes and token spend. The clock is passed in, never read.
+//! Per-group driver settings, read from the `group_settings` field of the cadencer's
+//! record (`group_settings.<name>.driver`), and an hourly counter for wakes and token spend. The clock is passed in, never read.
 
 use std::collections::BTreeMap;
 
@@ -45,21 +45,19 @@ impl DriverConfig {
     }
 }
 
-/// The driver of group `group` in the `team.yaml` text `yaml`. `Ok(None)` when
-/// the group has no driver key; `Err` naming the group when it is malformed.
-pub fn driver_for(yaml: &str, group: &str) -> Result<Option<DriverConfig>, String> {
-    let doc: serde_yaml::Value =
-        serde_yaml::from_str(yaml).map_err(|e| format!("team.yaml: {e}"))?;
-    let raw = doc
-        .get("groups")
-        .and_then(|g| g.get(group))
-        .and_then(|g| g.get("driver"));
-    let raw = match raw {
-        None | Some(serde_yaml::Value::Null) => return Ok(None),
+/// The driver of group `group` in `group_settings`, the cadencer record's field (a map
+/// from group name to that group's settings). `Ok(None)` when the group has no `driver`
+/// key; `Err` naming the group when it is malformed.
+pub fn driver_for(
+    group_settings: &serde_json::Value,
+    group: &str,
+) -> Result<Option<DriverConfig>, String> {
+    let raw = match group_settings.get(group).and_then(|g| g.get("driver")) {
+        None | Some(serde_json::Value::Null) => return Ok(None),
         Some(v) => v,
     };
     let cfg: DriverConfig =
-        serde_yaml::from_value(raw.clone()).map_err(|e| format!("group `{group}` driver: {e}"))?;
+        serde_json::from_value(raw.clone()).map_err(|e| format!("group `{group}` driver: {e}"))?;
     cfg.validate()
         .map_err(|e| format!("group `{group}` driver: {e}"))?;
     Ok(Some(cfg))
@@ -139,49 +137,55 @@ impl HourBudget {
 mod tests {
     use super::*;
 
-    const YAML: &str = "groups:\n  a:\n    driver:\n      model: m-small\n  b:\n    driver:\n      model: m-large\n  c:\n    name: plain\n";
+    fn settings() -> serde_json::Value {
+        serde_json::json!({
+            "a": {"driver": {"model": "m-small"}},
+            "b": {"driver": {"model": "m-large"}},
+            "c": {"name": "plain"},
+        })
+    }
 
     #[test]
     fn model_is_read_from_group_config() {
-        let a = driver_for(YAML, "a").unwrap().unwrap();
+        let a = driver_for(&settings(), "a").unwrap().unwrap();
         assert_eq!(a.model, Some("m-small".to_string()));
-        let b = driver_for(YAML, "b").unwrap().unwrap();
+        let b = driver_for(&settings(), "b").unwrap().unwrap();
         assert_eq!(b.model, Some("m-large".to_string()));
     }
 
     #[test]
     fn a_group_without_driver_has_none() {
-        assert_eq!(driver_for(YAML, "c").unwrap(), None);
-        assert_eq!(driver_for(YAML, "missing").unwrap(), None);
+        assert_eq!(driver_for(&settings(), "c").unwrap(), None);
+        assert_eq!(driver_for(&settings(), "missing").unwrap(), None);
     }
 
     #[test]
     fn an_unknown_cadence_knob_is_refused() {
-        let yaml = "groups:\n  a:\n    driver:\n      cadence:\n        bogus: 5\n";
-        let err = driver_for(yaml, "a").unwrap_err();
+        let yaml = serde_json::json!({"a": {"driver": {"cadence": {"bogus": 5}}}});
+        let err = driver_for(&yaml, "a").unwrap_err();
         assert!(err.contains("group `a`"), "{err}");
         assert!(err.contains("unknown cadence knob `bogus`"), "{err}");
     }
 
     #[test]
     fn an_allowed_cadence_knob_is_kept() {
-        let yaml = "groups:\n  a:\n    driver:\n      cadence:\n        poll_seconds: 30\n";
-        let cfg = driver_for(yaml, "a").unwrap().unwrap();
+        let yaml = serde_json::json!({"a": {"driver": {"cadence": {"poll_seconds": 30}}}});
+        let cfg = driver_for(&yaml, "a").unwrap().unwrap();
         assert_eq!(cfg.cadence.get("poll_seconds"), Some(&30));
     }
 
     #[test]
     fn zero_escalation_minutes_is_refused() {
-        let yaml = "groups:\n  a:\n    driver:\n      escalate_after_min: 0\n";
-        let err = driver_for(yaml, "a").unwrap_err();
+        let yaml = serde_json::json!({"a": {"driver": {"escalate_after_min": 0}}});
+        let err = driver_for(&yaml, "a").unwrap_err();
         assert!(err.contains("group `a`"), "{err}");
         assert!(err.contains("at least 1"), "{err}");
     }
 
     #[test]
     fn escalate_after_defaults_to_ten() {
-        let yaml = "groups:\n  a:\n    driver:\n      model: m-small\n";
-        let cfg = driver_for(yaml, "a").unwrap().unwrap();
+        let yaml = serde_json::json!({"a": {"driver": {"model": "m-small"}}});
+        let cfg = driver_for(&yaml, "a").unwrap().unwrap();
         assert_eq!(cfg.escalate_after_min, 10);
         assert_eq!(cfg.budget_tokens_per_hour, 0);
     }

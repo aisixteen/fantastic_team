@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         The team is configuration over code: workers, connectors and their directives
-        live in `team.yaml`. First consider whether your idea is a directive, a
+        live in a record. First consider whether your idea is a directive, a
         template or a connector binding rather than new code. See the roadmap (issue #1).
   - type: textarea
     id: problem

@@ -1,5 +1,5 @@
 //! The README is a guide a third party follows. These tests keep it honest:
-//! its sections are in order, the scripts it names exist, the config keys in
+//! its sections are in order, the scripts it names exist, the record fields in
 //! its examples are read by the code, and its examples hold no secret values.
 
 use std::fs;
@@ -59,48 +59,78 @@ fn every_script_the_readme_names_exists() {
     assert!(found > 0, "README should name at least one script");
 }
 
+/// The README's yaml blocks that are record fields (not a whole blueprint), by their first key.
+fn record_block(text: &str, first_key: &str) -> serde_json::Value {
+    let block = readme_yaml_blocks(text)
+        .into_iter()
+        .find(|b| b.lines().next().is_some_and(|l| l.starts_with(first_key)))
+        .unwrap_or_else(|| panic!("README must show a yaml block starting with `{first_key}`"));
+    serde_yaml::from_str(&block).unwrap_or_else(|e| panic!("`{first_key}` block is YAML: {e}"))
+}
+
 #[test]
-fn every_config_key_the_readme_names_is_read_by_the_code() {
+fn every_record_field_the_readme_names_is_read_by_the_code() {
     let text = readme();
-    let code = format!(
-        "{}\n{}",
-        fs::read_to_string(root().join("crates/team/src/config.rs")).unwrap(),
-        fs::read_to_string(root().join("crates/team/src/repo_config.rs")).unwrap(),
-    );
-    let mut in_yaml = false;
-    let mut checked = 0;
-    let mut parent = String::new();
-    for raw in text.lines() {
-        let line = raw.trim_start();
-        if line.starts_with("```") {
-            in_yaml = line == "```yaml";
-            parent.clear();
-            continue;
-        }
-        if !in_yaml {
-            continue;
-        }
-        let indent = raw.len() - line.len();
-        if indent == 0 {
-            parent = line.trim_end_matches(':').to_string();
-        } else if indent == 2 && (parent == "templates" || parent == "connectors") {
-            // a user-chosen name (template or connector id), not a config key
-            continue;
-        }
-        let body = line.trim_start_matches("- ").trim_start();
-        let key: String = body
-            .chars()
-            .take_while(|c| c.is_ascii_lowercase() || *c == '_')
-            .collect();
-        if !key.is_empty() && body[key.len()..].starts_with(':') {
-            checked += 1;
-            assert!(
-                code.contains(&key),
-                "README example uses key `{key}`, which config.rs / repo_config.rs do not read"
-            );
-        }
+    // the dispatcher's `groups`, the board's `team_groups`, `repos` and `github`
+    let code = rust_sources(&root().join("crates/team/src"));
+    let groups = record_block(&text, "groups:");
+    for key in groups.as_object().unwrap().keys() {
+        assert!(
+            code.contains(&format!("\"{key}\"")),
+            "README example uses the record field `{key}`, which the code does not read"
+        );
     }
-    assert!(checked > 0, "README should have yaml config examples");
+    // the roles registry's own fields: a registry made from the README block is enabled,
+    // lists the six cards and holds the limit
+    let reg = record_block(&text, "role_dirs:");
+    let dir = tempfile::TempDir::new().unwrap();
+    for (file, card) in fantastic_team::roles::ALL {
+        let p = dir.path().join("roles").join(file);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, card).unwrap();
+    }
+    let mut record = reg.as_object().unwrap().clone();
+    record.insert("type".into(), "create_agent".into());
+    record.insert("id".into(), "roles".into());
+    record.insert("parent_id".into(), "kernel".into());
+    record.insert("handler_module".into(), "agentic_resources.tools".into());
+    // the README's relative folder is relative to the directory the team runs in
+    record.insert(
+        "role_dirs".into(),
+        serde_json::json!([dir.path().join("roles").to_string_lossy()]),
+    );
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        use fantastic_kernel::Item;
+        let kernel = fantastic_team::start(dir.path()).await.unwrap();
+        let made = kernel
+            .send(vec![Item::new("kernel", serde_json::Value::Object(record))])
+            .await;
+        assert!(made[0].result.get("error").is_none(), "{}", made[0].result);
+        let roles = kernel
+            .send(vec![Item::new(
+                "roles",
+                serde_json::json!({"type": "roles"}),
+            )])
+            .await;
+        let names = roles[0].result.to_string();
+        for card in ["worker", "lead", "project_lead", "issue_keeper"] {
+            assert!(names.contains(card), "{card} not listed: {names}");
+        }
+        let count = kernel
+            .send(vec![Item::new(
+                "roles",
+                serde_json::json!({"type": "get_count"}),
+            )])
+            .await;
+        assert!(
+            count[0].result.to_string().contains('3'),
+            "the README's total limit is not read: {}",
+            count[0].result
+        );
+        kernel.shutdown().await;
+        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+    });
 }
 
 #[test]
@@ -143,7 +173,8 @@ fn readme_defaults_match_repo_config() {
         .find(|l| l.starts_with("Every key is optional"))
         .expect("README must state the defaults in an `Every key is optional` line");
     // The code's own answer for an empty file, not a grep of its source.
-    let cfg = fantastic_team::repo_config::parse("").expect("an empty team.yaml must parse");
+    let cfg =
+        fantastic_team::repo_config::from_record(None).expect("no entry must give the defaults");
     let label = fantastic_team::repo_config::DEFAULT_LABEL;
     assert_eq!(cfg.task_labels, vec![label.to_string()]);
     assert_eq!(cfg.review.approvals, 1);
@@ -167,9 +198,10 @@ fn readme_repo_yaml_example_parses() {
     let block = readme_yaml_blocks(&text)
         .into_iter()
         .find(|b| b.lines().any(|l| l.starts_with("task_labels:")))
-        .expect("README must show a team.yaml example with task_labels");
-    let cfg = fantastic_team::repo_config::parse(&block)
-        .unwrap_or_else(|e| panic!("README team.yaml example must parse: {e}"));
+        .expect("README must show a repo_config example with task_labels");
+    let entry: serde_json::Value = serde_yaml::from_str(&block).expect("the example is YAML");
+    let cfg = fantastic_team::repo_config::from_record(Some(&entry))
+        .unwrap_or_else(|e| panic!("README repo_config example must parse: {e}"));
     assert_eq!(cfg.task_labels, vec!["team-ready".to_string()]);
     assert_eq!(
         cfg.paths,
@@ -206,23 +238,49 @@ fn rust_sources(dir: &std::path::Path) -> String {
 fn readme_names_every_cli_subcommand_and_flag() {
     let text = readme();
     let source = format!(
-        "{}\n{}\n{}",
+        "{}\n{}",
         fs::read_to_string(root().join("crates/team/src/main.rs")).unwrap(),
-        fs::read_to_string(root().join("crates/team/src/instructions.rs")).unwrap(),
         fs::read_to_string(root().join("crates/team/src/setup_github.rs")).unwrap(),
     );
-    for name in [
-        "setup github",
-        "ai-readme",
-        "--instructions-file",
-        "--resend-instructions",
-        "--per-lead",
-    ] {
+    // the team's own first words are in the binary and in the README
+    for name in ["setup github", "ai-readme"] {
         assert!(
             text.contains(name),
             "README must document `{name}` (it is in the binary)"
         );
         assert!(source.contains(name), "`{name}` is not in the code");
+    }
+    // everything else is fantastic's command line, which the README says it is
+    assert!(
+        text.contains("The command line is fantastic's, unchanged"),
+        "README must say the CLI is fantastic's"
+    );
+    for word in [
+        "canvas",
+        "--headless",
+        "ai ",
+        "run ",
+        "system",
+        "mcp",
+        "send",
+        "import",
+        "readme",
+    ] {
+        assert!(text.contains(word), "README must name fantastic's `{word}`");
+    }
+    // the removed flags are named only as removed
+    for gone in [
+        "--tui",
+        "--instructions",
+        "--resend-instructions",
+        "--per-lead",
+    ] {
+        for line in text.lines().filter(|l| l.contains(gone)) {
+            assert!(
+                line.contains("refused") || line.contains("no longer"),
+                "README mentions the removed `{gone}` other than as removed: {line}"
+            );
+        }
     }
 }
 
@@ -252,20 +310,38 @@ fn readme_documents_the_e2e_tiers_and_manual_ci() {
 }
 
 #[test]
-fn readme_team_yaml_optional_keys_are_documented() {
+fn readme_record_fields_are_the_ones_the_code_reads() {
     let text = readme();
-    let config = fs::read_to_string(root().join("crates/team/src/config.rs")).unwrap();
-    for (key, field) in [("groups:", "pub groups"), ("board:", "pub board")] {
-        assert!(text.contains(key), "README must document the `{key}` key");
+    // each field the README sends a former config key to is read by the code
+    let sources = rust_sources(&root().join("crates/team/src"));
+    for (field, needle) in [
+        ("tiers", "\"tiers\""),
+        ("team_groups", "\"team_groups\""),
+        ("group_settings", "\"group_settings\""),
+        ("repo_config", "\"repo_config\""),
+        ("groups", "\"groups\""),
+    ] {
         assert!(
-            config.contains(field),
-            "`{key}` is not read by config.rs (`{field}`)"
+            text.contains(&format!("`{field}`")),
+            "README must document the `{field}` field"
+        );
+        assert!(
+            sources.contains(needle),
+            "`{field}` is not read by the code (`{needle}`)"
         );
     }
     assert!(
-        text.contains("examples/team.yaml") && text.contains("templates/"),
-        "README must point to examples/team.yaml and templates/"
+        text.contains("examples/blueprints/worker_only")
+            && text.contains("crates/team/preset/app_team/blueprint.yaml")
+            && text.contains("templates/"),
+        "README must point to the blueprint examples and templates/"
     );
+    assert!(root()
+        .join("examples/blueprints/worker_only/blueprint.yaml")
+        .is_file());
+    assert!(root()
+        .join("crates/team/preset/app_team/blueprint.yaml")
+        .is_file());
 }
 
 #[test]
@@ -421,8 +497,8 @@ fn docs_say_which_workers_the_pack_agent_can_reach() {
         "/../../docs/ai-readme.md"
     ))
     .unwrap();
-    assert!(readme.contains("`groups:`") && readme.contains("`callable_by`"));
-    assert!(ai.contains("`groups:`") && ai.contains("`callable_by`"));
+    assert!(readme.contains("`groups`") && readme.contains("`callable_by`"));
+    assert!(ai.contains("`groups`") && ai.contains("`can_call`") && ai.contains("`callable_by`"));
 }
 
 /// The shell test scripts CI's units job runs: the `sh tests/*.sh` lines of ci.yml.
@@ -467,53 +543,45 @@ fn readme_names_the_github_build_check_and_test_steps() {
 }
 
 #[test]
-fn install_help_block_matches_usage() {
+fn install_help_block_matches_the_packs_usage_and_says_the_cli_is_fantastics() {
     let install = fs::read_to_string(root().join("docs/install.md")).unwrap();
-    let lines: Vec<&str> = fantastic_team::USAGE
+    assert!(
+        install.contains("The command line is fantastic's, unchanged"),
+        "docs/install.md must say the CLI is fantastic's"
+    );
+    let lines: Vec<&str> = fantastic_team::pack_cli::USAGE
         .lines()
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .collect();
-    assert!(lines.len() >= 5, "USAGE should span several lines");
+    assert!(
+        lines.len() >= 2,
+        "the packs USAGE should span several lines"
+    );
     for line in lines {
         assert!(
             install.contains(line),
-            "docs/install.md help block lacks the USAGE line `{line}`"
+            "docs/install.md help block lacks the packs USAGE line `{line}`"
         );
     }
 }
 
 #[test]
-fn readme_minimal_examples_parse() {
+fn readme_blueprint_example_is_the_worker_only_folder() {
     let text = readme();
     let blocks = readme_yaml_blocks(&text);
-    let by = |tag: &str| {
-        blocks
-            .iter()
-            .find(|b| b.lines().next() == Some(tag))
-            .unwrap_or_else(|| panic!("README must show the `{tag}` example"))
-            .clone()
-    };
-    let worker = fantastic_team::config::parse(&by("# worker-only"))
-        .unwrap_or_else(|e| panic!("worker-only example must parse: {e}"));
-    assert_eq!(worker.first_agent.as_ref().unwrap().id, "w1");
-    assert!(worker.roles.is_none());
-    assert!(worker
-        .first_agent
-        .as_ref()
-        .unwrap()
-        .directive_file
-        .is_none());
-
-    let roles = fantastic_team::config::parse(&by("# roles mode"))
-        .unwrap_or_else(|e| panic!("roles example must parse: {e}"));
-    assert!(roles.roles.is_some());
-    let dir = tempfile::TempDir::new().unwrap();
-    for (file, card) in fantastic_team::roles::ALL {
-        let p = dir.path().join("roles").join(file);
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(p, card).unwrap();
-    }
-    fantastic_team::tree::plan(&roles, dir.path())
-        .unwrap_or_else(|e| panic!("roles example must plan with the cards: {e}"));
+    let block = blocks
+        .iter()
+        .find(|b| b.lines().next() == Some("# blueprint: worker-only"))
+        .expect("README must show the worker-only blueprint");
+    let shown: serde_yaml::Value = serde_yaml::from_str(block).expect("README example is YAML");
+    let file =
+        fs::read_to_string(root().join("examples/blueprints/worker_only/blueprint.yaml")).unwrap();
+    let on_disk: serde_yaml::Value = serde_yaml::from_str(&file).unwrap();
+    // the README shows the folder's blueprint, fields and all (comments aside; the README
+    // spells the endpoint's flow maps inline)
+    assert_eq!(
+        shown, on_disk,
+        "README example drifted from the example folder"
+    );
 }

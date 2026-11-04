@@ -128,8 +128,7 @@ else
     BOXPID=$(sed -n 's/^started gpu · pid \([0-9][0-9]*\) · log .*$/\1/p' "$R")
     i=0
     while [ ! -s "$T/fake/key.cksum" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-    want_args="--dir
-$T/box
+    want_args="canvas
 --host
 127.0.0.1
 --port

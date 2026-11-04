@@ -589,6 +589,13 @@ pub fn sync_views(kernel: &Arc<Kernel>) -> usize {
     changed
 }
 
+/// What the old start-up step wrote, now run by each team bundle when the kernel boots it:
+/// [`sync_views`] and [`grant_views`]. Idempotent and cheap, so every declared agent's
+/// boot may call it. Returns how many records and grants changed.
+pub fn sync_all(kernel: &Arc<Kernel>) -> usize {
+    sync_views(kernel) + grant_views(kernel)
+}
+
 /// The verbs a declaration reads, once each, in order.
 pub fn read_verbs(d: &Decl) -> Vec<&'static str> {
     let mut v: Vec<&'static str> = Vec::new();
@@ -1247,8 +1254,9 @@ mod tests {
             json!({"id": "pul", "handler_module": crate::puller::HANDLER_MODULE}),
         )
         .await;
-        let n = sync_views(&kernel);
-        assert_eq!(n, 2);
+        // each team bundle syncs the views when the kernel boots it (`sync_all`), so the
+        // records already carry them and a second sync changes nothing
+        assert_eq!(sync_views(&kernel), 0, "already synced at boot");
         let cad = view_of(&kernel, "cad");
         assert_eq!(cad["tui"], tui_of(&decl(crate::cadencer::HANDLER_MODULE)));
         assert_eq!(cad["kind"], "html", "kind survives: {cad}");
@@ -1371,7 +1379,10 @@ mod tests {
             json!({"id": "web", "handler_module": crate::webhook::HANDLER_MODULE}),
         )
         .await;
-        assert!(grant_views(&kernel) > 0);
+        // the dispatcher's own boot granted its read verbs on the others; again is a no-op
+        assert_eq!(grant_views(&kernel), 0, "already granted at boot");
+        let web_by = field_of(&kernel, "web", "callable_by");
+        assert!(web_by.get("dispatcher").is_some(), "{web_by}");
         for entry in kernel.agents.iter() {
             let meta = entry.meta.read().unwrap().clone();
             assert!(

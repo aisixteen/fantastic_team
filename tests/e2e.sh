@@ -1,10 +1,10 @@
 #!/bin/sh
 # sh tests/e2e.sh BIN — model-free e2e on one built fantastic_team binary (#46 full run).
-# Checks: a headless boot stays up with a clean log; a --port boot serves the canvas
+# Checks: a `--headless` boot stays up with a clean log; a `canvas --port` boot serves the canvas
 # page; the secrets guard runs over this run's output. The scripted fake-model master
 # with 2 workers against a local bare git remote is a TODO: it needs the fake-model
 # harness (#38, #8), which is not on main yet.
-# The no-port headless boot and the --tui refusal are e2e/tests/surfaces/.
+# The no-port headless boot and the refusal of the removed flags are e2e/tests/surfaces/.
 # Exit 0: all checks pass. 1: a check failed. 2: no binary.
 set -u
 BIN=${1:?usage: sh tests/e2e.sh PATH_TO_fantastic_team}
@@ -38,7 +38,7 @@ trap stop EXIT
 #    must still be alive after a while, with no panic or error in its log.
 H="$OUT/headless"
 mkdir -p "$H"
-(cd "$H" && exec "$BIN" >"$OUT/headless.log" 2>&1) &
+(cd "$H" && exec "$BIN" --headless >"$OUT/headless.log" 2>&1) &
 PID=$!
 sleep 8
 if kill -0 "$PID" 2>/dev/null; then
@@ -53,10 +53,10 @@ else
   ok "headless log is clean"
 fi
 
-# 2. --port boot: the binary prints the canvas page URL at start; it must answer 200 HTML.
+# 2. `canvas --port` boot: the binary prints the canvas page URL at start; it must answer 200 HTML.
 P="$OUT/port"
 mkdir -p "$P"
-(cd "$P" && exec "$BIN" --port "$PORT" >"$OUT/port.log" 2>&1) &
+(cd "$P" && exec "$BIN" canvas --port "$PORT" >"$OUT/port.log" 2>&1) &
 PID=$!
 URL=
 i=0
@@ -68,13 +68,13 @@ while [ "$i" -lt 30 ]; do
   i=$((i + 1))
 done
 if [ -z "$URL" ]; then
-  bad "--port boot prints the canvas URL" "see $OUT/port.log"
+  bad "canvas --port boot prints the canvas URL" "see $OUT/port.log"
 else
   CODE=$(curl -s -m 10 -o "$OUT/page.html" -w '%{http_code}' "$URL")
   if [ "$CODE" = 200 ] && grep -qi '<html' "$OUT/page.html"; then
-    ok "--port serves the canvas page (200, html)"
+    ok "canvas --port serves the canvas page (200, html)"
   else
-    bad "--port serves the canvas page" "http $CODE from $URL"
+    bad "canvas --port serves the canvas page" "http $CODE from $URL"
   fi
 fi
 stop

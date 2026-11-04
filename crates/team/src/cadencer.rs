@@ -10,7 +10,7 @@
 //!
 //! Quiet mode still sends a short heartbeat digest every `HEARTBEAT_EVERY` beats
 //! to a lead that has an idle member while work waits in the queue, so a driver
-//! never sleeps through queued work. Each group of `team.yaml` may set its own
+//! never sleeps through queued work. Each group of the record's `group_settings` may set its own
 //! `cadence`, `stall_after`, `quiet` and `enabled`; an unset key follows the
 //! global setting (changed live by `set`).
 
@@ -70,7 +70,7 @@ impl Default for Settings {
     }
 }
 
-/// What one group of `team.yaml` overrides, by the group's name (the lead's id).
+/// What one group of the record's `group_settings` overrides, by the group's name (the lead's id).
 /// An unset key follows the global setting.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct GroupSettings {
@@ -103,7 +103,7 @@ fn effective(s: &Settings, groups: &Groups, lead: &str) -> Settings {
     e
 }
 
-/// True when the group switched the cadencer off for itself in `team.yaml`.
+/// True when the group switched the cadencer off for itself in its `group_settings`.
 fn group_disabled(groups: &Groups, lead: &str) -> bool {
     groups.get(lead).and_then(|g| g.enabled) == Some(false)
 }
@@ -491,7 +491,7 @@ struct Inner {
     roles: Option<String>,
     /// The kernel, for the grants to the spawned leads (set with the peers).
     kernel: Option<Arc<Kernel>>,
-    /// The groups' own settings from `team.yaml`, by group name.
+    /// The groups' own settings (the record's `group_settings`), by group name.
     groups: Groups,
     /// Consecutive quiet beats with idle members and queued work, per lead.
     quiet_beats: BTreeMap<String, u64>,
@@ -893,6 +893,7 @@ impl Bundle for CadencerBundle {
         }
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if t == "boot" {
+            crate::declared_views::sync_all(kernel);
             return Ok(Some(self.restore(agent_id, kernel)));
         }
         let reply = dispatch(&self.inner, payload);

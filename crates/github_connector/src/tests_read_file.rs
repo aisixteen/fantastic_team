@@ -16,7 +16,7 @@ async fn read_file_returns_decoded_text() {
     let f = fx(json!({})).await;
     mock_app(&f.gh).await;
     Mock::given(method("GET"))
-        .and(path("/repos/acme/widgets/contents/.github/team.yaml"))
+        .and(path("/repos/acme/widgets/contents/.github/settings.yaml"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "encoding": "base64",
             "content": b64("task_labels: [do-it]\n"),
@@ -24,10 +24,10 @@ async fn read_file_returns_decoded_text() {
         .mount(&f.gh)
         .await;
     let r = f
-        .call(json!({"type": "read_file", "repo": "acme/widgets", "path": ".github/team.yaml"}))
+        .call(json!({"type": "read_file", "repo": "acme/widgets", "path": ".github/settings.yaml"}))
         .await;
     assert_eq!(r["text"], "task_labels: [do-it]\n", "{r}");
-    assert_eq!(r["path"], ".github/team.yaml");
+    assert_eq!(r["path"], ".github/settings.yaml");
     assert!(!r.to_string().contains(&token()), "token leaked: {r}");
 }
 
@@ -36,7 +36,7 @@ async fn read_file_passes_ref_as_query() {
     let f = fx(json!({})).await;
     mock_app(&f.gh).await;
     Mock::given(method("GET"))
-        .and(path("/repos/acme/widgets/contents/team.yaml"))
+        .and(path("/repos/acme/widgets/contents/settings.yaml"))
         .and(query_param("ref", "dev"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "encoding": "base64",
@@ -46,7 +46,7 @@ async fn read_file_passes_ref_as_query() {
         .await;
     let r = f
         .call(
-            json!({"type": "read_file", "repo": "acme/widgets", "path": "team.yaml", "ref": "dev"}),
+            json!({"type": "read_file", "repo": "acme/widgets", "path": "settings.yaml", "ref": "dev"}),
         )
         .await;
     assert_eq!(r["text"], "x\n", "{r}");
@@ -58,12 +58,12 @@ async fn read_file_missing_is_named_not_found() {
     let f = fx(json!({})).await;
     mock_app(&f.gh).await;
     Mock::given(method("GET"))
-        .and(path("/repos/acme/widgets/contents/.github/team.yaml"))
+        .and(path("/repos/acme/widgets/contents/.github/settings.yaml"))
         .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})))
         .mount(&f.gh)
         .await;
     let r = f
-        .call(json!({"type": "read_file", "repo": "acme/widgets", "path": ".github/team.yaml"}))
+        .call(json!({"type": "read_file", "repo": "acme/widgets", "path": ".github/settings.yaml"}))
         .await;
     assert_eq!(r["not_found"], true, "{r}");
     assert!(r.get("text").is_none(), "{r}");
@@ -83,7 +83,7 @@ async fn read_file_refuses_parent_dir() {
 async fn read_file_refuses_repo_outside_allowlist() {
     let f = fx(json!({})).await;
     let r = f
-        .call(json!({"type": "read_file", "repo": "evil/repo", "path": "team.yaml"}))
+        .call(json!({"type": "read_file", "repo": "evil/repo", "path": "settings.yaml"}))
         .await;
     assert!(r.get("error").is_some(), "{r}");
 }

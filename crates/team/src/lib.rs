@@ -1,8 +1,8 @@
 //! fantastic_team as a library: this repo's bundles ([`register_team`]) for
-//! fantastic's terminal-shell library (`fantastic_tui::main_with`), the command
-//! line that maps the team's surface flags onto that shell's modes
-//! ([`parse_args`]), and an in-process kernel ([`start`]) for tests. `main.rs`
-//! is a thin wrapper around `fantastic_tui::main_with`.
+//! fantastic's terminal-shell library (`fantastic_tui::main_with`) and an
+//! in-process kernel ([`start`]) for tests. The command line is fantastic's,
+//! unchanged: `main.rs` passes it to `fantastic_tui::main_with`. Config is
+//! fantastic's too: agent records, blueprints and recipe arguments.
 #![deny(missing_docs)]
 
 pub mod agent_views;
@@ -10,13 +10,11 @@ pub mod app_control;
 pub mod board;
 pub mod cadence_feed;
 pub mod cadencer;
-pub mod config;
 pub mod declared_views;
 pub mod dispatcher;
 pub mod driver;
 pub mod driver_config;
 pub mod driver_rules;
-pub mod instructions;
 pub mod pack_browser;
 pub mod pack_cli;
 pub mod pack_eval;
@@ -39,7 +37,7 @@ pub mod watchdog;
 pub mod webhook;
 pub mod worker_view;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
@@ -144,98 +142,21 @@ pub fn registry() -> BundleRegistry {
 /// by `fantastic_team ai-readme`.
 pub const AI_README: &str = include_str!("../../../docs/ai-readme.md");
 
-/// Usage text, printed on `--help` and on bad arguments.
-pub const USAGE: &str = "usage: fantastic_team [--dir PATH] [--port N | --tui]\n  no surface flag: fully headless (no port, no terminal UI)\n  --port N: serve the web UI on 127.0.0.1:N (the team page at /team_page/file/index.html, its socket at /team_ws/ws)\n  --tui: the terminal UI (needs a terminal)\n  (`mcp`, `send` and `readme` as the first word run fantastic's own commands)\n  (`packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)\n  (`packs install` run from a terminal asks for the agent id of each port first; an empty answer skips it)\n  packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]";
+/// The commands that run once and hold no kernel of their own: `send`, `readme`,
+/// `import` and the rest of fantastic's one-shot words, plus `mcp` (its stdout is
+/// its protocol). The binary starts no shutdown watchdog for them.
+pub const ONE_SHOT: &[&str] = &[
+    "mcp",
+    "send",
+    "readme",
+    "import",
+    "migrate-home",
+    "__ctrl_break",
+];
 
-/// The first words that are fantastic's own commands, passed through untouched.
-const PASSTHROUGH: &[&str] = &["mcp", "send", "readme"];
-
-/// Whether `argv` is one of fantastic's own commands (`mcp`, `send`, `readme`).
-pub fn is_passthrough(argv: &[String]) -> bool {
-    argv.first()
-        .is_some_and(|a| PASSTHROUGH.contains(&a.as_str()))
-}
-
-/// What the team shows, if anything. Surfaces are opt-in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Surface {
-    /// No port, no terminal UI: fantastic's headless mode.
-    Headless,
-    /// The web UI on `127.0.0.1:<port>`: fantastic's canvas mode.
-    Port(u16),
-    /// The terminal UI.
-    Tui,
-}
-
-/// Parsed command line.
-#[derive(Debug)]
-pub struct Args {
-    /// The directory the team lives in.
-    pub dir: PathBuf,
-    /// The surface to serve.
-    pub surface: Surface,
-}
-
-impl Args {
-    /// The arguments for `fantastic_tui::main_with` that run this surface:
-    /// `--headless`, `canvas --port N`, or none (its terminal UI).
-    pub fn fantastic_args(&self) -> Vec<String> {
-        match self.surface {
-            Surface::Headless => vec!["--headless".to_string()],
-            Surface::Port(p) => vec!["canvas".to_string(), "--port".to_string(), p.to_string()],
-            Surface::Tui => Vec::new(),
-        }
-    }
-}
-
-fn parse_port(v: &str) -> Result<u16, String> {
-    v.parse::<u16>()
-        .ok()
-        .filter(|p| *p != 0)
-        .ok_or_else(|| format!("--port needs a number from 1 to 65535, got `{v}`\n{USAGE}"))
-}
-
-/// Parse `--dir PATH` (default: the current directory) and the surface flags
-/// `--port N` and `--tui` (default: headless).
-pub fn parse_args(argv: &[String]) -> Result<Args, String> {
-    let mut dir: Option<PathBuf> = None;
-    let mut port: Option<u16> = None;
-    let mut tui = false;
-    let mut it = argv.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--dir" => {
-                let v = it
-                    .next()
-                    .ok_or_else(|| format!("--dir needs a value\n{USAGE}"))?;
-                dir = Some(PathBuf::from(v));
-            }
-            "--port" => {
-                let v = it
-                    .next()
-                    .ok_or_else(|| format!("--port needs a value\n{USAGE}"))?;
-                port = Some(parse_port(v)?);
-            }
-            "--tui" => tui = true,
-            "--help" | "-h" => return Err(USAGE.to_string()),
-            other => return Err(format!("unknown argument `{other}`\n{USAGE}")),
-        }
-    }
-    let dir = match dir {
-        Some(d) => d,
-        None => std::env::current_dir().map_err(|e| e.to_string())?,
-    };
-    if tui && port.is_some() {
-        return Err(format!(
-            "--port and --tui cannot be combined: fantastic serves the web UI without a terminal UI\n{USAGE}"
-        ));
-    }
-    let surface = match (port, tui) {
-        (Some(p), _) => Surface::Port(p),
-        (None, true) => Surface::Tui,
-        (None, false) => Surface::Headless,
-    };
-    Ok(Args { dir, surface })
+/// Whether `argv` is one of the [`ONE_SHOT`] commands.
+pub fn is_one_shot(argv: &[String]) -> bool {
+    argv.first().is_some_and(|a| ONE_SHOT.contains(&a.as_str()))
 }
 
 /// Seed a fresh directory's base tree: a RAM memory store for the kernel's
@@ -449,79 +370,14 @@ mod tests {
     }
 
     #[test]
-    fn args_default_to_the_current_directory() {
-        let a = parse_args(&[]).unwrap();
-        assert_eq!(a.dir, std::env::current_dir().unwrap());
-    }
-
-    #[test]
-    fn no_surface_flag_is_fully_headless() {
-        let a = parse_args(&[]).unwrap();
-        assert_eq!(a.surface, Surface::Headless);
-        assert_eq!(a.fantastic_args(), v(&["--headless"]));
-        let d = parse_args(&v(&["--dir", "/x"])).unwrap();
-        assert_eq!(d.surface, Surface::Headless);
-    }
-
-    #[test]
-    fn port_serves_the_web_ui_on_that_port() {
-        let a = parse_args(&v(&["--port", "8123"])).unwrap();
-        assert_eq!(a.surface, Surface::Port(8123));
-        assert_eq!(a.fantastic_args(), v(&["canvas", "--port", "8123"]));
-        let b = parse_args(&v(&["--port", "9000", "--dir", "/x"])).unwrap();
-        assert_eq!(b.surface, Surface::Port(9000));
-        assert_eq!(b.dir, PathBuf::from("/x"));
-    }
-
-    #[test]
-    fn tui_opens_the_terminal_ui() {
-        let a = parse_args(&v(&["--tui"])).unwrap();
-        assert_eq!(a.surface, Surface::Tui);
-        assert!(a.fantastic_args().is_empty());
-    }
-
-    #[test]
-    fn bad_surface_flags_are_refused() {
-        for bad in [
-            &["--port"][..],
-            &["--port", "abc"],
-            &["--port", "0"],
-            &["--port", "70000"],
-            &["--port", "80", "--tui"],
-            &["--tui", "--port", "80"],
-            &["--canvas"],
-            &["--headless"],
-            &["canvas"],
-        ] {
-            let e = parse_args(&v(bad))
-                .err()
-                .unwrap_or_else(|| panic!("{bad:?} must be refused"));
-            assert!(e.contains("usage:"), "{bad:?}: {e}");
-        }
-    }
-
-    #[test]
-    fn fantastic_s_own_commands_pass_through() {
-        assert!(is_passthrough(&v(&["mcp"])));
-        assert!(is_passthrough(&v(&["send", "{}"])));
-        assert!(is_passthrough(&v(&["readme"])));
-        assert!(!is_passthrough(&[]));
-        assert!(!is_passthrough(&v(&["--port", "1"])));
-    }
-
-    #[test]
-    fn args_take_a_dir() {
-        let a = parse_args(&["--dir".to_string(), "/x".to_string()]).unwrap();
-        assert_eq!(a.dir, PathBuf::from("/x"));
-    }
-
-    #[test]
-    fn unknown_args_and_help_are_refused() {
-        let e = parse_args(&["--nope".to_string()]).err().unwrap();
-        assert!(!is_passthrough(&v(&["--nope"])));
-        assert!(e.contains("unknown argument") && e.contains("usage:"));
-        assert_eq!(parse_args(&["--help".to_string()]).err().unwrap(), USAGE);
-        assert!(parse_args(&["--dir".to_string()]).is_err());
+    fn fantastic_s_one_shot_commands_are_named() {
+        assert!(is_one_shot(&v(&["mcp"])));
+        assert!(is_one_shot(&v(&["send", "{}"])));
+        assert!(is_one_shot(&v(&["readme"])));
+        assert!(is_one_shot(&v(&["import", "dir", "--parent", "user"])));
+        assert!(!is_one_shot(&[]));
+        assert!(!is_one_shot(&v(&["--headless"])));
+        assert!(!is_one_shot(&v(&["canvas", "--port", "1"])));
     }
 
     #[tokio::test(flavor = "multi_thread")]

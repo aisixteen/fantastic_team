@@ -270,9 +270,10 @@ pub fn validate_loopback(url: &str) -> Result<(), String> {
     }
 }
 
-/// The headless command line: `--port N` and nothing else.
+/// The binary's command line: fantastic's own `canvas --port N`, run in the team
+/// directory. Nothing else reaches it.
 pub fn start_args(port: u16) -> Vec<String> {
-    vec!["--port".to_string(), port.to_string()]
+    vec!["canvas".to_string(), "--port".to_string(), port.to_string()]
 }
 
 /// The web UI URL the window should show: the served page for `Start` and
@@ -287,10 +288,10 @@ pub fn web_url(target: &Target) -> String {
     }
 }
 
-/// The page the headless binary's `--port` serves since #181 (the team crate's
-/// `PAGE_PATH`). The web host answers 404 at `/`, so this is what the launcher
-/// waits for; the window URL ([`web_url`]) is the same page.
-pub const READY_PATH: &str = "/team_page/file/index.html";
+/// The page fantastic's `canvas --port` serves. The web host answers 404 at `/`, so this
+/// is what the launcher waits for; the window URL ([`web_url`]) is the same page. The
+/// team page comes back with the app step, as a recipe word like `canvas`.
+pub const READY_PATH: &str = "/canvas_page/file/index.html";
 
 /// The URL the launcher polls for a 200. `Attach` is the URL the user named.
 pub fn ready_url(target: &Target) -> String {
@@ -353,8 +354,8 @@ pub struct Launched {
 }
 
 /// The app creates a team: for a `Start` target with a team directory, write the
-/// roles-mode preset (`team.yaml` and the role cards) unless the directory already
-/// has a `team.yaml`, which is never overwritten. Attach, tunnel and setup targets
+/// roles-mode preset (the blueprint folder `blueprint/` and the role cards) unless the
+/// directory already has a `blueprint/`, which is never overwritten. Attach, tunnel and setup targets
 /// write nothing. Returns whether it wrote the preset. The CLI never calls this.
 pub fn prepare_team_dir(target: &Target, dir: Option<&Path>) -> Result<bool, String> {
     match (target, dir) {
@@ -363,7 +364,50 @@ pub fn prepare_team_dir(target: &Target, dir: Option<&Path>) -> Result<bool, Str
     }
 }
 
-/// Start the headless binary (or attach to a URL) and wait until its web UI
+/// Import the preset blueprint into the team running in `dir`: `<binary> send` of the
+/// `user` agent's `import_subtree` (fantastic's own import), then write the fresh ids
+/// into the role cards. The binary is fantastic's command line: `send` is its word.
+pub async fn import_preset(binary: &str, dir: &Path) -> Result<(), String> {
+    let item = fantastic_team::preset::import_item().to_string();
+    let out = Command::new(binary)
+        .arg("send")
+        .arg(item)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("failed to run {binary} send: {e}"))?;
+    let row: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("the preset import answered no JSON: {e}"))?;
+    let result = &row["result"];
+    if row["status"] != "completed" || result.get("error").is_some() {
+        return Err(format!("the preset import was refused: {result}"));
+    }
+    fantastic_team::preset::bind_cards(dir, &result["ids"])?;
+    // the tools the cards grant, with this directory's absolute paths: made with `send`
+    let lead = result["ids"]["lead"]
+        .as_str()
+        .ok_or("the import made no lead")?;
+    for item in fantastic_team::preset::tool_items(dir, lead) {
+        let out = Command::new(binary)
+            .arg("send")
+            .arg(item.to_string())
+            .current_dir(dir)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await
+            .map_err(|e| format!("failed to run {binary} send: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "a preset tool was refused: {}",
+                String::from_utf8_lossy(&out.stdout)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Start the binary (or attach to a URL) and wait until its web UI
 /// answers 200. If the child exits first, the error carries its exit status.
 pub async fn launch(
     target: &Target,
@@ -386,14 +430,15 @@ pub async fn launch(
         }
         Target::Setup { .. } => return Err("setup is started with start_setup".to_string()),
     };
-    prepare_team_dir(target, dir)?;
+    let wrote_preset = prepare_team_dir(target, dir)?;
     let binary = program;
     let mut cmd = Command::new(binary);
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
     if let (true, Some(d)) = (with_dir, dir) {
-        cmd.arg("--dir").arg(d);
+        // fantastic runs in the directory it is started in
+        cmd.current_dir(d);
     }
     let mut child = cmd
         .spawn()
@@ -411,10 +456,19 @@ pub async fn launch(
             Ok(s) => format!("{binary} exited before serving {ready}: {s}"),
             Err(e) => format!("{binary} exited before serving {ready}: {e}"),
         }),
-        Outcome::Ready(Ok(())) => Ok(Launched {
-            child: Some(child),
-            url,
-        }),
+        Outcome::Ready(Ok(())) => {
+            // A team the app just made is the preset blueprint, imported under `user`.
+            if let (true, Some(d)) = (wrote_preset, dir) {
+                if let Err(e) = import_preset(binary, d).await {
+                    let _ = child.kill().await;
+                    return Err(e);
+                }
+            }
+            Ok(Launched {
+                child: Some(child),
+                url,
+            })
+        }
         Outcome::Ready(Err(e)) => {
             let _ = child.kill().await;
             Err(e)
@@ -541,8 +595,8 @@ mod tests {
     }
 
     #[test]
-    fn start_args_are_only_the_port() {
-        assert_eq!(start_args(4321), args(&["--port", "4321"]));
+    fn start_args_are_fantastic_s_canvas_word_and_the_port() {
+        assert_eq!(start_args(4321), args(&["canvas", "--port", "4321"]));
     }
 
     #[tokio::test]
@@ -596,7 +650,7 @@ mod tests {
             port: 1,
         };
         assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(true));
-        let yaml = dir.path().join("team.yaml");
+        let yaml = dir.path().join("blueprint/blueprint.yaml");
         let first = std::fs::read_to_string(&yaml).unwrap();
         assert!(dir.path().join("roles/project_lead.md").is_file());
         assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(false));
@@ -617,7 +671,7 @@ mod tests {
         for t in [&attach, &tunnel] {
             assert_eq!(prepare_team_dir(t, Some(other.path())), Ok(false));
         }
-        assert!(!other.path().join("team.yaml").exists());
+        assert!(!other.path().join("blueprint").exists());
     }
 
     #[test]
@@ -873,7 +927,7 @@ mod tests {
         };
         assert_eq!(
             ready_url(&start),
-            "http://127.0.0.1:9123/team_page/file/index.html"
+            "http://127.0.0.1:9123/canvas_page/file/index.html"
         );
         assert_eq!(web_url(&start), ready_url(&start));
         let tunnel = Target::Tunnel {
@@ -884,7 +938,7 @@ mod tests {
         };
         assert_eq!(
             ready_url(&tunnel),
-            "http://127.0.0.1:9100/team_page/file/index.html"
+            "http://127.0.0.1:9100/canvas_page/file/index.html"
         );
         let attach = Target::Attach {
             url: "http://127.0.0.1:1/x".into(),
@@ -907,8 +961,8 @@ mod tests {
             port: 9123,
         };
         let u = web_url(&start);
-        assert_eq!(u, "http://127.0.0.1:9123/team_page/file/index.html");
-        assert!(u.ends_with("/team_page/file/index.html"));
+        assert_eq!(u, "http://127.0.0.1:9123/canvas_page/file/index.html");
+        assert!(u.ends_with("/canvas_page/file/index.html"));
         let tunnel = Target::Tunnel {
             ssh: "ssh".into(),
             host: "h".into(),
@@ -917,7 +971,7 @@ mod tests {
         };
         assert_eq!(
             web_url(&tunnel),
-            "http://127.0.0.1:9100/team_page/file/index.html"
+            "http://127.0.0.1:9100/canvas_page/file/index.html"
         );
     }
 
@@ -954,10 +1008,8 @@ mod tests {
     }
 
     #[test]
-    fn ready_path_matches_the_teams_page_path() {
-        assert_eq!(READY_PATH, "/team_page/file/index.html");
-        let page = include_str!("../../team/src/page.rs");
-        assert!(page.contains("PAGE_PATH: &str = \"/team_page/file/index.html\""));
+    fn ready_path_is_the_canvas_page() {
+        assert_eq!(READY_PATH, "/canvas_page/file/index.html");
     }
 
     #[tokio::test]

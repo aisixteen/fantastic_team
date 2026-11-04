@@ -43,8 +43,9 @@ while IFS= read -r l; do
   export "$n=$v"
 done
 v=
-set -- --dir "$d"
-if [ -n "$p" ]; then set -- "$@" --host 127.0.0.1 --port "$p"; fi
+# the fantastic command line, run in the team directory (the cd above): canvas with
+# a port serves the web UI, --headless is no screen and no port.
+if [ -n "$p" ]; then set -- canvas --host 127.0.0.1 --port "$p"; else set -- --headless; fi
 rm -f logs/team.stopped
 nohup "$b" "$@" </dev/null >>logs/kernel.log 2>&1 &
 echo $! >logs/team.pid
