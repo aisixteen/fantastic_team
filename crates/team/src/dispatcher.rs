@@ -2233,7 +2233,7 @@ mod tests {
             let o = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
             assert!(o[0].result.get("error").is_none(), "{:?}", o[0].result);
         }
-        // the root's end of the dispatcher's `can_call` on it (a blueprint writes it with `@root`)
+        // the root's end of the dispatcher's `can_call` on it (an operator write)
         kernel
             .edit_callable_by(&fantastic_kernel::AgentId::from(DEFAULT_ROOT_ID), |cb| {
                 cb.insert(

@@ -2,7 +2,7 @@
  {
   "calls": [
    {
-    "target": "roles_1",
+    "target": "roles",
     "type": "spawn",
     "args": {
      "role": "sublead",
@@ -14,7 +14,7 @@
  {
   "calls": [
    {
-    "target": "roles_1",
+    "target": "roles",
     "type": "spawn",
     "args": {
      "role": "sublead",
@@ -61,7 +61,7 @@
  {
   "calls": [
    {
-    "target": "roles_1",
+    "target": "roles",
     "type": "spawn",
     "args": {
      "role": "worker",
@@ -97,7 +97,7 @@
  {
   "calls": [
    {
-    "target": "roles_1",
+    "target": "roles",
     "type": "spawn",
     "args": {
      "role": "worker",

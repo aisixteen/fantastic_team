@@ -2,7 +2,7 @@
  {
   "calls": [
    {
-    "target": "w1_1",
+    "target": "w1",
     "type": "send",
     "args": {
      "text": "[lane:w1] Fix adder.py and commit."
@@ -13,7 +13,7 @@
  {
   "calls": [
    {
-    "target": "w2_1",
+    "target": "w2",
     "type": "send",
     "args": {
      "text": "[lane:w2] Fix muler.py and commit."

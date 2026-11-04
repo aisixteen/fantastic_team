@@ -353,22 +353,27 @@ pub struct Launched {
     pub url: String,
 }
 
-/// The app creates a team: for a `Start` target with a team directory, write the
-/// roles-mode preset (the blueprint folder `blueprint/` and the role cards) unless the
-/// directory already has a `blueprint/`, which is never overwritten. Attach, tunnel and setup targets
-/// write nothing. Returns whether it wrote the preset. The CLI never calls this.
-pub fn prepare_team_dir(target: &Target, dir: Option<&Path>) -> Result<bool, String> {
+/// The app creates a team: for a `Start` target with a team directory, write the role
+/// cards under `roles/` (a card the directory already has stays as it is). Attach, tunnel
+/// and setup targets write nothing. Returns how many cards it wrote. The CLI never calls
+/// this.
+pub fn prepare_team_dir(target: &Target, dir: Option<&Path>) -> Result<usize, String> {
     match (target, dir) {
-        (Target::Start { .. }, Some(d)) => fantastic_team::preset::write_app_preset(d),
-        _ => Ok(false),
+        (Target::Start { .. }, Some(d)) => fantastic_team::new_team::write_cards(d),
+        _ => Ok(0),
     }
 }
 
-/// Import the preset blueprint into the team running in `dir`: `<binary> send` of the
-/// `user` agent's `import_subtree` (fantastic's own import), then write the fresh ids
-/// into the role cards. The binary is fantastic's command line: `send` is its word.
-pub async fn import_preset(binary: &str, dir: &Path) -> Result<(), String> {
-    let item = fantastic_team::preset::import_item().to_string();
+/// One `<binary> send` item in `dir`: the item's `result`. The binary is fantastic's
+/// command line: `send` is its word. An error is a failed run, an answer that is no JSON
+/// or an item that did not complete.
+async fn send_item(
+    binary: &str,
+    dir: &Path,
+    target: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let item = serde_json::json!({"target": target, "payload": payload}).to_string();
     let out = Command::new(binary)
         .arg("send")
         .arg(item)
@@ -378,33 +383,35 @@ pub async fn import_preset(binary: &str, dir: &Path) -> Result<(), String> {
         .await
         .map_err(|e| format!("failed to run {binary} send: {e}"))?;
     let row: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| format!("the preset import answered no JSON: {e}"))?;
-    let result = &row["result"];
-    if row["status"] != "completed" || result.get("error").is_some() {
-        return Err(format!("the preset import was refused: {result}"));
+        .map_err(|e| format!("{binary} send answered no JSON: {e}"))?;
+    if row["status"] != "completed" {
+        return Err(format!("{binary} send did not complete: {row}"));
     }
-    fantastic_team::preset::bind_cards(dir, &result["ids"])?;
-    // the tools the cards grant, with this directory's absolute paths: made with `send`
-    let lead = result["ids"]["lead"]
-        .as_str()
-        .ok_or("the import made no lead")?;
-    for item in fantastic_team::preset::tool_items(dir, lead) {
-        let out = Command::new(binary)
-            .arg("send")
-            .arg(item.to_string())
-            .current_dir(dir)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .await
-            .map_err(|e| format!("failed to run {binary} send: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "a preset tool was refused: {}",
-                String::from_utf8_lossy(&out.stdout)
-            ));
-        }
+    Ok(row["result"].clone())
+}
+
+/// Make the team in `dir` when the running kernel has none: if no agent `lead` exists,
+/// run the steps of [`fantastic_team::new_team::steps`] with `<binary> send`
+/// (`create_agent` under fixed ids, then the grants on the home agents). A directory that
+/// has its `lead` already is left as it is. Returns whether it made the team.
+pub async fn create_team(binary: &str, dir: &Path) -> Result<bool, String> {
+    use fantastic_team::new_team;
+    let list = send_item(
+        binary,
+        dir,
+        fantastic_team::tree::ROOT_ID,
+        serde_json::json!({"type": "list_agents"}),
+    )
+    .await?;
+    if new_team::has_agent(&list, new_team::LEAD) {
+        return Ok(false);
     }
-    Ok(())
+    new_team::apply(&new_team::steps(dir), |target, payload| {
+        send_item(binary, dir, target, payload)
+    })
+    .await
+    .map_err(|e| format!("the new team was not made: {e}"))?;
+    Ok(true)
 }
 
 /// Start the binary (or attach to a URL) and wait until its web UI
@@ -430,7 +437,7 @@ pub async fn launch(
         }
         Target::Setup { .. } => return Err("setup is started with start_setup".to_string()),
     };
-    let wrote_preset = prepare_team_dir(target, dir)?;
+    prepare_team_dir(target, dir)?;
     let binary = program;
     let mut cmd = Command::new(binary);
     cmd.args(args)
@@ -457,9 +464,9 @@ pub async fn launch(
             Err(e) => format!("{binary} exited before serving {ready}: {e}"),
         }),
         Outcome::Ready(Ok(())) => {
-            // A team the app just made is the preset blueprint, imported under `user`.
-            if let (true, Some(d)) = (wrote_preset, dir) {
-                if let Err(e) = import_preset(binary, d).await {
+            // A directory with no team gets one: `create_agent` under fixed ids.
+            if let (Target::Start { .. }, Some(d)) = (target, dir) {
+                if let Err(e) = create_team(binary, d).await {
                     let _ = child.kill().await;
                     return Err(e);
                 }
@@ -643,20 +650,23 @@ mod tests {
     }
 
     #[test]
-    fn start_with_dir_writes_the_preset_once() {
+    fn start_with_dir_writes_the_role_cards_once() {
         let dir = tempfile::tempdir().unwrap();
         let start = Target::Start {
             binary: "x".into(),
             port: 1,
         };
-        assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(true));
-        let yaml = dir.path().join("blueprint/blueprint.yaml");
-        let first = std::fs::read_to_string(&yaml).unwrap();
-        assert!(dir.path().join("roles/project_lead.md").is_file());
-        assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(false));
-        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), first);
+        let n = fantastic_team::roles::ALL.len();
+        assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(n));
+        let card = dir.path().join("roles/project_lead.md");
+        assert!(card.is_file());
+        std::fs::write(&card, "# mine\n").unwrap();
+        assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(0));
+        assert_eq!(std::fs::read_to_string(&card).unwrap(), "# mine\n");
+        // no blueprint and nothing but the cards is written
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
         // no directory: nothing to write
-        assert_eq!(prepare_team_dir(&start, None), Ok(false));
+        assert_eq!(prepare_team_dir(&start, None), Ok(0));
         // attach and tunnel write nothing
         let other = tempfile::tempdir().unwrap();
         let attach = Target::Attach {
@@ -669,9 +679,103 @@ mod tests {
             local_port: 2,
         };
         for t in [&attach, &tunnel] {
-            assert_eq!(prepare_team_dir(t, Some(other.path())), Ok(false));
+            assert_eq!(prepare_team_dir(t, Some(other.path())), Ok(0));
         }
-        assert!(!other.path().join("blueprint").exists());
+        assert_eq!(std::fs::read_dir(other.path()).unwrap().count(), 0);
+    }
+
+    /// A fake `<binary> send`: logs each item and answers `list_agents` with the home's
+    /// agents (and `lead` when `LEAD=1`), any other item with `{id}`.
+    #[cfg(unix)]
+    fn fake_send(dir: &std::path::Path, with_lead: bool) -> String {
+        let lead = if with_lead { r#"{"id":"lead"},"# } else { "" };
+        let body = format!(
+            r#"echo "$2" >> "{log}"
+case "$2" in
+  *list_agents*) echo '{{"status":"completed","result":{{"agents":[{lead}{{"id":"kernel_state","callable_by":{{"$self":"*"}}}},{{"id":"memory","callable_by":{{"$self":"*","user":"*"}}}},{{"id":"files","callable_by":{{"$self":"*"}}}},{{"id":"credentials","callable_by":{{"$self":"*"}}}}]}}}}' ;;
+  *) echo '{{"status":"completed","result":{{"id":"made"}}}}' ;;
+esac"#,
+            log = dir.join("items.log").display()
+        );
+        fake_binary(dir, "fake_send", &body)
+    }
+
+    #[cfg(unix)]
+    fn logged(dir: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(dir.join("items.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_team_makes_the_agents_with_create_agent_under_fixed_ids() {
+        let _exec = EXEC_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_send(dir.path(), false);
+        assert_eq!(create_team(&bin, dir.path()).await, Ok(true));
+        let items = logged(dir.path());
+        let made: Vec<&str> = items
+            .iter()
+            .filter(|i| i["payload"]["type"] == "create_agent")
+            .map(|i| i["payload"]["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            made,
+            [
+                "lead",
+                "queue",
+                "github",
+                "board",
+                "roles",
+                "tasks",
+                "worker_exec",
+                "worker_files"
+            ]
+        );
+        // no import, whatever the item
+        assert!(!items.iter().any(|i| i.to_string().contains("import")));
+        // a home agent keeps what it had: `memory` still admits `user`
+        let up = items
+            .iter()
+            .find(|i| i["payload"]["type"] == "update_agent" && i["payload"]["id"] == "memory")
+            .expect("the grant on memory");
+        assert_eq!(up["payload"]["callable_by"]["user"], "*");
+        assert_eq!(up["payload"]["callable_by"]["lead"], "*");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_team_leaves_a_directory_that_has_its_lead() {
+        let _exec = EXEC_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_send(dir.path(), true);
+        assert_eq!(create_team(&bin, dir.path()).await, Ok(false));
+        let items = logged(dir.path());
+        assert_eq!(items.len(), 1, "only the look at the agents: {items:?}");
+        assert_eq!(items[0]["payload"]["type"], "list_agents");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_team_reports_a_refused_step() {
+        let _exec = EXEC_LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(
+            dir.path(),
+            "refuse",
+            r#"case "$2" in
+  *list_agents*) echo '{"status":"completed","result":{"agents":[]}}' ;;
+  *) echo '{"status":"completed","result":{"error":"no such parent"}}' ;;
+esac"#,
+        );
+        let e = create_team(&bin, dir.path()).await.unwrap_err();
+        assert!(
+            e.contains("create_agent") && e.contains("no such parent"),
+            "{e}"
+        );
     }
 
     #[test]

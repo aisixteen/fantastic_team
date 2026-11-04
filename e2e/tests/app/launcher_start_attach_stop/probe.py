@@ -1,12 +1,27 @@
 """The app launcher: start a headless child, attach to a server that is up, stop."""
 
 import os
-import shutil
 import signal
 import subprocess
 
-from helpers import app, run_flow, web
+from helpers import app, records, run_flow, team as team_mod, web
 from helpers.verdict import Verdict
+
+
+def seed_dir(ctx, folder, name, procs, v, setup):
+    """Run the binary once in `folder` so it is seeded, let `setup(team)` make its agents with
+    `send`, and stop it."""
+    port = app.free_port()
+    seed = app.Proc([ctx.binary, "canvas", "--port", str(port)], app.env_of(ctx.team),
+                    folder, os.path.join(ctx.run_dir, f"{name}.log"))
+    procs.append(seed)
+    v.check(f"{name}: a first run seeds the directory",
+            app.wait_http(f"http://127.0.0.1:{port}/canvas_page/file/index.html", 30), seed.log())
+    team = team_mod.Team(ctx.binary, folder, app.env_of(ctx.team))
+    setup(team)
+    seed.signal(signal.SIGINT)
+    v.check(f"{name}: the seeding run stops", seed.wait(30) is not None, seed.log())
+    return team
 
 
 def run(ctx):
@@ -42,18 +57,12 @@ def run(ctx):
         p = app.free_port()
         start_dir = os.path.join(ctx.run_dir, "start_dir")
         os.makedirs(start_dir)
-        # The launcher writes the app's preset into a folder with no `blueprint/` and imports it; a
-        # folder that has one is started as it is, so this one brings its own (the test's blueprint).
-        shutil.copytree(os.path.join(ctx.dir, "blueprint"), os.path.join(start_dir, "blueprint"))
+        # The launcher makes a team (`create_agent` under fixed ids) in a folder whose kernel has
+        # no `lead`; a folder that has its `lead` is started as it is, so this one brings its own.
         # A never-used directory is seeded by the first `canvas --port` start and serves the
         # page from the next, so seed it once before the launcher starts it.
-        sp = app.free_port()
-        seed = app.Proc([ctx.binary, "canvas", "--port", str(sp)], app.env_of(ctx.team),
-                        start_dir, os.path.join(ctx.run_dir, "seed.log"))
-        procs.append(seed)
-        v.check("a first run seeds the directory", app.wait_http(f"http://127.0.0.1:{sp}/canvas_page/file/index.html", 30), seed.log())
-        seed.signal(signal.SIGINT)
-        v.check("the seeding run stops", seed.wait(30) is not None, seed.log())
+        seed_dir(ctx, start_dir, "seed", procs, v, lambda t: records.create(
+            t, {"id": "lead", "parent_id": "user", "handler_module": "ram_store.tools"}))
         s = app.run_app(ctx, ["--binary", ctx.binary, "--port", p, "--dir", start_dir], name="start")
         procs.append(s)
         want = f"http://127.0.0.1:{p}/"
@@ -83,6 +92,36 @@ def run(ctx):
         v.check("stop leaves no child process", bool(kids) and app.wait_gone(kids[0], 10), str(kids))
         v.check("the port refuses connections after stop", app.wait_refused(p, 10))
         v.check("stop did not touch the attached server", web.up(q, "/canvas_page/file/index.html"))
+
+        # --- start in a folder with no team: the app makes it with create_agent, under fixed ids
+        # (no blueprint, no import); the home's credential store is the one thing it needs there
+        new_dir = os.path.join(ctx.run_dir, "new_team_dir")
+        os.makedirs(new_dir)
+        seed_dir(ctx, new_dir, "seed_new", procs, v, lambda t: records.create(
+            t, {"id": "credentials", "parent_id": "user", "handler_module": "credential_store.tools",
+                "backend": "env", "refs": {}}))
+        n = app.free_port()
+        s2 = app.run_app(ctx, ["--binary", ctx.binary, "--port", n, "--dir", new_dir], name="start_new")
+        procs.append(s2)
+        line = s2.wait_line("web UI at", 60)
+        v.check("start in a folder with no team prints the web UI URL", bool(line), s2.log())
+        t2 = team_mod.Team(ctx.binary, new_dir, app.env_of(ctx.team))
+        agents = t2.agents() if line else {}
+        want_ids = {"lead", "queue", "github", "board", "roles", "tasks", "worker_exec", "worker_files"}
+        v.check("the app made the team under the fixed ids the role cards name",
+                want_ids <= set(agents), str(sorted(set(agents))))
+        v.check("no id carries an import's suffix", not [i for i in agents if i.endswith("_1")],
+                str(sorted(agents)))
+        v.check("the roles registry, the queue and the board sit under the lead",
+                all(agents.get(i, {}).get("parent_id") == "lead" for i in ("roles", "queue", "board", "tasks")),
+                str({i: agents.get(i, {}).get("parent_id") for i in want_ids}))
+        mem = agents.get("memory", {}).get("callable_by", {})
+        v.check("the other end of the lead's edge is on the home's memory, and what it had stays",
+                mem.get("lead") == "*" and mem.get("user") in ("*", ["*"]), str(mem))
+        v.check("the role cards were written next to the kernel",
+                os.path.isfile(os.path.join(new_dir, "roles", "project_lead.md")))
+        s2.signal(signal.SIGINT)
+        v.check("start exits 0 on SIGINT", s2.wait(20) == 0, s2.log())
     finally:
         for pr in procs:
             pr.reap()

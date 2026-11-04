@@ -7,7 +7,7 @@ It is **AGPL-3.0-or-later**.
 > GitHub App open pull requests here. **Bug reports and ideas are welcome** as issues and
 > discussions; security problems go through private reporting ([`SECURITY.md`](SECURITY.md)).
 
-> **Alpha.** Configuration (agent records and blueprints), verbs and on-disk formats still change. See the
+> **Alpha.** Configuration (agent records), verbs and on-disk formats still change. See the
 > roadmap, issue #1.
 
 ## How work happens here

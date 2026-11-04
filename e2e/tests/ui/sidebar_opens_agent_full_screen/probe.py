@@ -120,7 +120,7 @@ def run(ctx):
     if not node_ok():
         print(f"SKIP {NAME}: needs node >= 22 (global WebSocket) to drive the page's script against the live socket")
         return 0
-    # the stock records (the dispatcher with its group `fantastic`), the blueprint's lead, and the
+    # the stock records (the dispatcher with its group `fantastic`), the lead, and the
     # team page and its socket leg under a web host, as the app serves them
     port = team_mod.free_port()
     S.boot(ctx, forge=False, groups={"fantastic": {"members": ["w1", "w2"]}})

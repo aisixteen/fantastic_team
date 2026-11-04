@@ -23,7 +23,7 @@ ports:
 
 
 def boot_plain(ctx, name: str) -> team_mod.Team:
-    """Boot a team in `<run_dir>/<name>`: fantastic's CLI, the test's blueprint (a lead), the
+    """Boot a team in `<run_dir>/<name>`: fantastic's CLI, the lead, the
     github connector (no git, puller or queue folder) and the pack agents."""
     from . import stock
     return stock.boot(ctx, sub=name, packs=True, git=False, puller=False)

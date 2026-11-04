@@ -70,14 +70,14 @@ For remote boxes, `scripts/remote-start.sh` reads the values of the variable nam
 
 ## 5. Minimal config and start
 
-The command line is fantastic's, unchanged: `fantastic_team` is `fantastic` with this repo's bundles added. It runs in the directory it is started in, so `cd` into the team's folder first. There is no config file: a team is agent records (a recipe, `send`, a blueprint folder through `import`, or a directory that already holds `.fantastic/agents/`). The example is the blueprint folder `examples/blueprints/worker_only/` (one AI worker); the app's preset, `crates/team/preset/app_team/`, is a lead with the roles registry, the tasks registry, the queue, the board and the GitHub connector.
+The command line is fantastic's, unchanged: `fantastic_team` is `fantastic` with this repo's bundles added. It runs in the directory it is started in, so `cd` into the team's folder first. There is no config file: a team is agent records (a recipe, `send` with `create_agent`, or a directory that already holds `.fantastic/agents/`). The example is the script `examples/create_agent/worker_only.sh` (one AI worker); the app makes a lead with the roles registry, the tasks registry, the queue, the board and the GitHub connector the same way (`crates/team/src/new_team.rs`).
 
     cd ./my-team
     ./target/release/fantastic_team --headless
 
-No screen and no port. Import the example into the running team, from a second shell in the same folder:
+No screen and no port. Make the example worker in the running team, from a second shell in the same folder:
 
-    ./target/release/fantastic_team import path/to/examples/blueprints/worker_only --parent user --bind @memory=memory --bind @credentials=credentials --approve
+    FANTASTIC_TEAM=./target/release/fantastic_team sh path/to/examples/create_agent/worker_only.sh
 
 Serve the web UI on a port:
 

@@ -331,17 +331,15 @@ fn readme_record_fields_are_the_ones_the_code_reads() {
         );
     }
     assert!(
-        text.contains("examples/blueprints/worker_only")
-            && text.contains("crates/team/preset/app_team/blueprint.yaml")
+        text.contains("examples/create_agent/worker_only.sh")
+            && text.contains("crates/team/src/new_team.rs")
             && text.contains("templates/"),
-        "README must point to the blueprint examples and templates/"
+        "README must point to the create_agent example, new_team.rs and templates/"
     );
     assert!(root()
-        .join("examples/blueprints/worker_only/blueprint.yaml")
+        .join("examples/create_agent/worker_only.sh")
         .is_file());
-    assert!(root()
-        .join("crates/team/preset/app_team/blueprint.yaml")
-        .is_file());
+    assert!(root().join("crates/team/src/new_team.rs").is_file());
 }
 
 #[test]
@@ -567,21 +565,86 @@ fn install_help_block_matches_the_packs_usage_and_says_the_cli_is_fantastics() {
 }
 
 #[test]
-fn readme_blueprint_example_is_the_worker_only_folder() {
+fn readme_create_agent_example_is_the_worker_only_script() {
     let text = readme();
-    let blocks = readme_yaml_blocks(&text);
-    let block = blocks
-        .iter()
-        .find(|b| b.lines().next() == Some("# blueprint: worker-only"))
-        .expect("README must show the worker-only blueprint");
-    let shown: serde_yaml::Value = serde_yaml::from_str(block).expect("README example is YAML");
-    let file =
-        fs::read_to_string(root().join("examples/blueprints/worker_only/blueprint.yaml")).unwrap();
-    let on_disk: serde_yaml::Value = serde_yaml::from_str(&file).unwrap();
-    // the README shows the folder's blueprint, fields and all (comments aside; the README
-    // spells the endpoint's flow maps inline)
+    let start = text
+        .find("```json\n{\"type\": \"create_agent\", \"id\": \"w1\"")
+        .expect("README must show the worker-only create_agent payload");
+    let body = &text[start + "```json\n".len()..];
+    let shown: serde_json::Value =
+        serde_json::from_str(body[..body.find("\n```").unwrap()].trim()).expect("README JSON");
+    let script = fs::read_to_string(root().join("examples/create_agent/worker_only.sh")).unwrap();
+    let on_disk = script
+        .lines()
+        .filter_map(|l| {
+            l.strip_prefix("$T send '")
+                .and_then(|r| r.strip_suffix('\''))
+        })
+        .map(|j| serde_json::from_str::<serde_json::Value>(j).expect("script item is JSON"))
+        .find(|i| i["payload"]["type"] == "create_agent")
+        .expect("the script creates the worker");
     assert_eq!(
-        shown, on_disk,
-        "README example drifted from the example folder"
+        shown, on_disk["payload"],
+        "README example drifted from the script"
     );
+}
+
+/// The example script's items, run in order on a seeded home with this repo's bundles:
+/// the worker exists with its fields, and both ends of its edges are written.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_create_agent_script_makes_its_worker_on_a_seeded_home() {
+    use fantastic_kernel::{AgentId, Item};
+    let script = fs::read_to_string(root().join("examples/create_agent/worker_only.sh")).unwrap();
+    let items: Vec<serde_json::Value> = script
+        .lines()
+        .filter_map(|l| {
+            l.strip_prefix("$T send '")
+                .and_then(|r| r.strip_suffix('\''))
+        })
+        .map(|j| serde_json::from_str(j).unwrap())
+        .collect();
+    assert_eq!(items.len(), 4, "list, create, two grants");
+    let dir = tempfile::TempDir::new().unwrap();
+    fantastic_tui::seed_dir(dir.path()).unwrap();
+    let kernel = fantastic_team::start(dir.path()).await.unwrap();
+    let mk = serde_json::json!({"type": "create_agent", "parent_id": "user", "id": "credentials",
+        "handler_module": "credential_store.tools", "backend": "env", "refs": {}});
+    let o = kernel
+        .send(vec![Item::new(fantastic_team::tree::ROOT_ID, mk)])
+        .await;
+    assert!(o[0].result.get("error").is_none(), "{}", o[0].result);
+    for item in &items {
+        let out = kernel
+            .send(vec![Item::new(
+                item["target"].as_str().unwrap(),
+                item["payload"].clone(),
+            )])
+            .await;
+        assert!(
+            out[0].result.get("error").is_none(),
+            "{item}: {}",
+            out[0].result
+        );
+    }
+    let meta = |id: &str| {
+        kernel
+            .agents
+            .get(&AgentId::from(id))
+            .map(|a| a.meta.read().unwrap().clone())
+            .unwrap()
+    };
+    let w = meta("w1");
+    assert_eq!(w["model"], "example-model");
+    assert_eq!(w["memory_store_id"], "memory");
+    assert_eq!(w["credentials"]["store"], "credentials");
+    assert_eq!(meta("memory")["callable_by"]["w1"], "*");
+    assert_eq!(
+        meta("memory")["callable_by"]["user"],
+        "*",
+        "what it had stays"
+    );
+    assert_eq!(meta("credentials")["callable_by"]["w1"], "*");
+    kernel.shutdown().await;
+    fantastic_sqlite_store::close_all(&kernel);
+    fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
 }

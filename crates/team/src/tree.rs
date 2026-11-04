@@ -1,7 +1,7 @@
 //! The ids and grant helpers of the team's agents. There is no plan here and no
 //! config file: a team is agent records, made the way fantastic makes any agent
-//! (a recipe, `send` with `create_agent`, a blueprint folder through `import`, or
-//! a directory that already holds `.fantastic/agents/`). What the team page and
+//! (a recipe, `send` with `create_agent`, or a directory that already holds
+//! `.fantastic/agents/`). What the team page and
 //! the dispatcher need granted at run time (the chat verbs on a worker, the
 //! control verbs, the cadencer's digest targets, the card views) is written
 //! here, from what the live records say.
@@ -48,48 +48,6 @@ fn exists(kernel: &Arc<Kernel>, id: &str) -> bool {
     kernel
         .agents
         .contains_key(&fantastic_kernel::AgentId::from(id))
-}
-
-/// The agent a record names in a field, as the id it has now. A blueprint import gives
-/// every agent a fresh id (`github` becomes `github_1`) and leaves a plain string field
-/// as it was written, so when no agent has the id `named`, the one agent that `me` may
-/// call (a `can_call` key) and whose handler is `handler_module` stands for it. With
-/// none or more than one, `named` is returned as written.
-pub fn peer_named(
-    kernel: &Arc<Kernel>,
-    me: &fantastic_kernel::AgentId,
-    named: &str,
-    handler_module: &str,
-) -> String {
-    if exists(kernel, named) {
-        return named.to_string();
-    }
-    let keys: Vec<String> = kernel
-        .agents
-        .get(me)
-        .and_then(|a| {
-            a.meta
-                .read()
-                .ok()?
-                .get("can_call")?
-                .as_object()
-                .map(|m| m.keys().cloned().collect())
-        })
-        .unwrap_or_default();
-    let mut hits: Vec<String> = keys
-        .into_iter()
-        .filter(|k| {
-            kernel
-                .agents
-                .get(&fantastic_kernel::AgentId::from(k.as_str()))
-                .is_some_and(|a| a.handler_module.as_deref() == Some(handler_module))
-        })
-        .collect();
-    hits.sort();
-    match hits.as_slice() {
-        [one] => one.clone(),
-        _ => named.to_string(),
-    }
 }
 
 /// The one root (kernel) verb the pack agent may call: `list_agents`, to check

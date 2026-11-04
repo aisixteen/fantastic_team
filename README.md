@@ -27,10 +27,9 @@ For the step-by-step version, with the GitHub App registration and troubleshooti
 
 ## Configure
 
-There is no config file. A team is agent records, and config is fantastic's: a record's own fields, a recipe's arguments, `send` and a blueprint folder. The `fantastic_team` binary is fantastic's command line with this repo's bundles added (see Run), so the records are made the way fantastic makes any agent. Three ways, all pure fantastic:
+There is no config file. A team is agent records, and config is fantastic's: a record's own fields, a recipe's arguments and `send`. The `fantastic_team` binary is fantastic's command line with this repo's bundles added (see Run), so the records are made the way fantastic makes any agent: with `create_agent` under an id you choose. There are no blueprints (fantastic's `import` renames every agent, `github` to `github_1`, and the role cards grant their tools by id).
 
-- **A blueprint folder**, imported into the running team: `fantastic_team import <folder> --parent <id> --approve` (`--bind @port=agent` binds the blueprint's ports to agents that exist: the home's `memory`, `files`, `credentials`). Without `--approve` it previews and creates nothing. fantastic gives every imported agent a fresh id (`lead` becomes `lead_1`) and refuses absolute paths and secret keys in a blueprint.
-- **A recipe, then `send`**: `fantastic_team --headless ai anthropic --model M` makes the root AI; further agents are `create_agent` payloads: `fantastic_team send '{"target": "kernel_state", "payload": {"type": "create_agent", ...}}'`.
+- **A recipe, then `send`**: `fantastic_team --headless ai anthropic --model M` makes the root AI; further agents are `create_agent` payloads: `fantastic_team send '{"target": "kernel_state", "payload": {"type": "create_agent", ...}}'`. [examples/create_agent](examples/create_agent/README.md) shows the payloads.
 - **A directory that already holds `.fantastic/agents/`** (records you wrote or copied).
 
 Where the old `team.yaml` keys went:
@@ -48,27 +47,15 @@ Where the old `team.yaml` keys went:
 | `.github/team.yaml` of a repo | the `repo_config` field of the puller's record, keyed by `owner/name` |
 | `--instructions`, `--workers`, `--leads`, `--per-lead` (no longer flags) | the lead's `system_prompt_file`, or a `send` to it |
 
-Examples are blueprint folders: [examples/blueprints/worker_only](examples/blueprints/worker_only/blueprint.yaml) is one AI worker, and the app's preset [crates/team/preset/app_team/blueprint.yaml](crates/team/preset/app_team/blueprint.yaml) is a lead with the roles registry, the tasks registry, the queue, the board and the GitHub connector:
+The example is a script of `send` payloads: [examples/create_agent/worker_only.sh](examples/create_agent/worker_only.sh) makes one AI worker, and its `create_agent` payload is:
 
-```yaml
-# blueprint: worker-only
-ports:
-  "@memory": {kind: memory}
-  "@credentials": {kind: credentials}
-agents:
-  - id: w1
-    handler_module: anthropic_backend.tools
-    model: example-model
-    endpoint: https://api.example.com/v1/messages
-    credentials: {store: "@credentials", ref: EXAMPLE_KEY}
-    price_input_per_mtok: 1.0
-    price_output_per_mtok: 5.0
-    memory_store_id: "@memory"
-    can_call: {"$self": "*", "@memory": "*"}
-    callable_by: {"$self": "*", "$parent": "*"}
+```json
+{"type": "create_agent", "id": "w1", "parent_id": "user", "handler_module": "anthropic_backend.tools", "model": "example-model", "endpoint": "https://api.example.com/v1/messages", "credentials": {"store": "credentials", "ref": "EXAMPLE_KEY"}, "price_input_per_mtok": 1.0, "price_output_per_mtok": 5.0, "memory_store_id": "memory", "can_call": {"$self": "*", "memory": "*", "credentials": "*"}, "callable_by": {"$self": "*", "$parent": "*"}}
 ```
 
-The desktop app ships the preset: when it creates a team it writes the blueprint folder `blueprint/` and the role cards under `roles/` once, then imports the blueprint under the home's `user` agent (`crates/team/src/preset.rs`). Edit the records afterwards with `update_agent`, as with any agent. The git connector is not in the preset, because it takes the absolute paths of your clone and your worktrees and a blueprint carries none: make it with `send` (`create_agent`, `handler_module: team_git.tools`, `repo_dir`, `workspace_root`, `remote`, `default_branch`).
+The desktop app makes its team the same way (`crates/team/src/new_team.rs`): the role cards are written under `roles/` once (a card you have stays as it is), and when the running kernel has no `lead` the app runs `create_agent` for `lead` and, under it, `queue`, `github`, `board`, `roles` (the registry, with its tiers and limits), `tasks`, `worker_exec` and `worker_files`, then writes the other end of each edge on the home's `memory`, `files`, `credentials` and the root. The ids are fixed, so the cards' grants (`github`, `board`, `queue`, `tasks`) are true as written. Edit the records afterwards with `update_agent`, as with any agent (replace `owner/name` in `github` and `board`). The git connector is not made by the app, because it takes the absolute paths of your clone and your worktrees: make it with `send` (`create_agent`, `handler_module: team_git.tools`, `repo_dir`, `workspace_root`, `remote`, `default_branch`).
+
+Every role card starts with a short section, "How the system works": which agents exist and their ids, what each tool agent is for, that an agent is started with `spawn` and deleted by the agent that spawned it (its own decision, as in fantastic), and that API keys are granted by the main lead.
 
 The `fantastic_team` binary creates no coding agent of its own: no lead or worker is a default, and nothing is added behind the records. `scripts/new-task.sh` renders a task file for whatever agents you made.
 
@@ -86,7 +73,7 @@ tiers:                 # the backend fields of an AI agent, by tier name
   small: {handler_module: anthropic_backend.tools, model: example-model, endpoint: https://api.example.com/v1/messages, memory_store_id: memory}
 ```
 
-fantastic's registry checks a card when it loads it (it refuses a card that does not parse, or one whose `tier` is not in `tiers`). The cards name the agents they grant by id (the `project_lead` card grants `github`, `board`, `queue` and `tasks`), and fantastic's import gives every agent a fresh id, so the app writes the new ids into the cards after the import (`preset::bind_cards`); do the same by hand when you import a blueprint. A spawn past a limit is refused with `{error: <sentence>, reason: "limit", ...}` (`reason` is the code, `error` the sentence); the dispatcher's sidebar shows the count (`fleet` `{running, max}`, and "agents R/M" in its footer line).
+fantastic's registry checks a card when it loads it (it refuses a card that does not parse, or one whose `tier` is not in `tiers`). The cards name the agents they grant by id (the `project_lead` card grants `github`, `board`, `queue` and `tasks`), so make those agents under exactly those ids, as the app does. A spawn past a limit is refused with `{error: <sentence>, reason: "limit", ...}` (`reason` is the code, `error` the sentence); the dispatcher's sidebar shows the count (`fleet` `{running, max}`, and "agents R/M" in its footer line).
 
 The task registry is the agent `tasks` (fantastic's `task_registry`, aisixteen/fantastic#429): a record with `task_store_id`. The `project_lead` card grants its write verbs (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`) and `spawn` opens `tasks` to it (fantastic#436). The `project_lead` also records, with each task, the `versions` it was done against (`{repo, branch, commit}` per repo), the issue's `source_version` and the mark it was forked from (`fork_from`), and passes a child's `usage` up with `report`. The GitHub connector's `staleness` verb gives the facts for reusing a mark (the commits and files since the recorded commit, whether the issue changed) and the lead decides (#194). The `project_lead` records each issue it hands out (source `gh:owner/repo#N`), its holder (an agent or a subtree root) and every reassignment, and pushes updates to the source itself through the GitHub connector; nothing syncs automatically.
 
@@ -146,7 +133,6 @@ fantastic_team canvas --port 8123               # serves the web UI on 127.0.0.1
 fantastic_team ai anthropic --model M           # the root AI on a backend, then the terminal
 fantastic_team run htop                         # a terminal cell running that command
 fantastic_team send '<item json>'               # one call into the team running here
-fantastic_team import <folder> --parent user --approve
 fantastic_team readme                           # fantastic's own readme
 ```
 
@@ -305,7 +291,8 @@ CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh w
 | `team_pack.tools` | Worker packs: verbs `pack`, `install` and `eval`. See Worker packs. |
 | declared views | Each kind above (cadencer, puller, webhook, packs, pack, git, github, board, dispatcher, queue) declares its read-only views as data in `declared_views.rs`: the fantastic TUI draws them from `view.tui`, written into the records at every start, and the team page draws the same declaration for cadencer, puller, webhook, packs, pack and git. The queue, board, github and team pages stay page code (`agent_views.rs`, with the reason). No view shows a secret. |
 | `team_app` | The launcher `fantastic_team_app` for the desktop app. See The app. |
-| `crates/team/preset/app_team/` | The app's preset: a blueprint folder (the lead, the roles registry with its tiers and limits, the tasks registry, the queue, the board, the GitHub connector). |
+| `crates/team/src/new_team.rs` | The app's new team: the `create_agent` steps (the lead, the roles registry with its tiers and limits, the tasks registry, the queue, the board, the GitHub connector, the worker's tools) under fixed ids, and the role cards written next to the kernel. |
+| `examples/create_agent/` | A script of `fantastic_team send` `create_agent` payloads. |
 
 ## Updating fantastic
 

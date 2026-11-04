@@ -2,7 +2,7 @@
 //! fantastic's terminal-shell library (`fantastic_tui::main_with`) and an
 //! in-process kernel ([`start`]) for tests. The command line is fantastic's,
 //! unchanged: `main.rs` passes it to `fantastic_tui::main_with`. Config is
-//! fantastic's too: agent records, blueprints and recipe arguments.
+//! fantastic's too: agent records (`create_agent`) and recipe arguments.
 #![deny(missing_docs)]
 
 pub mod agent_views;
@@ -15,6 +15,7 @@ pub mod dispatcher;
 pub mod driver;
 pub mod driver_config;
 pub mod driver_rules;
+pub mod new_team;
 pub mod pack_browser;
 pub mod pack_cli;
 pub mod pack_eval;
@@ -28,7 +29,6 @@ pub mod page;
 pub mod peer_envelope;
 pub mod peer_transport;
 pub mod peers;
-pub mod preset;
 pub mod puller;
 pub mod repo_config;
 pub mod setup_github;
@@ -71,7 +71,7 @@ pub fn register_team(reg: &mut BundleRegistry) {
         fantastic_task_registry::HANDLER_MODULE,
         fantastic_task_registry::TaskRegistryBundle::default(),
     );
-    // The model backend and the credential store the app preset's templates and `store_record` name.
+    // The model backend and the credential store the new team's records name (`new_team`).
     reg.register(
         fantastic_anthropic_backend::HANDLER_MODULE,
         fantastic_anthropic_backend::AnthropicBundle,

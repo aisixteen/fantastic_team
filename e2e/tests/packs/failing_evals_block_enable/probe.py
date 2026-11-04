@@ -7,7 +7,7 @@ from helpers import run_flow
 from helpers.verdict import Verdict
 
 
-LEAD = None  # the blueprint's lead, set by run()
+LEAD = None  # the lead, set by run()
 
 
 def agent_ids(team):

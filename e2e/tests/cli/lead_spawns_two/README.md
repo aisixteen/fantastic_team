@@ -5,10 +5,9 @@ A lead with a roles registry (fantastic's `agentic_resources`, switched on by
 They solve the shared fixture, one bug each (`adder.py`, `muler.py`) with a commit apiece, and the
 lead deletes them with `delete_agent`.
 
-Start: `--headless`, the blueprint folder imported under `user`
-(`fantastic_team import blueprint --parent user --approve`). The cards are not in the blueprint
-(a card is code to an import); the probe copies `roles/` next to the kernel, where `role_dirs`
-reads it. The workers' tier has no `credentials`, so they run keyless against the scripted
+Start: `--headless`, then the lead and its roles registry made with `send` + `create_agent`
+under the fixed ids `lead` and `roles`. The probe copies `roles/` next to the kernel, where
+`role_dirs` reads it. The workers' tier has no `credentials`, so they run keyless against the scripted
 server (a spawned agent is not on the credential store's `callable_by`).
 
 The plug is one script with lanes (`backends/scripted.py`): `main` is the lead, `w1`/`w2` the

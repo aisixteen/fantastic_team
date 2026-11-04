@@ -9,7 +9,7 @@ from helpers.verdict import Verdict
 SKIP_DIRS = {"secrets", ".fantastic", "home"}
 
 
-LEAD = None  # the blueprint's lead, set by run()
+LEAD = None  # the lead, set by run()
 
 
 def files_holding(run_dir, needle):

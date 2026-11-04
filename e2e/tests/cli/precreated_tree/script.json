@@ -2,7 +2,7 @@
  {
   "calls": [
    {
-    "target": "s1_1",
+    "target": "s1",
     "type": "send",
     "args": {
      "text": "[lane:s1] Have your worker fix adder.py."
@@ -13,7 +13,7 @@
  {
   "calls": [
    {
-    "target": "s2_1",
+    "target": "s2",
     "type": "send",
     "args": {
      "text": "[lane:s2] Have your worker fix muler.py."
@@ -37,7 +37,7 @@
  {
   "calls": [
    {
-    "target": "w1_1",
+    "target": "w1",
     "type": "send",
     "args": {
      "text": "[lane:w1] Fix adder.py and commit."
@@ -60,7 +60,7 @@
  {
   "calls": [
    {
-    "target": "w2_1",
+    "target": "w2",
     "type": "send",
     "args": {
      "text": "[lane:w2] Fix muler.py and commit."

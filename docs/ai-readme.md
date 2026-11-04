@@ -17,7 +17,7 @@ Run it from the directory the team lives in (`cd` there first).
 - `fantastic_team packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval --key value ...` sends a pack verb to the running team (attach-only, like `send`): `list [--query Q]`, `show --name N [--version V]`, `updates [--opt-in true|false]`, `publish --pack DIR --url HTTPS_URL --signing-key FILE`, `pack --worker W --out DIR`, `install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]]`, `eval --pack DIR --worker W [--timeout-s N]`. The hosted-registry verbs are `fetch --name N --hash H --stage DIR [--version V]`, `submit --pack DIR --url HTTPS_URL --signing-key FILE`, `report --name N --version V --reason TEXT`, `takedown --name N --version V --signing-key FILE` and `page`.
 - `fantastic_team setup github` and `fantastic_team ai-readme` are the team's own first words, with `packs`.
 
-Nothing is read from a config file: the team is the agent records in `.fantastic/agents/`. Make them with a recipe and `send` (`create_agent` payloads), or import a blueprint folder: `fantastic_team import <folder> --parent user --approve` (see section 3).
+Nothing is read from a config file: the team is the agent records in `.fantastic/agents/`. Make them with a recipe and `send` (`create_agent` payloads, under ids you choose; see section 3). The team uses no blueprints.
 
 The web UI's home screen is the dispatcher (agent `dispatcher`): a sidebar of
 the team's groups. In each group, every worker is followed by a `subagents (N)`
@@ -31,9 +31,9 @@ list; `open` answers the chat for one agent (`view: chat`, `target`, `fullscreen
 
 The right pane fills the height beside the tree: the chat's transcript scrolls inside it and the chat has no fixed height. An `embed {id}` row in the chat's history is drawn as a card where the row sits (a sandboxed iframe of the host agent's `get_html`; `unembed` removes it, the X hides it in the page only); the page's leg may call that host's panel verbs plus `get_html` and `watch`, granted at `open` and again after a turn, never `*`. When a canvas named after the node exists (`canvas_<id>`, what `new_canvas {name: <id>}` makes), the `open` reply carries `canvas {id, url}` and the pane shows a Canvas button that swaps the chat for `url` (`/canvas_page/file/index.html?canvas=<id>`) in an iframe. The `agents` rows carry `has_children`, so a subtree and the whole tree column fold (remembered in the browser). Up to 600 px wide the list and the pane are two snap panels side by side: opening a node scrolls the pane into view and Back scrolls the list back. 
 
-## 3. Records and blueprints
+## 3. Records
 
-There is no `team.yaml`. Every key it had is a field of an agent record, set with `create_agent` / `update_agent` through `fantastic_team send`, or written in a blueprint folder (`blueprint.yaml`, one top agent, children nested under `agents:`, `ports:` for the home agents it uses) and imported with `fantastic_team import <folder> --parent user --bind @memory=memory --approve` (without `--approve` it only previews). The examples: `examples/blueprints/worker_only/` and the app's preset `crates/team/preset/app_team/blueprint.yaml`. fantastic gives imported agents fresh ids (`lead` becomes `lead_1`) and refuses absolute paths and secret keys; the git connector (absolute `repo_dir`) is made with `send`.
+There is no `team.yaml`. Every key it had is a field of an agent record, set with `create_agent` / `update_agent` through `fantastic_team send`, with a `create_agent` payload sent to the root (`kernel_state`) under an id you choose. A grant is written on both ends: the new agent's `can_call` and the other agent's `callable_by` (`update_agent` replaces a whole map, so restate the keys it has). The example: `examples/create_agent/worker_only.sh`. The app makes its own team the same way (`crates/team/src/new_team.rs`): `lead`, and under it `queue`, `github`, `board`, `roles`, `tasks`, `worker_exec` and `worker_files`. The role cards grant those tools by id, so keep the ids.
 
 - Templates are the `tiers` field of the `agentic_resources` (roles registry) record, plus each AI record's own fields: `handler_module`, `model`, `endpoint`, `credentials` (a store and a ref), prices, `can_call`, `callable_by`.
 - The first agent is an ordinary AI record. Its directive is its `system_prompt_file` (read through its `file_bridge_id`), or a message sent with `send`. The caller defines the agents: nothing is created behind the records.
@@ -42,7 +42,7 @@ There is no `team.yaml`. Every key it had is a field of an agent record, set wit
 - The roles registry record: `role_dirs` (the folders of role cards, in `roles/` of the repo: each card names a `tier` that must be a key of `tiers`), `tiers` and `limits` (`total`, `per_role: {role: n}`). It is on with `FANTASTIC_AGENTIC_RESOURCES=1`.
 - A repo the puller serves is in its record's `repos`; its settings are the `repo_config` field, keyed by `owner/name`.
 
-Keys are never written in a record or a blueprint. Name the credential ref, set the environment variables the credential store reads in your shell, and tell the user which names to set.
+Keys are never written in a record. Name the credential ref, set the environment variables the credential store reads in your shell, and tell the user which names to set.
 
 ## 4. Run it on a remote box
 

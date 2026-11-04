@@ -17,7 +17,7 @@ TOP = ["task", "files", "output", "preview"]
 
 def run(ctx):
     v = Verdict("ui/worker_view_opens")
-    # the stock records (the dispatcher with its group `workers`), the blueprint's lead, and the team
+    # the stock records (the dispatcher with its group `workers`), the lead, and the team
     # page and its socket leg under a web host, as the app serves them
     port = app.free_port()
     S.boot(ctx, forge=False, groups={"workers": {"members": ["w1", "w2"]}})

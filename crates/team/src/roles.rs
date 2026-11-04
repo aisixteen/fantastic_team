@@ -421,6 +421,50 @@ mod tests {
         }
     }
 
+    /// The "how the system works" brief: every card carries it, with the fixed ids of the
+    /// agents, what each tool agent is for, who spawns and deletes, and who grants keys.
+    #[test]
+    fn every_card_carries_the_how_the_system_works_brief() {
+        for (file, text) in ALL {
+            let d = parse_card(text, file).unwrap().directive;
+            let at = d
+                .find("## How the system works")
+                .unwrap_or_else(|| panic!("{file} has no brief"));
+            let rest = &d[at + 3..];
+            let brief = &d[at..at + 3 + rest.find("\n## ").unwrap_or(rest.len())];
+            // the ids, and what each is for
+            for id in [
+                "`lead`",
+                "`roles`",
+                "`tasks`",
+                "`queue`",
+                "`board`",
+                "`worker_exec`",
+                "`worker_files`",
+                "`kernel_state`",
+            ] {
+                assert!(brief.contains(id), "{file}: the brief lacks {id}");
+            }
+            // who spawns, who deletes (the spawner, its own decision), who grants keys
+            assert!(brief.contains("`spawn`"), "{file}");
+            assert!(
+                brief.contains("The agent that spawned an agent deletes it"),
+                "{file}"
+            );
+            assert!(brief.contains("the spawner's own decision"), "{file}");
+            assert!(
+                brief.contains("granted by the main lead"),
+                "{file}: keys come from the main lead"
+            );
+            assert!(brief.len() < 2500, "{file}: the brief stays short");
+        }
+        // the worker's card never names the connector (it has no git or github words)
+        assert!(!card("worker.md").directive.contains("`github`"));
+        for file in ["lead.md", "project_lead.md", "issue_keeper.md"] {
+            assert!(card(file).directive.contains("- `github`:"), "{file}");
+        }
+    }
+
     #[test]
     fn lead_card_starting_an_agent_section_still_has_no_create_agent() {
         let l = card("lead.md").directive;
