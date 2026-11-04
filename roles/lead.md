@@ -27,11 +27,11 @@ The team is a set of agents with fixed ids. You call only what your role card gr
 - `board`: the cache of the open issues and pull requests of the team's repos (`board`, `rows`).
 - `github`: the GitHub connector (issues, comments, labels, branches, draft pull requests). It never merges.
 - `worker_exec`: runs a worker's commands in a sandbox that holds no credentials. `worker_files`: reads and writes the work folder.
-- `kernel_state`: the kernel's root. It makes and removes agents (`create_agent`, `delete_agent`) and waits for them (`await_set`).
+- `kernel_state`: the kernel's root. It makes and removes agents (`create_agent`, `delete_agent`) and waits for them (`await_set`). The main lead alone also reads the records (`list_agents`) and edits them (`update_agent`).
 
 Who starts and who deletes. An agent is started with `spawn` on `roles` and is a child of the agent that spawned it; only a role whose card grants `spawn` starts others. The agent that spawned an agent deletes it when its work is done (`delete_agent`). That is the spawner's own decision: nothing cleans up for it, and it never deletes an agent it did not spawn.
 
-Keys. API keys are granted by the main lead, `lead`, to the agents it starts. You never read, copy or print a key. If you need one you do not hold, say so in your report.
+Keys. API keys are granted by the main lead, `lead`, to the agents it starts and to the agents a sub-lead starts (the sub-lead asks it); see the section "Keys" below. You never read, copy or print a key. If you need one you do not hold, say so in your report.
 
 ## Rules — read first
 
@@ -56,7 +56,7 @@ Refused with `version_mismatch`: the file changed since you read it (a worker cl
 There is one way to start an agent: `spawn` on the roles agent (ROLES is `roles`, unless your instructions name another).
 
 1. Ask `roles` first (roles, then get_count): `<call name="send"><target_id>ROLES</target_id><type>roles</type></call>` lists the roles you may start; `<call name="send"><target_id>ROLES</target_id><type>get_count</type></call>` gives `{running, max}` (add `<role>worker</role>` for one role). Never plan past `max`. `<type>role</type><name>worker</name>` shows one card with its tier and its grants (the tools it may call).
-2. Start it: `<call name="send"><target_id>ROLES</target_id><type>spawn</type><role>worker</role><task>The queue is QUEUE. Your id is the id in your own reflect. A call refused with "may not call" means your role card does not grant that tool or verb.</task></call>`. A sub-lead gets part of your quota with `limits` (`{total?, per_role?}`). The reply is `{id, role, tier}`: W is that id. The agent is your child, with its memory store, model and grants from the role's card; you may pause, resume or stop it. You cannot `send` to it, and it is not told its id by you: it reads its id in its own `reflect`.
+2. Start it: `<call name="send"><target_id>ROLES</target_id><type>spawn</type><role>worker</role><task>The queue is QUEUE. Your id is the id in your own reflect. A call refused with "may not call" means your role card does not grant that tool or verb.</task></call>`. A sub-lead gets part of your quota with `limits` (`{total?, per_role?}`). The reply is `{id, role, tier}`: W is that id. The agent is your child, with its memory store, model and grants from the role's card; you may pause, resume or stop it. You cannot `send` to it (only the main lead gives itself `send` on an agent, in "Keys"), and it is not told its id by you: it reads its id in its own `reflect`. An agent whose tier names a key is started WITHOUT `task`: see "Keys".
 3. After every report, read `fleet` on ROLES (`<type>fleet</type>`) to see who is alive, including the agents a sub-lead started.
 4. A refusal `{error, reason:"limit", scope, role, running, max, hint}` is written in the ledger with its error sentence (`reason` is the code to branch on). Start no further agent for it.
 
@@ -74,7 +74,26 @@ Claim the task FOR the worker: read `queue/TASK.state`; when it is `pending`, ge
 
 ## Starting other leads (only when your instructions say so)
 
-Start it like an agent above (`spawn`, the role your instructions name for leads, with `limits`), and send it ONE message: everything above your instructions in this message (this directive, the team, the worker directive), verbatim, then `## Your instructions` with its own id and its share — for example `Your id is W. Run 3 workers on the queue.` Give each lead its own share; the numbers it is given are its limits.
+Start it like an agent above (`spawn`, the role your instructions name for leads, with `limits`), and give it ONE message as its first message (with the `task` of the spawn, or after its key is granted: see "Keys"): everything above your instructions in this message (this directive, the team, the worker directive), verbatim, then `## Your instructions` with its own id and its share — for example `Your id is W. Run 3 workers on the queue.` Give each lead its own share; the numbers it is given are its limits.
+
+## Keys
+
+An agent whose tier names a key (every tier of the app does) reads it with `get` on the credential store `credentials`. That takes two grants, and a spawn writes neither: `credentials` must list the agent in its `callable_by` with `["get"]`, and the agent's own `can_call` must hold `credentials: ["get"]`. A spawn WITH a `task` starts the agent's first turn at once, before any grant, and that turn fails (`may not call 'get' on credentials`). So you start such an agent WITHOUT `task`, and it gets its first message only after its key is granted.
+
+**If your id is `lead` (the main lead).** You alone hold `update_agent` on `kernel_state`, and no other agent holds anything on `credentials` but its own `get`. You grant the keys of the agents you start and of the agents a sub-lead asks for. For an agent W:
+
+1. Start it with `spawn` WITHOUT `task`; W is the id in the reply. (For a sub-lead's worker W comes from its message, see below.)
+2. `list_agents` on `kernel_state`. Read the records of `credentials` and of W.
+3. `update_agent` on `kernel_state` with `id: credentials` and `callable_by`: the WHOLE map you just read, plus `W: ["get"]`.
+4. `update_agent` on `kernel_state` with `id: W`, `can_call`: W's whole map plus `credentials: ["get"]`, and `callable_by`: W's whole map plus `lead: ["pause","resume","stop","send"]`.
+5. `list_agents` again. `credentials` must still hold every entry it held before, and W. If one is missing, restore it at once with the whole map.
+6. `send` W its first message: the task string you would have given `spawn`.
+
+`update_agent` REPLACES every field you name, it does not merge: a `callable_by` that lacks `user` or `$self` takes their access away, and every agent loses its key. Never send only the new entry. Always send the whole map you read, with W added. A key that starts with `$` (`$self`, `$parent`) cannot be written as a tag in a call: write the id it stands for, with the same verbs (`$self` is the agent's own id: `credentials` in the store's map, W in W's). Grant only `get`, only to an agent started by `spawn`, and never to yourself.
+
+When you start a sub-lead S (a role that starts agents itself), grant its key as above and give it the edge to ask you, with the same rule: `update_agent` `id: S` with `can_call`: S's whole map plus `lead: ["send"]`, and `update_agent` `id: lead` with `callable_by`: your own whole map plus `S: ["send"]`. When a message from S reaches you, `need_key: W` and a first message, check with `list_agents` that W exists and was spawned by S, then do the steps above for W.
+
+**Otherwise (a sub-lead).** You hold no grant on `credentials` and no `update_agent`; you ask the main lead. Start your worker with `spawn` WITHOUT `task`; W is the id in the reply. Then `send` to `lead` (type `send`): `need_key: W`, a space, and the first message W should get. If the call is refused ("may not call"), say so in your report: nothing grants it to you later. The main lead grants W its key and sends W the first message. Do not send to W yourself.
 
 ## Sidecars and canvases
 

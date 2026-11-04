@@ -51,7 +51,7 @@ The shared fixture is a local git repo with one failing test (`test_calc.py` che
 Facts found while writing them (about fantastic at this commit, not decisions of the suite):
 
 1. The test chooses the ids (`lead`, `roles`, `w1`...), so a script names those. Spawned ids are minted (`anthropic_backend_7a308a`).
-2. A spawned agent is not named on the credential store's `callable_by`, so a tier with `credentials` is refused its first turn and the agent never asks the model. The spawned tiers here carry no `credentials` (the record's own rule: no `credentials` is a keyless server, which the scripted plug is).
+2. A spawned agent is not named on the credential store's `callable_by`, so a tier with `credentials` is refused its first turn when the spawn has a `task` (fantastic's reach adds the agent a moment later). The spawned tiers here carry no `credentials` (the record's own rule: no `credentials` is a keyless server, which the scripted plug is). The way the team grants a key, with the cards, is in `roles/lead_grants_worker_key` and `roles/sublead_worker_key_via_lead` (#223).
 3. The registry's `spawn` sends the task detached, so the lead's turn goes on at once; the plug's lanes (below) keep the order.
 4. `delete_agent` of a parent takes its children with it; a spawned agent carries `spawned_by`, which is how the tests see that none is left.
 
@@ -154,6 +154,8 @@ These are facts about the binary at the commit this was built on, not decisions 
 - `roles/total_limit_refuses_fourth_worker`: `roles: limits: total: 3`; the lead spawns four workers, one call per turn; the fourth is refused with its reason; `get_count`, `fleet` and the dispatcher's `fleet` agree (3 of 3). The worker tiers are inert, so no worker asks the model.
 - `roles/project_lead_plans_and_runs_issues`: the coder `project_lead` reads four fake issues, proposes a tree and waits for "yes"; then two workers are started, a PR is opened for each, and the tree stays. The chat entry, the plan view and the approval gate (LATER, UI) are skipped with a note. The README of the test lists the ordering it relies on and the gaps it works around.
 - `roles/app_team_spawn_trees` (#227): the team the app makes (`fantastic_team_app --dir`, the cards of `roles/`) runs lead -> sub-lead -> worker and lead -> project_lead -> worker on the scripted plug; each parent deletes what it spawned; no spawned agent is left. Needs `fantastic_team_app` next to `--bin`.
+- `roles/lead_grants_worker_key` (#223): the main lead spawns a worker without a task, reads the records, sends `update_agent` on the root with the credential store's whole `callable_by` plus the worker, then sends the worker its first message; the worker's first turn reads its key from the store and asks the model. Headless binary, the repo's cards, tiers that name the model's key.
+- `roles/sublead_worker_key_via_lead` (#223): a sub-lead (the `lead` card) spawns a worker without a task and asks the main lead (`send` to `lead`, `need_key: W`); the main lead grants the worker on the store and sends it its first message. Uses the scripted plug's `{{tag:NAME}}` (the last `<NAME>id</NAME>` of the request body).
 
 ## Later
 

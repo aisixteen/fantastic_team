@@ -47,7 +47,7 @@ def point_at_plug(ctx, team):
     tiers = {}
     for name, t in agents["roles"]["tiers"].items():
         t = dict(t, model=cli.MODEL, endpoint=ctx.model.endpoint)
-        t.pop("credentials", None)  # a spawned agent is not on the credential store's callable_by
+        t.pop("credentials", None)  # this script spawns with a task, which runs before any key grant (#223 has its own tests)
         tiers[name] = t
     records.update(team, "roles", tiers=tiers, limits={"total": 6})
 

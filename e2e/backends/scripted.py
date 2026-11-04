@@ -29,7 +29,9 @@ before it have run). A script with no `lane` anywhere is the old single ordered 
 SPAWNED IDS. A spawned agent's id is minted (`anthropic_backend_7a308a`), so a script cannot
 name it. `{{id:N}}` in a turn is the id in the Nth `<id>...</id>` of the request's body (the
 reply of a `spawn`, in the order the agent saw them), filled when the turn is served.
-Strings may hold `{{name}}` placeholders, filled from `variables`.
+`{{tag:NAME}}` is the id in the last `<NAME>...</NAME>` of the body (an id an agent wrote in a
+tag of its own in a message it sent, such as `need_key` in a worker's key request). Strings may hold `{{name}}` placeholders,
+filled from `variables`.
 
 It records every request body and every `x-api-key`; a request past the end of
 the script gets a 500, and `exhausted` says so.
@@ -230,16 +232,23 @@ class ScriptedModel:
 
     @staticmethod
     def resolve_ids(text: str, raw: str) -> str:
-        """Fill `{{id:N}}` from the Nth `<id>X</id>` in the request body."""
-        if "{{id:" not in text:
-            return text
-        found = re.findall(r"<id>(\w+)</id>", raw)
+        """Fill `{{id:N}}` from the Nth `<id>X</id>` in the request body, and `{{tag:NAME}}`
+        from the LAST `<NAME>X</NAME>` in it (an id another agent wrote in a tag of its own in a
+        message it sent, such as the `need_key` of a worker's key request)."""
+        if "{{id:" in text:
+            found = re.findall(r"<id>(\w+)</id>", raw)
 
-        def pick(m):
-            n = int(m.group(1))
-            return found[n - 1] if 0 < n <= len(found) else m.group(0)
+            def pick(m):
+                n = int(m.group(1))
+                return found[n - 1] if 0 < n <= len(found) else m.group(0)
 
-        return re.sub(r"\{\{id:(\d+)\}\}", pick, text)
+            text = re.sub(r"\{\{id:(\d+)\}\}", pick, text)
+
+        def named(m):
+            hits = re.findall(rf"<{m.group(1)}>(\w+)</{m.group(1)}>", raw)
+            return hits[-1] if hits else m.group(0)
+
+        return re.sub(r"\{\{tag:(\w+)\}\}", named, text)
 
     def lane_turns(self, lane: str) -> list[int]:
         return [i for i, l in enumerate(self.lanes) if l == lane]
