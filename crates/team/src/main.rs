@@ -3,11 +3,12 @@
 //! The way `canvas` sits on top of the kernel, the team's bundles sit on top of
 //! fantastic: no flag of its own, no config file of its own.
 //!
-//! The binary takes exactly fantastic's words: `--headless`, `canvas [--port N]
+//! The binary takes fantastic's words: `--headless`, `canvas [--port N]
 //! [--host ADDR]`, `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`,
 //! `migrate-home` and `readme`. Fantastic runs in the directory it is started in.
 //! Three first words are the team's own and handle their arguments themselves:
-//! `setup github`, `packs …` and `ai-readme`.
+//! `setup github`, `packs …` and `ai-readme`. One recipe word is the team's own,
+//! `webui [--port N] [--host ADDR]`: the team page from the binary (`webui.rs`).
 
 use std::process::ExitCode;
 
@@ -29,6 +30,23 @@ fn main() -> ExitCode {
         print!("{}", fantastic_team::AI_README);
         return ExitCode::SUCCESS;
     }
+    // `webui [--port N] [--host ADDR]`: the team page from the binary. Fantastic has no
+    // extension point for a recipe word, so the team cuts the word out, writes the
+    // page's records, and fantastic boots them headless (`webui.rs`).
+    let argv = match fantastic_team::webui::split(&argv) {
+        Ok((None, argv)) => argv,
+        Ok((Some(w), argv)) => match serve_webui(&w) {
+            Ok(()) => argv,
+            Err(e) => {
+                eprintln!("fantastic_team: {e}");
+                return ExitCode::from(2);
+            }
+        },
+        Err(e) => {
+            eprintln!("fantastic_team: {e}");
+            return ExitCode::from(2);
+        }
+    };
     // Everything else is fantastic's own command line, parsed by fantastic.
     // The graceful stop can wait on an agent mid-model-call; bound it (#119).
     // The lock registry is keyed by the absolute working directory. The one-shot
@@ -46,6 +64,24 @@ fn main() -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// Write the team page's records into the working directory and say where it is.
+/// A kernel already running here refuses it, as fantastic refuses every recipe then.
+fn serve_webui(w: &fantastic_team::webui::WebUi) -> Result<(), String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    if let Ok(Some(pid)) = fantastic_kernel::lock::held(&cwd) {
+        return Err(format!(
+            "already running in this directory (pid {pid}) — this command cannot change it while it runs; stop it first"
+        ));
+    }
+    let (port, host) = fantastic_team::app_control::persist_web(&cwd, w.port, w.bind.as_deref())?;
+    fantastic_team::webui::request();
+    println!(
+        "the team page: {}",
+        fantastic_team::webui::page_url(&host, port)
+    );
+    Ok(())
 }
 
 fn finish(result: Result<(), String>) -> ExitCode {
@@ -79,6 +115,7 @@ mod tests {
             "ai-readme",
             "readme",
             "canvas",
+            "webui",
             "--port",
             "--headless",
             "import",

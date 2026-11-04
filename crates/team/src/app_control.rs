@@ -280,7 +280,7 @@ impl Drop for TeamHandle {
 /// mounts the children, then listens). A taken port makes the boot fail. Safe to
 /// repeat: what exists is kept, and the host's port is set.
 async fn serve_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
-    prepare_web(kernel, port).await?;
+    prepare_web(kernel, Some(port), None).await?;
     send_one(kernel, page::WEB_ID, json!({"type": "boot"}))
         .await
         .map(|_| ())
@@ -290,25 +290,58 @@ async fn serve_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
 /// Everything [`serve_web`] does before the boot: the port pre-check, the `web`
 /// host, the page and the socket leg, their edges, the leg's grants on the
 /// dispatcher and the workers, and the records flushed to disk.
-async fn prepare_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
+async fn prepare_web(
+    kernel: &Arc<Kernel>,
+    port: Option<u16>,
+    bind: Option<&str>,
+) -> Result<(u16, String), String> {
     let live = |id: &str| {
         kernel
             .agents
             .contains_key(&fantastic_kernel::AgentId::from(id))
     };
-    // The host binds in a task of its own, so a taken port would only be logged.
-    if !live(page::WEB_ID) {
-        std::net::TcpListener::bind(("127.0.0.1", port))
-            .map_err(|e| format!("serving the web UI on port {port} failed: {e}"))?;
-    }
-    if live(page::WEB_ID) {
-        let upd = json!({"type": "update_agent", "id": page::WEB_ID, "port": port});
-        send_one(kernel, DEFAULT_ROOT_ID, upd).await?;
+    let (port, host) = if live(page::WEB_ID) {
+        // A recorded host binds the address it was made with: another is refused, as
+        // fantastic's canvas refuses it (`kern/web.rs`, `ensure`).
+        let rec = web_record_of(kernel);
+        let bound = fantastic_web::listen_host(&rec);
+        if let Some(b) = bind.filter(|b| *b != bound) {
+            return Err(format!("--host {b}: the `web` leg still binds {bound}"));
+        }
+        let recorded = rec.get("port").and_then(Value::as_u64).map(|p| p as u16);
+        match (port, recorded) {
+            (Some(p), _) => {
+                let upd = json!({"type": "update_agent", "id": page::WEB_ID, "port": p});
+                send_one(kernel, DEFAULT_ROOT_ID, upd).await?;
+                (p, bound)
+            }
+            (None, Some(r)) => (r, bound),
+            (None, None) => {
+                return Err("the `web` host records no port; name one with --port".into())
+            }
+        }
     } else {
-        let rec = json!({"type": "create_agent", "id": page::WEB_ID, "parent_id": DEFAULT_ROOT_ID,
+        let host = bind.unwrap_or(fantastic_web::DEFAULT_HOST);
+        let port = match port {
+            Some(p) => p,
+            None => free_port(host)?,
+        };
+        // The host binds in a task of its own, so a taken port would only be logged.
+        std::net::TcpListener::bind((host, port))
+            .map_err(|e| format!("serving the web UI on port {port} failed: {e}"))?;
+        let mut rec = json!({"type": "create_agent", "id": page::WEB_ID, "parent_id": DEFAULT_ROOT_ID,
             "handler_module": fantastic_web::HANDLER_MODULE, "port": port});
+        // The record fantastic's canvas writes for `--host`: the listener's address,
+        // and the guard's identity too unless it is a wildcard.
+        if let Some(b) = bind {
+            rec["bind"] = json!(b);
+            if !is_wildcard(b) {
+                rec["host"] = json!(b);
+            }
+        }
         send_one(kernel, DEFAULT_ROOT_ID, rec).await?;
-    }
+        (port, host.to_string())
+    };
     if !live(page::PAGE_ID) {
         let rec = json!({"type": "create_agent", "id": page::PAGE_ID, "parent_id": page::WEB_ID,
             "handler_module": page::HANDLER_MODULE,
@@ -379,7 +412,29 @@ async fn prepare_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
         })?;
     }
     kernel.flush_records().await;
-    Ok(())
+    Ok((port, host))
+}
+
+/// The live `web` host's record fields.
+fn web_record_of(kernel: &Arc<Kernel>) -> serde_json::Map<String, Value> {
+    kernel
+        .agents
+        .get(&fantastic_kernel::AgentId::from(page::WEB_ID))
+        .and_then(|a| a.meta.read().ok().map(|m| m.clone()))
+        .unwrap_or_default()
+}
+
+/// A wildcard listener address: a browser cannot dial it.
+pub fn is_wildcard(host: &str) -> bool {
+    matches!(host, "0.0.0.0" | "::")
+}
+
+/// A port free on `host` now (the OS picks it), for a first run that names none.
+fn free_port(host: &str) -> Result<u16, String> {
+    std::net::TcpListener::bind((host, 0))
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .map_err(|e| format!("no free port to pick: {e}"))
 }
 
 /// Write the web UI's records (the same ones [`serve_web`] makes, with the same
@@ -390,12 +445,20 @@ async fn prepare_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
 /// A fresh directory is seeded first (`fantastic_tui::seed_dir`: the shell's `user`
 /// and page loader), so the page is served on the first start; one that already holds
 /// a kernel is left as it is.
-pub fn persist_web(dir: &Path, port: u16) -> Result<(), String> {
+///
+/// `port` None keeps the recorded port, else picks a free one. `bind` is `--host`: a
+/// fresh host binds it, a recorded one must already bind it. Returns the port and the
+/// address the host binds.
+pub fn persist_web(
+    dir: &Path,
+    port: Option<u16>,
+    bind: Option<&str>,
+) -> Result<(u16, String), String> {
     fantastic_tui::seed_dir(dir)?;
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async {
         let kernel = start(dir).await.map_err(|e| e.to_string())?;
-        let res = prepare_web(&kernel, port).await;
+        let res = prepare_web(&kernel, port, bind).await;
         if res.is_err() {
             drop_web(&kernel).await;
         }
@@ -403,11 +466,9 @@ pub fn persist_web(dir: &Path, port: u16) -> Result<(), String> {
         fantastic_sqlite_store::close_all(&kernel);
         let released = bootstrap::shutdown(dir).map_err(|e| e.to_string());
         match (res, released) {
-            (Ok(()), r) => r,
-            (Err(e), Ok(())) => Err(format!("serving the web UI on port {port} failed: {e}")),
-            (Err(e), Err(r)) => Err(format!(
-                "serving the web UI on port {port} failed: {e}; releasing the lock failed: {r}"
-            )),
+            (Ok(served), r) => r.map(|()| served),
+            (Err(e), Ok(())) => Err(e),
+            (Err(e), Err(r)) => Err(format!("{e}; releasing the lock failed: {r}")),
         }
     })
 }
@@ -831,7 +892,7 @@ mod tests {
     /// off the test's runtime.
     async fn persist(dir: &Path, port: u16) -> Result<(), String> {
         let dir = dir.to_path_buf();
-        std::thread::spawn(move || persist_web(&dir, port))
+        std::thread::spawn(move || persist_web(&dir, Some(port), None).map(|_| ()))
             .join()
             .unwrap()
     }
@@ -1069,10 +1130,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let k = start(dir.path()).await.unwrap();
         stub(&k, "cadencer").await;
-        prepare_web(&k, free_port()).await.unwrap();
+        prepare_web(&k, Some(free_port()), None).await.unwrap();
         let first = meta_of(&k, page::WS_ID, "can_call");
         let first_cb = meta_of(&k, "cadencer", "callable_by");
-        prepare_web(&k, free_port()).await.unwrap();
+        prepare_web(&k, Some(free_port()), None).await.unwrap();
         assert_eq!(meta_of(&k, page::WS_ID, "can_call"), first);
         assert_eq!(meta_of(&k, "cadencer", "callable_by"), first_cb);
         assert_eq!(first["cadencer"], json!(["status", "set"]));
@@ -1092,7 +1153,7 @@ mod tests {
         for id in ["cadencer", "user", "pack", "pack_listing", "queue", "tasks"] {
             stub(&k, id).await;
         }
-        prepare_web(&k, free_port()).await.unwrap();
+        prepare_web(&k, Some(free_port()), None).await.unwrap();
         let cc = meta_of(&k, page::WS_ID, "can_call");
         let pack = cc["pack"].as_array().unwrap();
         assert!(pack.contains(&json!("install")));
@@ -1105,6 +1166,90 @@ mod tests {
         drop_web(&k).await;
         k.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// `persist_web` with a bind, off the test's runtime (see [`persist`]); the port and
+    /// the address the host binds.
+    async fn persist_bound(
+        dir: &Path,
+        port: Option<u16>,
+        bind: Option<&'static str>,
+    ) -> Result<(u16, String), String> {
+        let dir = dir.to_path_buf();
+        std::thread::spawn(move || persist_web(&dir, port, bind))
+            .join()
+            .unwrap()
+    }
+
+    /// The record `persist_web` wrote for the `web` host, read from disk.
+    fn web_yaml(dir: &Path) -> String {
+        std::fs::read_to_string(dir.join(".fantastic/agents/web/agent.yaml")).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_web_names_the_bind_the_way_fantastic_s_canvas_does() {
+        let _web = WEB.lock().await;
+        // a concrete address is the listener and the guard's identity; a wildcard only the listener
+        let dir = tempfile::TempDir::new().unwrap();
+        let (port, host) = persist_bound(dir.path(), Some(free_port()), Some("127.0.0.1"))
+            .await
+            .unwrap();
+        assert_eq!(host, "127.0.0.1");
+        let y = web_yaml(dir.path());
+        assert!(
+            y.contains("bind: 127.0.0.1") && y.contains("host: 127.0.0.1"),
+            "{y}"
+        );
+        assert!(y.contains(&format!("port: {port}")), "{y}");
+        let wild = tempfile::TempDir::new().unwrap();
+        let (_, host) = persist_bound(wild.path(), Some(free_port()), Some("0.0.0.0"))
+            .await
+            .unwrap();
+        assert_eq!(host, "0.0.0.0");
+        let y = web_yaml(wild.path());
+        assert!(y.contains("bind: 0.0.0.0") && !y.contains("host:"), "{y}");
+        // no --host: the record says nothing of the address
+        let plain = tempfile::TempDir::new().unwrap();
+        let (_, host) = persist_bound(plain.path(), Some(free_port()), None)
+            .await
+            .unwrap();
+        assert_eq!(host, "127.0.0.1");
+        let y = web_yaml(plain.path());
+        assert!(!y.contains("bind:") && !y.contains("host:"), "{y}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_web_without_a_port_keeps_the_recorded_one_else_picks_a_free_one() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (picked, _) = persist_bound(dir.path(), None, None).await.unwrap();
+        assert!(picked > 0);
+        assert!(web_yaml(dir.path()).contains(&format!("port: {picked}")));
+        let (kept, _) = persist_bound(dir.path(), None, None).await.unwrap();
+        assert_eq!(kept, picked, "a recorded port is kept");
+        let named = free_port();
+        let (now, _) = persist_bound(dir.path(), Some(named), None).await.unwrap();
+        assert_eq!(now, named, "a named port overwrites the recorded one");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_web_refuses_a_bind_the_recorded_host_does_not_hold() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        persist_bound(dir.path(), Some(free_port()), Some("0.0.0.0"))
+            .await
+            .unwrap();
+        let err = persist_bound(dir.path(), None, Some("127.0.0.1"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("--host 127.0.0.1") && err.contains("still binds 0.0.0.0"),
+            "{err}"
+        );
+        // the refusal released the lock
+        persist_bound(dir.path(), None, Some("0.0.0.0"))
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

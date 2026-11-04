@@ -270,10 +270,10 @@ pub fn validate_loopback(url: &str) -> Result<(), String> {
     }
 }
 
-/// The binary's command line: fantastic's own `canvas --port N`, run in the team
+/// The binary's command line: the team's `webui --port N`, run in the team
 /// directory. Nothing else reaches it.
 pub fn start_args(port: u16) -> Vec<String> {
-    vec!["canvas".to_string(), "--port".to_string(), port.to_string()]
+    vec!["webui".to_string(), "--port".to_string(), port.to_string()]
 }
 
 /// The web UI URL the window should show: the served page for `Start` and
@@ -288,10 +288,9 @@ pub fn web_url(target: &Target) -> String {
     }
 }
 
-/// The page fantastic's `canvas --port` serves. The web host answers 404 at `/`, so this
-/// is what the launcher waits for; the window URL ([`web_url`]) is the same page. The
-/// team page comes back with the app step, as a recipe word like `canvas`.
-pub const READY_PATH: &str = "/canvas_page/file/index.html";
+/// The team page `webui --port` serves. The web host answers 404 at `/`, so this is what
+/// the launcher waits for; the window URL ([`web_url`]) is the same page.
+pub const READY_PATH: &str = fantastic_team::page::PAGE_PATH;
 
 /// The URL the launcher polls for a 200. `Attach` is the URL the user named.
 pub fn ready_url(target: &Target) -> String {
@@ -606,8 +605,8 @@ mod tests {
     }
 
     #[test]
-    fn start_args_are_fantastic_s_canvas_word_and_the_port() {
-        assert_eq!(start_args(4321), args(&["canvas", "--port", "4321"]));
+    fn start_args_are_the_webui_word_and_the_port() {
+        assert_eq!(start_args(4321), args(&["webui", "--port", "4321"]));
     }
 
     #[tokio::test]
@@ -1119,7 +1118,7 @@ esac"#,
         };
         assert_eq!(
             ready_url(&start),
-            "http://127.0.0.1:9123/canvas_page/file/index.html"
+            "http://127.0.0.1:9123/team_page/file/index.html"
         );
         assert_eq!(web_url(&start), ready_url(&start));
         let tunnel = Target::Tunnel {
@@ -1130,7 +1129,7 @@ esac"#,
         };
         assert_eq!(
             ready_url(&tunnel),
-            "http://127.0.0.1:9100/canvas_page/file/index.html"
+            "http://127.0.0.1:9100/team_page/file/index.html"
         );
         let attach = Target::Attach {
             url: "http://127.0.0.1:1/x".into(),
@@ -1153,8 +1152,8 @@ esac"#,
             port: 9123,
         };
         let u = web_url(&start);
-        assert_eq!(u, "http://127.0.0.1:9123/canvas_page/file/index.html");
-        assert!(u.ends_with("/canvas_page/file/index.html"));
+        assert_eq!(u, "http://127.0.0.1:9123/team_page/file/index.html");
+        assert!(u.ends_with("/team_page/file/index.html"));
         let tunnel = Target::Tunnel {
             ssh: "ssh".into(),
             host: "h".into(),
@@ -1163,7 +1162,7 @@ esac"#,
         };
         assert_eq!(
             web_url(&tunnel),
-            "http://127.0.0.1:9100/canvas_page/file/index.html"
+            "http://127.0.0.1:9100/team_page/file/index.html"
         );
     }
 
@@ -1200,8 +1199,8 @@ esac"#,
     }
 
     #[test]
-    fn ready_path_is_the_canvas_page() {
-        assert_eq!(READY_PATH, "/canvas_page/file/index.html");
+    fn ready_path_is_the_team_page() {
+        assert_eq!(READY_PATH, "/team_page/file/index.html");
     }
 
     #[tokio::test]

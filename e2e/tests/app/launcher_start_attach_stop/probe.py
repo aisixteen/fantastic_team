@@ -12,11 +12,11 @@ def seed_dir(ctx, folder, name, procs, v, setup):
     """Run the binary once in `folder` so it is seeded, let `setup(team)` make its agents with
     `send`, and stop it."""
     port = app.free_port()
-    seed = app.Proc([ctx.binary, "canvas", "--port", str(port)], app.env_of(ctx.team),
+    seed = app.Proc([ctx.binary, "webui", "--port", str(port)], app.env_of(ctx.team),
                     folder, os.path.join(ctx.run_dir, f"{name}.log"))
     procs.append(seed)
     v.check(f"{name}: a first run seeds the directory",
-            app.wait_http(f"http://127.0.0.1:{port}/canvas_page/file/index.html", 30), seed.log())
+            app.wait_http(f"http://127.0.0.1:{port}/team_page/file/index.html", 30), seed.log())
     team = team_mod.Team(ctx.binary, folder, app.env_of(ctx.team))
     setup(team)
     seed.signal(signal.SIGINT)
@@ -38,19 +38,19 @@ def run(ctx):
     procs = []
     try:
         q = app.free_port()
-        run_flow.boot(ctx, forge=False, port=q)
-        canvas = f"http://127.0.0.1:{q}/canvas_page/file/index.html"
-        v.check("the headless binary's web UI answers on its port", app.wait_http(canvas, 30), canvas)
+        run_flow.boot(ctx, forge=False, extra_args=["webui", "--port", q])
+        page_url = f"http://127.0.0.1:{q}/team_page/file/index.html"
+        v.check("the headless binary's web UI answers on its port", app.wait_http(page_url, 30), page_url)
 
         # --- attach to the server that is up: starts nothing, stops nothing
-        a = app.run_app(ctx, ["--attach", canvas], name="attach")
+        a = app.run_app(ctx, ["--attach", page_url], name="attach")
         procs.append(a)
         line = a.wait_line("web UI at", 40)
-        v.check("attach prints the web UI URL", bool(line) and line.strip().endswith(canvas), a.log())
+        v.check("attach prints the web UI URL", bool(line) and line.strip().endswith(page_url), a.log())
         v.check("attach starts no child process", app.child_pids(a.pid) == [], str(app.child_pids(a.pid)))
         a.signal(signal.SIGINT)
         v.check("attach exits 0 on SIGINT", a.wait(20) == 0, a.log())
-        v.check("the server it attached to is still up", web.up(q, "/canvas_page/file/index.html"))
+        v.check("the server it attached to is still up", web.up(q, "/team_page/file/index.html"))
 
         # --- attach to nothing: fails, starts nothing
         dead = app.free_port()
@@ -60,23 +60,23 @@ def run(ctx):
                 b.wait(90) not in (None, 0) and app.child_pids(b.pid) == [] and "no 200" in b.log(), b.log())
 
         # --- start: one child, the web UI answers, stop leaves no child
-        # The real binary, fantastic's `canvas --port N` run in the team folder. The launcher waits
+        # The real binary, the team's `webui --port N` run in the team folder. The launcher waits
         # for the page that command serves; the web host answers 404 at `/`.
         p = app.free_port()
         start_dir = os.path.join(ctx.run_dir, "start_dir")
         os.makedirs(start_dir)
         # The launcher makes a team (`create_agent` under fixed ids) in a folder whose kernel has
         # no `lead`; a folder that has its `lead` is started as it is, so this one brings its own.
-        # A never-used directory is seeded by the first `canvas --port` start and serves the
-        # page from the next, so seed it once before the launcher starts it.
+        # The first `webui --port` start seeds a never-used directory and serves the page at
+        # once; the directory is started once beforehand so it holds its `lead`.
         seed_dir(ctx, start_dir, "seed", procs, v, lambda t: records.create(
             t, {"id": "lead", "parent_id": "user", "handler_module": "ram_store.tools"}))
         s = app.run_app(ctx, ["--binary", ctx.binary, "--port", p, "--dir", start_dir], name="start")
         procs.append(s)
         want = f"http://127.0.0.1:{p}/"
-        page = want + "canvas_page/file/index.html"
+        page = want + "team_page/file/index.html"
         line = s.wait_line("web UI at", 40)
-        v.check("start prints the web UI URL (the page `canvas --port` serves)",
+        v.check("start prints the web UI URL (the page `webui --port` serves)",
                 bool(line) and line.strip().endswith(page), s.log())
         kids = app.child_pids(s.pid)
         v.check("start has exactly one child process", len(kids) == 1, str(kids))
@@ -91,15 +91,15 @@ def run(ctx):
         if kids:  # fantastic runs in the folder it is started in: that is how it gets the dir
             cwd = subprocess.run(["lsof", "-a", "-d", "cwd", "-p", str(kids[0]), "-Fn"],
                                  capture_output=True, text=True).stdout
-        v.check("the child got fantastic's `canvas --port N` and nothing else",
-                args.endswith(f"canvas --port {p}"), args)
+        v.check("the child got the team's `webui --port N` and nothing else",
+                args.endswith(f"webui --port {p}"), args)
         v.check("it runs in the team directory", os.path.realpath(start_dir) in
                 [os.path.realpath(l[1:]) for l in cwd.splitlines() if l.startswith("n")] or not cwd, cwd)
         s.signal(signal.SIGINT)
         v.check("start exits 0 on SIGINT", s.wait(20) == 0, s.log())
         v.check("stop leaves no child process", bool(kids) and app.wait_gone(kids[0], 10), str(kids))
         v.check("the port refuses connections after stop", app.wait_refused(p, 10))
-        v.check("stop did not touch the attached server", web.up(q, "/canvas_page/file/index.html"))
+        v.check("stop did not touch the attached server", web.up(q, "/team_page/file/index.html"))
 
         # --- start in an empty folder on a fresh home: the app chooses fantastic's plain key mode
         # (so the credential store exists), then makes the team with create_agent under fixed ids

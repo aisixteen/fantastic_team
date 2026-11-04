@@ -1,0 +1,328 @@
+//! #224: `fantastic_team webui [--port N] [--host ADDR]` serves the team page from the
+//! binary, on a real kernel: the page and its socket answer on the port, `--host` is the
+//! address the web host binds, a kernel already running refuses the word, and `webui`
+//! with `canvas` is refused before anything is written. Unix only: the tests send signals.
+#![cfg(unix)]
+
+use std::collections::BTreeSet;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+static ISSUED: Mutex<BTreeSet<u16>> = Mutex::new(BTreeSet::new());
+
+fn free_port() -> u16 {
+    let mut issued = ISSUED.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        if issued.insert(port) {
+            return port;
+        }
+    }
+}
+
+/// A running binary; stopped (SIGTERM, then reaped) when dropped.
+struct Running(Child);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = Command::new("kill")
+            .args(["-TERM", &self.0.id().to_string()])
+            .status();
+        let end = Instant::now() + Duration::from_secs(10);
+        while self.0.try_wait().ok().flatten().is_none() {
+            if Instant::now() > end {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+fn start(dir: &Path, args: &[&str]) -> Running {
+    Running(
+        Command::new(env!("CARGO_BIN_EXE_fantastic_team"))
+            .args(args)
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    )
+}
+
+fn run_to_end(dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_fantastic_team"))
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+/// One HTTP/1.0 GET; the status and the whole response, or None while nothing listens.
+fn get(port: u16, path: &str) -> Option<(u16, String)> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut c = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
+    let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+    c.write_all(req.as_bytes()).ok()?;
+    let mut buf = Vec::new();
+    c.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    let status = text.split_whitespace().nth(1)?.parse().ok()?;
+    Some((status, text))
+}
+
+const PAGE: &str = "/team_page/file/index.html";
+
+fn wait_page(child: &mut Running, port: u16) -> String {
+    let end = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(st) = child.0.try_wait().unwrap() {
+            panic!("the binary exited with {st} before the page answered on {port}");
+        }
+        if let Some((200, text)) = get(port, PAGE) {
+            return text;
+        }
+        assert!(Instant::now() < end, "the page never answered on {port}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A websocket handshake on `/team_ws/ws` and one `call` frame; the handshake head and
+/// the first non-`event` frame.
+fn ws_call(port: u16, target: &str, payload: serde_json::Value) -> (String, serde_json::Value) {
+    let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    c.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    let hs = format!(
+        "GET /team_ws/ws HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
+    c.write_all(hs.as_bytes()).unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut b = [0u8; 1];
+        c.read_exact(&mut b).unwrap();
+        head.push(b[0]);
+    }
+    let head = String::from_utf8_lossy(&head).into_owned();
+    let msg = serde_json::json!({"type": "call", "target": target, "payload": payload, "id": "p1"})
+        .to_string();
+    assert!(msg.len() < 126);
+    let mut frame = vec![0x81, 0x80 | msg.len() as u8, 0, 0, 0, 0];
+    frame.extend_from_slice(msg.as_bytes());
+    c.write_all(&frame).unwrap();
+    loop {
+        let mut h2 = [0u8; 2];
+        c.read_exact(&mut h2).unwrap();
+        let len = match h2[1] & 0x7f {
+            126 => {
+                let mut l = [0u8; 2];
+                c.read_exact(&mut l).unwrap();
+                u16::from_be_bytes(l) as usize
+            }
+            127 => {
+                let mut l = [0u8; 8];
+                c.read_exact(&mut l).unwrap();
+                u64::from_be_bytes(l) as usize
+            }
+            n => n as usize,
+        };
+        let mut body = vec![0u8; len];
+        c.read_exact(&mut body).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        if v["type"] != "event" {
+            return (head, v);
+        }
+    }
+}
+
+fn text(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}
+
+#[test]
+fn webui_port_serves_the_team_page_and_its_socket() {
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let mut team = start(dir.path(), &["webui", "--port", &port.to_string()]);
+    let page = wait_page(&mut team, port);
+    assert!(
+        page.contains("<html") || page.contains("<!DOCTYPE"),
+        "{page}"
+    );
+    // the page's files, and the canvas is not there
+    let (js, _) = get(port, "/team_page/file/page.js").unwrap();
+    assert_eq!(js, 200);
+    let (canvas, _) = get(port, "/canvas_page/file/index.html").unwrap();
+    assert_eq!(canvas, 404, "webui serves the team page, not the canvas");
+    // the socket: the handshake and a call answered under the call's id
+    let (head, reply) = ws_call(port, "dispatcher", serde_json::json!({"type": "sidebar"}));
+    assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+    assert_eq!(reply["id"], "p1", "{reply}");
+    // the records the page needs are on disk: the host, and the page and socket under it
+    let web = dir.path().join(".fantastic/agents/web");
+    for rec in [
+        "agent.yaml",
+        "agents/team_page/agent.yaml",
+        "agents/team_ws/agent.yaml",
+    ] {
+        assert!(web.join(rec).is_file(), "{rec} missing under {web:?}");
+    }
+}
+
+#[test]
+fn webui_announces_the_page_it_serves() {
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let mut team = start(dir.path(), &["webui", "--port", &port.to_string()]);
+    wait_page(&mut team, port);
+    let mut out = team.0.stdout.take().unwrap();
+    let _ = Command::new("kill")
+        .args(["-TERM", &team.0.id().to_string()])
+        .status();
+    let mut seen = String::new();
+    let mut buf = [0u8; 512];
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end {
+        match out.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => seen.push_str(&String::from_utf8_lossy(&buf[..n])),
+        }
+    }
+    assert!(
+        seen.contains(&format!("the team page: http://127.0.0.1:{port}{PAGE}")),
+        "{seen}"
+    );
+}
+
+#[test]
+fn host_is_the_address_the_web_host_binds() {
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let mut team = start(
+        dir.path(),
+        &["webui", "--port", &port.to_string(), "--host", "0.0.0.0"],
+    );
+    wait_page(&mut team, port);
+    let rec = std::fs::read_to_string(dir.path().join(".fantastic/agents/web/agent.yaml")).unwrap();
+    assert!(
+        rec.contains("0.0.0.0"),
+        "the web record names its bind: {rec}"
+    );
+}
+
+#[test]
+fn a_host_that_is_not_an_address_and_a_bad_port_are_refused() {
+    let _s = serial();
+    for (args, want) in [
+        (
+            &["webui", "--host", "localhost"][..],
+            "--host must be an IP address, got `localhost`",
+        ),
+        (
+            &["webui", "--port", "0"],
+            "--port must be 1..65535, got `0`",
+        ),
+        (&["webui", "--port"], "--port needs a number"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let o = run_to_end(dir.path(), args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {}", text(&o.stderr));
+        assert!(
+            text(&o.stderr).contains(want),
+            "{args:?}: {}",
+            text(&o.stderr)
+        );
+        assert!(
+            !dir.path().join(".fantastic").exists(),
+            "{args:?}: a refused command writes nothing"
+        );
+    }
+}
+
+#[test]
+fn webui_and_canvas_together_are_refused_before_anything_is_written() {
+    let _s = serial();
+    for args in [
+        &["webui", "--port", "8123", "canvas"][..],
+        &["canvas", "--port", "8123", "webui"],
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let o = run_to_end(dir.path(), args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {}", text(&o.stderr));
+        let err = text(&o.stderr);
+        assert!(
+            err.contains("`webui` and `canvas` cannot run together"),
+            "{args:?}: {err}"
+        );
+        assert!(!dir.path().join(".fantastic").exists(), "{args:?}");
+    }
+}
+
+#[test]
+fn a_kernel_already_running_here_refuses_webui() {
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let mut team = start(dir.path(), &["webui", "--port", &port.to_string()]);
+    wait_page(&mut team, port);
+    let o = run_to_end(dir.path(), &["webui", "--port", &free_port().to_string()]);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+    assert!(
+        text(&o.stderr).contains("already running in this directory"),
+        "{}",
+        text(&o.stderr)
+    );
+    assert!(
+        team.0.try_wait().unwrap().is_none(),
+        "the running team is untouched"
+    );
+    assert_eq!(get(port, PAGE).map(|r| r.0), Some(200));
+}
+
+#[test]
+fn headless_over_webui_records_opens_no_port() {
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let mut team = start(dir.path(), &["webui", "--port", &port.to_string()]);
+    wait_page(&mut team, port);
+    drop(team); // stopped and reaped: the folder keeps the page's records
+    assert!(dir
+        .path()
+        .join(".fantastic/agents/web/agents/team_page/agent.yaml")
+        .is_file());
+    let mut headless = start(dir.path(), &["--headless"]);
+    // give the kernel time to boot every record, then ask the port
+    let end = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < end {
+        assert!(
+            headless.0.try_wait().unwrap().is_none(),
+            "--headless exited"
+        );
+        assert!(
+            get(port, PAGE).is_none(),
+            "--headless served the page that webui recorded"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
