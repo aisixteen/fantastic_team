@@ -22,3 +22,5 @@ records are the ones the app made; the registry counts nothing running.
 
 Mutation: put `kernel: "*"` back in `roles/lead.md` and the sub-lead's spawn is refused
 (`not_allowed`); lane `s1` and `w1` never run and the check on lanes fails.
+
+Waiting on aisixteen/fantastic#467 (#233): under fantastic's reach (god mode) every agent is granted `*` on the credential store, so no key procedure exists in the team. But reach writes a new agent's grants after a spawn with a task has begun its first turn. With the tiers' `credentials` ref kept, that first turn fails and the spawned agents never answer (checked: 3 of 13 turns served). So this test removes the tiers' `credentials` ref (the spawned agents ask the plug without a key), and the check "a worker spawned with a task reads its key under reach" is NOT made here until #467 is fixed. No sleep, no grant in the probe.

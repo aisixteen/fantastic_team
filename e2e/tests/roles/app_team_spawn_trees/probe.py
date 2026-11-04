@@ -47,7 +47,7 @@ def point_at_plug(ctx, team):
     tiers = {}
     for name, t in agents["roles"]["tiers"].items():
         t = dict(t, model=cli.MODEL, endpoint=ctx.model.endpoint)
-        t.pop("credentials", None)  # this script spawns with a task, which runs before any key grant (#223 has its own tests)
+        t.pop("credentials", None)  # WAITING on aisixteen/fantastic#467: reach writes a new agent's grants after a spawn with a task has started its first turn, so a tier with a key ref fails that turn; no sleep or grant here
         tiers[name] = t
     records.update(team, "roles", tiers=tiers, limits={"total": 6})
 
