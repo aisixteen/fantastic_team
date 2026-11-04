@@ -9,7 +9,6 @@ from helpers import app, cli, records, run_flow, team as team_mod
 from helpers.verdict import Verdict
 
 TASK = "Run a sub-lead and a project lead, each with a worker; delete what you spawned."
-FILES_VERBS = ["read", "read_stream", "watch_path", "unwatch_path", "watch"]
 REPO_ROLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "roles")
 
 
@@ -38,11 +37,6 @@ def point_at_plug(ctx, team):
     agents = team.agents()
     records.update(team, "lead", model=cli.MODEL, endpoint=ctx.model.endpoint,
                    credentials={"store": "credentials", "ref": f"model/{ctx.model.host}"})
-    # The lead reads its card (`system_prompt_file`) through `files` and the app grants it only
-    # `read`; the prompt file is read and watched (`read_stream`, `watch_path`, `unwatch_path`, `watch`). Not part of #227: the probe
-    # adds the verbs on both ends so the lead can start, and the report names the gap.
-    records.merge(team, "lead", "can_call", {"files": FILES_VERBS}, agents)
-    records.merge(team, "files", "callable_by", {"lead": FILES_VERBS}, agents)
     tiers = {}
     for name, t in agents["roles"]["tiers"].items():
         t = dict(t, model=cli.MODEL, endpoint=ctx.model.endpoint)

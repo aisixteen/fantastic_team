@@ -14,12 +14,6 @@ card or grant is touched. The one record change besides that is `limits.total` o
 raised from the app's 3 to 6 with `update_agent`: the two sub-leads and their two workers are
 alive at once (4).
 
-One more probe write, outside #227: the app's main lead holds only `read` on the home `files`,
-but its `system_prompt_file` is read and watched through it (`read_stream`, `watch_path`,
-`unwatch_path`, `watch`), so with the app's own grants the lead's first turn fails with
-`may not call 'watch' on files`. The probe adds those verbs on both ends (lead `can_call`, files
-`callable_by`); drop that when the app grants them.
-
 Needs `fantastic_team_app` next to `--bin` (a Skip otherwise).
 
 Checks: the cards on disk equal the repo's `roles/`; all four lanes asked the model (so four
