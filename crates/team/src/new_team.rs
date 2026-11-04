@@ -62,6 +62,12 @@ pub const CANVAS: &str = crate::tree::CANVAS_ID;
 /// What the lead may call on the canvas: the cards of the workers and leads grant it too,
 /// and a spawn grants only what the spawner holds.
 pub const LEAD_CANVAS_VERBS: [&str; 1] = ["new_canvas"];
+/// What the lead may call on the home's `files`, and what `files` admits from the lead: `read`,
+/// and the verbs its `system_prompt_file` is read and followed with through its
+/// `file_bridge_id` (fantastic's ai_core `prompt_file.rs`: `read_stream` at :290, `watch_path`
+/// at :232 and :253, `unwatch_path` at :340, and the bridge `watch` at :239).
+pub const LEAD_FILES_VERBS: [&str; 5] =
+    ["read", "read_stream", "watch_path", "unwatch_path", "watch"];
 
 /// One step of making a team.
 #[derive(Debug, Clone, PartialEq)]
@@ -140,7 +146,7 @@ pub fn steps(dir: &Path) -> Vec<Step> {
     lead["system_prompt_file"] = json!("roles/lead.md");
     lead["can_call"] = json!({
         "$self": "*", "$subtree": "*",
-        (MEMORY): "*", (CREDENTIALS): "*", (FILES): ["read"],
+        (MEMORY): "*", (CREDENTIALS): "*", (FILES): LEAD_FILES_VERBS,
         (ROOT_ID): LEAD_ROOT_VERBS,
         (ROLES): LEAD_ROLES_VERBS,
         (BOARD): LEAD_BOARD_VERBS,
@@ -230,7 +236,11 @@ pub fn steps(dir: &Path) -> Vec<Step> {
         "callable_by",
         json!({(LEAD): "*", (ROLES): "*", (TASKS): "*"}),
     ));
-    out.push(grant(FILES, "callable_by", json!({(LEAD): ["read"]})));
+    out.push(grant(
+        FILES,
+        "callable_by",
+        json!({(LEAD): LEAD_FILES_VERBS}),
+    ));
     out.push(grant(
         CREDENTIALS,
         "callable_by",
@@ -499,6 +509,13 @@ mod tests {
 
     /// [`team`], and the log of the `send`s its `caller.tools` agents received.
     async fn team_with_log() -> (tempfile::TempDir, Arc<Kernel>, SentLog) {
+        build(None).await
+    }
+
+    /// The home and the team of [`team_with_log`]. With `Some(endpoint)` the lead stays the
+    /// real backend the app makes, pointed at `endpoint` (a scripted model on 127.0.0.1) with a
+    /// key from a file credential store; nothing else about it changes.
+    async fn build(real_lead: Option<&str>) -> (tempfile::TempDir, Arc<Kernel>, SentLog) {
         let log: SentLog = Arc::default();
         let dir = tempfile::TempDir::new().unwrap();
         fantastic_tui::seed_dir(dir.path()).unwrap();
@@ -510,16 +527,37 @@ mod tests {
         booted.write_seed().unwrap();
         let kernel = booted.kernel.clone();
         crate::boot_kernel(&kernel).await.unwrap();
-        let mk = json!({"type": "create_agent", "parent_id": "user", "id": "credentials",
+        let mut mk = json!({"type": "create_agent", "parent_id": "user", "id": "credentials",
             "handler_module": "credential_store.tools", "backend": "env", "refs": {}});
+        if let Some(endpoint) = real_lead {
+            mk["backend"] = json!("file");
+            mk["file"] = json!(dir.path().join("creds.yaml").to_string_lossy());
+            let host = endpoint.trim_start_matches("http://");
+            mk["refs"] = json!({"plug": {"host": host.split('/').next().unwrap()}});
+        }
         let o = ask(&kernel, ROOT_ID, mk).await;
         assert!(o.get("error").is_none(), "{o}");
+        if real_lead.is_some() {
+            let o = ask(
+                &kernel,
+                "credentials",
+                json!({"type": "set", "ref": "plug", "fields": {"api_key": "sk-plug"}}),
+            )
+            .await;
+            assert_eq!(o["stored"], json!(true), "{o}");
+        }
         write_cards(dir.path()).unwrap();
         let mut made = steps(dir.path());
         for s in &mut made {
             if let Step::Create(p) = s {
                 if p["id"] == LEAD {
-                    p["handler_module"] = json!("caller.tools");
+                    match real_lead {
+                        None => p["handler_module"] = json!("caller.tools"),
+                        Some(endpoint) => {
+                            p["endpoint"] = json!(endpoint);
+                            p["credentials"] = json!({"store": CREDENTIALS, "ref": "plug"});
+                        }
+                    }
                 }
                 if p["id"] == ROLES {
                     p["tiers"]["strong"]["handler_module"] = json!("caller.tools");
@@ -569,6 +607,52 @@ mod tests {
         bootstrap::shutdown(dir).unwrap();
     }
 
+    /// The app's lead takes its first turn: its `system_prompt_file` is read through `files`
+    /// with the grants of [`steps`] alone (the model is scripted on 127.0.0.1, no real API),
+    /// and what the model is sent is the card's text.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_leads_first_turn_reads_its_system_prompt_file() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let srv = MockServer::start().await;
+        let body: String = [
+            json!({"type": "message_start", "message": {"usage": {"input_tokens": 10}}}),
+            json!({"type": "content_block_delta", "index": 0,
+                   "delta": {"type": "text_delta", "text": "ready"}}),
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                   "usage": {"output_tokens": 1}}),
+            json!({"type": "message_stop"}),
+        ]
+        .iter()
+        .map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap()))
+        .collect();
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&srv)
+            .await;
+        let (dir, kernel, _) = build(Some(&format!("{}/v1/messages", srv.uri()))).await;
+        let r = ask(&kernel, LEAD, json!({"type": "send", "text": "go"})).await;
+        let err = meta(&kernel, LEAD)["system_prompt_file_error"].clone();
+        assert!(
+            err.is_null(),
+            "the prompt file was refused: {err}; reply {r}"
+        );
+        assert!(!r.to_string().contains("may not call"), "{r}");
+        let seen = srv.received_requests().await.unwrap_or_default();
+        assert_eq!(seen.len(), 1, "the model got no request: {r}");
+        let card = std::fs::read_to_string(dir.path().join("roles/lead.md")).unwrap();
+        let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert!(
+            sent["system"]
+                .to_string()
+                .contains(card.lines().nth(2).unwrap()),
+            "the system block is not the card: {}",
+            sent["system"]
+        );
+        finish(dir.path(), kernel).await;
+    }
+
     /// Roles mode on the new path: the lead has the roles registry and its spawn grants,
     /// the registry is the tiers-and-limits record, and the home agents admit the lead.
     #[tokio::test(flavor = "multi_thread")]
@@ -606,7 +690,7 @@ mod tests {
         );
         assert_eq!(
             meta(&kernel, "files")["callable_by"]["lead"],
-            json!(["read"])
+            json!(LEAD_FILES_VERBS)
         );
         assert_eq!(
             meta(&kernel, ROOT_ID)["callable_by"]["lead"],
