@@ -13,23 +13,30 @@ REPO_ROLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."
 
 
 def seed(ctx, folder, env, v):
-    """Run the binary once in `folder` so it is seeded, make the home's credential store (the
-    model's key from the environment), and stop it: what the app needs in a folder with no team."""
+    """Run the binary once in `folder` so it is seeded, and stop it: what the app needs in a
+    folder with no team. The key store is the app's to make (it chooses `plain`, #222)."""
     port = app.free_port()
     proc = app.Proc([ctx.binary, "canvas", "--port", str(port)], env, folder,
                     os.path.join(ctx.run_dir, "seed.log"))
     try:
         v.check("a first run seeds the directory",
                 app.wait_http(f"http://127.0.0.1:{port}/canvas_page/file/index.html", 30), proc.log())
-        t = team_mod.Team(ctx.binary, folder, env)
-        records.create(t, {"id": "credentials", "parent_id": "user", "handler_module": "credential_store.tools",
-                           "backend": "env",
-                           "refs": {f"model/{ctx.model.host}": {"host": ctx.model.host,
-                                                                 "env": {"api_key": "E2E_MODEL_KEY"}}}})
         proc.signal(signal.SIGINT)
         v.check("the seeding run stops", proc.wait(30) is not None, proc.log())
     finally:
         proc.reap()
+
+
+def store_model_key(ctx, team, key):
+    """Keep the model's key the way the set-up page does: declare the ref on the store the app
+    made (its backend stays the app's `plain` file), then `set` the value."""
+    ref = f"model/{ctx.model.host}"
+    refs = dict(team.agents()["credentials"].get("refs") or {})
+    refs[ref] = {"host": ctx.model.host, "fields": ["api_key"]}
+    records.update(team, "credentials", refs=refs)
+    r = team.send("credentials", {"type": "set", "ref": ref, "fields": {"api_key": key}})
+    if r.get("status") != "completed" or (r.get("result") or {}).get("error"):
+        raise RuntimeError(f"set {ref}: {r}")
 
 
 def point_at_plug(ctx, team):
@@ -65,6 +72,7 @@ def run(ctx):
         for name in sorted(os.listdir(REPO_ROLES)):
             with open(os.path.join(REPO_ROLES, name)) as f, open(os.path.join(folder, "roles", name)) as g:
                 v.check(f"roles/{name} on disk is the repo's card", f.read() == g.read())
+        store_model_key(ctx, probe, keys["model_key"])
         point_at_plug(ctx, probe)
         before = cli.tree(probe)
 
