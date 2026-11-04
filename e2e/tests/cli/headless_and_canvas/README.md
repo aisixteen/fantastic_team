@@ -4,7 +4,7 @@ The two surfaces of fantastic's command line, and the canvas as an agent's own s
 
 1. `fantastic_team --headless`: no screen and no port. The team runs with stdin on /dev/null and
    no terminal (the UI would need one), and its process (and children) listen on no TCP port. The
-   probe imports a lead (blueprint) that may `create_agent` on the root; the scripted lead makes a
+   probe makes a lead with `create_agent` that may `create_agent` on the root itself; the scripted lead makes a
    `canvas_page.tools` agent under itself: the canvas is compiled in and registered, so an agent
    can create one with no `canvas` word. It does not start a web host.
 2. `fantastic_team canvas --port N` in the same folder: the same records, now with a web host:

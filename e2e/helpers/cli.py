@@ -1,8 +1,9 @@
-"""The cli group's shared steps (issue #219): one fixture, fantastic's own start, blueprints.
+"""The cli group's shared steps (issues #219, #221): one fixture, fantastic's own start, agents.
 
 Every test in `tests/cli/` starts the team binary the way fantastic is started
-(`--headless`, or `canvas --port N`) in the run folder, imports its blueprint folder (or makes
-its agents with `send`), hands the lead its task, and checks the result and the record set.
+(`--headless`, or `canvas --port N`) in the run folder, makes its agents with `send` +
+`create_agent` under fixed ids (no blueprint, no import), hands the lead its task, and checks
+the result and the record set.
 
 THE FIXTURE is a local git repo with one failing test: `test_calc.py` checks `adder.add`
 and `muler.mul`, and both are wrong. SOLVED means the test passes AND the fix is committed
@@ -18,7 +19,7 @@ import shutil
 import subprocess
 import tempfile
 
-from . import run_flow, team as team_mod
+from . import records, run_flow, team as team_mod
 
 FILES = {
     "adder.py": "def add(a, b):\n    return a - b\n",
@@ -121,10 +122,7 @@ def tool_record(repo: str, work: str) -> dict:
 
 
 def create(team, payload: dict) -> dict:
-    r = team.send("kernel", dict(payload, type="create_agent"))
-    if r.get("status") != "completed":
-        raise RuntimeError(f"create_agent {payload.get('id')}: {r}")
-    return r["result"]
+    return records.create(team, payload)
 
 
 def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | None = None):
@@ -146,7 +144,7 @@ def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | Non
 
 
 def add_base(ctx) -> None:
-    """The two agents every blueprint of this group binds its ports to: the credential store
+    """The two agents every test of this group's lead and workers use: the credential store
     (the model's key from the environment, the way `backend: env` says) and the exec agent."""
     create(ctx.team, {"id": "credentials", "parent_id": "user", "handler_module": "credential_store.tools",
                       "backend": "env",
@@ -155,28 +153,56 @@ def add_base(ctx) -> None:
     create(ctx.team, dict(tool_record(ctx.repo, ctx.work), id=EXEC, parent_id="user"))
 
 
-BIND = {"@memory": "memory", "@credentials": "credentials", "@exec": EXEC}
+LEAD = "lead"
+MODEL = "scripted-model"
 
 
-def import_blueprint(ctx, name: str = "blueprint") -> list[str]:
-    """Fill the test's blueprint folder (`{{model_endpoint}}` and the like) into the run
-    folder and import it under `user`. Returns the new ids."""
-    src = os.path.join(ctx.dir, name)
-    out = os.path.join(ctx.work, name)
-    shutil.copytree(src, out)
-    for dirpath, _, files in os.walk(out):
-        for f in files:
-            p = os.path.join(dirpath, f)
-            with open(p) as fh:
-                text = fh.read()
-            with open(p, "w") as fh:
-                fh.write(team_mod.fill_text(text, ctx.vars))
-    if os.path.isdir(os.path.join(ctx.dir, "roles")):
-        # the role cards are not in the blueprint (a card is code to an import); `role_dirs: [roles]`
-        # reads them from the folder the kernel runs in
-        shutil.copytree(os.path.join(ctx.dir, "roles"), os.path.join(ctx.work, "roles"))
-    said = ctx.team.import_blueprint(out, "user", BIND)
-    return [i.strip() for i in said.split(":", 1)[1].split(",")]
+def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool = False,
+               **extra) -> str:
+    """One AI agent of the scripted model: `create_agent` under `parent` with the fixed id `id`.
+    `grants` is its `can_call` beyond `$self` and the shared `memory` store (agent -> verbs,
+    `"*"` for every verb). An edge is written on both ends: the caller's `can_call` in this
+    payload, the callee's `callable_by` for the callees that exist already (a child made later
+    admits its parent through `$parent`). `key` gives it the model's credential ref (a spawned
+    agent has none: a spawn does not open the credential store). Returns `id`."""
+    team = ctx.team
+    can_call = {"$self": "*", "memory": "*", **({"credentials": "*"} if key else {}), **(grants or {})}
+    rec = {"id": id, "parent_id": parent, "handler_module": "anthropic_backend.tools",
+           "model": MODEL, "endpoint": ctx.model.endpoint, "memory_store_id": "memory",
+           "can_call": can_call, "callable_by": {"$self": "*", "$parent": "*"}}
+    if key:
+        rec["credentials"] = {"store": "credentials", "ref": f"model/{ctx.model.host}"}
+    rec.update(extra)
+    records.create(team, rec)
+    have = team.agents()
+    for callee, verbs in can_call.items():
+        if callee in have and callee != "$self":
+            records.merge(team, callee, "callable_by", {id: verbs}, have)
+    return id
+
+
+def make_lead(ctx, grants: dict | None = None, subtree: bool = False) -> str:
+    """The lead: `make_agent` under `user` with the model's key. `subtree` lets it call
+    everything below it."""
+    lead = make_agent(ctx, LEAD, "user", {**({"$subtree": "*"} if subtree else {}), **(grants or {})},
+                      key=True)
+    return lead
+
+
+def make_registry(ctx, total: int, parent: str = LEAD) -> str:
+    """The roles registry `roles` (fantastic's `agentic_resources`) under `parent`: one tier
+    `small` (the scripted model), the role cards of the test's `roles/` folder copied next to
+    the kernel (where `role_dirs: [roles]` reads them), `limits.total`. The lead may call it."""
+    team = ctx.team
+    shutil.copytree(os.path.join(ctx.dir, "roles"), os.path.join(ctx.work, "roles"))
+    records.create(team, {"id": "roles", "parent_id": parent, "handler_module": "agentic_resources.tools",
+                          "role_dirs": ["roles"], "limits": {"total": total},
+                          "tiers": {"small": {"handler_module": "anthropic_backend.tools", "model": MODEL,
+                                              "endpoint": ctx.model.endpoint, "memory_store_id": "memory"}},
+                          "can_call": {"$self": "*"}, "callable_by": {"$self": "*", "$parent": "*"}})
+    records.link(team, "roles", "memory")
+    records.link(team, parent, "roles", ["roles", "role", "spawn", "get_count", "fleet"])
+    return "roles"
 
 
 def ids(team) -> dict:
@@ -208,21 +234,23 @@ def dump(obj) -> str:
 
 
 def precreated(ctx, v, expect: dict, lanes: set[str], task: str) -> None:
-    """The shared run of the tests whose whole tree is in the blueprint: import, hand the lead
-    its task, then check: solved; the tree is exactly `expect` (new id -> parent) and unchanged by the run;
-    every lane in `lanes` asked the model."""
+    """The shared run of the tests whose whole tree is made with `create_agent` before the task:
+    make the agents of `expect` (id -> parent, parents first), hand the lead its task, then check:
+    solved; the tree is exactly `expect` and unchanged by the run; every lane in `lanes` asked
+    the model. An agent may call its children; one with no child may call the exec agent."""
     start(ctx)
     add_base(ctx)
     base = set(ids(ctx.team))
-    new = import_blueprint(ctx)
-    v.check("the import made exactly the blueprint's agents", sorted(new) == sorted(expect), str(new))
+    for id, parent in expect.items():
+        kids = {c: "*" for c, p in expect.items() if p == id}
+        make_agent(ctx, id, parent, kids or {EXEC: "*"}, key=(id == LEAD))
     before = tree(ctx.team)
-    v.check("the tree is the blueprint's and the base, nothing else",
+    v.check("the tree is the one made and the base, nothing else",
             set(before) == base | set(expect), str(sorted(set(before) - base)))
-    v.check("each agent sits under the parent the blueprint gave it",
+    v.check("each agent sits under the parent it was made under",
             all(before[i][1] == p for i, p in expect.items()),
             str({i: before[i][1] for i in expect}))
-    ctx.team.send("lead_1", {"type": "send", "text": task})
+    ctx.team.send(LEAD, {"type": "send", "text": task})
     v.check("the scripted model played every turn, none past the end",
             wait_served(ctx, 120) and ctx.model.consumed,
             f"served {ctx.model.served} of {len(ctx.model.turns)}")

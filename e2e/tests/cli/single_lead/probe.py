@@ -1,6 +1,6 @@
 """single_lead: one lead solves the fixture, started two ways.
 
-A: `--headless`, then the blueprint folder imported under `user`.
+A: `--headless`, then the lead made with `send` + `create_agent` under the fixed id `lead`.
 B: no file. `--headless ai anthropic --model M --endpoint URL` (fantastic's recipe: the root AI
    `ai`), then `send` of `create_agent` / `update_agent` payloads.
 The script plays twice in a row (turns 1-6 for A, 7-12 for B); one lead is on at a time.
@@ -34,12 +34,13 @@ def check_end(v, ctx, label, before, lead):
     return ok
 
 
-def variant_blueprint(ctx, v):
-    cli.start(ctx, sub="blueprint_run")
+def variant_create_agent(ctx, v):
+    cli.start(ctx, sub="create_agent_run")
     cli.add_base(ctx)
-    new = cli.import_blueprint(ctx)
-    v.check("A: the import made the lead alone", len(new) == 1 and new[0].startswith("lead"), str(new))
-    lead = new[0]
+    base = set(cli.ids(ctx.team))
+    lead = cli.make_lead(ctx, {cli.EXEC: "*"})
+    made = set(cli.ids(ctx.team)) - base
+    v.check("A: create_agent made the lead alone, under the id `lead`", made == {"lead"} and lead == "lead", str(made))
     before = cli.ids(ctx.team)
     v.check("A: the lead is an anthropic backend record",
             before.get(lead) == "anthropic_backend.tools", str(before))
@@ -74,7 +75,7 @@ def variant_recipe(ctx, v):
 
 def run(ctx):
     v = Verdict("cli/single_lead")
-    variant_blueprint(ctx, v)
+    variant_create_agent(ctx, v)
     variant_recipe(ctx, v)
     v.check("the scripted model played exactly its 12 turns, none past the end",
             ctx.model.consumed, f"served {ctx.model.served} of {len(ctx.model.turns)}")

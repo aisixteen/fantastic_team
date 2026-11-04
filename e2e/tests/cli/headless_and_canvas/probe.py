@@ -16,19 +16,21 @@ def run(ctx):
     # 1. --headless: no port, no screen; the lead makes a canvas with create_agent
     team = cli.start(ctx)  # stdin is /dev/null and there is no tty: the UI could not open
     cli.add_base(ctx)
-    new = cli.import_blueprint(ctx)
-    v.check("the lead was imported", new == ["lead_1"], str(new))
+    base = set(cli.ids(team))
+    cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent"]})
+    new = set(cli.ids(team)) - base
+    v.check("the lead was made with create_agent", new == {"lead"}, str(new))
     v.check("the team runs headless", team.proc.poll() is None)
     agents = team.agents()
     v.check("the canvas is registered but not started: no web host, no canvas page",
             not {"web", "canvas_page", "canvas_ws"} & set(agents), str(sorted(agents)))
-    team.send("lead_1", {"type": "send", "text": "Make a canvas for your notes."})
+    team.send("lead", {"type": "send", "text": "Make a canvas for your notes."})
     v.check("the scripted model played every turn", cli.wait_served(ctx, 60) and ctx.model.consumed,
             f"served {ctx.model.served} of {len(ctx.model.turns)}")
     agents = team.agents()
     sk = agents.get("sketch", {})
     v.check("the lead's create_agent made a canvas with no `canvas` word",
-            sk.get("handler_module") == "canvas_page.tools" and sk.get("parent_id") == "lead_1", str(sk)[:300])
+            sk.get("handler_module") == "canvas_page.tools" and sk.get("parent_id") == "lead", str(sk)[:300])
     v.check("still no web host", "web" not in agents, str(sorted(agents)))
     ports = cli.listeners(team.proc.pid)
     v.check("--headless binds no TCP port", ports == set(), str(ports))
@@ -54,6 +56,6 @@ def run(ctx):
     v.check("the listener check sees port N", str(port) in ports, f"{ports}, want {port}")
     v.check("the web host and the canvas page are there now",
             {"web", "canvas_page"} <= set(team.agents()), str(sorted(team.agents())))
-    v.check("the lead's canvas and the lead are still there", {"lead_1", "sketch"} <= set(team.agents()))
+    v.check("the lead's canvas and the lead are still there", {"lead", "sketch"} <= set(team.agents()))
     team.stop()
     return v.finish()

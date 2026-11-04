@@ -10,7 +10,7 @@
     python3 e2e/run.py --bin PATH ...         use a built binary instead of building
 
 A test is a folder `e2e/tests/<group>/<id>/` with `test.yaml` (`costs`, `timeout`,
-`plug`, `build`), a `blueprint/` folder (fantastic's blueprint: the lead; the `cli/` tests hold the whole tree), a plug's input (`script.json` for the scripted plug) and
+`plug`, `build`), a plug's input (`script.json` for the scripted plug) and
 `probe.py`, whose `run(ctx)` returns the exit code of its `Verdict`.
 A test whose plug has no key in the environment is skipped (`SKIP`), not failed.
 Runs live under `e2e/runs/<stamp>/<group>/<id>/` (gitignored: they hold model output).
@@ -129,12 +129,12 @@ class Ctx:
         self.team: team_mod.Team | None = None
         self.secrets: dict = {}
         self.build = BUILD  # "general" or "github": which exec the worker gets
-        self.lead = "lead_1"  # the blueprint's lead, as fantastic's import renames it
+        self.lead = "lead"  # the lead `stock.make_lead` creates, under a fixed id
         self.work = run_dir
 
     def boot_team(self, env_extra: dict[str, str] | None = None, **kw) -> team_mod.Team:
         """Start the stock team (`helpers/stock.py`): fantastic's CLI in the run folder, the
-        test's `blueprint/` folder imported (the lead), the rest made with `send`."""
+        the lead and the rest made with `send` + `create_agent`."""
         return stock_mod.boot(self, env_extra, **kw)
 
 
@@ -157,7 +157,7 @@ def run_test(test: dict, binary: str, stamp_dir: str) -> str:
         forge = forge_mod.Forge(os.path.join(run_dir, "forge")).start()
         variables = {"run_dir": run_dir, "forge_url": forge.url, "forge_host": forge.host}
         model = PLUGS[test["plug"]](test["dir"], variables)
-        variables.update(provides_vars(model))  # model_name: what a blueprint's `model:` takes
+        variables.update(provides_vars(model))  # model_name: what the lead's `model` field takes
         model.start()
         ctx = Ctx(test, run_dir, binary, model, forge)
         ctx.vars = dict(variables, model_endpoint=model.endpoint, model_host=model.host)
@@ -342,7 +342,7 @@ def selftest() -> int:
     selftest_cli_fixture(v)
     selftest_app_helpers(v)
     selftest_new_tests_collect(v)
-    selftest_blueprints(v)
+    selftest_no_blueprints(v)
     return v.finish()
 
 
@@ -821,39 +821,31 @@ def selftest_new_tests_collect(v: Verdict) -> None:
         if not t:
             continue
         ok, detail = collect_probe(t["dir"])
-        files = all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py",
-                                                                         os.path.join("blueprint", "blueprint.yaml")))
+        files = all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py"))
         if not (ok and files and t["costs"] == "free" and t["plug"] == "scripted" and t["build"] == "any"):
             bad.append(f"{n}: collect={detail} files={files} costs={t['costs']} plug={t['plug']} build={t['build']}")
     v.check("each collects, has its files, and is free / scripted / any build", not bad, "; ".join(bad))
 
 
-def selftest_blueprints(v: Verdict) -> None:
-    """The tests hold no team.yaml: each has a blueprint folder whose ports `helpers/stock.py` binds,
-    and the GitHub build's exec pattern is read from its patch."""
+def selftest_no_blueprints(v: Verdict) -> None:
+    """The tests hold no team.yaml and no blueprint: every agent is a `create_agent` payload
+    sent with `send` (`helpers/stock.py`, `helpers/cli.py`), and the GitHub build's exec pattern
+    is read from its patch."""
     from helpers import stock
     tests = discover()
-    v.check("no test holds a team.yaml (the config is fantastic's records and blueprints)",
+    v.check("no test holds a team.yaml (the config is fantastic's records)",
             not [t["name"] for t in tests if os.path.exists(os.path.join(t["dir"], "team.yaml"))])
-    bad = []
+    held = []
     for t in tests:
-        if t["name"] == "surfaces/bare_without_terminal_prints_readme":  # starts no team
-            continue
-        bp = os.path.join(t["dir"], "blueprint", "blueprint.yaml")
-        if not os.path.isfile(bp):
-            bad.append(f"{t['name']}: no blueprint/blueprint.yaml")
-            continue
-        unknown = [p for p in stock.declared_ports(os.path.join(t["dir"], "blueprint")) if p not in stock.PORTS]
-        if unknown:
-            bad.append(f"{t['name']}: ports {unknown} are not bound by stock.PORTS")
-    v.check("every test has a blueprint folder and every port it declares is one stock.py binds",
-            not bad, "; ".join(bad))
+        for dirpath, _, files in os.walk(t["dir"]):
+            held += [os.path.join(dirpath, f) for f in files if f == "blueprint.yaml"]
+        if os.path.isdir(os.path.join(t["dir"], "blueprint")):
+            held.append(os.path.join(t["dir"], "blueprint"))
+    v.check("no test holds a blueprint (agents are made with send + create_agent)", not held, str(held))
     v.check("the GitHub build's worker exec pattern is the patch's, the general build's is any command",
             "api\\.github\\.com" in stock.github_allowed()
             and stock.worker_exec_record("github")["allowed"] == [stock.github_allowed()]
             and stock.worker_exec_record()["allowed"] == [".*"])
-    ports = stock.declared_ports(os.path.join(HERE, "tests", "task", "one_issue_to_draft_pr", "blueprint"))
-    v.check("declared_ports reads the ports of a blueprint in order", ports == list(stock.PORTS), str(ports))
 
 
 def main() -> int:

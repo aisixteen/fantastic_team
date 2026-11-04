@@ -38,8 +38,8 @@ def fake_keys(ctx) -> dict:
 
 
 def boot(ctx, **kw) -> dict:
-    """Boot the stock team (`helpers/stock.py`: fantastic's CLI, the lead from the test's
-    blueprint folder, the rest as records) with the fake keys in ITS environment only.
+    """Boot the stock team (`helpers/stock.py`: fantastic's CLI, the lead and the rest made
+    with `send` + `create_agent`) with the fake keys in ITS environment only.
     Returns the keys."""
     from . import stock
     stock.boot(ctx, **kw)

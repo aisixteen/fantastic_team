@@ -15,11 +15,11 @@ def run(ctx):
         return 0
     other = None
     try:
-        stock.boot(ctx, forge=False)
+        stock.boot(ctx, forge=False, lead_tools=())
         team = ctx.team
         v.check("the headless team is running", team.proc.poll() is None)
         v.check("it serves the operator socket", os.path.exists(os.path.join(team.dir, team_mod.SOCK)))
-        v.check("the blueprint's lead is in it", ctx.lead in team.agents(), ctx.lead)
+        v.check("the lead made with create_agent is in it", ctx.lead in team.agents(), ctx.lead)
         ports = cli.listeners(team.proc.pid)
         v.check("it binds no TCP port", ports == set(), str(ports))
         log = team.log()

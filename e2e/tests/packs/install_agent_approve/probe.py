@@ -10,7 +10,7 @@ BIND = {"connector:github": "github"}
 
 
 def run(ctx):
-    v = Verdict("packs/install_blueprint_approve")
+    v = Verdict("packs/install_agent_approve")
     a = None
     try:
         a = P.boot_plain(ctx, "a")

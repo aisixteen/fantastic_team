@@ -677,21 +677,12 @@ fn cfg_of(
                 .collect()
         })
         .unwrap_or_default();
-    // A plain string field names a peer by the id it was written with; after a blueprint
-    // import the peer has a fresh id, so it is found among the agents this one may call.
-    let peer = |named: String, hm: &str| crate::tree::peer_named(kernel, id, &named, hm);
     Ok(BoardCfg {
         repos,
-        github: peer(
-            text("github").ok_or_else(|| "team_board: record needs `github`".to_string())?,
-            team_github_connector::HANDLER_MODULE,
-        ),
-        store: peer(
-            text("store").ok_or_else(|| "team_board: record needs `store`".to_string())?,
-            "ram_store.tools",
-        ),
+        github: text("github").ok_or_else(|| "team_board: record needs `github`".to_string())?,
+        store: text("store").ok_or_else(|| "team_board: record needs `store`".to_string())?,
         ask_to: text("ask_to").unwrap_or_else(|| "user".into()),
-        roles: text("roles").map(|r| peer(r, fantastic_agentic_resources::HANDLER_MODULE)),
+        roles: text("roles"),
         groups: meta
             .get("team_groups")
             .and_then(|v| serde_json::from_value(v.clone()).ok())

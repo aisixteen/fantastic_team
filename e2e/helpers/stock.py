@@ -1,16 +1,14 @@
-"""The stock team of the older e2e tests, as fantastic records (issue #219).
+"""The stock team of the older e2e tests, as fantastic records (issues #219, #221).
 
 The team binary is fantastic's command line (`--headless`, `canvas --port N`) and has no
-config file, so a test builds its team the way anyone does:
+config file and no blueprint, so a test builds its team the way anyone does: every agent is a
+`create_agent` payload sent with `fantastic_team send`, under an id the test chooses, and every
+edge is written on both ends (`link`):
 
-- the AI agents (the lead) are a BLUEPRINT FOLDER in the test (`blueprint/`), imported under
-  `user` with `fantastic_team import` (`Team.import_blueprint`); fantastic gives every imported
-  id a `_1` suffix, so the lead is `lead_1` (`ctx.lead`);
-- the agents a blueprint cannot hold (an absolute path, a key, a fixed id the product's code
-  and the role cards name: the credential store, the worker's exec, the connectors, the
-  puller, the board, the dispatcher, the cadencer, the roles registry, the pack agents) are
-  plain records made with `fantastic_team send` (`create_agent`), with the grants written on
-  both ends (`link`).
+- the lead is `lead` (`ctx.lead`), made by `make_lead`;
+- the credential store, the worker's exec and files, the connectors, the puller, the board, the
+  dispatcher, the cadencer, the roles registry and the pack agents are made the same way, under
+  the fixed ids the product's code and the role cards name.
 
 Nothing here is a team config: every step is a fantastic verb a person can type.
 """
@@ -19,11 +17,10 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 
-from . import cli, forge as forge_mod, run_flow, team as T
+from . import forge as forge_mod, run_flow, team as T
+from .records import ROOT, create as _create, link, merge, update
 
-ROOT = "kernel_state"  # fantastic's root agent
 PAGE_VERBS = ["sidebar", "tree", "open", "control"]
 CHAT = T.CHAT_VERBS
 DISPATCHER_KERNEL_VERBS = ["create_agent", "update_agent", "delete_agent"]
@@ -31,41 +28,16 @@ LEAD_ROLES_VERBS = ["roles", "role", "spawn", "get_count", "fleet"]
 LEAD_BOARD_VERBS = ["board", "rows"]
 AWAIT_VERBS = ["await_set", "await_cancel"]
 REPO = "acme/widgets"
+LEAD = "lead"
 
-# the ports a test's blueprint may declare, and the agent each is bound to
-PORTS = {"@memory": "memory", "@credentials": "credentials", "@exec": "worker_exec",
-         "@files": "worker_files", "@queue": "queue", "@git": "git", "@github": "github"}
+# the tools the lead may call, when they exist
+LEAD_TOOLS = ("worker_exec", "worker_files", "queue", "git", "github")
 
 
 # ---- records ---------------------------------------------------------------------------
 
 def create(_team, **rec) -> dict:
-    return cli.create(_team, rec)
-
-
-def update(team, agent: str, **fields) -> dict:
-    r = team.send("kernel", dict(fields, type="update_agent", id=agent))
-    if r.get("status") != "completed":
-        raise RuntimeError(f"update_agent {agent}: {r}")
-    return r
-
-
-def merge(team, agent: str, field: str, entries: dict, have: dict | None = None) -> None:
-    """Add `entries` to `agent`'s `can_call`/`callable_by`, keeping the entries it has
-    (`update_agent` replaces the whole map)."""
-    rec = (have if have is not None else team.agents())[agent]
-    cur = dict(rec.get(field) or {})
-    cur.update(entries)
-    update(team, agent, **{field: cur})
-
-
-def link(team, caller: str, callee: str, verbs="*") -> None:
-    """`caller` may call `callee` (verbs): both ends of the edge, as the kernel wants them."""
-    have = team.agents()
-    if callee in have:
-        merge(team, callee, "callable_by", {caller: verbs}, have)
-    if caller in have:
-        merge(team, caller, "can_call", {callee: verbs}, have)
+    return _create(_team, rec)
 
 
 def operator_holds(team, targets: dict) -> None:
@@ -158,35 +130,25 @@ def make_forge(ctx, team, puller: bool = True, github_only: bool = False) -> Non
         link(team, "puller", "queue_files")
 
 
-# ---- the lead: a blueprint folder ------------------------------------------------------
+# ---- the lead: `create_agent` ------------------------------------------------------------
 
-def declared_ports(blueprint_dir: str) -> list[str]:
-    with open(os.path.join(blueprint_dir, "blueprint.yaml")) as f:
-        text = f.read()
-    head = text.split("agents:", 1)[0]
-    return re.findall(r'^\s+"?(@\w+)"?\s*:\s*$', head, re.M)
-
-
-def import_lead(ctx, name: str = "blueprint") -> str:
-    """Fill the test's blueprint folder and import it under `user`, binding every port it
-    declares to the agent `PORTS` names. Returns the lead's id (the first id imported)."""
-    binds = {p: PORTS[p] for p in declared_ports(os.path.join(ctx.dir, name))}
-    src = os.path.join(ctx.dir, name)
-    out = os.path.join(ctx.work, name)
-    shutil.rmtree(out, ignore_errors=True)
-    shutil.copytree(src, out)
-    for dirpath, _, files in os.walk(out):
-        for f in files:
-            p = os.path.join(dirpath, f)
-            with open(p) as fh:
-                text = fh.read()
-            with open(p, "w") as fh:
-                fh.write(T.fill_text(text, ctx.vars))
-    said = ctx.team.import_blueprint(out, "user", binds)
-    new = [i.strip() for i in said.split(":", 1)[1].split(",")]
-    ctx.imported = new
-    ctx.lead = new[0]
-    return ctx.lead
+def make_lead(ctx, team, tools=None, subtree: bool = True) -> str:
+    """The lead, `create_agent` under `user` with the fixed id `lead`: the scripted (or real)
+    plug's model, the credential ref of the model host, the shared memory store. Its `can_call`
+    names the tools that exist (`tools`, default `LEAD_TOOLS`), each edge written on both ends.
+    Returns the lead's id (`ctx.lead`)."""
+    have = team.agents()
+    wanted = LEAD_TOOLS if tools is None else tools
+    create(team, id=LEAD, parent_id="user", handler_module="anthropic_backend.tools",
+           model=ctx.vars["model_name"], endpoint=ctx.vars["model_endpoint"],
+           credentials={"store": "credentials", "ref": f"model/{ctx.vars['model_host']}"},
+           memory_store_id="memory", context_window=100000, max_tokens=4000,
+           can_call={"$self": "*", **({"$subtree": "*"} if subtree else {})},
+           callable_by={"$self": "*", "$parent": "*"})
+    for callee in [c for c in ("memory", "credentials", *wanted) if c in have]:
+        link(team, LEAD, callee)
+    ctx.lead = LEAD
+    return LEAD
 
 
 # ---- the machinery: roles, board, dispatcher, cadencer, packs, the page -----------------
@@ -223,7 +185,6 @@ def make_roles(ctx, team, tiers: dict, limits: dict | None = None) -> None:
     link(team, "tasks", "memory")
     link(team, lead, ROOT, AWAIT_VERBS + ["create_agent", "delete_agent"])
     merge(team, lead, "can_call", {"canvas_page": ["new_canvas"]})
-    merge(team, ROOT, "callable_by", {"$subtree": AWAIT_VERBS})
 
 
 def lead_tier(ctx, **extra) -> dict:
@@ -379,11 +340,12 @@ def start_args(port: int | None, extra_args=None) -> list[str]:
 def boot(ctx, env: dict | None = None, *, port: int | None = None, forge: bool = True,
          puller: bool = True, git: bool = True, packs: bool = False, groups: dict | None = None,
          board: bool = False, board_store: str = "queue_files", roles_tiers: dict | None = None,
-         registry_tiers: dict | None = None, limits: dict | None = None, extra_args=None, blueprint: str = "blueprint",
+         registry_tiers: dict | None = None, limits: dict | None = None, extra_args=None, lead_tools=None,
          credentials: bool = True, queue: bool = True, github_cred: bool | None = None,
          sub: str | None = None, dispatcher: bool | None = None):
-    """Start the team binary as fantastic's CLI in the run folder, make the stock records and
-    import the test's blueprint (the lead). Sets `ctx.team`, `ctx.lead`, `ctx.work`; returns the Team."""
+    """Start the team binary as fantastic's CLI in the run folder and make the stock records with
+    `send` + `create_agent`, the lead among them (`make_lead`; `lead_tools` names the tools it
+    may call, default `LEAD_TOOLS`). Sets `ctx.team`, `ctx.lead`, `ctx.work`; returns the Team."""
     keys = run_flow.fake_keys(ctx)
     ctx.secrets = keys
     env = dict(env or {"E2E_MODEL_KEY": keys["model_key"], "E2E_APP_ID": keys["app_id"],
@@ -399,8 +361,8 @@ def boot(ctx, env: dict | None = None, *, port: int | None = None, forge: bool =
     make_tools(ctx, team, queue=queue)
     if forge:
         make_forge(ctx, team, puller=puller, github_only=not git)
-    import_lead(ctx, blueprint)
-    if groups is not None:  # `$lead` is the id the import gave the lead
+    make_lead(ctx, team, lead_tools)
+    if groups is not None:  # `$lead` is the lead's id
         groups = {n: {**g, **({"driver": ctx.lead} if g.get("driver") == "$lead" else {})}
                   for n, g in groups.items()}
     ctx.groups = groups
