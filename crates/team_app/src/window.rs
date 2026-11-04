@@ -83,10 +83,7 @@ mod tests {
             port: 9123,
         });
         let spec = window_spec(&url).unwrap();
-        assert_eq!(
-            spec.url,
-            "http://127.0.0.1:9123/canvas_page/file/index.html"
-        );
+        assert_eq!(spec.url, "http://127.0.0.1:9123/team_page/file/index.html");
         assert_eq!(spec.label, "main");
         assert_eq!(spec.title, TITLE);
     }

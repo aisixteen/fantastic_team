@@ -13,7 +13,7 @@ You are reading the text of the `fantastic_team` binary, the team's start-up. Us
 
 Run it from the directory the team lives in (`cd` there first).
 
-- The command line is fantastic's, unchanged (`fantastic readme` documents it): `--headless` (no screen, no port), `canvas [--port N] [--host ADDR]` (serves the web UI), `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`, `migrate-home`, `readme`. It runs in the directory it is started in: there is no `--dir`. `--tui`, a bare `--port`, `--instructions` and `--resend-instructions` are gone; fantastic refuses them.
+- The command line is fantastic's, unchanged (`fantastic readme` documents it): `--headless` (no screen, no port), `webui [--port N] [--host ADDR]` (serves the team page; the team's own word, refused with `canvas`), `canvas [--port N] [--host ADDR]` (serves fantastic's canvas), `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`, `migrate-home`, `readme`. It runs in the directory it is started in: there is no `--dir`. `--tui`, a bare `--port`, `--instructions` and `--resend-instructions` are gone; fantastic refuses them.
 - `fantastic_team packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval --key value ...` sends a pack verb to the running team (attach-only, like `send`): `list [--query Q]`, `show --name N [--version V]`, `updates [--opt-in true|false]`, `publish --pack DIR --url HTTPS_URL --signing-key FILE`, `pack --worker W --out DIR`, `install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]]`, `eval --pack DIR --worker W [--timeout-s N]`. The hosted-registry verbs are `fetch --name N --hash H --stage DIR [--version V]`, `submit --pack DIR --url HTTPS_URL --signing-key FILE`, `report --name N --version V --reason TEXT`, `takedown --name N --version V --signing-key FILE` and `page`.
 - `fantastic_team setup github` and `fantastic_team ai-readme` are the team's own first words, with `packs`.
 
@@ -68,8 +68,8 @@ Work comes from GitHub issues. A maintainer adds the label `team-ready` to an is
 
 ## 7. Troubleshooting
 
-- `fantastic: the UI needs a terminal`: where there is none, run `fantastic_team canvas` or `fantastic_team --headless`.
-- `fantastic: unknown \`--tui\``: the team's own surface flags are gone; use fantastic's words (`canvas --port N`, `--headless`).
+- `fantastic: the UI needs a terminal`: where there is none, run `fantastic_team webui` or `fantastic_team --headless`.
+- `fantastic: unknown \`--tui\``: the team's own surface flags are gone; use fantastic's words (`webui --port N`, `canvas --port N`, `--headless`).
 - `… is not set on this laptop`: export the variable named in the remote's keys, then run `remote-start.sh` again.
 - `no remote \`name\``: add it first with `remote-add.sh`.
 - `already running · pid …`: the team is up. Use `remote-stop.sh` before starting again.

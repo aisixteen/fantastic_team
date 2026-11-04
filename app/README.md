@@ -96,7 +96,7 @@ the agent's `callable_by`), and no `*` is granted.
 The launcher (`crates/team_app`, binary `fantastic_team_app`) starts the
 headless `fantastic_team` binary for you and waits until its web UI answers:
 
-- `fantastic_team_app` starts `fantastic_team --port 8765` (the port the
+- `fantastic_team_app` starts `fantastic_team webui --port 8765` (the port the
   packaged window loads) and prints `web UI at http://127.0.0.1:8765/`.
 - `--port <n>` picks another port (1-65535; the window still loads 8765).
 - `--binary <path>` runs a specific headless binary instead of one on `PATH`.

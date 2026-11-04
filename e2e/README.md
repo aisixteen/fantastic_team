@@ -46,7 +46,7 @@ The shared fixture is a local git repo with one failing test (`test_calc.py` che
 | `precreated_1_2` | a lead and 2 workers made with `create_agent` | solve | solved; the same 3 under the same parents, nothing extra |
 | `precreated_tree` | a lead, 2 sub-leads, a worker under each, made with `create_agent` | solve | solved; the tree unchanged |
 | `leads_spawn_leads` | a lead with the `sublead` and `worker` cards | spawns 2 sub-leads, they spawn workers, solve, each parent deletes what it spawned | solved; 4 spawns; no spawned agent left, no orphans |
-| `headless_and_canvas` | `--headless`, then `canvas --port N` | an agent makes a canvas with `create_agent` | headless opens no port and needs no terminal; `canvas` serves; the canvas made with no `canvas` word |
+| `headless_and_canvas` | `--headless`, then `canvas --port N`, then `webui --port N` | an agent makes a canvas with `create_agent` | headless opens no port and needs no terminal; `canvas` serves; `webui` serves the team page and its socket, is refused with `canvas`, and `--headless` after it opens no port; the canvas made with no `canvas` word |
 
 Facts found while writing them (about fantastic at this commit, not decisions of the suite):
 
@@ -103,8 +103,8 @@ A probe that cannot run here raises `helpers.verdict.Skip(reason)`; the launcher
 
 Facts about the web UI at this commit, found while writing these tests:
 
-1. `fantastic_team canvas --port P` serves the canvas page `/canvas_page/file/index.html` (the web host answers 404 at `/`) and its socket leg `canvas_ws`; the binary no longer serves the team page or `/team_ws/ws` by itself (the app does, in-process: `TeamHandle`, `examples/handle_serve`). The chat tests use `canvas_ws`, to which the harness writes the page's chat grant (`helpers/team.py grant_chat`); the tests that need the team page build it with `stock.serve_team_page`.
-2. The launcher (`fantastic_team_app`) starts `canvas --port N` in the team folder and waits for a 200 at `/canvas_page/file/index.html` (`READY_PATH`), the page that command serves. It writes the role cards under `roles/` and, once the page answers, makes the team with `create_agent` under fixed ids when the kernel has no `lead` (it needs the home's `credentials` agent); a folder whose kernel has its `lead` is started as it is, so `app/launcher_start_attach_stop` makes one first (and has a second leg for the folder with no team). `app/attach_remote` keeps a small proxy front for its tunnel leg.
+1. `fantastic_team canvas --port P` serves the canvas page `/canvas_page/file/index.html` (the web host answers 404 at `/`) and its socket leg `canvas_ws`; `fantastic_team webui --port P` serves the team page `/team_page/file/index.html` and its socket `/team_ws/ws` (#224; the app's in-process handle serves the same page: `TeamHandle`, `examples/handle_serve`), and is refused with `canvas`. The chat tests use `canvas_ws`, to which the harness writes the page's chat grant (`helpers/team.py grant_chat`); the tests that need the team page build it with `stock.serve_team_page`.
+2. The launcher (`fantastic_team_app`) starts `webui --port N` in the team folder and waits for a 200 at `/team_page/file/index.html` (`READY_PATH`), the page that command serves. It writes the role cards under `roles/` and, once the page answers, makes the team with `create_agent` under fixed ids when the kernel has no `lead` (it needs the home's `credentials` agent); a folder whose kernel has its `lead` is started as it is, so `app/launcher_start_attach_stop` makes one first (and has a second leg for the folder with no team). `app/attach_remote` keeps a small proxy front for its tunnel leg.
 3. The Rust ai-core never emits the `tool_calling` status the page's tool blocks key on; a tool call is a `call` part sent to the watchers of its addressee.
 4. The scripted plug takes `"thinking": "..."` (a reasoning block before the text) and `"delay": seconds` (the plug waits before it answers) on a turn.
 

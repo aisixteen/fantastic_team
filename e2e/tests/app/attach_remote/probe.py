@@ -11,7 +11,7 @@ import time
 from helpers import app, run_flow, web
 from helpers.verdict import Verdict
 
-CANVAS = "/canvas_page/file/index.html"
+PAGE = "/team_page/file/index.html"
 
 # The user's ssh, replaced: it records its argv and forwards the loopback port it is
 # asked for (`-L 127.0.0.1:LOCAL:127.0.0.1:REMOTE`) to the remote port, like ssh -N -L.
@@ -48,7 +48,7 @@ while True:
     threading.Thread(target=pipe, args=(r, c), daemon=True).start()
 '''
 
-# The remote box's front: the launcher asks for the page path (/canvas_page/...), which
+# The remote box's front: the launcher asks for the page path (/team_page/...), which
 # passes through; `/` is mapped to the page only for the probe's own GET. See README.
 FRONT = r'''
 import http.server, sys, urllib.request
@@ -75,10 +75,10 @@ def run(ctx):
     procs = []
     try:
         real = app.free_port()
-        keys = run_flow.boot(ctx, forge=False, port=real)
-        v.check("the shift serves its web UI on its port", app.wait_http(f"http://127.0.0.1:{real}{CANVAS}", 30))
+        keys = run_flow.boot(ctx, forge=False, extra_args=["webui", "--port", real])
+        v.check("the shift serves its web UI on its port", app.wait_http(f"http://127.0.0.1:{real}{PAGE}", 30))
         remote = app.free_port()
-        front = app.Proc([sys.executable, "-c", FRONT, str(remote), str(real), CANVAS], app.env_of(ctx.team),
+        front = app.Proc([sys.executable, "-c", FRONT, str(remote), str(real), PAGE], app.env_of(ctx.team),
                          ctx.run_dir, os.path.join(ctx.run_dir, "front.log"))
         procs.append(front)
         v.check("the remote box answers on a second port", app.wait_http(f"http://127.0.0.1:{remote}/", 20))
@@ -90,7 +90,7 @@ def run(ctx):
         t = app.run_app(ctx, ["--tunnel", f"fakehost:{remote}", "--ssh", ssh], name="tunnel")
         procs.append(t)
         line = t.wait_line("web UI at", 60) or ""
-        m = re.search(r"web UI at (http://127\.0\.0\.1:(\d+)" + re.escape(CANVAS) + r")$", line.strip())
+        m = re.search(r"web UI at (http://127\.0\.0\.1:(\d+)" + re.escape(PAGE) + r")$", line.strip())
         v.check("the app prints a loopback URL for the tunnel", m is not None, t.log())
         local = int(m.group(2)) if m else 0
         status, body = web.http_get(m.group(1)) if m else (0, b"")
@@ -121,7 +121,7 @@ def run(ctx):
         v.check("the app exits 0 on SIGINT", t.wait(20) == 0, t.log())
         v.check("ssh is gone with it", ssh_pid > 0 and app.wait_gone(ssh_pid, 10))
         v.check("the tunnel's port is closed", app.wait_refused(local, 10))
-        v.check("the shift on the other port is still running", web.up(real, CANVAS))
+        v.check("the shift on the other port is still running", web.up(real, PAGE))
 
         # a URL with user info is refused, and its password is never echoed
         secret = "s3cr3tpw-9157"

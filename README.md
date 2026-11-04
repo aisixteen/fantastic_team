@@ -124,19 +124,20 @@ Tasks are exact: each says what to read, what to produce, and how to check it. T
 
 ## Run
 
-The command line is fantastic's, unchanged. `fantastic_team` is `fantastic` with this repo's bundles added to its registry, the way `canvas` sits on top of the kernel. It takes fantastic's words and nothing else, and it runs in the directory it is started in (`cd` there first; fantastic has no `--dir`):
+The command line is fantastic's, unchanged. `fantastic_team` is `fantastic` with this repo's bundles added to its registry, the way `canvas` sits on top of the kernel. It takes fantastic's words and one of its own (`webui`), and it runs in the directory it is started in (`cd` there first; fantastic has no `--dir`):
 
 ```
 fantastic_team                                  # the terminal UI, on a terminal
 fantastic_team --headless                       # no screen and no port
-fantastic_team canvas --port 8123               # serves the web UI on 127.0.0.1:8123
+fantastic_team webui --port 8123                # serves the team page on 127.0.0.1:8123
+fantastic_team canvas --port 8123               # serves fantastic's canvas on 127.0.0.1:8123
 fantastic_team ai anthropic --model M           # the root AI on a backend, then the terminal
 fantastic_team run htop                         # a terminal cell running that command
 fantastic_team send '<item json>'               # one call into the team running here
 fantastic_team readme                           # fantastic's own readme
 ```
 
-`canvas [--port N] [--host ADDR]`, `ai <backend> …`, `run …`, `system`, `--headless`, `mcp`, `send`, `import`, `migrate-home` and `readme` are fantastic's words; `fantastic readme` documents them. The team page, the board and the dispatcher are agents like any other: the bundles are registered, and an agent comes from a record. The canvas is registered too but only started by the `canvas` word; an agent can still make a canvas of its own with `create_agent`. The team's own first words are `setup github`, `packs …` and `ai-readme`. The team no longer has its own `--dir`, `--port`, `--tui`, `--instructions` or `--resend-instructions`; they are refused as unknown. Ctrl-C to stop.
+`canvas [--port N] [--host ADDR]`, `ai <backend> …`, `run …`, `system`, `--headless`, `mcp`, `send`, `import`, `migrate-home` and `readme` are fantastic's words; `fantastic readme` documents them. The team page, the board and the dispatcher are agents like any other: the bundles are registered, and an agent comes from a record. The canvas is registered too but only started by the `canvas` word; an agent can still make a canvas of its own with `create_agent`. The team's own first words are `setup github`, `packs …` and `ai-readme`. `webui [--port N] [--host ADDR]` is the team's own recipe word: it serves the team page (two columns and the agent list) and its socket from the binary, headless like `canvas` (the browser is the View), with the same `--port` and `--host`. Without `--port` it keeps the port recorded here, else picks a free one, and it prints `the team page: <url>`. `--headless` opens no port, even in a folder `webui` has run in. `webui` and `canvas` together are refused: both mount a socket leg on the web host's one `/{host_id}/ws` route and the second would win, so run one. The team no longer has its own `--dir`, `--port`, `--tui`, `--instructions` or `--resend-instructions`; they are refused as unknown. Ctrl-C to stop.
 
 A directive for the lead is its record's `system_prompt_file`, or a message sent to it: `fantastic_team send '{"target": "lead", "payload": {"type": "send", "text": "..."}}'`.
 
@@ -169,12 +170,12 @@ scripts/remote-stop.sh gpu       # asks first; drains (SIGTERM); --now kills
 - **The board** (`team_board.tools`): the shared picture of the work — open issues with their queue state (pending, in work, done, failed) and the agents. Verb `board`.
 - **The worker view** (`team_worker_view.tools`): one canvas per worker, with its task, files, output and chat.
 - **The dispatcher** (`team_dispatcher.tools`): the home screen of the web UI and the app. Workers by group, each with its state, current task, time and cost, and what is waiting for you.
-- **The web UI** with `canvas --port`, or fantastic's terminal UI.
+- **The web UI** with `webui --port`, or fantastic's terminal UI.
 - **Logs** through `scripts/remote-logs.sh` when the team runs remotely.
 
 ## The app
 
-`crates/team_app` builds `fantastic_team_app`, a launcher that starts the binary (`canvas --port 8765`) and waits until its web UI answers. `app/tauri.conf.json` is the packaging for a desktop window (macOS, Windows, Linux); the window loads the web UI on `127.0.0.1` only. The window is not built yet. The dispatcher is the home screen: each worker row has Start, Pause and Stop buttons, and Stop asks first. The GitHub build is the same app with the GitHub patch applied. Build steps, controls and the signing notes are in [app/README.md](app/README.md).
+`crates/team_app` builds `fantastic_team_app`, a launcher that starts the binary (`webui --port 8765`) and waits until its web UI answers. `app/tauri.conf.json` is the packaging for a desktop window (macOS, Windows, Linux); the window loads the web UI on `127.0.0.1` only. The window is not built yet. The dispatcher is the home screen: each worker row has Start, Pause and Stop buttons, and Stop asks first. The GitHub build is the same app with the GitHub patch applied. Build steps, controls and the signing notes are in [app/README.md](app/README.md).
 
 ## Security model
 

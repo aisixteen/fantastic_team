@@ -35,6 +35,7 @@ pub mod setup_github;
 pub mod tree;
 pub mod watchdog;
 pub mod webhook;
+pub mod webui;
 pub mod worker_view;
 
 use std::path::Path;

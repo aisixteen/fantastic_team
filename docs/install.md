@@ -81,7 +81,7 @@ No screen and no port. Make the example worker in the running team, from a secon
 
 Serve the web UI on a port:
 
-    ./target/release/fantastic_team canvas --port 8123
+    ./target/release/fantastic_team webui --port 8123
 
 The terminal UI (needs a terminal):
 
@@ -95,7 +95,7 @@ Help block, the first words the team adds to fantastic's (`setup github`, `packs
       (`packs install` run from a terminal asks for the agent id of each port first; an empty answer skips it)
       packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]
 
-`--dir`, `--port` outside `canvas`, `--tui`, `--instructions` and `--resend-instructions` are not flags any more; fantastic refuses them.
+`--dir`, `--port` outside `canvas` and `webui`, `--tui`, `--instructions` and `--resend-instructions` are not flags any more; fantastic refuses them.
 
 Run it on a remote box with the scripts (each prints its usage with `--help`; all support `--dry-run`):
 
