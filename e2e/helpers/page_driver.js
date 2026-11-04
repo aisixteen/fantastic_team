@@ -11,7 +11,12 @@
 //   {cmd:'state'}                      what is drawn (see snapshot)
 //   {cmd:'click_expander', worker}     click that worker's expander row
 //   {cmd:'click_node', id}             click that worker or subagent row
-//   {cmd:'click_back'}                 click Back
+//   {cmd:'click_back'}                 click the Back button of the open pane (on a phone it scrolls the list into view)
+//   {cmd:'set', id, value}             type a value into the element with that id
+//   {cmd:'click_id', id}               click the element with that id (waits for the calls it starts)
+//   {cmd:'click_in', id, sel}          click the first element matching sel (.class or [data-x]) inside the element with that id
+//   {cmd:'text', id}                   the text of the element with that id
+//   {cmd:'prompts', answers}           what window.prompt answers next, in order (null: cancelled)
 //   {cmd:'submit', text}               type text into the open chat's composer and submit
 //   {cmd:'call', target, payload}      one call of the probe's own over the page's socket
 //   {cmd:'frames', since}              the call/watch frames sent from index `since`
@@ -33,6 +38,7 @@ class El {
     this.hidden = false; this.disabled = false; this.value = ''; this.checked = false;
     this.files = null; this.scrollTop = 0; this.scrollHeight = 0; this.id = '';
   }
+  scrollIntoView() { scrolls.push(this.id || this.tag); }
   get className() { return Array.from(this._cls).join(' '); }
   set className(v) { this._cls = new Set(String(v).split(/\s+/).filter(Boolean)); }
   get classList() {
@@ -66,9 +72,9 @@ class El {
   getAttribute(k) { return this.attrs[k]; }
   matches(sel) {
     let m;
-    if ((m = /^\[data-([a-z-]+)\]$/.exec(sel))) {
+    if ((m = /^\[data-([a-z-]+)(?:="([^"]*)")?\]$/.exec(sel))) {
       const k = m[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-      return this.dataset[k] !== undefined;
+      return m[2] === undefined ? this.dataset[k] !== undefined : this.dataset[k] === m[2];
     }
     if ((m = /^([a-z0-9]*)((?:\.[A-Za-z0-9_-]+)*)$/.exec(sel))) {
       if (m[1] && this.tag !== m[1]) return false;
@@ -88,6 +94,8 @@ class El {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const scrolls = [];     // the ids of the elements the page scrolled into view
+const answers = [];     // what window.prompt answers next
 const frames = [];      // every call/watch/unwatch frame the page sent, in order
 let pendingCalls = 0;   // calls sent and not yet answered
 let rt = null;
@@ -148,26 +156,26 @@ function bridge() {
 async function load() {
   const res = await fetch('http://127.0.0.1:' + port + '/team_page/file/index.html');
   const html = await res.text();
-  const scripts = Array.from(html.matchAll(/<script>([\s\S]*?)<\/script>/g)).map((m) => m[1]);
-  const script = scripts[scripts.length - 1];
+  const src = /<script src="([^"]+)"><\/script>/g;
+  const own = Array.from(html.matchAll(src)).map((m) => m[1]).filter((u) => u === 'page.js');
+  if (own.length !== 1) throw new Error('the page loads no page.js script');
+  const script = await (await fetch('http://127.0.0.1:' + port + '/team_page/file/' + own[0])).text();
   const byId = {};
   const idRe = /<[a-z0-9]+[^>]*\sid="([^"]+)"/g;
   let m;
   while ((m = idRe.exec(html))) { byId[m[1]] = new El('div'); byId[m[1]].id = m[1]; }
-  byId.back.hidden = true;
-  byId.pane.hidden = true;
+  byId.pane.hidden = /<section id="pane" hidden>/.test(html);
   const document = {
     getElementById: (id) => byId[id] || null,
     createElement: (tag) => new El(tag),
     createDocumentFragment: () => new El('#frag'),
   };
   const store = new Map();
-  const scrolls = [];
   const fantastic = bridge();
   await fantastic.opened;
   const sandbox = {
     document,
-    window: { scrollTo: (x, y) => scrolls.push(y), scrollY: 0, addEventListener() {}, confirm: () => true, prompt: () => null },
+    window: { addEventListener() {}, confirm: () => true, prompt: () => (answers.length ? answers.shift() : null) },
     fantastic,
     FileReader: class {},
     localStorage: {
@@ -175,11 +183,11 @@ async function load() {
       setItem: (k, v) => store.set(k, String(v)),
       removeItem: (k) => store.delete(k),
     },
-    setTimeout, clearTimeout, console,
+    setTimeout, clearTimeout, setInterval, clearInterval, console,
   };
   const ctx = vm.createContext(sandbox);
   vm.runInContext(script, ctx);
-  rt = { byId, ctx, store, scrolls, js: (code) => vm.runInContext(code, ctx), html };
+  rt = { byId, ctx, store, js: (code) => vm.runInContext(code, ctx), html };
   return { html_has_renderSidebar: html.includes('function renderSidebar('), html_has_shim: html.includes('window.fantastic = {') };
 }
 
@@ -208,10 +216,12 @@ function snapshot() {
   const chat = rt.js('chat ? { node: chat.node, placeholder: chat.input.placeholder, rows: chat.transcript.children.map((c) => c.textContent) } : null');
   return {
     rows, groupTitles: nav.children.filter((c) => c.matches('.group-title')).map((c) => c.textContent),
-    sidebarHidden: nav.hidden, paneHidden: rt.byId.pane.hidden, backHidden: rt.byId.back.hidden,
+    sidebarHidden: nav.hidden, paneHidden: rt.byId.pane.hidden,
+    hasBack: rt.byId.pane.all('.pane-back').length > 0,
     title: rt.byId.title.textContent, error: rt.byId.error.textContent,
-    chat, expanded: rt.js('Array.from(expanded)'), stackDepth: rt.js('stack.length'),
-    scrolls: rt.scrolls.slice(), remembered: Object.fromEntries(rt.store),
+    chatTitle: (rt.byId.pane.querySelector('.chat-head') || { children: [] }).children.map((c) => c.textContent),
+    chat, expanded: rt.js('Array.from(expanded)'),
+    scrolls: scrolls.slice(), remembered: Object.fromEntries(rt.store),
     frameCount: frames.length,
   };
 }
@@ -243,11 +253,38 @@ async function run(c) {
       return snapshot();
     }
     case 'click_back': {
-      if (rt.byId.back.hidden) return { error: 'Back is hidden' };
-      rt.byId.back.dispatch('click');
+      const back = rt.byId.pane.querySelector('.pane-back');
+      if (!back) return { error: 'the pane has no Back button' };
+      back.dispatch('click');
       await settle();
       return snapshot();
     }
+    case 'set': {
+      const e = rt.byId[c.id];
+      if (!e) return { error: 'no element ' + c.id };
+      e.value = String(c.value);
+      return { ok: true };
+    }
+    case 'click_id': {
+      const e = rt.byId[c.id];
+      if (!e) return { error: 'no element ' + c.id };
+      e.dispatch('click');
+      await settle(c.quiet_ms || 400);
+      return { ok: true };
+    }
+    case 'click_in': {
+      const root = rt.byId[c.id];
+      const e = root && root.querySelector(c.sel);
+      if (!e) return { error: 'no ' + c.sel + ' in ' + c.id };
+      root.dispatch('click', { target: e });
+      await settle(c.quiet_ms || 400);
+      return { ok: true };
+    }
+    case 'text': {
+      const e = rt.byId[c.id];
+      return e ? { text: e.textContent } : { error: 'no element ' + c.id };
+    }
+    case 'prompts': answers.splice(0, answers.length, ...c.answers); return { ok: true };
     case 'submit': {
       const chat = rt.js('chat');
       if (!chat) return { error: 'no chat is open' };

@@ -1,13 +1,13 @@
 # packs/web_browser
 
-Issue #42. The pack browser panel (`crates/team/web/packs.html`) and the verbs it sends.
+Issue #42. The packs section of the team page (`crates/team/web/team.html`) and the verbs it sends. The old `packs_view` agent and `packs.html` are gone (#212: the team page serves the Pack install panel and the packs browser); the behaviour stayed, so this test reads the page where it lives now (#225).
 
 Real rendering is NOT exercised: there is no browser, display or WebKitGTK in this tier, and the page is JavaScript. The test checks the contract instead:
 
-- the panel as the team serves it: the `packs_view` agent the first start places on the canvas (the harness adds the `canvas_page` the app would make; this binary has no `html.tools` bundle, so the agent is read from its persisted record), its page names `pack_listing`, `install`, `eval`, and its `can_call` is the two pack agents only;
-- the exact payloads the page sends: `list` (with and without a query), `show` (ports, grants, price, install decision), the install preview (`parent_id`, no `approve`: the permission preview under `approval`, no agent created) then the same payload with `approve` (the blueprint is imported and the new agent exists), and `eval` on the lead (the scripted model answers `ok`);
+- the team page as the binary serves it (`webui --port N`, `stock.serve_webui`): its script names `browser`, `show`, `fetch` for `pack_listing` and `install`, `eval` for `pack`; its socket leg `team_ws` may call `pack` with `install` and `eval` and `pack_listing` with `browser`, `show` and `fetch`, and no more; the script makes no request of its own (no `fetch(`, no `XMLHttpRequest`);
+- the exact payloads: `list` (with and without a query) and `show` (ports, grants, price, install decision), the install preview (`parent_id`, no `approve`: the permission preview under `approval`, no agent created) then the same payload with `approve` (the blueprint is imported and the new agent exists), and `eval` on the lead (the scripted model answers `ok`);
 - the browser view-model: `browser` shows updates and their permission diff only with `opt_in`, and says `turn on updates to see changes` without it.
 
-Free tier: scripted model, no key, no network.
+Free tier: scripted model, no key, no network. `ui_shows_pass_rate_time_cost` drives the page's own buttons.
 
-Two facts the test works around, both about the harness and not the panel: the harness adds the `canvas_page` the app makes, and the operator grants `pack` the `import_subtree` verb on the seeded `user` agent (the tree's own grant is written only when `user` is created by the plan; the first start seeds it, see e2e/README.md). `eval` reads a model agent's answer from `final` (the lead has no `text`).
+One fact the test works around, about the harness and not the page: the operator grants `pack` the `import_subtree` verb on the seeded `user` agent (the tree's own grant is written only when `user` is created by the plan; the first start seeds it, see e2e/README.md). `eval` reads a model agent's answer from `final` (the lead has no `text`).
