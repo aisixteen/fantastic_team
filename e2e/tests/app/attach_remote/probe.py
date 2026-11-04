@@ -48,7 +48,7 @@ while True:
     threading.Thread(target=pipe, args=(r, c), daemon=True).start()
 '''
 
-# The remote box's front: the launcher asks for the page path (/team_page/...), which
+# The remote box's front: the launcher asks for the page path (/canvas_page/...), which
 # passes through; `/` is mapped to the page only for the probe's own GET. See README.
 FRONT = r'''
 import http.server, sys, urllib.request
@@ -74,11 +74,8 @@ def run(ctx):
     app.app_binary(ctx)
     procs = []
     try:
-        keys = run_flow.fake_keys(ctx)
-        ctx.secrets = keys
         real = app.free_port()
-        ctx.boot_team({"E2E_MODEL_KEY": keys["model_key"], "E2E_APP_ID": keys["app_id"],
-                       "E2E_APP_PEM": keys["pem"]}, port=real, wire=["credentials"])
+        keys = run_flow.boot(ctx, forge=False, port=real)
         v.check("the shift serves its web UI on its port", app.wait_http(f"http://127.0.0.1:{real}{CANVAS}", 30))
         remote = app.free_port()
         front = app.Proc([sys.executable, "-c", FRONT, str(remote), str(real), CANVAS], app.env_of(ctx.team),
@@ -93,7 +90,7 @@ def run(ctx):
         t = app.run_app(ctx, ["--tunnel", f"fakehost:{remote}", "--ssh", ssh], name="tunnel")
         procs.append(t)
         line = t.wait_line("web UI at", 60) or ""
-        m = re.search(r"web UI at (http://127\.0\.0\.1:(\d+)/)$", line.strip())
+        m = re.search(r"web UI at (http://127\.0\.0\.1:(\d+)" + re.escape(CANVAS) + r")$", line.strip())
         v.check("the app prints a loopback URL for the tunnel", m is not None, t.log())
         local = int(m.group(2)) if m else 0
         status, body = web.http_get(m.group(1)) if m else (0, b"")

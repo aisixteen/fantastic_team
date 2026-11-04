@@ -20,10 +20,7 @@ def run(ctx):
     app.app_binary(ctx)
     procs = []
     try:
-        keys = run_flow.fake_keys(ctx)
-        ctx.secrets = keys
-        ctx.boot_team({"E2E_MODEL_KEY": keys["model_key"], "E2E_APP_ID": keys["app_id"],
-                       "E2E_APP_PEM": keys["pem"]}, wire=["credentials"])
+        keys = run_flow.boot(ctx, forge=False)
         ctx.team.stop()  # the directory's lock is free for the setup flow
 
         s = app.run_app(ctx, ["--setup-github", NAME, "--binary", ctx.binary], name="setup")
@@ -65,8 +62,9 @@ def run(ctx):
                 code not in (None, 0) and app.child_pids(s.pid) == [], f"{code}\n{s.log()[-400:]}")
         v.check("the setup page is closed", app.wait_refused(port, 10))
 
-        cfg = open(os.path.join(ctx.run_dir, "team.yaml")).read()
-        v.check("team.yaml has no github_app_id", "github_app_id" not in cfg)
+        v.check("no team.yaml is written (the team has no config file) and no file holds a github_app_id",
+                not os.path.exists(os.path.join(ctx.run_dir, "team.yaml"))
+                and app.files_holding(ctx.run_dir, "github_app_id") == [])
         for what, needle in (("app key text", keys["pem_chunk"]), ("private key marker", "PRIVATE KEY"),
                              ("model key", keys["model_key"])):
             where = app.files_holding(ctx.run_dir, needle)

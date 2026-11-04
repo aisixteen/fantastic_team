@@ -3,7 +3,7 @@
 import os
 import shutil
 
-from helpers import run_flow
+from helpers import run_flow, stock as S
 from helpers.verdict import Verdict
 
 REASON = "all roles together are at the limit (3 running, max 3)"
@@ -13,11 +13,9 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..",
 def run(ctx):
     v = Verdict("roles/total_limit_refuses_fourth_worker")
     shutil.copytree(os.path.join(ROOT, "roles"), os.path.join(ctx.run_dir, "roles"))
-    keys = run_flow.fake_keys(ctx)
-    ctx.secrets = keys
-    team = ctx.boot_team({"E2E_MODEL_KEY": keys["model_key"], "E2E_APP_ID": keys["app_id"],
-                          "E2E_APP_PEM": keys["pem"]},
-                         wire=["credentials", "github", "worker_files"])
+    team = ctx.boot_team(puller=False, board=True, board_store="queue", groups={}, limits={"total": 3},
+                         roles_tiers={"strong": S.lead_tier(ctx), "small": S.inert_tier(ctx),
+                                      "issue_keeper": S.inert_tier(ctx)})
 
     roles = team.send("roles", {"type": "roles"})["result"]
     names = sorted(r["name"] for r in roles.get("roles", []))

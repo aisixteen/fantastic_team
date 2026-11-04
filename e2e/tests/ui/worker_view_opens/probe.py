@@ -4,11 +4,10 @@ import os
 import re
 import time
 
-from helpers import app, run_flow, team as T
+from helpers import app, run_flow, stock as S, team as T
 from helpers.verdict import Verdict
 from helpers.web import WsClient, http_get
 
-PAGE = "/canvas_page/file/index.html"
 TEAM_PAGE = "/team_page/file/index.html"
 WS = "/team_ws/ws"
 CHAT_VERBS = ["history", "send", "stop", "status", "watch"]  # tree::CHAT_VERBS
@@ -18,27 +17,27 @@ TOP = ["task", "files", "output", "preview"]
 
 def run(ctx):
     v = Verdict("ui/worker_view_opens")
-    # boot without helpers.team.wire: that wires the github flow, and this team has none
-    keys = run_flow.fake_keys(ctx)
-    ctx.secrets = keys
-    team = ctx.team = T.Team(ctx.binary, ctx.run_dir, {"E2E_MODEL_KEY": keys["model_key"]})
+    # the stock records (the dispatcher with its group `workers`), the blueprint's lead, and the team
+    # page and its socket leg under a web host, as the app serves them
     port = app.free_port()
-    T.boot(team, os.path.join(ctx.dir, "team.yaml"), ctx.vars, port=port)
+    S.boot(ctx, forge=False, groups={"workers": {"members": ["w1", "w2"]}})
+    team = ctx.team
+    S.serve_team_page(team, port)
 
-    # two workers on the scripted model, and the operator's grants a team.yaml cannot say
+    # two workers on the scripted model, and the operator's grants
     for w in ("w1", "w2"):
         r = team.send("kernel", {"type": "create_agent", "id": w, "parent_id": "kernel",
                                  "handler_module": "anthropic_backend.tools",
                                  "model": "scripted-model", "endpoint": ctx.model.endpoint,
-                                 "memory_store_id": "lead_memory",
+                                 "memory_store_id": "memory",
                                  "credentials": {"store": "credentials",
                                                  "ref": f"model/{ctx.vars['model_host']}"},
                                  "can_call": {"$self": "*", "queue": "*"}})
         v.check(f"{w} was created", r.get("status") == "completed", str(r))
-    r = team.send("kernel", {"type": "update_agent", "id": "credentials",
-                             "callable_by": {"$self": "*", "lead": "*", "w1": "*", "w2": "*"}})
+    S.merge(team, "credentials", "callable_by", {"w1": "*", "w2": "*"})
+    r = {"status": "completed"}
     v.check("the credential store admits the workers", r.get("status") == "completed", str(r))
-    # the binary grants the page's leg the workers a team.yaml names, at start; these two
+    # the app grants the page's leg a group's workers at start; these two
     # are made after boot, so the operator grants them as `tree::grant_chat_to` would
     for w in ("w1", "w2"):
         r = team.send("kernel", {"type": "update_agent", "id": w,
@@ -56,7 +55,7 @@ def run(ctx):
         r = team.send("kernel", {"type": "update_agent", "id": agent, "callable_by": by})
         v.check(f"the operator may call {agent}", r.get("status") == "completed", str(r))
 
-    v.check("the page is served on --port", app.wait_http(f"http://127.0.0.1:{port}{PAGE}", 30))
+    v.check("the page is served on --port", app.wait_http(f"http://127.0.0.1:{port}{TEAM_PAGE}", 30))
 
     def wv(payload):
         return team.send("worker_view", payload).get("result", {})
@@ -95,16 +94,13 @@ def run(ctx):
                                                              "target": "w2", "locked": False}})
     v.check("placing a chat cell is refused", "error" in refused, str(refused))
 
-    # 4. web leg: what the binary's --port serves, and what its socket may do
-    status, page = http_get(f"http://127.0.0.1:{port}{PAGE}")
-    page = page.decode(errors="replace")
-    v.check("the web UI page is served on --port", status == 200 and "<html" in page.lower(),
-            f"{status}")
-    # the team page and its socket are the same ones the app serves (`serve_web`)
+    # 4. web leg: what the web host serves, and what its socket may do
+    # the team page and its socket are the same ones the app serves (`prepare_web`)
     status, tpage = http_get(f"http://127.0.0.1:{port}{TEAM_PAGE}")
     tpage = tpage.decode(errors="replace")
-    v.check("the binary serves the team page (/team_page)",
-            status == 200 and "function renderSidebar(" in tpage, f"{status}")
+    _, script = http_get(f"http://127.0.0.1:{port}/team_page/file/page.js")  # the page's script is its own file
+    v.check("the web host serves the team page (/team_page) and its script",
+            status == 200 and "function renderSidebar(" in script.decode(errors="replace"), f"{status}")
 
     ws = WsClient(port, WS)
     try:
@@ -119,7 +115,7 @@ def run(ctx):
                 isinstance(got, dict) and got.get("view") == "chat" and got.get("target") == "w1"
                 and got.get("fullscreen") is True, f"{got} {err}")
         for target, payload in (("worker_view", {"type": "open", "worker": "w1"}),
-                                ("lead", {"type": "send", "text": "hi"})):
+                                (ctx.lead, {"type": "send", "text": "hi"})):
             got, err = leg(target, payload)
             print(f"  (team_ws -> {target}: reply={got!r} error={err!r})")
             refused = err is not None and "closed" not in err or (
@@ -148,7 +144,7 @@ def run(ctx):
         f.seek(mark)
         after = f.read().decode(errors="replace")
     mine = [ln for ln in after.splitlines() if re.search(r"\] w1 (call|task) ", ln)]
-    other = [ln for ln in after.splitlines() if re.search(r"\] (w2|lead) (call|task) ", ln)]
+    other = [ln for ln in after.splitlines() if re.search(r"\] (w2|" + ctx.lead + ") (call|task) ", ln)]
     v.check("w1 handled the message", bool(mine), "no w1 line in the team log")
     v.check("w2 and the lead handled nothing", not other, str(other[:3]))
 

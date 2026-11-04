@@ -7,6 +7,9 @@ from helpers import run_flow
 from helpers.verdict import Verdict
 
 
+LEAD = None  # the blueprint's lead, set by run()
+
+
 def agent_ids(team):
     r = team.send("kernel", {"type": "list_agents", "limit": 500})
     return {a.get("id") for a in (P.result(r).get("agents") or [])}
@@ -14,13 +17,14 @@ def agent_ids(team):
 
 def enable(team, name, extra=()):
     return P.cli(team, "install", "--pack", f"packs/{name}", "--into", "templates",
-                 "--worker", "lead", "--timeout-s", "60", "--parent-id", "lead", *extra)
+                 "--worker", LEAD, "--timeout-s", "60", "--parent-id", LEAD, *extra)
 
 
 def run(ctx):
+    global LEAD
+    LEAD = ctx.lead
     v = Verdict("packs/failing_evals_block_enable")
-    run_flow.boot(ctx)
-    P.wire_packs(ctx.team)
+    run_flow.boot(ctx, packs=True)
     team = ctx.team
     P.make_pack(team, "okpack", {"a.yaml": P.PASS_EVAL}, blueprint=True)
     P.make_pack(team, "badpack", {"a.yaml": P.PASS_EVAL + P.FAIL_EVAL}, blueprint=True)

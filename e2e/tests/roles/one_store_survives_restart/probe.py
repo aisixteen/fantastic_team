@@ -4,7 +4,7 @@ import json
 import os
 import shutil
 
-from helpers import run_flow
+from helpers import run_flow, stock as S
 from helpers.verdict import Verdict
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
@@ -15,9 +15,9 @@ def agents(team):
     return {a["id"]: a for a in r["agents"]}
 
 
-def history(team):
+def history(team, lead):
     """The lead's chat rows as (role, content) pairs, ids dropped."""
-    r = team.send("lead", {"type": "history"})["result"]
+    r = team.send(lead, {"type": "history"})["result"]
     return r, [json.dumps({k: v for k, v in row.items() if k != "id"}, sort_keys=True)
                for row in r.get("rows", [])]
 
@@ -29,11 +29,9 @@ def task_rows(team):
 def run(ctx):
     v = Verdict("roles/one_store_survives_restart")
     shutil.copytree(os.path.join(ROOT, "roles"), os.path.join(ctx.run_dir, "roles"))
-    keys = run_flow.fake_keys(ctx)
-    ctx.secrets = keys
-    team = ctx.boot_team({"E2E_MODEL_KEY": keys["model_key"], "E2E_APP_ID": keys["app_id"],
-                          "E2E_APP_PEM": keys["pem"]},
-                         wire=["credentials", "github", "worker_files"])
+    team = ctx.boot_team(puller=False, board=True, board_store="queue", groups={}, limits={"total": 3},
+                         roles_tiers={"strong": S.lead_tier(ctx), "small": S.inert_tier(ctx),
+                                      "issue_keeper": S.inert_tier(ctx)})
 
     live = agents(team)
     stores = [i for i, a in live.items() if a.get("handler_module") == "sqlite_store.tools"]
@@ -42,8 +40,8 @@ def run(ctx):
     v.check("no per-agent *_memory agent exists", extra == [], str(extra))
     v.check("the store's file is .fantastic/memory.db", live["memory"].get("path") == ".fantastic/memory.db",
             str(live["memory"].get("path")))
-    v.check("the lead's memory_store_id names it", live["lead"].get("memory_store_id") == "memory",
-            str(live["lead"].get("memory_store_id")))
+    v.check("the lead's memory_store_id names it", live[ctx.lead].get("memory_store_id") == "memory",
+            str(live[ctx.lead].get("memory_store_id")))
     tiers = live["roles"].get("tiers", {})
     v.check("every tier's memory_store_id names it",
             len(tiers) == 3 and all(t.get("memory_store_id") == "memory" for t in tiers.values()), str(tiers))
@@ -62,7 +60,7 @@ def run(ctx):
         by = live["memory"].get("callable_by", {})
         v.check("the store admits the worker", by.get(workers[0]["id"]) in ("*", ["*"]), str(by))
     by = live["memory"].get("callable_by", {})
-    v.check("the store admits the lead and tasks", all(by.get(a) in ("*", ["*"]) for a in ("lead", "tasks")), str(by))
+    v.check("the store admits the lead and tasks", all(by.get(a) in ("*", ["*"]) for a in (ctx.lead, "tasks")), str(by))
     v.check("the spawn made no *_memory agent",
             [i for i in live if i.endswith("_memory") and i != "kernel_memory"] == [])
 
@@ -74,14 +72,14 @@ def run(ctx):
     cb["mcp"] = ["list"]
     granted = team.send("kernel", {"type": "update_agent", "id": "tasks", "callable_by": cb})
     v.check("the operator is granted `list` on tasks", granted.get("status") == "completed", str(granted))
-    h1, rows1 = history(team)
+    h1, rows1 = history(team, ctx.lead)
     t1 = task_rows(team)
     v.check("the lead has history rows", len(rows1) >= 3 and "error" not in h1, str(h1)[:300])
     v.check("tasks lists the recorded issue", "acme/widgets#1" in json.dumps(t1), str(t1))
 
     team.stop()
     team.start()
-    h2, rows2 = history(team)
+    h2, rows2 = history(team, ctx.lead)
     t2 = task_rows(team)
     v.check("after a restart the lead's history rows are back, unchanged", rows2 == rows1 and rows1,
             f"{len(rows1)} before, {len(rows2)} after")

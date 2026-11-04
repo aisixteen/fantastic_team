@@ -38,18 +38,17 @@ def run(ctx):
     if not node:
         print("SKIP: node not found (the panel is driven by node and a stub DOM)")
         return 0
-    run_flow.boot(ctx)
-    P.wire_packs(ctx.team)
+    run_flow.boot(ctx, packs=True)
     team = ctx.team
     pack = P.make_pack(team, "p", {"a.yaml": P.PASS_EVAL})
 
-    out = drive(team, node, pack, "lead", "eval")
+    out = drive(team, node, pack, ctx.lead, "eval")
     v.check("the Eval button shows no error", out["error"] == "", out["error"])
     got = shows_all(out["result_text"])
     v.check("the Eval button shows the pass rate, the time and the cost", all(got.values()),
             f"{got} in {out['result_text']!r}")
 
-    out = drive(team, node, pack, "lead", "install")
+    out = drive(team, node, pack, ctx.lead, "install")
     v.check("the Install (preview) button shows no error", out["error"] == "", out["error"])
     got = shows_all(out["result_text"])
     v.check("an install shows the pass rate, the time and the cost", all(got.values()),

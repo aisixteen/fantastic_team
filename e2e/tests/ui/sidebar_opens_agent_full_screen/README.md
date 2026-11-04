@@ -15,7 +15,7 @@ Asserts, in order:
 - Back, then a click on `sub_a` (the expansion is kept): the same for the subagent, every `history`, `send` and `watch` frame sent meanwhile names `sub_a`, a second token costs exactly one more model request and only `sub_a`'s history holds it;
 - Back again: the pane is hidden, the sidebar shown, Back hidden, the reload asks for `expanded: ["w2"]`, w2's subagents are still drawn, w1 is collapsed, the remembered key `fantastic.team.subagents.w2` is `1` (none for w1) and the scroll was restored.
 
-What the harness works around: the workers and subagents are made after boot, so the probe writes, with operator verbs, the chat grants that `tree::grant_chat_to` writes at start for the workers a team.yaml names (`grant_chat`). The page, the `/team_ws/ws` leg, the dispatcher's grants and the model calls are the binary's own: `--port` serves them through the same code as the app (`app_control::persist_web`, which runs `prepare_web`).
+What the harness works around: the workers and subagents are made after boot, so the probe writes, with operator verbs, the chat grants that `tree::grant_chat_to` writes at start for a group's workers (`grant_chat`). The page, the `/team_ws/ws` leg and the dispatcher's grants are the app's records (`stock.serve_team_page`, a port of `app_control::prepare_web`); the model calls are the binary's own.
 
 Mutations (each makes named checks fail, and each was run once):
 

@@ -37,13 +37,13 @@ def fake_keys(ctx) -> dict:
             "pem_chunk": body[1][:48] if len(body) > 1 else body[0][:48]}
 
 
-def boot(ctx) -> dict:
-    """Boot the team with the fake keys in ITS environment only. Returns the keys."""
-    keys = fake_keys(ctx)
-    ctx.secrets = keys
-    ctx.boot_team({"E2E_MODEL_KEY": keys["model_key"], "E2E_APP_ID": keys["app_id"],
-                   "E2E_APP_PEM": keys["pem"]})
-    return keys
+def boot(ctx, **kw) -> dict:
+    """Boot the stock team (`helpers/stock.py`: fantastic's CLI, the lead from the test's
+    blueprint folder, the rest as records) with the fake keys in ITS environment only.
+    Returns the keys."""
+    from . import stock
+    stock.boot(ctx, **kw)
+    return ctx.secrets
 
 
 def boot_page(ctx, workers=("lead",), watch_only=()) -> int:
@@ -51,10 +51,11 @@ def boot_page(ctx, workers=("lead",), watch_only=()) -> int:
     page's chat grant on `workers` (and `watch` on `watch_only`). Returns the port."""
     from . import app, team as team_mod
 
-    keys = fake_keys(ctx)
-    ctx.secrets = keys
+    from . import stock
+
     port = app.free_port()
-    ctx.boot_team({"E2E_MODEL_KEY": keys["model_key"]}, port=port, wire=["credentials"])
+    stock.boot(ctx, port=port, forge=False)
+    workers = [ctx.lead if w == "lead" else w for w in workers]
     team_mod.grant_chat(ctx.team, "canvas_ws", list(workers))
     if watch_only:
         team_mod.grant_chat(ctx.team, "canvas_ws", list(watch_only), ["watch"])
@@ -63,7 +64,7 @@ def boot_page(ctx, workers=("lead",), watch_only=()) -> int:
 
 def hand_over(ctx, text: str, wait_s: float = 120.0) -> bool:
     """Send the lead its message and wait until the scripted model has played every turn."""
-    r = ctx.team.send("lead", {"type": "send", "text": text})
+    r = ctx.team.send(ctx.lead, {"type": "send", "text": text})
     if r.get("status") != "completed":
         return False
     end = time.time() + wait_s
@@ -82,7 +83,7 @@ def kick(ctx, text: str, timeout: float = 1800.0) -> threading.Thread:
 
     def go():
         try:
-            ctx.kicked["reply"] = ctx.team.send("lead", {"type": "send", "text": text}, timeout=timeout)
+            ctx.kicked["reply"] = ctx.team.send(ctx.lead, {"type": "send", "text": text}, timeout=timeout)
         except Exception as e:  # recorded, the probe decides
             ctx.kicked["error"] = str(e)
 

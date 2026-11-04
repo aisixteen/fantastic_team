@@ -2,7 +2,7 @@
 
 import json
 
-from helpers import packs_pub as P
+from helpers import packs_pub as P, stock as S
 from helpers import run_flow
 from helpers.verdict import Verdict
 
@@ -11,7 +11,7 @@ URL = "https://registry.example.invalid/demo-{v}.json"
 
 def run(ctx):
     v = Verdict("packs/pack_publish_install_update")
-    ctx.boot_packs({"E2E_MODEL_KEY": run_flow.fake_keys(ctx)["model_key"]})
+    S.boot(ctx, forge=False, packs=True)
     t = ctx.team
 
     # 1. pack v1.0.0; the Python content hash is the binary's

@@ -3,7 +3,7 @@ a registry whose certificate the binary does not trust gets a connection and not
 
 import os
 
-from helpers import packs_pub as P
+from helpers import packs_pub as P, stock as S
 from helpers import run_flow
 from helpers.registry import FakeRegistry
 from helpers.verdict import Verdict
@@ -19,7 +19,7 @@ def settle(reg, want, wait_s=5.0):
 
 def run(ctx):
     v = Verdict("packs/install_from_hosted_registry")
-    ctx.boot_packs({"E2E_MODEL_KEY": run_flow.fake_keys(ctx)["model_key"]})
+    S.boot(ctx, forge=False, packs=True)
     t = ctx.team
     reg = FakeRegistry(os.path.join(ctx.run_dir, "registry")).start()
     try:

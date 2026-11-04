@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 
-from helpers import team as team_mod
+from helpers import stock as S, team as team_mod
 from helpers.verdict import Verdict
 
 NAME = "ui/sidebar_opens_agent_full_screen"
@@ -92,7 +92,7 @@ def operator(team, **fields) -> None:
 
 
 def grant_chat(team, chat_agents) -> None:
-    """The binary grants the page's leg the chat verbs of the workers a team.yaml names, at
+    """The app grants the page's leg the chat verbs of a group's workers, at
     start (`tree::grant_chat_to`). These agents are made after boot, so the operator writes
     the same grants. `update_agent` rewrites a field whole, so `team_ws` gets the union."""
     for aid in chat_agents:
@@ -120,11 +120,12 @@ def run(ctx):
     if not node_ok():
         print(f"SKIP {NAME}: needs node >= 22 (global WebSocket) to drive the page's script against the live socket")
         return 0
-    key = "".join(["sk-", "ant-", secrets.token_hex(20)])
-    team = team_mod.Team(ctx.binary, ctx.run_dir, {"E2E_MODEL_KEY": key})
-    ctx.team = team
+    # the stock records (the dispatcher with its group `fantastic`), the blueprint's lead, and the
+    # team page and its socket leg under a web host, as the app serves them
     port = team_mod.free_port()
-    team_mod.boot(team, os.path.join(ctx.dir, "team.yaml"), ctx.vars, port=port)
+    S.boot(ctx, forge=False, groups={"fantastic": {"members": ["w1", "w2"]}})
+    team = ctx.team
+    S.serve_team_page(team, port)
     ref = "model/" + ctx.vars["model_host"]
     agents = [("w1", ROOT), ("w2", ROOT), ("sub_a", "w2"), ("sub_b", "w2")]
     for aid, parent in agents:
@@ -136,15 +137,14 @@ def run(ctx):
         r = team.send("kernel", worker_record(ctx, aid, parent, ref))
         if r.get("status") != "completed":
             raise RuntimeError(f"cannot make {aid}: {r}")
-    r = team.send("kernel", {"type": "update_agent", "id": "credentials",
-                             "callable_by": {"$self": "*", "lead": "*", **{a: "*" for a, _ in agents}}})
-    if r.get("status") != "completed":
-        raise RuntimeError(f"cannot admit the agents to the credential store: {r}")
+    S.merge(team, "credentials", "callable_by", {a: "*" for a, _ in agents})
     grant_chat(team, [a for a, _ in agents])
 
     status, body = team_mod.http_get(port, "/team_page/file/index.html")
+    _, script = team_mod.http_get(port, "/team_page/file/page.js")  # the page's script is its own file
     v.check("the page is served (HTTP 200, the sidebar script and the socket shim)",
-            status == 200 and "function renderSidebar(" in body and "window.fantastic = {" in body, f"HTTP {status} {body[:300]}")
+            status == 200 and "function renderSidebar(" in script and "window.fantastic = {" in (body + script),
+            f"HTTP {status} {body[:300]}")
 
     page = Page(port, os.path.join(ctx.run_dir, "page_driver.err"))
     try:
@@ -211,9 +211,9 @@ def run(ctx):
         v.check("the scripted model got exactly one request, and it holds the token",
                 ctx.model.served == 1 and len(ctx.model.raw_bodies) == 1 and tok1 in ctx.model.raw_bodies[0],
                 f"served {ctx.model.served}")
-        h = holders(page, tok1, ["w1", "w2", "sub_a", "sub_b", "lead"])
+        h = holders(page, tok1, ["w1", "w2", "sub_a", "sub_b", ctx.lead])
         v.check("only w1's history holds the token (not w2, its subagents or the lead)",
-                h == {"w1": True, "w2": False, "sub_a": False, "sub_b": False, "lead": False}, str(h))
+                h == {"w1": True, "w2": False, "sub_a": False, "sub_b": False, ctx.lead: False}, str(h))
 
         # g. a subagent's chat
         s = page.cmd(cmd="click_back")
@@ -241,9 +241,9 @@ def run(ctx):
                 bool(chat_frames) and all(f["target"] == "sub_a" for f in chat_frames), str(chat_frames))
         v.check("the second message cost the model exactly one more request, and it holds the token",
                 ctx.model.served == 2 and tok2 in ctx.model.raw_bodies[-1], f"served {ctx.model.served}")
-        h = holders(page, tok2, ["w1", "w2", "sub_a", "sub_b", "lead"])
+        h = holders(page, tok2, ["w1", "w2", "sub_a", "sub_b", ctx.lead])
         v.check("only sub_a's history holds the second token",
-                h == {"w1": False, "w2": False, "sub_a": True, "sub_b": False, "lead": False}, str(h))
+                h == {"w1": False, "w2": False, "sub_a": True, "sub_b": False, ctx.lead: False}, str(h))
 
         # h. Back keeps the expansion
         mark = page.cmd(cmd="frames")["total"]

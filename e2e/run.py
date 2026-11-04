@@ -10,8 +10,7 @@
     python3 e2e/run.py --bin PATH ...         use a built binary instead of building
 
 A test is a folder `e2e/tests/<group>/<id>/` with `test.yaml` (`costs`, `timeout`,
-`plug`, `build`), a blueprint folder (the `cli/` group; the older tests still hold a `team.yaml`
-that moves to one), a plug's input (`script.json` for the scripted plug) and
+`plug`, `build`), a `blueprint/` folder (fantastic's blueprint: the lead; the `cli/` tests hold the whole tree), a plug's input (`script.json` for the scripted plug) and
 `probe.py`, whose `run(ctx)` returns the exit code of its `Verdict`.
 A test whose plug has no key in the environment is skipped (`SKIP`), not failed.
 Runs live under `e2e/runs/<stamp>/<group>/<id>/` (gitignored: they hold model output).
@@ -48,12 +47,14 @@ from helpers import cli as cli_mod  # noqa: E402
 from helpers import packs_pub as packs_mod  # noqa: E402
 from helpers import registry as registry_mod  # noqa: E402
 from helpers import run_flow  # noqa: E402
+from helpers import stock as stock_mod  # noqa: E402
 from helpers import team as team_mod  # noqa: E402
 from helpers import web as web_mod  # noqa: E402
 from helpers.verdict import Skip, Verdict  # noqa: E402
 
 # A real-key shape, built from pieces so this file does not hold one.
 KEY_SHAPE = re.compile("sk-" "ant-" r"[A-Za-z0-9_\-]{20,}")
+BUILD = "general"  # set by --build; the worker's exec record follows it (helpers/stock.py)
 TURNS_TESTS = ["turns/task/worker_finishes_small_spec", "turns/secrets/real_key_stays_in_x_api_key"]
 
 
@@ -127,23 +128,14 @@ class Ctx:
         self.vars: dict = {}
         self.team: team_mod.Team | None = None
         self.secrets: dict = {}
+        self.build = BUILD  # "general" or "github": which exec the worker gets
+        self.lead = "lead_1"  # the blueprint's lead, as fantastic's import renames it
+        self.work = run_dir
 
-    def boot_team(self, env_extra: dict[str, str], port: int | None = None,
-                  wire=None) -> team_mod.Team:
-        self.team = team_mod.Team(self.binary, self.run_dir, env_extra)
-        team_mod.boot(self.team, os.path.join(self.dir, "team.yaml"), self.vars, port)
-        team_mod.wire(self.team, wire)
-        return self.team
-
-    def boot_packs(self, env_extra: dict[str, str], canvas: bool = False) -> team_mod.Team:
-        """Boot a team that has no connectors (the packs tests): the same start-up, none of
-        `wire()`'s grants for the credentials, puller, github and queue agents, and one
-        grant of its own (the operator may call the `files` agent). `canvas` adds the canvas the
-        app would make, so the pack browser panel is placed on it."""
-        self.team = team_mod.Team(self.binary, self.run_dir, env_extra)
-        team_mod.boot(self.team, os.path.join(self.dir, "team.yaml"), self.vars, canvas=canvas)
-        packs_mod.wire_packs(self.team)
-        return self.team
+    def boot_team(self, env_extra: dict[str, str] | None = None, **kw) -> team_mod.Team:
+        """Start the stock team (`helpers/stock.py`): fantastic's CLI in the run folder, the
+        test's `blueprint/` folder imported (the lead), the rest made with `send`."""
+        return stock_mod.boot(self, env_extra, **kw)
 
 
 class Timeout(Exception):
@@ -165,7 +157,7 @@ def run_test(test: dict, binary: str, stamp_dir: str) -> str:
         forge = forge_mod.Forge(os.path.join(run_dir, "forge")).start()
         variables = {"run_dir": run_dir, "forge_url": forge.url, "forge_host": forge.host}
         model = PLUGS[test["plug"]](test["dir"], variables)
-        variables.update(provides_vars(model))  # model_name: what team.yaml's `model:` takes
+        variables.update(provides_vars(model))  # model_name: what a blueprint's `model:` takes
         model.start()
         ctx = Ctx(test, run_dir, binary, model, forge)
         ctx.vars = dict(variables, model_endpoint=model.endpoint, model_host=model.host)
@@ -350,6 +342,7 @@ def selftest() -> int:
     selftest_cli_fixture(v)
     selftest_app_helpers(v)
     selftest_new_tests_collect(v)
+    selftest_blueprints(v)
     return v.finish()
 
 
@@ -828,11 +821,39 @@ def selftest_new_tests_collect(v: Verdict) -> None:
         if not t:
             continue
         ok, detail = collect_probe(t["dir"])
-        files = all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "team.yaml",
-                                                                         "script.json", "probe.py"))
+        files = all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py",
+                                                                         os.path.join("blueprint", "blueprint.yaml")))
         if not (ok and files and t["costs"] == "free" and t["plug"] == "scripted" and t["build"] == "any"):
             bad.append(f"{n}: collect={detail} files={files} costs={t['costs']} plug={t['plug']} build={t['build']}")
     v.check("each collects, has its files, and is free / scripted / any build", not bad, "; ".join(bad))
+
+
+def selftest_blueprints(v: Verdict) -> None:
+    """The tests hold no team.yaml: each has a blueprint folder whose ports `helpers/stock.py` binds,
+    and the GitHub build's exec pattern is read from its patch."""
+    from helpers import stock
+    tests = discover()
+    v.check("no test holds a team.yaml (the config is fantastic's records and blueprints)",
+            not [t["name"] for t in tests if os.path.exists(os.path.join(t["dir"], "team.yaml"))])
+    bad = []
+    for t in tests:
+        if t["name"] == "surfaces/bare_without_terminal_prints_readme":  # starts no team
+            continue
+        bp = os.path.join(t["dir"], "blueprint", "blueprint.yaml")
+        if not os.path.isfile(bp):
+            bad.append(f"{t['name']}: no blueprint/blueprint.yaml")
+            continue
+        unknown = [p for p in stock.declared_ports(os.path.join(t["dir"], "blueprint")) if p not in stock.PORTS]
+        if unknown:
+            bad.append(f"{t['name']}: ports {unknown} are not bound by stock.PORTS")
+    v.check("every test has a blueprint folder and every port it declares is one stock.py binds",
+            not bad, "; ".join(bad))
+    v.check("the GitHub build's worker exec pattern is the patch's, the general build's is any command",
+            "api\\.github\\.com" in stock.github_allowed()
+            and stock.worker_exec_record("github")["allowed"] == [stock.github_allowed()]
+            and stock.worker_exec_record()["allowed"] == [".*"])
+    ports = stock.declared_ports(os.path.join(HERE, "tests", "task", "one_issue_to_draft_pr", "blueprint"))
+    v.check("declared_ports reads the ports of a blueprint in order", ports == list(stock.PORTS), str(ports))
 
 
 def main() -> int:
@@ -852,6 +873,8 @@ def main() -> int:
 
     if a.selftest:
         return selftest()
+    global BUILD
+    BUILD = a.build
     tests = for_build(discover(), a.build)
     if a.only:
         missing = set(a.only) - {t["name"] for t in tests}

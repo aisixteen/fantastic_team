@@ -6,8 +6,7 @@ from helpers.verdict import Verdict
 
 def run(ctx):
     v = Verdict("dispatcher/digest_reaches_driver")
-    run_flow.boot(ctx)
-    T.wire_dispatcher(ctx.team)
+    run_flow.boot(ctx, groups={"g": {"driver": "$lead", "members": ["w1", "w2"]}}, board=True)
     r = ctx.team.send("cadencer", {"type": "set", "cadence": 2})
     v.check("the operator sets the cadence to 2s", r.get("status") == "completed"
             and r["result"].get("cadence") == 2, str(r))

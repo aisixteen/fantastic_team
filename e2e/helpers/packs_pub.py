@@ -19,27 +19,6 @@ def result(reply: dict) -> dict:
     return r if isinstance(r, dict) else {"value": r}
 
 
-def wire_packs(team) -> None:
-    """The operator's grant a team.yaml cannot say: the `send` leg (`mcp`) may call
-    the `files` agent, so the probe can write and read pack folders."""
-    r = team.send("kernel", {"type": "update_agent", "id": "files",
-                             "callable_by": {"$self": "*", "$parent": "*", "pack": "*",
-                                             "pack_listing": "*", "mcp": "*"}})
-    if r.get("status") != "completed":
-        raise RuntimeError(f"cannot wire files: {r}")
-    # The first start of a fresh dir seeds its own `user` (see README, "Things the harness works
-    # around" 1), so the tree's grant "the pack agent may call user.import_subtree" is not
-    # written; the operator writes it.
-    users = result(team.send("kernel", {"type": "list_agents"})).get("agents", [])
-    user = next((a for a in users if a.get("id") == "user"), None)
-    have = (user or {}).get("callable_by", {}).get("pack") if user else None
-    if user is not None and have != "*" and "import_subtree" not in (have or []):
-        cb = dict(user.get("callable_by") or {}, pack=sorted(set(have or []) | {"import_subtree"}))
-        r = team.send("kernel", {"type": "update_agent", "id": "user", "callable_by": cb})
-        if r.get("status") != "completed":
-            raise RuntimeError(f"cannot wire user: {r}")
-
-
 def put(team, path: str, text: str) -> dict:
     return result(team.send("files", {"type": "write", "path": path, "bytes": text}))
 
