@@ -134,7 +134,7 @@ def parse_stream(raw: bytes) -> str:
 
 
 class ScriptedModel:
-    model_name = MODEL  # what team.yaml's `{{model_name}}` takes
+    model_name = MODEL  # what a blueprint's `{{model_name}}` takes
     key_env = None  # no real key
     real = False  # a script answers; nothing is sent upstream
 
