@@ -667,6 +667,69 @@ mod tests {
         finish(dir.path(), kernel).await;
     }
 
+    /// Room for every spawn of the tests below: the app's registry allows three agents in
+    /// all, and these trees hold up to six. A record field the registry already has.
+    async fn raise_total(kernel: &Arc<Kernel>, total: u64) {
+        let o = ask(
+            kernel,
+            ROOT_ID,
+            json!({"type": "update_agent", "id": ROLES, "limits": {"total": total}}),
+        )
+        .await;
+        assert!(o.get("error").is_none(), "{o}");
+    }
+
+    async fn spawn_as(kernel: &Arc<Kernel>, caller: &str, role: &str) -> String {
+        let r = call_as(
+            kernel,
+            caller,
+            ROLES,
+            json!({"type": "spawn", "role": role}),
+        )
+        .await;
+        assert!(r.get("error").is_none(), "{caller} spawns {role}: {r}");
+        r["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{caller} spawns {role}: {r}"))
+            .to_string()
+    }
+
+    /// The team's own cards: the main lead spawns a sub-lead (the `lead` card) and that
+    /// sub-lead spawns a worker; the main lead spawns a project_lead and that project_lead
+    /// spawns a worker. A card may only grant what its spawner holds (aisixteen/fantastic_team#227).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leads_and_project_leads_spawn_workers_with_the_team_cards() {
+        let (dir, kernel) = team().await;
+        raise_total(&kernel, 6).await;
+        let sub = spawn_as(&kernel, LEAD, "lead").await;
+        let w1 = spawn_as(&kernel, &sub, "worker").await;
+        let pl = spawn_as(&kernel, LEAD, "project_lead").await;
+        let w2 = spawn_as(&kernel, &pl, "worker").await;
+        assert_eq!(meta(&kernel, &w1)["spawned_by"], "roles");
+        assert_eq!(meta(&kernel, &w2)["spawned_by"], "roles");
+        for w in [&w1, &w2] {
+            assert_eq!(meta(&kernel, w)["can_call"][WORKER_EXEC], "*");
+            assert_eq!(meta(&kernel, w)["can_call"][WORKER_FILES], "*");
+        }
+        let count = ask(&kernel, ROLES, json!({"type": "get_count"})).await;
+        assert_eq!(count["running"], 4, "{count}");
+        finish(dir.path(), kernel).await;
+    }
+
+    /// Every card in `roles/` can be spawned by the main lead, so a card cannot grow past
+    /// the lead's grants without this test saying so.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_main_lead_can_spawn_every_card() {
+        let (dir, kernel) = team().await;
+        raise_total(&kernel, 12).await;
+        for name in roles::CODER_ROLES {
+            let r = call_as(&kernel, LEAD, ROLES, json!({"type": "spawn", "role": name})).await;
+            assert!(r["id"].is_string(), "{name}: {r}");
+            assert_ne!(r["reason"], "not_allowed", "{name}: {r}");
+        }
+        finish(dir.path(), kernel).await;
+    }
+
     /// The root's `$subtree` await grant of the old plan is not needed: `spawn` writes the
     /// root's end of the project_lead card's `kernel_state` grant, so a spawned
     /// project_lead waits for an agent with `await_set` and no `$subtree` entry exists.

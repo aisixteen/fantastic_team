@@ -7,7 +7,6 @@ grants:
   worker_exec: "*"
   worker_files: "*"
   queue: "*"
-  kernel: "*"
   kernel_state: [create_agent, delete_agent]
   canvas_page: [new_canvas]
 ---

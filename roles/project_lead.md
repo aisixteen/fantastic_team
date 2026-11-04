@@ -7,6 +7,8 @@ grants:
   github: [issues, issue_view, issue_edit, issue_state, comment, label, project_field_set, pr_create, pr_status, staleness, push]
   board: [board, rows]
   queue: "*"
+  worker_exec: "*"
+  worker_files: "*"
   tasks: [add, assign, reassign, status, report, list, get]
   kernel_state: [await_set, await_cancel, create_agent, delete_agent]
   canvas_page: [new_canvas]

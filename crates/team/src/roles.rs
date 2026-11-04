@@ -198,7 +198,9 @@ mod tests {
             g["$registry"],
             serde_json::json!(["roles", "role", "spawn", "get_count", "fleet", "report"])
         );
-        assert!(g.contains_key("kernel") && g.contains_key("queue"));
+        assert!(g.contains_key("queue"));
+        // the main lead holds nothing on `kernel`, so a card granting it cannot be spawned (#227)
+        assert!(!g.contains_key("kernel"));
     }
 
     #[test]
@@ -378,11 +380,17 @@ mod tests {
                 "{file}"
             );
         }
-        assert_eq!(
-            card("lead.md").grants["kernel"],
-            "*",
-            "the lead card's kernel grant is unchanged"
+        assert!(
+            !card("lead.md").grants.contains_key("kernel"),
+            "the main lead holds nothing on `kernel`, so the lead card must not grant it"
         );
+        for tool in ["worker_exec", "worker_files"] {
+            assert_eq!(
+                card("project_lead.md").grants[tool],
+                "*",
+                "the project_lead card grants what the worker card grants: {tool}"
+            );
+        }
     }
 
     #[test]

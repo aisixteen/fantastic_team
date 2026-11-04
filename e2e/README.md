@@ -153,6 +153,7 @@ These are facts about the binary at the commit this was built on, not decisions 
 
 - `roles/total_limit_refuses_fourth_worker`: `roles: limits: total: 3`; the lead spawns four workers, one call per turn; the fourth is refused with its reason; `get_count`, `fleet` and the dispatcher's `fleet` agree (3 of 3). The worker tiers are inert, so no worker asks the model.
 - `roles/project_lead_plans_and_runs_issues`: the coder `project_lead` reads four fake issues, proposes a tree and waits for "yes"; then two workers are started, a PR is opened for each, and the tree stays. The chat entry, the plan view and the approval gate (LATER, UI) are skipped with a note. The README of the test lists the ordering it relies on and the gaps it works around.
+- `roles/app_team_spawn_trees` (#227): the team the app makes (`fantastic_team_app --dir`, the cards of `roles/`) runs lead -> sub-lead -> worker and lead -> project_lead -> worker on the scripted plug; each parent deletes what it spawned; no spawned agent is left. Needs `fantastic_team_app` next to `--bin`.
 
 ## Later
 

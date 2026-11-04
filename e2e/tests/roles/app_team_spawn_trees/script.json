@@ -1,0 +1,149 @@
+[
+ {
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "lead",
+     "task": "[lane:s1] Run a worker, then delete it."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "project_lead",
+     "task": "[lane:p1] Run a worker, then delete it."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel_state",
+    "type": "delete_agent",
+    "args": {
+     "id": "{{id:1}}"
+    }
+   }
+  ],
+  "after": [
+   "s1",
+   "p1",
+   "w1",
+   "w2"
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel_state",
+    "type": "delete_agent",
+    "args": {
+     "id": "{{id:2}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "worker",
+     "task": "[lane:w1] Do nothing."
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel_state",
+    "type": "delete_agent",
+    "args": {
+     "id": "{{id:1}}"
+    }
+   }
+  ],
+  "after": [
+   "w1"
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "worker",
+     "task": "[lane:w2] Do nothing."
+    }
+   }
+  ],
+  "lane": "p1"
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel_state",
+    "type": "delete_agent",
+    "args": {
+     "id": "{{id:1}}"
+    }
+   }
+  ],
+  "after": [
+   "w2"
+  ],
+  "lane": "p1"
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "lane": "p1"
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "lane": "w2"
+ }
+]
