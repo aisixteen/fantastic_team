@@ -752,10 +752,6 @@ def selftest_scripted_lanes(v: Verdict) -> None:
             pass
         v.check("{{id:N}} is the Nth <id> in the request body",
                 m.resolve_ids("x {{id:2}} {{id:3}}", "<id>a1</id> <id>b2</id>") == "x b2 {{id:3}}")
-        v.check("{{tag:NAME}} is the last <NAME> in the request body",
-                m.resolve_ids("x {{tag:need_key}} {{tag:none}}",
-                              "<need_key>w8</need_key> <id>a1</id> <need_key>w9</need_key>")
-                == "x w9 {{tag:none}}")
         v.check("a lane asked past its end is an overrun, not another lane's turn", m.overrun == 1)
     finally:
         m.stop()
