@@ -19,7 +19,7 @@ body:
         - git connector
         - github connector (the GitHub App)
         - remote runner / tunnel
-        - web UI (--port)
+        - web UI (canvas --port)
         - app (Tauri wrapper)
         - worker packs
         - docs
@@ -43,7 +43,7 @@ body:
     id: repro
     attributes:
       label: Steps to reproduce
-      description: Commands, the relevant part of team.yaml (no keys), and what the workers were doing.
+      description: Commands, the relevant agent records (no keys), and what the workers were doing.
       render: shell
     validations:
       required: true

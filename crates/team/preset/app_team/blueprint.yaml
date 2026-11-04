@@ -1,0 +1,148 @@
+# The app's preset, in roles mode, as a fantastic BLUEPRINT FOLDER. The app imports it
+# under the home's `user` agent when it creates a team (the `user` agent's
+# `import_subtree`, the same as `fantastic_team import <folder> --parent user`):
+#
+#   fantastic_team import <this folder> --parent user \
+#     --bind @memory=memory --bind @files=files --bind @credentials=credentials --approve
+#
+# What it makes: the lead (an AI agent on the Anthropic backend, its directive the file
+# `roles/lead.md`), under it the roles registry (fantastic's `agentic_resources`: the
+# role cards in `roles/`, the TIERS the cards name, the limits), the task registry
+# (`tasks`), the queue and the GitHub connector. Edit the records afterwards with
+# `fantastic_team send` (`update_agent`), the way you edit any agent.
+#
+# - Every id gets fantastic's `_1` suffix on import (`lead_1`, `roles_1`, ...): the app
+#   writes the new ids into the cards' grants (`preset::bind_cards`).
+# - The git connector is not here: it takes the absolute paths of your clone and your
+#   worktrees, and a blueprint carries no absolute path. Make it with
+#   `fantastic_team send` (`create_agent`, handler_module team_git.tools, repo_dir,
+#   workspace_root, remote, default_branch), then set the GitHub connector's `git`.
+# - Replace `owner/name` (the GitHub connector's `repos`, the board's `repos`).
+# - The GitHub App's credentials live in the home's `credentials` agent (`fantastic_team
+#   setup github` stores them there); this file names the ref, never a key.
+ports:
+  "@memory":
+    kind: memory
+  "@files":
+    kind: files
+  "@credentials":
+    kind: credentials
+agents:
+  - id: lead
+    handler_module: anthropic_backend.tools
+    model: claude-opus-5-5
+    endpoint: https://api.anthropic.com/v1/messages
+    credentials:
+      store: "@credentials"
+      ref: anthropic/api.anthropic.com
+    price_input_per_mtok: 4.0
+    price_output_per_mtok: 20.0
+    caching: provider_cache
+    context_window: 1000000
+    max_tokens: 32000
+    memory_store_id: "@memory"
+    file_bridge_id: "@files"
+    system_prompt_file: roles/lead.md
+    can_call:
+      "$self": "*"
+      "$subtree": "*"
+      "@memory": "*"
+      "@files": [read]
+      "@root": [await_set, await_cancel, create_agent, delete_agent]
+      roles: [roles, role, spawn, get_count, fleet]
+      board: [board, rows]
+    callable_by:
+      "$self": "*"
+      "$parent": "*"
+    agents:
+      - id: queue
+        handler_module: ram_store.tools
+        callable_by:
+          "$self": "*"
+          "$parent": "*"
+          board: "*"
+      - id: github
+        handler_module: team_github.tools
+        app:
+          credentials:
+            store: credentials
+            ref: github/app
+        repos: [owner/name]
+        directive: Push a work branch and open a draft pull request. Never the default branch, never a force, never a merge.
+        callable_by:
+          "$self": "*"
+          "$parent": "*"
+          board: "*"
+      - id: board
+        handler_module: team_board.tools
+        repos: [owner/name]
+        github: github
+        store: queue
+        roles: roles
+        can_call:
+          github: "*"
+          queue: "*"
+          roles: [fleet, get_count]
+          tasks: [list]
+          "@root": [reflect]
+        callable_by:
+          "$self": "*"
+          "$parent": "*"
+      - id: roles
+        handler_module: agentic_resources.tools
+        role_dirs: [roles]
+        limits:
+          total: 3
+          per_role:
+            worker: 2
+        tiers:
+          strong:
+            handler_module: anthropic_backend.tools
+            model: claude-opus-5-5
+            endpoint: https://api.anthropic.com/v1/messages
+            credentials: {store: credentials, ref: anthropic/api.anthropic.com}
+            price_input_per_mtok: 4.0
+            price_output_per_mtok: 20.0
+            caching: provider_cache
+            context_window: 1000000
+            max_tokens: 32000
+            memory_store_id: memory
+          small:
+            handler_module: anthropic_backend.tools
+            model: claude-haiku-5-5
+            endpoint: https://api.anthropic.com/v1/messages
+            credentials: {store: credentials, ref: anthropic/api.anthropic.com}
+            price_input_per_mtok: 0.1
+            price_output_per_mtok: 0.5
+            caching: provider_cache
+            context_strategy: compact
+            context_window: 1000000
+            max_tokens: 32000
+            memory_store_id: memory
+          issue_keeper:
+            handler_module: anthropic_backend.tools
+            model: claude-haiku-5-5
+            endpoint: https://api.anthropic.com/v1/messages
+            credentials: {store: credentials, ref: anthropic/api.anthropic.com}
+            price_input_per_mtok: 0.1
+            price_output_per_mtok: 0.5
+            caching: provider_cache
+            context_strategy: compact
+            context_window: 1000000
+            max_tokens: 8000
+            memory_store_id: memory
+        can_call:
+          "@memory": "*"
+        callable_by:
+          "$self": "*"
+          "$parent": "*"
+          board: [fleet, get_count]
+      - id: tasks
+        handler_module: task_registry.tools
+        task_store_id: memory
+        can_call:
+          "@memory": "*"
+        callable_by:
+          "$self": "*"
+          "$parent": "*"
+          board: [list]

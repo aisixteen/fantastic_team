@@ -10,7 +10,7 @@
     python3 e2e/run.py --bin PATH ...         use a built binary instead of building
 
 A test is a folder `e2e/tests/<group>/<id>/` with `test.yaml` (`costs`, `timeout`,
-`plug`, `build`), `team.yaml`, a plug's input (`script.json` for the scripted plug) and
+`plug`, `build`), a `blueprint/` folder (fantastic's blueprint: the lead; the `cli/` tests hold the whole tree), a plug's input (`script.json` for the scripted plug) and
 `probe.py`, whose `run(ctx)` returns the exit code of its `Verdict`.
 A test whose plug has no key in the environment is skipped (`SKIP`), not failed.
 Runs live under `e2e/runs/<stamp>/<group>/<id>/` (gitignored: they hold model output).
@@ -43,15 +43,18 @@ from backends import PLUGS, available, provides_vars, scripted  # noqa: E402
 from backends import anthropic as relay_mod  # noqa: E402
 from helpers import forge as forge_mod  # noqa: E402
 from helpers import app as app_mod  # noqa: E402
+from helpers import cli as cli_mod  # noqa: E402
 from helpers import packs_pub as packs_mod  # noqa: E402
 from helpers import registry as registry_mod  # noqa: E402
 from helpers import run_flow  # noqa: E402
+from helpers import stock as stock_mod  # noqa: E402
 from helpers import team as team_mod  # noqa: E402
 from helpers import web as web_mod  # noqa: E402
 from helpers.verdict import Skip, Verdict  # noqa: E402
 
 # A real-key shape, built from pieces so this file does not hold one.
 KEY_SHAPE = re.compile("sk-" "ant-" r"[A-Za-z0-9_\-]{20,}")
+BUILD = "general"  # set by --build; the worker's exec record follows it (helpers/stock.py)
 TURNS_TESTS = ["turns/task/worker_finishes_small_spec", "turns/secrets/real_key_stays_in_x_api_key"]
 
 
@@ -125,23 +128,14 @@ class Ctx:
         self.vars: dict = {}
         self.team: team_mod.Team | None = None
         self.secrets: dict = {}
+        self.build = BUILD  # "general" or "github": which exec the worker gets
+        self.lead = "lead_1"  # the blueprint's lead, as fantastic's import renames it
+        self.work = run_dir
 
-    def boot_team(self, env_extra: dict[str, str], port: int | None = None,
-                  wire=None) -> team_mod.Team:
-        self.team = team_mod.Team(self.binary, self.run_dir, env_extra)
-        team_mod.boot(self.team, os.path.join(self.dir, "team.yaml"), self.vars, port)
-        team_mod.wire(self.team, wire)
-        return self.team
-
-    def boot_packs(self, env_extra: dict[str, str], canvas: bool = False) -> team_mod.Team:
-        """Boot a team that has no connectors (the packs tests): the same start-up, none of
-        `wire()`'s grants for the credentials, puller, github and queue agents, and one
-        grant of its own (the operator may call the `files` agent). `canvas` adds the canvas the
-        app would make, so the pack browser panel is placed on it."""
-        self.team = team_mod.Team(self.binary, self.run_dir, env_extra)
-        team_mod.boot(self.team, os.path.join(self.dir, "team.yaml"), self.vars, canvas=canvas)
-        packs_mod.wire_packs(self.team)
-        return self.team
+    def boot_team(self, env_extra: dict[str, str] | None = None, **kw) -> team_mod.Team:
+        """Start the stock team (`helpers/stock.py`): fantastic's CLI in the run folder, the
+        test's `blueprint/` folder imported (the lead), the rest made with `send`."""
+        return stock_mod.boot(self, env_extra, **kw)
 
 
 class Timeout(Exception):
@@ -163,7 +157,7 @@ def run_test(test: dict, binary: str, stamp_dir: str) -> str:
         forge = forge_mod.Forge(os.path.join(run_dir, "forge")).start()
         variables = {"run_dir": run_dir, "forge_url": forge.url, "forge_host": forge.host}
         model = PLUGS[test["plug"]](test["dir"], variables)
-        variables.update(provides_vars(model))  # model_name: what team.yaml's `model:` takes
+        variables.update(provides_vars(model))  # model_name: what a blueprint's `model:` takes
         model.start()
         ctx = Ctx(test, run_dir, binary, model, forge)
         ctx.vars = dict(variables, model_endpoint=model.endpoint, model_host=model.host)
@@ -344,8 +338,11 @@ def selftest() -> int:
     selftest_scripted_thinking(v)
     selftest_web(v)
     selftest_team_args(v)
+    selftest_scripted_lanes(v)
+    selftest_cli_fixture(v)
     selftest_app_helpers(v)
     selftest_new_tests_collect(v)
+    selftest_blueprints(v)
     return v.finish()
 
 
@@ -674,31 +671,90 @@ def selftest_web(v: Verdict) -> None:
 
 
 def selftest_team_args(v: Verdict) -> None:
-    """Team.start passes extra_args after `--dir D`; boot's port goes to the final start only."""
+    """Team.start runs fantastic's own words in the run folder: `--headless` unless told, no `--dir`."""
     tmp = tempfile.mkdtemp(prefix="e2e-args-")
     t = None
     try:
         stub = os.path.join(tmp, "stub")
         with open(stub, "w") as f:
-            f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" > argv.txt\nmkdir -p .fantastic/cli\n"
+            f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" > argv.txt\npwd > cwd.txt\nmkdir -p .fantastic/cli\n"
                     ": > .fantastic/cli/mcp.sock\nexec sleep 20\n")
         os.chmod(stub, 0o755)
         t = team_mod.Team(stub, tmp, {})
-        t.start(wait_s=10, extra_args=["--port", 18080])
+        t.start(wait_s=10, extra_args=["canvas", "--port", 18080])
         argv = open(os.path.join(tmp, "argv.txt")).read().split("\n")[:-1]
-        v.check("Team.start puts extra_args after --dir", argv == ["--dir", tmp, "--port", "18080"], str(argv))
+        v.check("Team.start passes fantastic's words as they are", argv == ["canvas", "--port", "18080"], str(argv))
         v.check("Team.port is the port of the start", t.port == 18080)
+        v.check("it runs in the run folder (fantastic has no --dir)",
+                os.path.realpath(open(os.path.join(tmp, "cwd.txt")).read().strip()) == os.path.realpath(tmp))
         t.stop()
         os.remove(os.path.join(tmp, ".fantastic", "cli", "mcp.sock"))
         t.start(wait_s=10)
         argv = open(os.path.join(tmp, "argv.txt")).read().split("\n")[:-1]
-        v.check("Team.start with no extra_args is [--dir D] only, and clears the port",
-                argv == ["--dir", tmp] and t.port is None, str(argv))
-        v.check("Team.argv builds the same command line", t.argv(["--port", 7]) == [stub, "--dir", tmp, "--port", "7"])
+        v.check("Team.start with no extra_args is [--headless] only, and clears the port",
+                argv == ["--headless"] and t.port is None, str(argv))
+        v.check("Team.argv builds the same command line",
+                t.argv(["canvas", "--port", 7]) == [stub, "canvas", "--port", "7"] and "--dir" not in t.argv())
     finally:
         if t:
             t.stop()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def selftest_cli_fixture(v: Verdict) -> None:
+    """The cli group's fixture: unsolved at first, an edit alone is not solved, a commit is."""
+    tmp = tempfile.mkdtemp(prefix="e2e-fixture-")
+    try:
+        repo = cli_mod.make_fixture(tmp)
+        v.check("the fixture's test fails", not cli_mod.test_passes(repo))
+        v.check("the fixture is not solved", not cli_mod.solved(repo)[0])
+        for f in (("adder.py", "a - b", "a + b"), ("muler.py", "a + b", "a * b")):
+            p = os.path.join(repo, f[0])
+            with open(p) as fh:
+                text = fh.read().replace(f[1], f[2])
+            with open(p, "w") as fh:
+                fh.write(text)
+        v.check("the fix in the work tree, uncommitted, is not solved", not cli_mod.solved(repo)[0])
+        cli_mod.git(repo, "commit", "-q", "-a", "-m", "fix")
+        v.check("the fix committed is solved", cli_mod.solved(repo)[0], cli_mod.solved(repo)[1])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def selftest_scripted_lanes(v: Verdict) -> None:
+    """Lanes: each agent (by the marker in its first message) plays its own turns in order, and
+    `after` holds a turn until the named lanes have played out."""
+    script = [{"text": "main-1"}, {"text": "a-1", "lane": "a"}, {"text": "a-2", "lane": "a"},
+              {"text": "b-1", "lane": "b", "after": ["a"]}]
+    m = scripted.ScriptedModel(script).start()
+    try:
+        def ask(marker):
+            body = json.dumps({"messages": [{"role": "user", "content": f"go {marker}"}]}).encode()
+            req = urllib.request.Request(m.url + "/v1/messages", data=body, method="POST")
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return scripted.parse_stream(r.read())
+
+        got = {}
+        tb = threading.Thread(target=lambda: got.setdefault("b", ask("[lane:b]")))
+        tb.start()
+        time.sleep(0.5)
+        v.check("a turn with `after` is held while the lane it waits for has turns left", "b" not in got)
+        outs = [ask("[lane:a]"), ask("[lane:a]")]
+        tb.join(20)
+        v.check("lane a plays a-1, a-2 in order", outs == ["a-1", "a-2"], str(outs))
+        v.check("the held turn is answered once lane a is played out", got.get("b") == "b-1", str(got))
+        v.check("a request with no marker is the main lane", ask("plain") == "main-1")
+        v.check("every turn played, none past the end", m.consumed and m.request_lanes[-1] == "main",
+                str(m.request_lanes))
+        try:
+            ask("[lane:a]")
+        except urllib.error.HTTPError:
+            pass
+        v.check("{{id:N}} is the Nth <id> in the request body",
+                m.resolve_ids("x {{id:2}} {{id:3}}", "<id>a1</id> <id>b2</id>") == "x b2 {{id:3}}")
+        v.check("a lane asked past its end is an overrun, not another lane's turn", m.overrun == 1)
+    finally:
+        m.stop()
 
 
 def selftest_app_helpers(v: Verdict) -> None:
@@ -765,11 +821,39 @@ def selftest_new_tests_collect(v: Verdict) -> None:
         if not t:
             continue
         ok, detail = collect_probe(t["dir"])
-        files = all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "team.yaml",
-                                                                         "script.json", "probe.py"))
+        files = all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py",
+                                                                         os.path.join("blueprint", "blueprint.yaml")))
         if not (ok and files and t["costs"] == "free" and t["plug"] == "scripted" and t["build"] == "any"):
             bad.append(f"{n}: collect={detail} files={files} costs={t['costs']} plug={t['plug']} build={t['build']}")
     v.check("each collects, has its files, and is free / scripted / any build", not bad, "; ".join(bad))
+
+
+def selftest_blueprints(v: Verdict) -> None:
+    """The tests hold no team.yaml: each has a blueprint folder whose ports `helpers/stock.py` binds,
+    and the GitHub build's exec pattern is read from its patch."""
+    from helpers import stock
+    tests = discover()
+    v.check("no test holds a team.yaml (the config is fantastic's records and blueprints)",
+            not [t["name"] for t in tests if os.path.exists(os.path.join(t["dir"], "team.yaml"))])
+    bad = []
+    for t in tests:
+        if t["name"] == "surfaces/bare_without_terminal_prints_readme":  # starts no team
+            continue
+        bp = os.path.join(t["dir"], "blueprint", "blueprint.yaml")
+        if not os.path.isfile(bp):
+            bad.append(f"{t['name']}: no blueprint/blueprint.yaml")
+            continue
+        unknown = [p for p in stock.declared_ports(os.path.join(t["dir"], "blueprint")) if p not in stock.PORTS]
+        if unknown:
+            bad.append(f"{t['name']}: ports {unknown} are not bound by stock.PORTS")
+    v.check("every test has a blueprint folder and every port it declares is one stock.py binds",
+            not bad, "; ".join(bad))
+    v.check("the GitHub build's worker exec pattern is the patch's, the general build's is any command",
+            "api\\.github\\.com" in stock.github_allowed()
+            and stock.worker_exec_record("github")["allowed"] == [stock.github_allowed()]
+            and stock.worker_exec_record()["allowed"] == [".*"])
+    ports = stock.declared_ports(os.path.join(HERE, "tests", "task", "one_issue_to_draft_pr", "blueprint"))
+    v.check("declared_ports reads the ports of a blueprint in order", ports == list(stock.PORTS), str(ports))
 
 
 def main() -> int:
@@ -789,6 +873,8 @@ def main() -> int:
 
     if a.selftest:
         return selftest()
+    global BUILD
+    BUILD = a.build
     tests = for_build(discover(), a.build)
     if a.only:
         missing = set(a.only) - {t["name"] for t in tests}

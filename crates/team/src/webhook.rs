@@ -221,6 +221,7 @@ impl fantastic_kernel::bundle::Bundle for WebhookBundle {
     ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if t == "boot" {
+            crate::declared_views::sync_all(kernel);
             return Ok(None);
         }
         let out = match t {

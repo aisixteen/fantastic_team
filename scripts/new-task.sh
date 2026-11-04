@@ -8,9 +8,9 @@
 #   field NAME            (required: give it with --set NAME=…)
 #   field NAME=default    (optional)
 #   -->
-# The task file is for whatever agents the caller's team.yaml defines: the team creates no
-# coding agent by default. See the README ("The caller defines the agents") for a minimal
-# team.yaml with one worker and no lead, and one with `roles:`.
+# The task file is for whatever agents the caller made: the team creates no coding agent by
+# default. See the README ("Configure") for a minimal blueprint with one worker, and the app's
+# preset with a lead and the roles registry.
 # TITLE, KIND, DATE and SLUG are filled by the generator; AUTHOR is $USER unless --set AUTHOR=….
 set -eu
 LC_ALL=C
@@ -58,7 +58,7 @@ check() {
 case $1 in
     -h | --help)
         echo "$USAGE"
-        echo "The task file is for the agents your team.yaml defines; see the README examples (one worker, or roles)."
+        echo "The task file is for the agents you made; see the README examples (one worker, or roles)."
         exit 0 ;;
     --list)
         for k in $(kinds); do

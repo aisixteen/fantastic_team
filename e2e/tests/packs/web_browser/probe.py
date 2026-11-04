@@ -5,7 +5,7 @@ browser view-model with and without opt-in."""
 
 import os
 
-from helpers import packs_pub as P
+from helpers import app, packs_pub as P, stock as S
 from helpers import run_flow
 from helpers.verdict import Verdict
 
@@ -20,7 +20,7 @@ def ids(t):
 
 def run(ctx):
     v = Verdict("packs/web_browser")
-    ctx.boot_packs({"E2E_MODEL_KEY": run_flow.fake_keys(ctx)["model_key"]}, canvas=True)
+    S.boot(ctx, forge=False, packs=True, port=app.free_port())
     t = ctx.team
 
     # 1. the panel the team serves: an agent on the canvas, with the page and its two grants
@@ -60,7 +60,7 @@ def run(ctx):
     # 3. the install, in the panel's two steps
     before = ids(t)
     payload = {"type": "install", "pack": "packs/notes-1.0.0", "into": "templates",
-               "bindings": {}, "parent_id": "lead"}
+               "bindings": {}, "parent_id": ctx.lead}
     prev = P.result(t.send("pack", payload))
     v.check("install without approve answers the permission preview under approval",
             "approval" in prev and "imported" not in prev and "error" not in prev, str(prev))
@@ -94,7 +94,7 @@ def run(ctx):
     served = ctx.model.served
     P.make_worker(t, "checker", "1.0.0", [], extra_files={"evals/one.yaml": EVAL})
     P.pack(t, "workers/checker", "packs/checker-1.0.0")
-    ev = P.result(t.send("pack", {"type": "eval", "pack": "packs/checker-1.0.0", "worker": "lead"}))
+    ev = P.result(t.send("pack", {"type": "eval", "pack": "packs/checker-1.0.0", "worker": ctx.lead}))
     v.check("eval runs the pack's eval on the lead: one eval, pass rate 1",
             ev.get("total") == 1 and ev.get("passed") == 1 and ev.get("pass_rate") == 1, str(ev))
     # the lead answers its own reply once more (an absent reply_to is self), a moment later: wait

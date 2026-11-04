@@ -10,7 +10,7 @@ THOUGHT = "let me check the queue"
 MARKER = "ATTACH-MARKER-5821"
 
 
-def own(ws, src="lead"):
+def own(ws, src):
     return [f["payload"] for f in ws.events(src) if f["payload"].get("client_id") == CLIENT]
 
 
@@ -32,15 +32,15 @@ def run(ctx):
     port = run_flow.boot_page(ctx, watch_only=["queue"])
     ws = web.WsClient(port, "/canvas_ws/ws")
     ws2 = web.WsClient(port, "/canvas_ws/ws")  # a second page: asks `status` while the first waits
-    ws.watch("lead")
+    ws.watch(ctx.lead)
     ws.watch("queue")
 
-    cid = ws.send_call("lead", {"type": "send", "text": "check the queue", "client_id": CLIENT})
+    cid = ws.send_call(ctx.lead, {"type": "send", "text": "check the queue", "client_id": CLIENT})
     running = None
     end = time.time() + 30
     while time.time() < end and not running:
         if ctx.model.served >= 2:  # the second reply is held for 3 s: the turn is running
-            s = ws2.call("lead", {"type": "status", "client_id": CLIENT})
+            s = ws2.call(ctx.lead, {"type": "status", "client_id": CLIENT})
             if s.get("generating") and (s.get("current") or {}).get("is_mine"):
                 running = s
         time.sleep(0.2)
@@ -57,10 +57,10 @@ def run(ctx):
     v.check("the chain ends: two model turns, two done statuses", ended and ctx.model.served == 2,
             f"served {ctx.model.served}, dones {len(dones())}")
     time.sleep(0.5)
-    idle = ws2.call("lead", {"type": "status"})
+    idle = ws2.call(ctx.lead, {"type": "status"})
     v.check("status is idle once the turn is over", idle.get("generating") is False, str(idle))
 
-    mine = own(ws)
+    mine = own(ws, ctx.lead)
     think = parts(mine, "thinking")
     v.check("a reasoning part streams, with the thought, and ends",
             len(think) == 1 and think[0][1] == THOUGHT and think[0][2], str(think))
@@ -81,7 +81,7 @@ def run(ctx):
     v.check("the done status carries the context numbers",
             detail.get("context_window") == 100000 and isinstance(detail.get("prompt_tokens"), int), str(detail))
 
-    hist = ws2.call("lead", {"type": "history"})
+    hist = ws2.call(ctx.lead, {"type": "history"})
     rows = hist.get("rows", [])
     v.check("history replays the reasoning (the assistant row has thinking)",
             any(r.get("role") == "assistant" and r.get("has_thinking") for r in rows), str(rows))
@@ -90,12 +90,12 @@ def run(ctx):
             and any(r.get("head", "").startswith("[reply to") and "queue read" in r.get("head", "") for r in rows),
             str([r.get("head") for r in rows]))
 
-    inq = ws2.call("user", {"type": "inquiries", "asker": "lead"})
+    inq = ws2.call("user", {"type": "inquiries", "asker": ctx.lead})
     v.check("the user agent answers `inquiries` for the lead (none open)",
             isinstance(inq.get("inquiries"), list) and inq["inquiries"] == [], str(inq))
 
     text = f"read this\n\n[attached: notes.txt]\n{MARKER}"
-    r3 = ws.call("lead", {"type": "send", "text": text, "client_id": CLIENT}, timeout=60)
+    r3 = ws.call(ctx.lead, {"type": "send", "text": text, "client_id": CLIENT}, timeout=60)
     v.check("a send with an attachment (text inside the send) is accepted", not r3.get("error"), str(r3))
     body = ctx.model.raw_bodies[2] if len(ctx.model.raw_bodies) > 2 else ""
     v.check("the model got the attached text", MARKER in body and "[attached: notes.txt]" in body,

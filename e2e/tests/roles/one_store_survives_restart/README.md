@@ -1,6 +1,6 @@
 # roles/one_store_survives_restart (free, build: any)
 
-Every AI agent's memory and the task registry point at ONE store agent (#185): a `sqlite_store` named `memory`, one file `.fantastic/memory.db` in the team directory. It is config (`team.yaml` may name another store with `store:`); this test runs the default.
+Every AI agent's memory and the task registry point at ONE store agent (#185): a `sqlite_store` named `memory`, one file `.fantastic/memory.db` in the team directory. The home's own `memory` agent is that store; this test runs the default.
 
 The lead, on the scripted model, spawns one worker through the roles registry, then adds one row to `tasks`, then `done`.
 

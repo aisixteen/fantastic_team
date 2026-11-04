@@ -1,7 +1,10 @@
 """Start and stop the team binary in a run dir, and talk to it.
 
-The binary runs headless (`--dir RUN`). Everything it is told goes through
-`fantastic_team send '<item>'` (attach-only, over `.fantastic/cli/mcp.sock`).
+The binary is fantastic's command line, run in the run folder (fantastic has no `--dir`:
+it works in the directory it is started in): `--headless` by default, `canvas --port N`
+for the web. Everything it is told goes through `fantastic_team send '<item>'` or
+`fantastic_team import <folder> --parent user --approve` (attach-only, over
+`.fantastic/cli/mcp.sock`). `helpers/stock.py` builds the stock team with them.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import urllib.error
 import urllib.request
 
 SOCK = os.path.join(".fantastic", "cli", "mcp.sock")
+HEADLESS = ("--headless",)  # no screen, no port; the default start
 
 
 def free_port() -> int:
@@ -58,17 +62,12 @@ class Team:
         self.proc: subprocess.Popen | None = None
         self.port: int | None = None  # the web UI port of the last start that had one
 
-    def write_yaml(self, template_path: str, variables: dict) -> None:
-        with open(template_path) as f:
-            text = fill_text(f.read(), variables)
-        with open(os.path.join(self.dir, "team.yaml"), "w") as f:
-            f.write(text)
+    def argv(self, extra_args=HEADLESS) -> list[str]:
+        """The command line of a start: fantastic's own words, run in the run folder
+        (`["--headless"]`, `["canvas", "--port", "8123"]`, `["--headless", "ai", "anthropic", ...]`)."""
+        return [self.binary, *map(str, extra_args)]
 
-    def argv(self, extra_args=()) -> list[str]:
-        """The command line of a start: `--dir D`, then `extra_args` (`["--port", "8123"]`)."""
-        return [self.binary, "--dir", self.dir, *map(str, extra_args)]
-
-    def start(self, wait_s: float = 60.0, extra_args=()) -> None:
+    def start(self, wait_s: float = 60.0, extra_args=HEADLESS) -> None:
         extra = list(map(str, extra_args))
         self.port = int(extra[extra.index("--port") + 1]) if "--port" in extra else None
         log = open(self.log_path, "wb")
@@ -83,6 +82,24 @@ class Team:
                 return
             time.sleep(0.2)
         raise RuntimeError(f"team binary did not open {SOCK} in {wait_s}s:\n{self.log()}")
+
+    def import_blueprint(self, folder: str, parent: str = "user", binds=None,
+                         timeout: float = 120.0) -> str:
+        """`fantastic_team import FOLDER --parent PARENT --bind @p=id ... --approve` on the running
+        team; the command's output (`imported N: id, id`). Raises when fantastic refuses."""
+        cmd = [self.binary, "import", folder, "--parent", parent, "--approve"]
+        for port, agent in (binds or {}).items():
+            cmd += ["--bind", f"{port}={agent}"]
+        r = subprocess.run(cmd, env=self.env, cwd=self.dir, capture_output=True, text=True,
+                           timeout=timeout)
+        if r.returncode != 0 or not r.stdout.startswith("imported"):
+            raise RuntimeError(f"import {folder} failed ({r.returncode}): {r.stdout}{r.stderr}")
+        return r.stdout.strip()
+
+    def agents(self) -> dict:
+        """Every agent record, by id (`list_agents` on the kernel)."""
+        r = self.send("kernel", {"type": "list_agents"})
+        return {a["id"]: a for a in r["result"]["agents"]}
 
     def send(self, target: str, payload: dict, timeout: float = 120.0) -> dict:
         item = json.dumps({"target": target, "payload": payload})
@@ -122,87 +139,6 @@ class Team:
                 return None
             time.sleep(every)
         return None
-
-
-def boot(team: "Team", yaml_template: str, variables: dict, port: int | None = None,
-         canvas: bool = False) -> None:
-    """Bring the team up from `yaml_template`.
-
-    The binary's own start-up (plan the tree from team.yaml, apply it, then run
-    the shell) cannot persist the tree into a fresh directory at this commit: it
-    seeds a sealed store, and the shell then finds no `kernel_memory`. So:
-    1. start with no team.yaml (the shell seeds its own base tree), add one
-       open file store at the root with a public verb, stop;
-    2. write team.yaml and start again: the start-up now finds a store, applies
-       the tree to disk, and the shell boots it.
-    With `canvas`, step 1 also adds the `canvas_page` agent the app would make, so the
-    start-up places the dispatcher and the pack browser panel on it.
-    Only that final start gets `--port` (the first one never serves a web UI).
-    """
-    for d in ("work/wt", "work/tasks", "sandbox/home"):  # the binary makes none of these
-        os.makedirs(os.path.join(team.dir, d), exist_ok=True)
-    team.start()
-    r = team.send("kernel", {"type": "create_agent", "id": "team_store", "parent_id": "kernel",
-                             "handler_module": "file_bridge.tools", "root": ".fantastic",
-                             "allow": ["."], "ingress_rule": "allow_all_ingress"})
-    if r.get("status") != "completed":
-        raise RuntimeError(f"cannot add the root store: {r}")
-    if canvas:  # the app makes the canvas; a headless team has none, and so no panels on it
-        r = team.send("kernel", {"type": "create_agent", "id": "canvas_page", "parent_id": "kernel",
-                                 "handler_module": "ram_store.tools"})
-        if r.get("status") != "completed":
-            raise RuntimeError(f"cannot add the canvas: {r}")
-    team.stop()
-    team.write_yaml(yaml_template, variables)
-    team.start(extra_args=["--port", port] if port else ())
-
-
-def wire(team: "Team", only=None) -> None:
-    """The operator's grants a team.yaml cannot say: the credential store admits
-    the lead (its model key) and the github connector (the app key); the puller
-    may call github and the queue folder; the operator (the `send` leg) may call
-    them too; the worker and queue folders are opened for the lead (they are
-    sealed by default, and so no model could use them). `only` names the agents to
-    wire when the team.yaml has not all of them (default: all)."""
-    both = {"$self": "*", "$parent": "*", "puller": "*", "mcp": "*"}
-    steps = [
-        ("credentials", {"callable_by": {"$self": "*", "github": "*", "lead": "*"}}),
-        ("puller", {"can_call": {"$self": "*", "github": "*", "queue_files": "*"}}),
-        ("github", {"callable_by": both, "can_call": {"$self": "*", "credentials": "*"}}),
-        ("queue_files", {"callable_by": both, "ingress_rule": "allow_all_ingress"}),
-        ("worker_files", {"ingress_rule": "allow_all_ingress"}),
-    ]
-    for agent, fields in steps:
-        if only is not None and agent not in only:
-            continue  # a team.yaml without that agent (the app and dispatcher tests)
-        r = team.send("kernel", dict(fields, type="update_agent", id=agent))
-        if r.get("status") != "completed":
-            raise RuntimeError(f"cannot wire {agent}: {r}")
-
-
-def wire_dispatcher(team: "Team") -> None:
-    """The grants a team.yaml with `groups:` and `board:` cannot say, for the
-    operator (the `mcp` leg) to steer the dispatcher, the cadencer and the board.
-    `wire()` replaces github's and the queue folder's callable_by, which drops
-    the `board` entry the tree plan made; so both are written again here with
-    `board` added. The plan points the board's `store` at the RAM `queue`, which
-    has no `read`/`write` by path, so the board could not keep its tasks; the
-    harness points it at the queue folder (`queue_files`) instead."""
-    both = {"$self": "*", "$parent": "*", "puller": "*", "mcp": "*", "board": "*"}
-    steps = [
-        ("dispatcher", {"callable_by": {"$self": "*", "$parent": "*", "mcp": "*"}}),
-        ("cadencer", {"callable_by": {"$self": "*", "$parent": "*", "dispatcher": ["status"], "mcp": "*"}}),
-        ("board", {"callable_by": {"$self": "*", "$parent": "*", "dispatcher": "*",
-                                   "cadencer": ["rows"], "mcp": "*"},
-                   "store": "queue_files",
-                   "can_call": {"$self": "*", "github": "*", "queue_files": "*"}}),
-        ("github", {"callable_by": both}),
-        ("queue_files", {"callable_by": both}),
-    ]
-    for agent, fields in steps:
-        r = team.send("kernel", dict(fields, type="update_agent", id=agent))
-        if r.get("status") != "completed":
-            raise RuntimeError(f"cannot wire {agent}: {r}")
 
 
 CHAT_VERBS = ["history", "send", "stop", "status", "watch"]  # tree.rs CHAT_VERBS

@@ -57,9 +57,8 @@ sidebar reloads after each control. Subagents have no buttons.
 
 - `hand_task {node: worker, task}` sends the worker `task <task>`; an empty task is
   refused.
-- `add_worker {node: group, id, template}` makes the worker and its memory store
-  from the template of `team.yaml` in the working directory (the file is read, not
-  rewritten) and lists the worker in the group, in the dispatcher's `groups` and in
+- `add_worker {node: group, id, template}` makes the worker (its memory in the store the tier names)
+  from the tier `template` of the roles registry's record (`tiers`) and lists the worker in the group, in the dispatcher's `groups` and in
   the board's `team_groups`. The new worker gets its chat grant at the next start.
 - `remove_worker {node: worker}` deletes the worker and its memory store and drops
   it from its group.
@@ -167,7 +166,7 @@ Not in this slice:
 - Chat, what is left (#37): an attachment is a text file only (no images or
   binary). A turn replayed from `status` shows the text so far as one bubble and
   the rest of that part's stream is not drawn until the next part. Grants reach
-  only the workers in `team.yaml` groups and their subagents, as of the start; an
+  only the workers in the dispatcher's `groups` and their subagents, as of the start; an
   agent made later is granted at the next start. No real browser check of the
   chat, and no live-canvas test. The stream, tool, reasoning, stats, inquiry,
   attachment and replay handlers are run in CI by `cargo test -p fantastic-team`
@@ -186,8 +185,7 @@ Not in this slice:
 - Dispatcher, what is left (#29, #36): teams on other machines through the
   relay (#47, #49); connections and waiting-for-you panels from real data;
   start, pause and stop for a group or the whole team (the page controls one
-  worker at a time); a worker made by add_worker is not written to `team.yaml`
-  and gets the dispatcher's start/pause/stop/hand_task edge only once granted;
+  worker at a time); a worker made by add_worker gets the dispatcher's start/pause/stop/hand_task edge only once granted;
   the Tauri window loading the dispatcher instead of the
   canvas; the in-process kernel (#87); a real browser check of the page; a
   test that runs the team start with a live canvas page (the place step is

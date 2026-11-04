@@ -21,6 +21,7 @@ tauri = ["dep:tauri", "dep:tauri-build"]
 [dependencies]
 fantastic-team = { path = "../team" }
 tokio.workspace = true
+serde_json.workspace = true
 tauri = { version = "=2.12.1", optional = true }
 
 [build-dependencies]

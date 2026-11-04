@@ -8,8 +8,7 @@ HEARTBEAT = "heartbeat: 2 idle, 1 queued"
 
 def run(ctx):
     v = Verdict("dispatcher/quiet_heartbeat")
-    run_flow.boot(ctx)
-    T.wire_dispatcher(ctx.team)
+    run_flow.boot(ctx, groups={"g": {"driver": "$lead", "members": ["w1", "w2"]}}, board=True)
     pulled = ctx.team.send("board", {"type": "pull"})
     v.check("the board pulled the forge's open issue", pulled.get("status") == "completed"
             and pulled["result"].get("tasks") == 1, str(pulled))

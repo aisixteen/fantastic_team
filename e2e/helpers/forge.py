@@ -124,9 +124,6 @@ class Forge:
             return 201, {"token": self.token, "expires_at": "2099-01-01T00:00:00Z"}
         if method == "GET" and path == r:
             return 200, {"full_name": REPO, "default_branch": "main"}
-        if method == "GET" and path == f"{r}/contents/.github/team.yaml":
-            text = "task_labels:\n  - team-ready\n"
-            return 200, {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
         if method == "GET" and path == f"{r}/issues":
             issues = [{"number": ISSUE_NUMBER, "title": ISSUE_TITLE, "state": "open",
                        "labels": [{"name": "team-ready"}]}]

@@ -40,8 +40,8 @@ fn free_port() -> u16 {
 
 fn start(dir: &Path, port: u16) -> Child {
     Command::new(env!("CARGO_BIN_EXE_fantastic_team"))
-        .args(["--port", &port.to_string(), "--dir"])
-        .arg(dir)
+        .args(["canvas", "--port", &port.to_string()])
+        .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

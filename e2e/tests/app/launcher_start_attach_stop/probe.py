@@ -1,6 +1,7 @@
 """The app launcher: start a headless child, attach to a server that is up, stop."""
 
 import os
+import shutil
 import signal
 import subprocess
 
@@ -13,10 +14,8 @@ def run(ctx):
     app.app_binary(ctx)  # a Skip when the app is not built next to --bin
     procs = []
     try:
-        keys = run_flow.fake_keys(ctx)
-        ctx.secrets = keys
         q = app.free_port()
-        ctx.boot_team({"E2E_MODEL_KEY": keys["model_key"]}, port=q, wire=["credentials"])
+        run_flow.boot(ctx, forge=False, port=q)
         canvas = f"http://127.0.0.1:{q}/canvas_page/file/index.html"
         v.check("the headless binary's web UI answers on its port", app.wait_http(canvas, 30), canvas)
 
@@ -38,15 +37,18 @@ def run(ctx):
                 b.wait(90) not in (None, 0) and app.child_pids(b.pid) == [] and "no 200" in b.log(), b.log())
 
         # --- start: one child, the web UI answers, stop leaves no child
-        # The real binary. The launcher waits for the page it serves since #181,
-        # /team_page/file/index.html; the web host answers 404 at `/`.
+        # The real binary, fantastic's `canvas --port N` run in the team folder. The launcher waits
+        # for the page that command serves; the web host answers 404 at `/`.
         p = app.free_port()
         start_dir = os.path.join(ctx.run_dir, "start_dir")
         os.makedirs(start_dir)
-        # A never-used directory is seeded by the first --port start and serves the
-        # page from the next (main.rs), so seed it once before the launcher starts it.
+        # The launcher writes the app's preset into a folder with no `blueprint/` and imports it; a
+        # folder that has one is started as it is, so this one brings its own (the test's blueprint).
+        shutil.copytree(os.path.join(ctx.dir, "blueprint"), os.path.join(start_dir, "blueprint"))
+        # A never-used directory is seeded by the first `canvas --port` start and serves the
+        # page from the next, so seed it once before the launcher starts it.
         sp = app.free_port()
-        seed = app.Proc([ctx.binary, "--dir", start_dir, "--port", str(sp)], app.env_of(ctx.team),
+        seed = app.Proc([ctx.binary, "canvas", "--port", str(sp)], app.env_of(ctx.team),
                         start_dir, os.path.join(ctx.run_dir, "seed.log"))
         procs.append(seed)
         v.check("a first run seeds the directory", app.wait_http(f"http://127.0.0.1:{sp}/canvas_page/file/index.html", 30), seed.log())
@@ -55,9 +57,10 @@ def run(ctx):
         s = app.run_app(ctx, ["--binary", ctx.binary, "--port", p, "--dir", start_dir], name="start")
         procs.append(s)
         want = f"http://127.0.0.1:{p}/"
-        page = f"http://127.0.0.1:{p}/team_page/file/index.html"
+        page = want + "canvas_page/file/index.html"
         line = s.wait_line("web UI at", 40)
-        v.check("start prints the web UI URL", bool(line) and line.strip().endswith(want), s.log())
+        v.check("start prints the web UI URL (the page `canvas --port` serves)",
+                bool(line) and line.strip().endswith(page), s.log())
         kids = app.child_pids(s.pid)
         v.check("start has exactly one child process", len(kids) == 1, str(kids))
         v.check("the child answers 200 on the page path", app.wait_http(page, 10))
@@ -67,8 +70,14 @@ def run(ctx):
         if kids:
             args = subprocess.run(["ps", "-o", "args=", "-p", str(kids[0])],
                                   capture_output=True, text=True).stdout.strip()
-        v.check("the child got the port and the dir and nothing else",
-                args.endswith(f"--port {p} --dir {start_dir}"), args)
+        cwd = ""
+        if kids:  # fantastic runs in the folder it is started in: that is how it gets the dir
+            cwd = subprocess.run(["lsof", "-a", "-d", "cwd", "-p", str(kids[0]), "-Fn"],
+                                 capture_output=True, text=True).stdout
+        v.check("the child got fantastic's `canvas --port N` and nothing else",
+                args.endswith(f"canvas --port {p}"), args)
+        v.check("it runs in the team directory", os.path.realpath(start_dir) in
+                [os.path.realpath(l[1:]) for l in cwd.splitlines() if l.startswith("n")] or not cwd, cwd)
         s.signal(signal.SIGINT)
         v.check("start exits 0 on SIGINT", s.wait(20) == 0, s.log())
         v.check("stop leaves no child process", bool(kids) and app.wait_gone(kids[0], 10), str(kids))

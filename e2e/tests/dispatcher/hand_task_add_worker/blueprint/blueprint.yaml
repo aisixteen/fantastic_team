@@ -1,0 +1,43 @@
+# The dispatcher e2e: a lead (the group's driver) on the scripted model.
+# The lead is the only agent of this blueprint. `helpers/stock.py` makes the agents a
+# blueprint cannot hold (the credential store, the worker's tools, the connectors, the board, ...)
+# and imports this folder under `user`, binding each port to the agent of that name.
+# {{double-brace}} names are filled by the launcher; no model, host or key is named here.
+ports:
+  "@memory":
+    kind: memory
+  "@credentials":
+    kind: credentials
+  "@exec":
+    kind: exec
+  "@files":
+    kind: files
+  "@queue":
+    kind: connector
+  "@git":
+    kind: connector
+  "@github":
+    kind: connector
+agents:
+  - id: lead
+    handler_module: anthropic_backend.tools
+    model: scripted-model
+    endpoint: "{{model_endpoint}}"
+    credentials:
+      store: "@credentials"
+      ref: "model/{{model_host}}"
+    memory_store_id: "@memory"
+    context_window: 100000
+    max_tokens: 4000
+    can_call:
+      "$self": "*"
+      "$subtree": "*"
+      "@memory": "*"
+      "@exec": "*"
+      "@files": "*"
+      "@queue": "*"
+      "@git": "*"
+      "@github": "*"
+    callable_by:
+      "$self": "*"
+      "$parent": "*"

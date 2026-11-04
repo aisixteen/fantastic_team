@@ -16,6 +16,19 @@ content block (a `thinking_delta` x2, index 0) before the text block (index 1), 
 reasoning part reaches the team. `parse_stream` still returns the text only.
 A turn may carry `"delay": seconds`: the plug waits that long before it answers, so a
 test can look at the team while a turn is running.
+
+LANES. Several agents share one plug, and their requests race. A turn may carry
+`"lane": "w1"`: it then belongs to the agent whose FIRST message holds the marker
+`[lane:w1]` (a spawn's `task`, or a `send`'s `text`); turns with no `lane` are lane
+`main` (an agent whose first message holds no marker). Each lane plays its own turns in
+order, whatever the other lanes do. A turn may carry `"after": ["w1", "w2"]`: the plug
+holds that answer until those lanes have been served every turn, so one agent works
+only once another has finished (a last turn is served after the calls of the turn
+before it have run). A script with no `lane` anywhere is the old single ordered script.
+
+SPAWNED IDS. A spawned agent's id is minted (`anthropic_backend_7a308a`), so a script cannot
+name it. `{{id:N}}` in a turn is the id in the Nth `<id>...</id>` of the request's body (the
+reply of a `spawn`, in the order the agent saw them), filled when the turn is served.
 Strings may hold `{{name}}` placeholders, filled from `variables`.
 
 It records every request body and every `x-api-key`; a request past the end of
@@ -121,7 +134,7 @@ def parse_stream(raw: bytes) -> str:
 
 
 class ScriptedModel:
-    model_name = MODEL  # what team.yaml's `{{model_name}}` takes
+    model_name = MODEL  # what a blueprint's `{{model_name}}` takes
     key_env = None  # no real key
     real = False  # a script answers; nothing is sent upstream
 
@@ -129,6 +142,12 @@ class ScriptedModel:
         self.turns = [render_turn(fill(t, variables or {})) for t in script]
         self.thinking = [fill(t, variables or {}).get("thinking") for t in script]
         self.delays = [float(t.get("delay") or 0) for t in script]
+        filled = [fill(t, variables or {}) for t in script]
+        self.laned = any("lane" in t for t in filled)
+        self.lanes = [t.get("lane", "main") for t in filled]
+        self.after = [list(t.get("after") or []) for t in filled]
+        self.cursor: dict[str, int] = {}  # lane -> turns served
+        self.request_lanes: list[str] = []  # the lane of each request, in order
         self.requests: list[dict] = []  # parsed JSON bodies, in order
         self.raw_bodies: list[str] = []
         self.keys: list[str | None] = []  # x-api-key of each POST /v1/messages
@@ -172,16 +191,23 @@ class ScriptedModel:
                     except ValueError:
                         outer.requests.append({})
                     outer.keys.append(self.headers.get("x-api-key"))
-                    i = outer.served
+                    lane = outer.lane_of(raw)
+                    outer.request_lanes.append(lane)
+                    i = outer.next_index(lane)
                     outer.served += 1
-                    if i >= len(outer.turns):
+                    if i is None:
                         outer.overrun += 1
+                        i = len(outer.turns)
+                    else:
+                        outer.cursor[lane] = outer.cursor.get(lane, 0) + 1
                 if i >= len(outer.turns):
                     return self._send(500, json.dumps({"type": "error", "error": {
                         "type": "api_error", "message": "scripted model: script exhausted"}}).encode())
+                outer.hold(outer.after[i])
+                text = outer.resolve_ids(outer.turns[i], raw)
                 if outer.delays[i]:
                     time.sleep(outer.delays[i])
-                data = b"".join(stream_frames(outer.turns[i], thinking=outer.thinking[i]))
+                data = b"".join(stream_frames(text, thinking=outer.thinking[i]))
                 self._send(200, data, "text/event-stream; charset=utf-8")
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -190,6 +216,52 @@ class ScriptedModel:
         self.host = f"127.0.0.1:{self.port}"
         self.endpoint = self.url + "/v1/messages"
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+
+    def lane_of(self, raw: str) -> str:
+        """The lane of a request: the `[lane:NAME]` marker in its first message."""
+        if not self.laned:
+            return "main"
+        try:
+            first = json.loads(raw).get("messages", [{}])[0]
+        except (ValueError, IndexError, AttributeError):
+            return "main"
+        m = re.search(r"\[lane:(\w+)\]", json.dumps(first))
+        return m.group(1) if m else "main"
+
+    @staticmethod
+    def resolve_ids(text: str, raw: str) -> str:
+        """Fill `{{id:N}}` from the Nth `<id>X</id>` in the request body."""
+        if "{{id:" not in text:
+            return text
+        found = re.findall(r"<id>(\w+)</id>", raw)
+
+        def pick(m):
+            n = int(m.group(1))
+            return found[n - 1] if 0 < n <= len(found) else m.group(0)
+
+        return re.sub(r"\{\{id:(\d+)\}\}", pick, text)
+
+    def lane_turns(self, lane: str) -> list[int]:
+        return [i for i, l in enumerate(self.lanes) if l == lane]
+
+    def next_index(self, lane: str) -> int | None:
+        """The index of the lane's next turn (the whole script in order when no turn has a
+        lane); None past its end. Called under the lock, before the cursor moves."""
+        if not self.laned:
+            return self.served if self.served < len(self.turns) else None
+        mine = self.lane_turns(lane)
+        at = self.cursor.get(lane, 0)
+        return mine[at] if at < len(mine) else None
+
+    def lane_done(self, lane: str) -> bool:
+        with self.lock:
+            return self.cursor.get(lane, 0) >= len(self.lane_turns(lane))
+
+    def hold(self, lanes: list[str], limit: float = 600.0) -> None:
+        """Wait until every lane in `lanes` has been served all its turns."""
+        end = time.time() + limit
+        while time.time() < end and not all(self.lane_done(l) for l in lanes):
+            time.sleep(0.1)
 
     def start(self) -> "ScriptedModel":
         self.thread.start()

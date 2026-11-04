@@ -16,7 +16,9 @@ use std::io::{BufRead, Write};
 use serde_json::{json, Map, Value};
 
 use crate::tree::{PACK_ID, PACK_LISTING_ID};
-use crate::USAGE;
+
+/// Usage text for the `packs` words, printed on a bad `packs` command line.
+pub const USAGE: &str = "usage: fantastic_team packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval …\n  (`packs install` run from a terminal asks for the agent id of each port first; an empty answer skips it)\n  packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]";
 
 /// One verb: the agent it goes to, its payload type, and its flags. A flag is
 /// `(name, kind)`; a required flag is listed in `required`.

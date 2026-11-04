@@ -677,12 +677,21 @@ fn cfg_of(
                 .collect()
         })
         .unwrap_or_default();
+    // A plain string field names a peer by the id it was written with; after a blueprint
+    // import the peer has a fresh id, so it is found among the agents this one may call.
+    let peer = |named: String, hm: &str| crate::tree::peer_named(kernel, id, &named, hm);
     Ok(BoardCfg {
         repos,
-        github: text("github").ok_or_else(|| "team_board: record needs `github`".to_string())?,
-        store: text("store").ok_or_else(|| "team_board: record needs `store`".to_string())?,
+        github: peer(
+            text("github").ok_or_else(|| "team_board: record needs `github`".to_string())?,
+            team_github_connector::HANDLER_MODULE,
+        ),
+        store: peer(
+            text("store").ok_or_else(|| "team_board: record needs `store`".to_string())?,
+            "ram_store.tools",
+        ),
         ask_to: text("ask_to").unwrap_or_else(|| "user".into()),
-        roles: text("roles"),
+        roles: text("roles").map(|r| peer(r, fantastic_agentic_resources::HANDLER_MODULE)),
         groups: meta
             .get("team_groups")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -946,7 +955,7 @@ async fn roles_reads(peers: &dyn Peers, roles: &str) -> (Value, Value, Value, Va
         tree = find_node(&r["tree"], pl).unwrap_or(Value::Null);
     }
     let tasks = peers
-        .ask(crate::config::TASKS_ID, json!({"type": "list"}))
+        .ask(crate::tree::TASKS_ID, json!({"type": "list"}))
         .await;
     (fleet, count, tree, tasks)
 }
@@ -1240,6 +1249,7 @@ impl fantastic_kernel::bundle::Bundle for BoardBundle {
     ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if t == "boot" {
+            crate::declared_views::sync_all(kernel);
             return Ok(None);
         }
         let out = match cfg_of(kernel, agent_id) {

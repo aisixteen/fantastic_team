@@ -9,6 +9,9 @@ from helpers.verdict import Verdict
 SKIP_DIRS = {"secrets", ".fantastic", "home"}
 
 
+LEAD = None  # the blueprint's lead, set by run()
+
+
 def files_holding(run_dir, needle):
     """Run-dir files (not the keys, the team's own state or its log) whose text holds `needle`."""
     hits = []
@@ -27,7 +30,7 @@ def files_holding(run_dir, needle):
 
 
 def measure(team, pack, key):
-    r = P.result(team.send("pack", {"type": "eval", "pack": pack, "worker": "lead", "signing_key": key,
+    r = P.result(team.send("pack", {"type": "eval", "pack": pack, "worker": LEAD, "signing_key": key,
                                      "timeout_s": 60}))
     return r.get("measured") or {}, r
 
@@ -41,9 +44,10 @@ def publish(team, pack, key, measured, opt_in):
 
 
 def run(ctx):
+    global LEAD
+    LEAD = ctx.lead
     v = Verdict("packs/measured_record_stays_local_until_published")
-    run_flow.boot(ctx)
-    P.wire_packs(ctx.team)
+    run_flow.boot(ctx, packs=True)
     team = ctx.team
     key = P.write_signing_seed(team.dir)
     p1 = P.make_pack(team, "p1", {"a.yaml": P.PASS_EVAL})

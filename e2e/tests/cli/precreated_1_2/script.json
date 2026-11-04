@@ -1,0 +1,200 @@
+[
+ {
+  "calls": [
+   {
+    "target": "w1_1",
+    "type": "send",
+    "args": {
+     "text": "[lane:w1] Fix adder.py and commit."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "w2_1",
+    "type": "send",
+    "args": {
+     "text": "[lane:w2] Fix muler.py and commit."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "after": [
+   "w1",
+   "w2"
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "-c",
+      "import pathlib; p = pathlib.Path('adder.py'); p.write_text(p.read_text().replace('a - b', 'a + b'))"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "-c",
+      "user.name=Worker",
+      "-c",
+      "user.email=worker@example.invalid",
+      "commit",
+      "-q",
+      "-a",
+      "-m",
+      "Fix add"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w2",
+  "after": [
+   "w1"
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "-c",
+      "import pathlib; p = pathlib.Path('muler.py'); p.write_text(p.read_text().replace('a + b', 'a * b'))"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w2"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w2"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "-c",
+      "user.name=Worker",
+      "-c",
+      "user.email=worker@example.invalid",
+      "commit",
+      "-q",
+      "-a",
+      "-m",
+      "Fix mul"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w2"
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "lane": "w2"
+ }
+]

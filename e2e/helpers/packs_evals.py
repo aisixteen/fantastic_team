@@ -93,13 +93,3 @@ def grant(team, agent: str, extra: dict, field: str = "callable_by") -> None:
         raise RuntimeError(f"cannot wire {agent}: {r}")
 
 
-def wire_packs(team) -> None:
-    """The operator grants the harness' two-step boot leaves out (see e2e/README, item 1).
-
-    The first start (no team.yaml) seeds a base tree with its own `files` and `user`;
-    the second start finds them and keeps them as they are, so their `callable_by` does
-    not name the pack agents. Add `pack` and `pack_listing` to `files`, and `pack` (the
-    `import_subtree` verb only) to `user`. A fresh run of the product creates them with
-    these grants (tree.rs)."""
-    grant(team, "files", {"pack": "*", "pack_listing": "*"})
-    grant(team, "user", {"pack": ["import_subtree"]})

@@ -1,0 +1,24 @@
+# A tiny team: one lead on the scripted model. The surface test needs a booted
+# tree and nothing else. {{double-brace}} names are filled by the launcher.
+ports:
+  "@memory":
+    kind: memory
+  "@credentials":
+    kind: credentials
+agents:
+  - id: lead
+    handler_module: anthropic_backend.tools
+    model: scripted-model
+    endpoint: "{{model_endpoint}}"
+    credentials:
+      store: "@credentials"
+      ref: "model/{{model_host}}"
+    memory_store_id: "@memory"
+    context_window: 100000
+    max_tokens: 4000
+    can_call:
+      "$self": "*"
+      "@memory": "*"
+    callable_by:
+      "$self": "*"
+      "$parent": "*"

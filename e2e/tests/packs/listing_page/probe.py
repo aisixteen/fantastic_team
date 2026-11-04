@@ -2,14 +2,14 @@
 
 import re
 
-from helpers import packs_pub as P
+from helpers import packs_pub as P, stock as S
 from helpers import run_flow
 from helpers.verdict import Verdict
 
 
 def run(ctx):
     v = Verdict("packs/listing_page")
-    ctx.boot_packs({"E2E_MODEL_KEY": run_flow.fake_keys(ctx)["model_key"]})
+    S.boot(ctx, forge=False, packs=True)
     t = ctx.team
     page = lambda: P.listing(t, "page")
 

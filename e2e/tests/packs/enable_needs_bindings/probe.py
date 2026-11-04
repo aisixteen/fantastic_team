@@ -16,7 +16,7 @@ def run(ctx):
         P.write_source_worker(a.dir)
         r = P.send_pack(a, {"type": "pack", "worker": "w", "out": "out"})
         v.check("pack replies without an error", "error" not in r, str(r))
-        base = {"type": "install", "pack": "out", "into": "templates", "parent_id": "lead", "approve": True}
+        base = {"type": "install", "pack": "out", "into": "templates", "parent_id": ctx.lead, "approve": True}
 
         r = P.send_pack(a, base)
         e = r.get("error") or ""

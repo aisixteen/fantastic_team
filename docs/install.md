@@ -26,18 +26,9 @@ For the **GitHub** build (Team GitHub), run `sh scripts/build-github.sh`. It cop
 
 Check it runs:
 
-    ./target/release/fantastic_team --help
+    ./target/release/fantastic_team readme
 
-Output (verified on this box):
-
-    usage: fantastic_team [--dir PATH] [--port N | --tui]
-      no surface flag: fully headless (no port, no terminal UI)
-      --port N: serve the web UI on 127.0.0.1:N (the team page at /team_page/file/index.html, its socket at /team_ws/ws)
-      --tui: the terminal UI (needs a terminal)
-      (`mcp`, `send` and `readme` as the first word run fantastic's own commands)
-      (`packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval` as the first word sends a pack verb to a running team: see `pack_cli`)
-      (`packs install` run from a terminal asks for the agent id of each port first; an empty answer skips it)
-      packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]
+It prints fantastic's readme (the command line is fantastic's, unchanged). The team's own first words are listed in step 5. There is no `--version` flag and no `--help`: fantastic refuses an unknown word and prints its usage line.
 
 There is no `--version` flag.
 
@@ -79,23 +70,38 @@ For remote boxes, `scripts/remote-start.sh` reads the values of the variable nam
 
 ## 5. Minimal config and start
 
-The example config is `examples/team.yaml` (one master, one group, two workers). Start the team headless:
+The command line is fantastic's, unchanged: `fantastic_team` is `fantastic` with this repo's bundles added. It runs in the directory it is started in, so `cd` into the team's folder first. There is no config file: a team is agent records (a recipe, `send`, a blueprint folder through `import`, or a directory that already holds `.fantastic/agents/`). The example is the blueprint folder `examples/blueprints/worker_only/` (one AI worker); the app's preset, `crates/team/preset/app_team/`, is a lead with the roles registry, the tasks registry, the queue, the board and the GitHub connector.
 
-    ./target/release/fantastic_team --dir ./my-team
+    cd ./my-team
+    ./target/release/fantastic_team --headless
+
+No screen and no port. Import the example into the running team, from a second shell in the same folder:
+
+    ./target/release/fantastic_team import path/to/examples/blueprints/worker_only --parent user --bind @memory=memory --bind @credentials=credentials --approve
 
 Serve the web UI on a port:
 
-    ./target/release/fantastic_team --dir ./my-team --port 8123
+    ./target/release/fantastic_team canvas --port 8123
 
-Terminal UI:
+The terminal UI (needs a terminal):
 
-    ./target/release/fantastic_team --dir ./my-team --tui
+    ./target/release/fantastic_team
+
+Help block, the first words the team adds to fantastic's (`setup github`, `packs …`, `ai-readme`):
+
+    usage: fantastic_team setup github --name NAME [--org ORG]
+    fantastic_team ai-readme
+    usage: fantastic_team packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval …
+      (`packs install` run from a terminal asks for the agent id of each port first; an empty answer skips it)
+      packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]
+
+`--dir`, `--port` outside `canvas`, `--tui`, `--instructions` and `--resend-instructions` are not flags any more; fantastic refuses them.
 
 Run it on a remote box with the scripts (each prints its usage with `--help`; all support `--dry-run`):
 
 - `scripts/remote-add.sh <name> <host>:<dir> [--bin PATH] [--port N] [--keys "NAME …"]`
 - `scripts/remote-start.sh <name> [--port N]` (starts detached; the binary binds 127.0.0.1 only)
-- `scripts/remote-attach.sh <name> [--port N] [--tui]`
+- `scripts/remote-attach.sh <name> [--port N]`
 - `scripts/remote-logs.sh <name> [-f] [-n LINES]`
 - `scripts/remote-ls.sh`
 - `scripts/remote-stop.sh <name> [--now] [--yes]`
@@ -119,4 +125,4 @@ Run it on a remote box with the scripts (each prints its usage with `--help`; al
 
 ## Tested on
 
-Linux, this box: built with `cargo build -p fantastic-team --bin fantastic_team` (exit 0), ran `--help` (above), and ran `--help` on each `scripts/remote-*.sh`. Not run: `--port`, `--tui`, a live GitHub app, real keys. macOS: not yet verified.
+Linux, this box: built with `cargo build -p fantastic-team --bin fantastic_team` (exit 0), ran `readme` (above), and ran `--help` on each `scripts/remote-*.sh`. Not run: `canvas --port`, the terminal UI, a live GitHub app, real keys. macOS: not yet verified.

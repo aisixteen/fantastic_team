@@ -91,6 +91,9 @@ pub struct PullerCfg {
     pub github: String,
     /// The file bridge agent that holds the queue directory.
     pub store: String,
+    /// Per-repo settings, the record's `repo_config` field: `owner/name` → the
+    /// settings of `repo_config` (a repo with no entry takes the defaults).
+    pub repo_config: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Outcome of one pass: which issues got task files and which were skipped.
@@ -172,6 +175,11 @@ fn cfg_of(
         app: s("app")?,
         github: s("github")?,
         store: s("store")?,
+        repo_config: meta
+            .get("repo_config")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default(),
     })
 }
 
@@ -210,25 +218,9 @@ fn comments_of(v: &serde_json::Value) -> Vec<Comment> {
 pub async fn pull(peers: &dyn Peers, cfg: &PullerCfg) -> PullReport {
     let mut report = PullReport::default();
     for repo in &cfg.repos {
-        let file = peers
-            .ask(
-                &cfg.github,
-                serde_json::json!({"type": "read_file", "repo": repo, "path": crate::repo_config::FILE}),
-            )
-            .await;
-        if file["not_found"] == serde_json::json!(true) {
-            report
-                .skipped
-                .push((repo.clone(), format!("no {}", crate::repo_config::FILE)));
-            continue;
-        }
-        let Some(text) = file["text"].as_str() else {
-            report
-                .skipped
-                .push((repo.clone(), format!("config: {file}")));
-            continue;
-        };
-        let rc = match crate::repo_config::parse(text) {
+        // A repo in the record's `repos` is served; its settings are the record's
+        // `repo_config` entry for it (absent: the defaults).
+        let rc = match crate::repo_config::from_record(cfg.repo_config.get(repo)) {
             Ok(c) => c,
             Err(e) => {
                 report.skipped.push((repo.clone(), e));
@@ -412,6 +404,7 @@ impl fantastic_kernel::bundle::Bundle for PullerBundle {
     ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if t == "boot" {
+            crate::declared_views::sync_all(kernel);
             return Ok(None);
         }
         let out = match (t, cfg_of(kernel, agent_id)) {
@@ -462,14 +455,6 @@ mod tests {
         async fn ask(&self, to: &str, p: serde_json::Value) -> serde_json::Value {
             let kind = p["type"].as_str().unwrap_or("");
             match (to, kind) {
-                ("gh", "read_file") => {
-                    let files = self.files.lock().unwrap();
-                    if files.contains_key("__no_config__") {
-                        serde_json::json!({"not_found": true})
-                    } else {
-                        serde_json::json!({"text": files.get("__team_yaml__").cloned().unwrap_or_default()})
-                    }
-                }
                 ("gh", "issues") => serde_json::json!({"issues": [{"number": 25}]}),
                 ("gh", "issue_view") => serde_json::json!({
                     "comments": [{"author": "maintainer", "body": "## SPEC\ndo it"}]
@@ -502,6 +487,7 @@ mod tests {
             app: "app".into(),
             github: "gh".into(),
             store: "store".into(),
+            repo_config: serde_json::Map::new(),
         }
     }
 
@@ -575,34 +561,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repo_without_config_is_not_served() {
+    async fn invalid_repo_config_skips_repo_with_error() {
         let fake = Fake {
-            files: Mutex::new(BTreeMap::from([(
-                "__no_config__".to_string(),
-                String::new(),
-            )])),
+            files: Mutex::new(BTreeMap::new()),
         };
-        let r = pull(&fake, &cfg()).await;
-        assert!(r.created.is_empty(), "{r:?}");
-        assert_eq!(r.skipped.len(), 1, "{r:?}");
-        assert!(r.skipped[0].1.contains("no .github/team.yaml"), "{r:?}");
-        assert!(!fake
-            .files
-            .lock()
-            .unwrap()
-            .keys()
-            .any(|k| k.starts_with("queue/")));
-    }
-
-    #[tokio::test]
-    async fn invalid_config_skips_repo_with_error() {
-        let fake = Fake {
-            files: Mutex::new(BTreeMap::from([(
-                "__team_yaml__".to_string(),
-                "buidl: make\n".to_string(),
-            )])),
-        };
-        let r = pull(&fake, &cfg()).await;
+        let mut c = cfg();
+        c.repo_config.insert(
+            "aisixteen/fantastic_team".into(),
+            serde_json::json!({"buidl": "make"}),
+        );
+        let r = pull(&fake, &c).await;
         assert!(r.created.is_empty(), "{r:?}");
         assert!(r.skipped[0].1.contains("buidl"), "{r:?}");
         assert!(!fake
@@ -614,19 +582,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn puller_uses_configured_labels() {
+    async fn puller_uses_the_labels_of_its_repo_config() {
         let fake = Fake {
-            files: Mutex::new(BTreeMap::from([(
-                "__team_yaml__".to_string(),
-                "task_labels: [do-it]\n".to_string(),
-            )])),
+            files: Mutex::new(BTreeMap::new()),
         };
-        let r = pull(&fake, &cfg()).await;
+        let mut c = cfg();
+        c.repo_config.insert(
+            "aisixteen/fantastic_team".into(),
+            serde_json::json!({"task_labels": ["do-it"]}),
+        );
+        let r = pull(&fake, &c).await;
         assert_eq!(
             r.created,
             vec!["aisixteen/fantastic_team#25".to_string()],
             "{r:?}"
         );
+    }
+
+    #[test]
+    fn the_puller_reads_repo_config_from_its_own_record() {
+        // `repo_config` is a field of the puller's record, keyed by repo.
+        let dir = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let kernel = crate::start(dir.path()).await.unwrap();
+            let rec = serde_json::json!({
+                "type": "create_agent", "id": "pull", "parent_id": fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
+                "handler_module": HANDLER_MODULE,
+                "repos": ["o/r"], "maintainer": "m", "app": "a", "github": "gh", "store": "st",
+                "repo_config": {"o/r": {"task_labels": ["do-it"], "review": {"approvals": 2}}},
+            });
+            let outs = kernel
+                .send(vec![fantastic_kernel::Item::new(
+                    fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
+                    rec,
+                )])
+                .await;
+            assert!(outs[0].result.get("error").is_none(), "{}", outs[0].result);
+            let got = cfg_of(&kernel, &fantastic_kernel::AgentId::from("pull")).unwrap();
+            assert_eq!(got.repos, vec!["o/r".to_string()]);
+            let rc = crate::repo_config::from_record(got.repo_config.get("o/r")).unwrap();
+            assert_eq!(rc.task_labels, vec!["do-it".to_string()]);
+            assert_eq!(rc.review.approvals, 2);
+            kernel.shutdown().await;
+            fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        });
     }
 
     #[tokio::test]

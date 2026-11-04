@@ -758,6 +758,7 @@ fn error_of(reply: &Value) -> Option<String> {
 /// `team_groups` (when the board is live), and the groups as they stand.
 struct Membership<'a> {
     me: &'a str,
+    roles: Option<&'a str>,
     board: &'a str,
     board_groups: Option<&'a Value>,
     groups: &'a BTreeMap<String, Vec<String>>,
@@ -795,9 +796,42 @@ async fn save_groups(
     }
 }
 
-/// `add_worker {node: group, id, template}`: create the worker from the template of
-/// `team.yaml` (in the working directory), point its memory at the team's one store
-/// agent (and let it call that store), and list it. No memory agent is made.
+/// The tier `name` of the roles registry `roles` (the registry's own `tiers` field), as
+/// the record fields of an AI agent. `Err` names the tiers the registry has.
+fn tier_of(
+    kernel: &Arc<fantastic_kernel::Kernel>,
+    roles: Option<&str>,
+    name: &str,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let Some(roles) = roles else {
+        return Err(
+            "team_dispatcher: this dispatcher's record names no `roles` registry, so \
+                    it has no tiers to make a worker from"
+                .into(),
+        );
+    };
+    let tiers = kernel
+        .agents
+        .get(&fantastic_kernel::AgentId::from(roles))
+        .and_then(|e| e.meta.read().expect("meta").get("tiers").cloned())
+        .and_then(|t| t.as_object().cloned())
+        .ok_or_else(|| format!("team_dispatcher: the registry '{roles}' has no `tiers`"))?;
+    match tiers.get(name).and_then(Value::as_object) {
+        Some(t) => Ok(t.clone()),
+        None => {
+            let names: Vec<&str> = tiers.keys().map(String::as_str).collect();
+            Err(format!(
+                "team_dispatcher: no tier '{name}' in the registry '{roles}' (have: {})",
+                names.join(", ")
+            ))
+        }
+    }
+}
+
+/// `add_worker {node: group, id, template}`: create the worker from the tier `template`
+/// of the roles registry's record (`tiers`, in the dispatcher's `roles` field), keep
+/// its memory in the store that tier names (and let it call that store), and list it.
+/// No memory agent is made.
 async fn add_worker(
     kernel: &Arc<fantastic_kernel::Kernel>,
     peers: &dyn Peers,
@@ -824,28 +858,39 @@ async fn add_worker(
         Ok(g) => g,
         Err(e) => return refused(group, action, e),
     };
-    let cfg = match crate::config::load(std::path::Path::new(crate::config::FILE_NAME)) {
-        Ok(c) => c,
-        Err(e) => return refused(group, action, format!("team_dispatcher: team.yaml: {e}")),
+    let tier = match tier_of(kernel, at.roles, &template) {
+        Ok(t) => t,
+        Err(e) => return refused(group, action, e),
     };
-    let Some(tpl) = cfg.templates.get(&template) else {
-        let names: Vec<&str> = cfg.templates.keys().map(String::as_str).collect();
+    let Some(store) = tier
+        .get("memory_store_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+    else {
         return refused(
             group,
             action,
-            format!(
-                "team_dispatcher: no template '{template}' in team.yaml (have: {})",
-                names.join(", ")
-            ),
+            format!("team_dispatcher: the tier '{template}' names no memory_store_id"),
         );
     };
     let root = fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
-    let store = cfg.store.id.as_str();
-    let rec = crate::config::agent_record(tpl, &id, store);
-    if let Some(e) = error_of(&peers.ask(root, rec).await) {
+    let mut rec = serde_json::Map::new();
+    rec.insert("type".into(), json!("create_agent"));
+    rec.insert("parent_id".into(), json!(root));
+    rec.insert("id".into(), json!(id));
+    for (k, v) in &tier {
+        rec.insert(k.clone(), v.clone());
+    }
+    rec.insert(
+        "can_call".into(),
+        json!({"$self": "*", "$subtree": "*", (store.as_str()): "*"}),
+    );
+    rec.insert("callable_by".into(), json!({"$self": "*", "$parent": "*"}));
+    if let Some(e) = error_of(&peers.ask(root, Value::Object(rec)).await) {
         return refused(group, action, format!("could not create '{id}': {e}"));
     }
-    if let Err(e) = crate::tree::grant_store(kernel, store, &id) {
+    if let Err(e) = crate::tree::grant_store(kernel, &store, &id) {
         // Only the worker is undone: the store and its rows are the team's.
         let _ = peers
             .ask(root, json!({"type": "delete_agent", "id": id}))
@@ -1068,7 +1113,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
             "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher|cadencer|puller|webhook|packs|pack|git, label}], the team's own agents that exist",
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
             "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher; a node in the sidebar's services → {view: panel, kind, target, model: {kind, title, summary, sections}} drawn as text in the right pane)",
-            "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker from the team.yaml template, its memory in the team's one store agent, in the working directory and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start; team.yaml is not rewritten). remove_worker {node: worker, confirm} deletes the worker (its rows stay in the store) and drops it from its group",
+            "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker from the tier named `template` in the roles registry's record (`tiers`), its memory in the store that tier names, and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start). remove_worker {node: worker, confirm} deletes the worker (its rows stay in the store) and drops it from its group",
         })
     }
 
@@ -1080,6 +1125,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
     ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if t == "boot" {
+            crate::declared_views::sync_all(kernel);
             return Ok(None);
         }
         let meta = kernel
@@ -1192,6 +1238,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                     "add_worker" => {
                         let at = Membership {
                             me: agent_id.as_str(),
+                            roles: meta.get("roles").and_then(Value::as_str),
                             board: &board,
                             board_groups: board_groups.as_ref(),
                             groups: &groups,
@@ -1209,6 +1256,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                     "remove_worker" => {
                         let at = Membership {
                             me: agent_id.as_str(),
+                            roles: meta.get("roles").and_then(Value::as_str),
                             board: &board,
                             board_groups: board_groups.as_ref(),
                             groups: &groups,
@@ -2159,8 +2207,9 @@ mod tests {
         bootstrap::shutdown(dir.path()).unwrap();
     }
 
-    /// A kernel with a dispatcher as the plan makes it (the agent verbs on the
-    /// root), a board record holding `team_groups`, and one group `g` with `w1`.
+    /// A kernel with a dispatcher (the agent verbs on the root, `roles` naming the
+    /// registry), a roles registry whose `tiers` field holds the tier `t`, a board record
+    /// holding `team_groups`, the store `memory`, and one group `g` with `w1`.
     async fn kernel_with_groups(dir: &std::path::Path) -> Arc<fantastic_kernel::Kernel> {
         use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
@@ -2169,20 +2218,31 @@ mod tests {
         for item in [
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
                 "handler_module": HANDLER_MODULE, "can_call": can_call,
-                "groups": {"g": ["w1"]}}),
+                "roles": "roles", "groups": {"g": ["w1"]}}),
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
                 "handler_module": "ram_store.tools",
                 "team_groups": {"g": {"driver": "lead", "members": ["w1"]}}}),
-            // the team's one store agent, as the plan makes it
-            crate::config::store_agent_record(
-                &crate::config::StoreCfg::default(),
-                &["lead".to_string(), "w1".to_string()],
-            ),
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "roles",
+                "handler_module": "agentic_resources.tools", "role_dirs": ["roles"],
+                "tiers": {"t": {"handler_module": "ram_store.tools", "model": "m",
+                    "endpoint": "http://e", "memory_store_id": "memory"}}}),
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "memory",
+                "handler_module": "sqlite_store.tools", "path": ".fantastic/memory.db",
+                "callable_by": {"$self": "*", "lead": "*", "w1": "*"}}),
         ] {
             let o = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
             assert!(o[0].result.get("error").is_none(), "{:?}", o[0].result);
         }
-        crate::tree::grant_agent_verbs(&kernel).unwrap();
+        // the root's end of the dispatcher's `can_call` on it (a blueprint writes it with `@root`)
+        kernel
+            .edit_callable_by(&fantastic_kernel::AgentId::from(DEFAULT_ROOT_ID), |cb| {
+                cb.insert(
+                    "dispatcher".into(),
+                    json!(crate::tree::DISPATCHER_KERNEL_VERBS),
+                );
+                true
+            })
+            .unwrap();
         kernel
     }
 
@@ -2194,20 +2254,11 @@ mod tests {
             .unwrap_or_default()
     }
 
-    const MINI_TEAM: &str = "templates:\n  t:\n    handler_module: ram_store.tools\n    model: m\n    endpoint: http://e\nfirst_agent:\n  template: t\nqueue:\n  id: q\n";
-
-    /// Serialises the tests that change the process's working directory.
-    static CWD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     #[tokio::test(flavor = "multi_thread")]
     async fn control_via_kernel_add_worker_creates_the_agent_and_lists_it_in_the_tree() {
         use fantastic_kernel::bootstrap;
-        let _cwd = CWD.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("team.yaml"), MINI_TEAM).unwrap();
         let kernel = kernel_with_groups(dir.path()).await;
-        let before = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
         let out = ask_kernel(
             &kernel,
             "dispatcher",
@@ -2227,13 +2278,9 @@ mod tests {
             json!({"type": "control", "node": "g", "action": "add_worker", "id": "w1", "template": "t"}),
         )
         .await;
-        std::env::set_current_dir(before).unwrap();
         assert_eq!(out["sent"], json!(true), "{out}");
         assert_eq!(bad["sent"], json!(false), "{bad}");
-        assert!(
-            bad["error"].as_str().unwrap().contains("no template"),
-            "{bad}"
-        );
+        assert!(bad["error"].as_str().unwrap().contains("no tier"), "{bad}");
         assert_eq!(dup["sent"], json!(false), "{dup}");
         assert!(kernel
             .agents
@@ -2267,19 +2314,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn control_via_kernel_add_worker_grants_the_dispatcher_the_new_worker() {
         use fantastic_kernel::bootstrap;
-        let _cwd = CWD.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("team.yaml"), MINI_TEAM).unwrap();
         let kernel = kernel_with_groups(dir.path()).await;
-        let before = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
         let added = ask_kernel(
             &kernel,
             "dispatcher",
             json!({"type": "control", "node": "g", "action": "add_worker", "id": "w2", "template": "t"}),
         )
         .await;
-        std::env::set_current_dir(before).unwrap();
         assert_eq!(added["sent"], json!(true), "{added}");
         let verbs = json!(crate::tree::CONTROL_VERBS);
         assert_eq!(meta_of(&kernel, "w2")["callable_by"]["dispatcher"], verbs);
@@ -2301,19 +2343,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn add_worker_uses_the_shared_store_and_makes_no_memory() {
         use fantastic_kernel::bootstrap;
-        let _cwd = CWD.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("team.yaml"), MINI_TEAM).unwrap();
         let kernel = kernel_with_groups(dir.path()).await;
-        let before = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
         let out = ask_kernel(
             &kernel,
             "dispatcher",
             json!({"type": "control", "node": "g", "action": "add_worker", "id": "w2", "template": "t"}),
         )
         .await;
-        std::env::set_current_dir(before).unwrap();
         assert_eq!(out["sent"], json!(true), "{out}");
         let ids: Vec<String> = kernel.agents.iter().map(|e| e.key().0.clone()).collect();
         assert!(!ids.iter().any(|i| i == "w2_memory"), "{ids:?}");
@@ -2328,6 +2365,13 @@ mod tests {
         let store = meta_of(&kernel, "memory");
         assert_eq!(store["callable_by"]["w2"], json!("*"), "{store:?}");
         assert_eq!(store["callable_by"]["lead"], json!("*"), "{store:?}");
+        // the record the tier and the dispatcher's start grant make: no `*` for anyone
+        assert_eq!(w["callable_by"]["$self"], json!("*"));
+        assert_eq!(w["callable_by"]["$parent"], json!("*"));
+        assert_eq!(
+            w["callable_by"]["dispatcher"],
+            json!(crate::tree::CONTROL_VERBS)
+        );
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
@@ -2335,9 +2379,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn add_worker_without_the_store_is_refused_and_leaves_no_worker() {
         use fantastic_kernel::bootstrap;
-        let _cwd = CWD.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("team.yaml"), MINI_TEAM).unwrap();
         let kernel = kernel_with_groups(dir.path()).await;
         let gone = ask_kernel(
             &kernel,
@@ -2346,15 +2388,12 @@ mod tests {
         )
         .await;
         assert!(gone.get("error").is_none(), "{gone}");
-        let before = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
         let out = ask_kernel(
             &kernel,
             "dispatcher",
             json!({"type": "control", "node": "g", "action": "add_worker", "id": "w2", "template": "t"}),
         )
         .await;
-        std::env::set_current_dir(before).unwrap();
         assert_eq!(out["sent"], json!(false), "{out}");
         assert!(
             out["error"]

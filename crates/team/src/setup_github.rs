@@ -2,7 +2,9 @@
 //! their own app; a local page posts the manifest to GitHub, GitHub redirects back
 //! with a code, and the code is exchanged once for the app id and private key. The
 //! key goes to the credential agent (through a [`KeyStore`]) and never to a file,
-//! a log line or any reply. Only the app id is written to the config file.
+//! a log line or any reply. The app id is stored beside the key, as the `app_id` field of
+//! the same credential ref (the github connector's `app.credentials` names that ref):
+//! no config file holds it.
 //!
 //! Decision on the spec's contradiction (`wt-t30` vs `wt-burst-t30`, `t30` vs
 //! `burst-t30`): the task header names the burst paths and the PR lives on
@@ -12,7 +14,6 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -195,36 +196,6 @@ pub async fn store_key(
     store.store(reference, reg.id, &reg.private_key).await
 }
 
-/// Set `github_app_id: <id>` in the config text, keeping the rest of the file.
-pub fn set_app_id(config: &str, id: u64) -> String {
-    let line = format!("github_app_id: {id}");
-    let mut found = false;
-    let mut out: Vec<String> = config
-        .lines()
-        .map(|l| {
-            if l.trim_start().starts_with("github_app_id:") {
-                found = true;
-                line.clone()
-            } else {
-                l.to_string()
-            }
-        })
-        .collect();
-    if !found {
-        out.push(line);
-    }
-    let mut text = out.join("\n");
-    text.push('\n');
-    text
-}
-
-/// Record the app id in the config file at `path`, preserving everything else.
-pub fn record_app_id(path: &Path, id: u64) -> Result<(), String> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    std::fs::write(path, set_app_id(&text, id))
-        .map_err(|e| format!("cannot write {}: {e}", path.display()))
-}
-
 fn respond(conn: &mut TcpStream, ctype: &str, body: &str) {
     let _ = conn.write_all(
         format!(
@@ -297,7 +268,7 @@ pub fn wait_for_code(
     }
 }
 
-/// One setup run: which app, which account, which config file.
+/// One setup run: which app, which account.
 pub struct Flow<'a> {
     /// The app name the user chose.
     pub name: &'a str,
@@ -305,14 +276,12 @@ pub struct Flow<'a> {
     pub org: Option<&'a str>,
     /// The GitHub API base, `https://api.github.com` or a mock.
     pub api_base: &'a str,
-    /// The config file that gets `github_app_id`.
-    pub config: &'a Path,
     /// How long to wait for the browser to come back.
     pub timeout: Duration,
 }
 
 /// Run the flow: serve the manifest page, wait for the callback, exchange the
-/// code, store the key, record the app id. `announce` is told the local URL to
+/// code, store the key and the app id. `announce` is told the local URL to
 /// open. Returns the summary line; never the key.
 pub async fn run_flow(
     flow: &Flow<'_>,
@@ -331,7 +300,6 @@ pub async fn run_flow(
     let reg = exchange(&code, flow.api_base).await?;
     let reference = format!("github/{}", flow.name);
     store_key(store, &reference, &reg).await?;
-    record_app_id(flow.config, reg.id)?;
     Ok(format!("App {} (id {}) registered", reg.slug, reg.id))
 }
 
@@ -364,12 +332,10 @@ pub fn run_cli(args: &[String]) -> Result<(), String> {
             kernel: kernel.clone(),
             agent: CREDENTIAL_AGENT.into(),
         };
-        let config = dir.join(crate::config::FILE_NAME);
         let flow = Flow {
             name: &name,
             org: org.as_deref(),
             api_base: "https://api.github.com",
-            config: &config,
             timeout: Duration::from_secs(600),
         };
         let announce = |url: &str| {
@@ -387,6 +353,7 @@ pub fn run_cli(args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::sync::Mutex;
 
     const FIXTURE_KEY: &str = "fixture-key-material-not-a-real-key";
@@ -488,14 +455,6 @@ mod tests {
         assert!(all_files(dir.path()).is_empty());
     }
 
-    #[test]
-    fn app_id_recorded_and_other_config_kept() {
-        let out = set_app_id("name: team\ngithub_app_id: 1\nlead: x\n", 99);
-        assert_eq!(out, "name: team\ngithub_app_id: 99\nlead: x\n");
-        let added = set_app_id("name: team\n", 5);
-        assert_eq!(added, "name: team\ngithub_app_id: 5\n");
-    }
-
     /// Every file under `dir`, concatenated.
     fn all_files(dir: &Path) -> String {
         let mut text = String::new();
@@ -553,15 +512,12 @@ mod tests {
             .mount(&server)
             .await;
         let dir = tempfile::TempDir::new().unwrap();
-        let config = dir.path().join("team.yaml");
-        std::fs::write(&config, "name: team\n").unwrap();
         let store = FakeStore::default();
         let base = server.uri();
         let flow = Flow {
             name: "my-team-app",
             org: None,
             api_base: &base,
-            config: &config,
             timeout: Duration::from_secs(10),
         };
         let log = Mutex::new(String::new());
@@ -579,8 +535,8 @@ mod tests {
         seen.push_str(&summary);
         seen.push_str(&all_files(dir.path()));
         assert!(!seen.contains(FIXTURE_KEY), "key leaked into output");
-        assert!(std::fs::read_to_string(&config)
-            .unwrap()
-            .contains("github_app_id: 4242"));
+        // The app id is stored beside the key, in the credential ref; no file holds it.
+        assert_eq!(store.0.lock().unwrap()[0].1, 4242);
+        assert!(!all_files(dir.path()).contains("4242"));
     }
 }

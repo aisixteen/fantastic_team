@@ -7,15 +7,19 @@ from helpers import run_flow
 from helpers.verdict import Verdict
 
 
+LEAD = None  # the blueprint's lead, set by run()
+
+
 def install(team, name):
     return P.cli(team, "install", "--pack", f"packs/{name}", "--into", "templates",
-                 "--worker", "lead", "--timeout-s", "60")
+                 "--worker", LEAD, "--timeout-s", "60")
 
 
 def run(ctx):
+    global LEAD
+    LEAD = ctx.lead
     v = Verdict("packs/install_reports_evals_and_verdict")
-    run_flow.boot(ctx)
-    P.wire_packs(ctx.team)
+    run_flow.boot(ctx, packs=True)
     team = ctx.team
     P.make_pack(team, "good", {"a.yaml": P.PASS_EVAL})
     P.make_pack(team, "mixed", {"a.yaml": P.PASS_EVAL + P.FAIL_EVAL})

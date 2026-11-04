@@ -27,134 +27,80 @@ For the step-by-step version, with the GitHub App registration and troubleshooti
 
 ## Configure
 
-A team is a folder with a `team.yaml`. The file names the worker templates the team may start, the connectors it may use, the queue, and the credential store.
+There is no config file. A team is agent records, and config is fantastic's: a record's own fields, a recipe's arguments, `send` and a blueprint folder. The `fantastic_team` binary is fantastic's command line with this repo's bundles added (see Run), so the records are made the way fantastic makes any agent. Three ways, all pure fantastic:
+
+- **A blueprint folder**, imported into the running team: `fantastic_team import <folder> --parent <id> --approve` (`--bind @port=agent` binds the blueprint's ports to agents that exist: the home's `memory`, `files`, `credentials`). Without `--approve` it previews and creates nothing. fantastic gives every imported agent a fresh id (`lead` becomes `lead_1`) and refuses absolute paths and secret keys in a blueprint.
+- **A recipe, then `send`**: `fantastic_team --headless ai anthropic --model M` makes the root AI; further agents are `create_agent` payloads: `fantastic_team send '{"target": "kernel_state", "payload": {"type": "create_agent", ...}}'`.
+- **A directory that already holds `.fantastic/agents/`** (records you wrote or copied).
+
+Where the old `team.yaml` keys went:
+
+| was | now |
+|---|---|
+| `templates` | the `tiers` field of the `agentic_resources` record, and each AI record's own fields (`model`, `endpoint`, `credentials`, `price_input_per_mtok`, `price_output_per_mtok`, `can_call`, `callable_by`) |
+| `first_agent`, `directive_file` | an ordinary AI record; its directive is its `system_prompt_file` (read through its `file_bridge_id`), or a message sent with `send` |
+| `roles` | the `agentic_resources` record: `role_dirs`, `tiers`, `limits` |
+| `connectors`, `queue`, `store`, `credentials` | agent records with their own fields (`team_git.tools`, `team_github.tools`, `ram_store.tools`, `sqlite_store.tools`, `credential_store.tools`) |
+| `groups` | the `groups` field of the dispatcher, the `team_groups` field of the board and the `group_settings` field of the cadencer |
+| `board` | the board's record (`repos`, `github`, `store`) |
+| `cadencer` | the cadencer's record (`enabled`) |
+| `canvases` | no switch: the canvas is fantastic's |
+| `.github/team.yaml` of a repo | the `repo_config` field of the puller's record, keyed by `owner/name` |
+| `--instructions`, `--workers`, `--leads`, `--per-lead` (no longer flags) | the lead's `system_prompt_file`, or a `send` to it |
+
+Examples are blueprint folders: [examples/blueprints/worker_only](examples/blueprints/worker_only/blueprint.yaml) is one AI worker, and the app's preset [crates/team/preset/app_team/blueprint.yaml](crates/team/preset/app_team/blueprint.yaml) is a lead with the roles registry, the tasks registry, the queue, the board and the GitHub connector:
 
 ```yaml
-templates:
-  writer:
-    handler_module: anthropic_backend
+# blueprint: worker-only
+ports:
+  "@memory": {kind: memory}
+  "@credentials": {kind: credentials}
+agents:
+  - id: w1
+    handler_module: anthropic_backend.tools
     model: example-model
-    endpoint: https://api.example.com/v1
-    credentials:
-      store: credentials
-      ref: EXAMPLE_KEY
+    endpoint: https://api.example.com/v1/messages
+    credentials: {store: "@credentials", ref: EXAMPLE_KEY}
     price_input_per_mtok: 1.0
     price_output_per_mtok: 5.0
-first_agent:
-  id: lead
-  template: writer
-  directive_file: lead.md
-connectors:
-  git:
-    kind: team_git.tools
-    directive_file: git.md
-queue:
-  id: queue
-credentials:
-  id: credentials
-  backend: env
-  refs:
-    EXAMPLE_KEY: EXAMPLE_KEY
+    memory_store_id: "@memory"
+    can_call: {"$self": "*", "@memory": "*"}
+    callable_by: {"$self": "*", "$parent": "*"}
 ```
 
-- `templates`: each is an agent template (model, endpoint, credential ref, prices per million tokens).
-- `first_agent` (optional): the lead, made from a template, instructed by its `directive_file`. Without it no agent is created.
-- `connectors`: GitHub, a plain git remote, or others, each with its own directive.
-- `queue`: where tasks wait.
-- `credentials`: the store the team creates when it has none. The values are never in this file; only the ref names are.
-- `roles` (optional): turns on fantastic's roles registry (`agentic_resources`) for the team, see below.
+The desktop app ships the preset: when it creates a team it writes the blueprint folder `blueprint/` and the role cards under `roles/` once, then imports the blueprint under the home's `user` agent (`crates/team/src/preset.rs`). Edit the records afterwards with `update_agent`, as with any agent. The git connector is not in the preset, because it takes the absolute paths of your clone and your worktrees and a blueprint carries none: make it with `send` (`create_agent`, `handler_module: team_git.tools`, `repo_dir`, `workspace_root`, `remote`, `default_branch`).
 
-### The caller defines the agents
-
-The `fantastic_team` binary creates no coding agent of its own: nothing is added behind `team.yaml`, and no lead or worker is a default. A `team.yaml` with no `templates` and no `first_agent` is valid and starts only the system agents (the dispatcher, the tools, the queue). `queue` defaults to the agent `queue`. Which agents exist, with or without a lead, with or without `roles:`, is the file's choice. `scripts/new-task.sh` renders a task file for whatever agents your `team.yaml` defines.
-
-One worker, no lead, no `roles:` (the worker is the `first_agent`; give `--instructions` to send it work):
-
-```yaml
-# worker-only
-templates:
-  worker:
-    handler_module: anthropic_backend
-    model: example-model
-    endpoint: https://api.example.com/v1
-    can_call: [worker_exec, worker_files, queue]
-first_agent:
-  id: w1
-  template: worker
-```
-
-With `roles:`, the lead spawns the agents it needs through the registry, so `roles:` needs a `first_agent` and templates (the tiers the role cards name):
-
-```yaml
-# roles mode
-templates:
-  strong:
-    handler_module: anthropic_backend
-    model: example-model
-    endpoint: https://api.example.com/v1
-    can_call: [kernel, kernel_state, worker_exec, worker_files, queue]
-  small:
-    handler_module: anthropic_backend
-    model: example-model
-    endpoint: https://api.example.com/v1
-    can_call: [worker_exec, worker_files, queue]
-  issue_keeper:
-    handler_module: anthropic_backend
-    model: example-model
-    endpoint: https://api.example.com/v1
-    can_call: [queue]
-first_agent:
-  id: lead
-  template: strong
-  directive_file: roles/lead.md
-connectors:
-  git:
-    kind: team_git.tools
-    record: {repo_dir: /path/to/clone, workspace_root: /path/to/worktrees, remote: origin, default_branch: main}
-  github:
-    kind: team_github.tools
-    record: {repos: [owner/name], git: git}
-board:
-  repos: [owner/name]
-  github: github
-roles:
-  limits:
-    total: 3
-```
-
-The role cards (`roles/` of this repo) go in a `roles/` folder next to `team.yaml`.
-
-The desktop app ships this second shape as a preset, `crates/team/preset/app_team.yaml`. When the app starts a team in a folder with no `team.yaml`, it writes the preset and the role cards there once. It is an ordinary `team.yaml`: edit it, and the app never overwrites it.
+The `fantastic_team` binary creates no coding agent of its own: no lead or worker is a default, and nothing is added behind the records. `scripts/new-task.sh` renders a task file for whatever agents you made.
 
 ### Roles and limits
 
-With a `roles:` section the team gets a registry agent (`roles` by default). The coder role cards live in the `roles/` folder of this repo, one file each: `worker`, `lead`, `issue_keeper`, `issue_writer`, `spec_reviewer` and `project_lead`. A card is a `---` header (`name`, `purpose`, `tier`, `grants`) and the directive text. The `tier` is a key: the name of a template in `team.yaml` (`small`, `strong`, `issue_keeper` in the example), so a card never names a model. The registry holds one tier per template. The lead starts every agent with `spawn` on the registry, after it asks `roles` and `get_count`; it does not use `create_agent`.
+The roles registry is fantastic's `agentic_resources`, switched on by `FANTASTIC_AGENTIC_RESOURCES=1` and a record with `role_dirs`. The coder role cards live in the `roles/` folder of this repo, one file each: `worker`, `lead`, `issue_keeper`, `issue_writer`, `spec_reviewer` and `project_lead`. A card is a `---` header (`name`, `purpose`, `tier`, `grants`) and the directive text. The `tier` is a key of the registry record's `tiers` (`small`, `strong`, `issue_keeper` in the preset), so a card never names a model. The lead starts every agent with `spawn` on the registry, after it asks `roles` and `get_count`; it does not use `create_agent`.
 
 ```yaml
-roles:
-  id: roles        # the registry agent's id (default roles)
-  dirs: [roles]    # card folders, relative to the team's directory (default [roles])
-  limits:          # set with set_limit at every start; absent keys clear the old limit
-    total: 3
-    per_role:
-      worker: 2
+role_dirs: [roles]     # card folders, relative to the directory the team runs in
+limits:                # kept by set_limit; edit with `send` (`set_limit {max}` / `{role, max}`)
+  total: 3
+  per_role:
+    worker: 2
+tiers:                 # the backend fields of an AI agent, by tier name
+  small: {handler_module: anthropic_backend.tools, model: example-model, endpoint: https://api.example.com/v1/messages, memory_store_id: memory}
 ```
 
-The team refuses to start when a card does not parse, names a tier that is not a template, grants an agent `team.yaml` does not define (the `project_lead` card grants the `github` connector and the `board`, so a team with `roles:` defines both, or ships its own `project_lead.md`), or when one of the six cards is missing. A spawn past a limit is refused with `{error: <sentence>, reason: "limit", ...}` (`reason` is the code, `error` the sentence); the dispatcher's sidebar shows the count (`fleet` `{running, max}`, and "agents R/M" in its footer line). The team's one store agent (below) keeps every spawned agent's conversation under its own id.
+fantastic's registry checks a card when it loads it (it refuses a card that does not parse, or one whose `tier` is not in `tiers`). The cards name the agents they grant by id (the `project_lead` card grants `github`, `board`, `queue` and `tasks`), and fantastic's import gives every agent a fresh id, so the app writes the new ids into the cards after the import (`preset::bind_cards`); do the same by hand when you import a blueprint. A spawn past a limit is refused with `{error: <sentence>, reason: "limit", ...}` (`reason` is the code, `error` the sentence); the dispatcher's sidebar shows the count (`fleet` `{running, max}`, and "agents R/M" in its footer line).
 
-With `roles:` the team also gets the agent `tasks` (fantastic's `task_registry`, aisixteen/fantastic#429), a child of the lead that keeps its rows in the team's one store agent; the id `tasks` is taken. The `project_lead` card grants its write verbs (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`) and `spawn` opens `tasks` to it (fantastic#436). The `project_lead` also records, with each task, the `versions` it was done against (`{repo, branch, commit}` per repo), the issue's `source_version` and the mark it was forked from (`fork_from`), and passes a child's `usage` up with `report`. The GitHub connector's `staleness` verb gives the facts for reusing a mark (the commits and files since the recorded commit, whether the issue changed) and the lead decides (#194). The `project_lead` records each issue it hands out (source `gh:owner/repo#N`), its holder (an agent or a subtree root) and every reassignment, and pushes updates to the source itself through the GitHub connector; nothing syncs automatically.
+The task registry is the agent `tasks` (fantastic's `task_registry`, aisixteen/fantastic#429): a record with `task_store_id`. The `project_lead` card grants its write verbs (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`) and `spawn` opens `tasks` to it (fantastic#436). The `project_lead` also records, with each task, the `versions` it was done against (`{repo, branch, commit}` per repo), the issue's `source_version` and the mark it was forked from (`fork_from`), and passes a child's `usage` up with `report`. The GitHub connector's `staleness` verb gives the facts for reusing a mark (the commits and files since the recorded commit, whether the issue changed) and the lead decides (#194). The `project_lead` records each issue it hands out (source `gh:owner/repo#N`), its holder (an agent or a subtree root) and every reassignment, and pushes updates to the source itself through the GitHub connector; nothing syncs automatically.
 
-The memory of every AI agent (the lead, the tiers of the roles registry, workers added from the dispatcher) and the rows of `tasks` live in ONE store agent: a `sqlite_store` with one file per team directory, `.fantastic/memory.db`, so the history and the task rows survive a restart. It is config, not enforced in code: the optional `store:` section of `team.yaml` renames it or moves its file (`store: {id: memory, path: .fantastic/memory.db}`; the path is relative to the team directory, no `..`, and the id must not be another agent's). The kernel's own bookkeeping (`kernel_memory`) stays a RAM store. A worker added from the dispatcher is granted on the store when it is made; removing it leaves its rows.
+The memory of every AI agent (the lead, the tiers of the roles registry, workers added from the dispatcher) and the rows of `tasks` live in ONE store agent: the home's `memory`, a `sqlite_store` with one file, `.fantastic/memory.db`, so the history and the task rows survive a restart. The records name it (`memory_store_id`, `task_store_id`); the kernel's own bookkeeping (`kernel_memory`) stays a RAM store. A worker added from the dispatcher (`add_worker {template}`, the template being a tier of the registry record) is granted on the store when it is made; removing it leaves its rows.
 
-With `roles:` the `board` verb also returns a `roles` section: the tree below the `project_lead` (each agent's role and active/paused/done state, from the `fleet` and the tasks it holds), the registry's `get_count` as `fleet`, and the `tasks` rows (source, holder, status). A team without `roles:` keeps the old rows only.
+With a roles registry the `board` verb also returns a `roles` section: the tree below the `project_lead` (each agent's role and active/paused/done state, from the `fleet` and the tasks it holds), the registry's `get_count` as `fleet`, and the `tasks` rows (source, holder, status). A team without one keeps the old rows only.
 
-The `project_lead` waits for its children with the kernel's `await_set`; each start names the agents below the root for `await_set` and `await_cancel` in the root's `callable_by`.
+The `project_lead` waits for its children with the kernel's `await_set`; the lead holds `await_set`, `await_cancel`, `create_agent` and `delete_agent` on the root (its record's `can_call`), and a spawn opens them to the child its card grants them to.
 
 In roles mode the team page has two columns: an Agents list (the lead first, labelled Lead, then its tree indented by depth) beside the pane of the opened agent. The lead's pane shows the plan (the task registry's rows) above its chat and redraws it in place; any other agent shows its chat alone. Approval is the user's chat reply to the lead: its card says when it asks (a large plan, past its limits, GitHub writes) and honours "show me the plan first". Not done yet (#185, #198, later): the e2e. A spawned agent that reads a key must still be named on the credential store (it is not a card grant).
 
 The sidebar of every team (roles mode or not) also has a Team section with the team's own services: the queue, the board, the github connector and the dispatcher itself (the sidebar reply's `services`). Opening one answers `{view: panel, kind, target, model}` and the right pane draws the model as tables of text (never markup) and refreshes it every five seconds: the queue by queued, taken and done tasks with title, holder and age (failed ones only in the counts); the board by the lead's agent tree and the registry's tasks (without roles mode, its agents and the task counts by state); the github connector by its repos, its last calls (verb, target, ok / refused / unreachable / error status) and its rate limit and permissions; the dispatcher by its workers and lanes, with agents running over the cap. The github view is built from a whitelist of the connector's `reflect` reply (which now lists `recent_calls` and `rate`) and never shows a token or a key. The TUI shows these agents in its generic panel (the `reflect` reply and the verb entry); a panel of their own there is not part of this.
 
-Each repo that the team serves can opt in with `.github/team.yaml`:
+A repo the puller serves is one in its record's `repos`. Its settings are the `repo_config` field of that record, keyed by `owner/name`:
 
 ```yaml
 task_labels: [team-ready]
@@ -166,23 +112,22 @@ review:
   approvers: [alice]
 ```
 
-Every key is optional. An empty file gives the defaults: the label `team-ready`, any path, and one approval from any reviewer.
+Every key is optional. A repo with no entry takes the defaults: the label `team-ready`, any path, and one approval from any reviewer.
 
-Two more keys in the team's `team.yaml` are optional. `groups` names the worker groups the dispatcher shows: each has an AI `driver` (an agent id; absent means the group has no AI) and its `members`. `board` names the repos the board caches, through a GitHub connector of the same file:
+Two more sets of fields are optional. `groups` (a field of the dispatcher's record) names the worker groups the dispatcher shows, each with its members; the board's `team_groups` field adds each group's AI `driver` (an agent id; absent means the group has no AI), and the cadencer's `group_settings` its timing. The board's `repos` names the repos it caches, through the GitHub connector its `github` field names:
 
 ```yaml
 groups:
-  build:
-    driver: lead
-    members: [worker_1, worker_2]
-board:
-  repos: [aisixteen/fantastic_team]
-  github: git
+  build: [worker_1, worker_2]
+team_groups:
+  build: {driver: lead, members: [worker_1, worker_2]}
+repos: [aisixteen/fantastic_team]
+github: git
 ```
 
-`examples/team.yaml` is a complete team config with both keys in place (commented out), and `templates/` holds example directive files to start from.
+`templates/` holds example directive files to start from.
 
-**Register the GitHub App.** The GitHub connector needs an app you own. `fantastic_team setup github --name NAME [--org ORG]` runs the manifest flow: a local page posts the app's manifest to GitHub, GitHub redirects back, and the code is exchanged once for the app id and private key. The key goes to the credential store and is never written to a file or printed; only the app id is written to the config. `--org` creates the app under an organization. docs/install.md, step 3, lists the permissions and the by-hand steps as a fallback.
+**Register the GitHub App.** The GitHub connector needs an app you own. `fantastic_team setup github --name NAME [--org ORG]` runs the manifest flow: a local page posts the app's manifest to GitHub, GitHub redirects back, and the code is exchanged once for the app id and private key. The key goes to the credential store and is never written to a file or printed; the app id is stored beside it, in the same credential ref. `--org` creates the app under an organization. docs/install.md, step 3, lists the permissions and the by-hand steps as a fallback.
 
 ## Lanes
 
@@ -192,17 +137,24 @@ Tasks are exact: each says what to read, what to produce, and how to check it. T
 
 ## Run
 
+The command line is fantastic's, unchanged. `fantastic_team` is `fantastic` with this repo's bundles added to its registry, the way `canvas` sits on top of the kernel. It takes fantastic's words and nothing else, and it runs in the directory it is started in (`cd` there first; fantastic has no `--dir`):
+
 ```
-./target/release/fantastic_team --dir ./my-team            # headless: no port, no terminal UI
-./target/release/fantastic_team --dir ./my-team --port 8123  # also serves the web UI on 127.0.0.1:8123
-./target/release/fantastic_team --dir ./my-team --tui        # the terminal UI (needs a terminal)
+fantastic_team                                  # the terminal UI, on a terminal
+fantastic_team --headless                       # no screen and no port
+fantastic_team canvas --port 8123               # serves the web UI on 127.0.0.1:8123
+fantastic_team ai anthropic --model M           # the root AI on a backend, then the terminal
+fantastic_team run htop                         # a terminal cell running that command
+fantastic_team send '<item json>'               # one call into the team running here
+fantastic_team import <folder> --parent user --approve
+fantastic_team readme                           # fantastic's own readme
 ```
 
-`--port` and `--tui` are the only surfaces and are not combined. Ctrl-C to stop.
+`canvas [--port N] [--host ADDR]`, `ai <backend> …`, `run …`, `system`, `--headless`, `mcp`, `send`, `import`, `migrate-home` and `readme` are fantastic's words; `fantastic readme` documents them. The team page, the board and the dispatcher are agents like any other: the bundles are registered, and an agent comes from a record. The canvas is registered too but only started by the `canvas` word; an agent can still make a canvas of its own with `create_agent`. The team's own first words are `setup github`, `packs …` and `ai-readme`. The team no longer has its own `--dir`, `--port`, `--tui`, `--instructions` or `--resend-instructions`; they are refused as unknown. Ctrl-C to stop.
 
-The first agent's instructions come from `--instructions "<text>"` or `--instructions-file <path>` (not both), and from counts: `--workers <n>` starts n workers; `--leads <m> --per-lead <k>` starts m leads, each with k workers (`--workers` and `--leads` are not combined). Given text comes first. With no instruction flag the team starts with no first message. `--resend-instructions` sends the first agent its instructions again when it already exists.
+A directive for the lead is its record's `system_prompt_file`, or a message sent to it: `fantastic_team send '{"target": "lead", "payload": {"type": "send", "text": "..."}}'`.
 
-`fantastic_team ai-readme` prints [docs/ai-readme.md](docs/ai-readme.md), the same guide for AI agents, and exits. `mcp`, `send` and `readme` as the first word run fantastic's own commands in this directory.
+`fantastic_team ai-readme` prints [docs/ai-readme.md](docs/ai-readme.md), the same guide for AI agents, and exits.
 
 The build packs fantastic's canvas page with a pinned esbuild. With no vendored binary it compiles esbuild itself, which needs Go on PATH. CI installs Go 1.23.4 (`setup-go` in `.github/workflows/ci.yml`).
 
@@ -231,12 +183,12 @@ scripts/remote-stop.sh gpu       # asks first; drains (SIGTERM); --now kills
 - **The board** (`team_board.tools`): the shared picture of the work — open issues with their queue state (pending, in work, done, failed) and the agents. Verb `board`.
 - **The worker view** (`team_worker_view.tools`): one canvas per worker, with its task, files, output and chat.
 - **The dispatcher** (`team_dispatcher.tools`): the home screen of the web UI and the app. Workers by group, each with its state, current task, time and cost, and what is waiting for you.
-- **The web UI** with `--port`, or the terminal UI with `--tui`.
+- **The web UI** with `canvas --port`, or fantastic's terminal UI.
 - **Logs** through `scripts/remote-logs.sh` when the team runs remotely.
 
 ## The app
 
-`crates/team_app` builds `fantastic_team_app`, a launcher that starts the headless binary on port 8765 and waits until its web UI answers. `app/tauri.conf.json` is the packaging for a desktop window (macOS, Windows, Linux); the window loads the web UI on `127.0.0.1` only. The window is not built yet. The dispatcher is the home screen: each worker row has Start, Pause and Stop buttons, and Stop asks first. The GitHub build is the same app with the GitHub patch applied. Build steps, controls and the signing notes are in [app/README.md](app/README.md).
+`crates/team_app` builds `fantastic_team_app`, a launcher that starts the binary (`canvas --port 8765`) and waits until its web UI answers. `app/tauri.conf.json` is the packaging for a desktop window (macOS, Windows, Linux); the window loads the web UI on `127.0.0.1` only. The window is not built yet. The dispatcher is the home screen: each worker row has Start, Pause and Stop buttons, and Stop asks first. The GitHub build is the same app with the GitHub patch applied. Build steps, controls and the signing notes are in [app/README.md](app/README.md).
 
 ## Security model
 
@@ -248,7 +200,7 @@ scripts/remote-stop.sh gpu       # asks first; drains (SIGTERM); --now kills
 
 ## The lead
 
-A team is run by **the lead**: an AI agent configured in `team.yaml` that works from a directive. It spawns worker agents when there is work, gives each a task, checks on them, and deletes workers when the queue is empty. Its model, directive and templates come from config; no provider or model is named in the code.
+A team is run by **the lead**: an AI agent, an ordinary record, that works from a directive. It spawns worker agents when there is work, gives each a task, checks on them, and deletes workers when the queue is empty. Its model, directive and tiers come from records; no provider or model is named in the code.
 
 ## Load and progress
 
@@ -257,14 +209,14 @@ every stall. So that a driver with idle members and queued work does not sleep, 
 quiet lead that got no digest for three beats in a row, while a direct member is
 idle (no task in hand) and tasks are queued, gets one line:
 `heartbeat: N idle, M queued`. A regular digest restarts the count. Each group in
-`team.yaml` may set `cadence`, `stall_after`, `quiet` and `enabled` (whole seconds,
+the cadencer's `group_settings` field may set `cadence`, `stall_after`, `quiet` and `enabled` (whole seconds,
 at least 1); an unset key follows the global setting, which `set` still changes
 live. A group `cadence` longer than the timer's beat skips beats until it is due; a
 shorter one is held to the beat.
 
-The plan always creates the `cadencer` agent with these settings, with or without a
-`board` section (a CLI team has none). It is on by default. `cadencer: {enabled: false}`
-in `team.yaml` creates it switched off, and so does `enabled: false` on every group. The
+The cadencer works with or without a board (a CLI team has none). It is on by default. A
+cadencer record with `enabled: false` is switched off, and so is one whose groups all set
+`enabled: false`. The
 team page has a "Digests (cadencer)" switch in its header that calls `set
 {enabled}`; the state is kept in the cadencer's record and shown again after a restart.
 With a `roles:` section the digest tree is the spawned tree (the project_lead, its
@@ -307,7 +259,7 @@ The `eval` reply, and the `evals` report of an `install` with a worker, also car
 - `pack` scans every file before it writes anything (`crates/team/src/pack_scan.rs`). It refuses secrets, directives or templates that ask for a key, read `~/.ssh` or send data out, and any code file (`.rs`, `.py`, `.sh`, executables under `bin/`, …). A refused pack writes nothing and the reply lists each finding by path, rule and line, never the matched text.
 - `install` refuses a pack with no `pack.yaml`, an invalid manifest, a content hash that differs from the files it lists (a tampered file), a scan refusal, or an installed version. It checks all of this before its first write, then copies the pack as a template under `<into>/<name>-<version>/`. It creates no agent. The reply carries the pack's parsed ports (`{"kind": "model" | "connector" | "exec:sandboxed", …}`) so the caller can show what the pack asks for. `bindings` is the buyer's map from each port key (`model`, `connector:<name>`, or `exec:sandboxed`; two `@model` ports share `model`) to the id of the agent that fills it. `install` refuses a key that is not a port key of the pack, a value that is not a plain agent id (a secret-shaped value or one with path characters is refused, and the value is never echoed), and a non-object, all before its first write. The bound map is written to `<dest>/bindings.json`, outside the hash. The reply carries `bindings: {bound, unbound}`, where `unbound` lists the ports no binding fills. With no bindings, every port is unbound and a plain `install` still succeeds: binding is checked where a worker is built, not at the copy (see **Enabling**).
 
-**Surfaces.** The pack verbs are reachable locally, with no network and no hosted service. Three agents sit under the lead in every team: `pack` (`pack`, `install`, `eval`), `pack_listing` (`list`, `show`, `updates`, `publish`) and `files`, the file bridge rooted at the team directory that only those two may call. From the shell, with the team running in the directory: `fantastic_team packs list|show|updates|publish|pack|install|eval --key value ...` (for example `fantastic_team packs install --pack mypack --into templates --worker w1`). A pack that carries a `blueprint/` folder (fantastic's blueprint format, see below) can also be built into a worker: `fantastic_team packs install --pack P --into templates --parent-id lead --approve` (without `--approve` it only previews). Over MCP, `fantastic_team mcp` reaches the agents `pack` and `pack_listing`. `pack_listing` reads the local index at `packs/index.json` and installed packs under `templates/`; `trusted_keys` is unset, so no signed index entry is trusted. `pack` writes its files without a final newline, because the file bridge does not return one and `install` must read back exactly what was hashed. `eval` and `install --worker` send each eval task to the worker by id. The `pack` agent may call the lead and the workers listed under `groups:` in `team.yaml`, and the lead accepts it; any other worker must list `pack` in its own `callable_by`, or the eval fails with `pack may not call 'send'` or the worker's refusal. The CLI has no `--bindings` or `--min-pass-rate` flag (use `send` or MCP for those), but `packs install` run from a terminal with no bindings in its payload asks, before it sends, for the agent id of each port in `<pack>/pack.yaml` (an empty answer skips a port) and sends the answers as `bindings`; it asks first because a second install of the same version is refused. Without a terminal nothing is asked. The CLI prints the reply and exits non-zero when it carries an `error` (or when `send` fails), so a script can detect a failed `install` or `eval`.
+**Surfaces.** The pack verbs are reachable locally, with no network and no hosted service. Three agents serve them, made as records like any other (`pack` on `team_pack.tools`: `pack`, `install`, `eval`; `pack_listing` on `team_packs.tools`: `list`, `show`, `updates`, `publish`; and `files`, a file bridge rooted at the team directory that only those two may call). The CLI sends to the ids `pack` and `pack_listing`. From the shell, with the team running in the directory: `fantastic_team packs list|show|updates|publish|pack|install|eval --key value ...` (for example `fantastic_team packs install --pack mypack --into templates --worker w1`). A pack that carries a `blueprint/` folder (fantastic's blueprint format, see below) can also be built into a worker: `fantastic_team packs install --pack P --into templates --parent-id lead --approve` (without `--approve` it only previews). Over MCP, `fantastic_team mcp` reaches the agents `pack` and `pack_listing`. `pack_listing` reads the local index at `packs/index.json` and installed packs under `templates/`; `trusted_keys` is unset, so no signed index entry is trusted. `pack` writes its files without a final newline, because the file bridge does not return one and `install` must read back exactly what was hashed. `eval` and `install --worker` send each eval task to the worker by id. The `pack` agent may call the agents its own record's `can_call` names; any worker must list `pack` in its own `callable_by`, or the eval fails with `pack may not call 'send'` or the worker's refusal. The CLI has no `--bindings` or `--min-pass-rate` flag (use `send` or MCP for those), but `packs install` run from a terminal with no bindings in its payload asks, before it sends, for the agent id of each port in `<pack>/pack.yaml` (an empty answer skips a port) and sends the answers as `bindings`; it asks first because a second install of the same version is refused. Without a terminal nothing is asked. The CLI prints the reply and exits non-zero when it carries an `error` (or when `send` fails), so a script can detect a failed `install` or `eval`.
 
 **Blueprint packs.** `pack` also packs `<worker>/blueprint/` (`blueprint.yaml` plus `<agent id>/directive.md`, the folder `user.export_subtree` writes) next to `worker.json`: the files are listed in `pack.yaml`, covered by the content hash and scanned (a directive in it is scanned like any other). A blueprint folder without `blueprint.yaml` is refused. `install` with a `parent_id` then builds the worker through fantastic's `user.import_subtree` (#269) from the installed `<dest>/blueprint`, after every normal check and the template copy. Without `approve` the reply carries the permission preview under `approval` (agents, new ids, what they reach, ports, code) and nothing is created; with `approve: true` it carries `imported`, the new `ids`, and `installed_as: worker`. The pack's `bindings` become the blueprint's ports (`model` is `@model`, `connector:<name>` is `@connector:<name>`, `exec:sandboxed` is `@exec`), and fantastic refuses an unbound port, a key value or a code file; the refusal is the reply's `error` (`blueprint import refused: ...`) and the template copy stays. `allow_code` is passed through and defaults to false (`pack` already refuses code files). A pack with no blueprint and a `parent_id` is refused before any write. The `pack` agent may call only `import_subtree` on the team's `user` agent. The CLI flags are `--parent-id`, `--approve` and `--allow-code`. The `<dest>/blueprint` path is read by fantastic relative to the team directory, which is also the root of the `files` agent. Without `parent_id` nothing changes: `install` creates no agent.
 
@@ -315,7 +267,7 @@ The `eval` reply, and the `evals` report of an `install` with a worker, also car
 
 **Packs panel.** The first start places no agent for it: the team page (`team_page`, served at `/team_page/file/index.html`) serves the team page and its Pack install panel. The panel lists the packs (`pack_listing list`), shows a pack's permission preview (`show`: ports, grants, price, evals, the measured record, whether it is installed or revoked, and the install decision), asks for one agent id per unbound port, previews an install (`install` without `approve`), installs after a confirm (`install` with `approve: true`) and runs the evals (`eval`). It sends no other verb and draws every value as text.
 
-Not yet: signatures, signing and publishing the measured record (it is built locally from eval results, in the `eval` and `install` replies, but is never signed or sent; `publishable` is the gate), checking that a bound agent meets the port's window and tools, fetching pack files from a registry over the network, and `trusted_keys` in `team.yaml`. `publish {pack, url, signing_key, grants?}` signs a packed pack with the 64-hex ed25519 seed in the file at `signing_key` and appends it to the local index (checks first: manifest, content hash, secrets scan; https `url`; no duplicate version or hash). It needs no network, and the CLI has no `--grants` flag (use `send` or MCP). The entry is listed only when its signer is in `trusted_keys`.
+Not yet: signatures, signing and publishing the measured record (it is built locally from eval results, in the `eval` and `install` replies, but is never signed or sent; `publishable` is the gate), checking that a bound agent meets the port's window and tools, fetching pack files from a registry over the network, and `trusted_keys` on the `pack_listing` record. `publish {pack, url, signing_key, grants?}` signs a packed pack with the 64-hex ed25519 seed in the file at `signing_key` and appends it to the local index (checks first: manifest, content hash, secrets scan; https `url`; no duplicate version or hash). It needs no network, and the CLI has no `--grants` flag (use `send` or MCP). The entry is listed only when its signer is in `trusted_keys`.
 
 ## Tests and CI
 
@@ -340,11 +292,11 @@ CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh w
 
 | Part | What it is |
 |---|---|
-| `fantastic_team` | The program: fantastic's terminal-shell library plus the agents below. Headless by default. |
-| the lead | An AI agent configured in `team.yaml`. |
+| `fantastic_team` | The program: fantastic's command line (its terminal-shell library) plus the agents below. Its flags are fantastic's. |
+| the lead | An AI agent, an ordinary record. |
 | `queue` agent | Tasks as data: add, list, take, mark done. |
 | `team_puller.tools` | Reads `team-ready` issues from the GitHub connector and writes `queue/<repo>-<n>.md`. `status` gives the source, the last pull and the counts. |
-| connectors | `git` (`team_git.tools`) and `github` (optional, `team_github.tools`). Bound in `team.yaml`, each with its directive. |
+| connectors | `git` (`team_git.tools`) and `github` (optional, `team_github.tools`). Each is a record, with its directive. |
 | `team_board.tools` | Board: the shared picture of the work. Verbs `pull`, `board`, `task`, `report`, `agent`, `ask`, `audit`. It never assigns. |
 | `team_worker_view.tools` | Worker view: one vertical canvas per worker. |
 | `team_webhook.tools` | Optional webhook receiver (off unless enabled). `status` lists the last 20 events (event, action, accepted or refused, time) and whether a secret is set, never the secret, a header or a body. |
@@ -353,7 +305,7 @@ CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh w
 | `team_pack.tools` | Worker packs: verbs `pack`, `install` and `eval`. See Worker packs. |
 | declared views | Each kind above (cadencer, puller, webhook, packs, pack, git, github, board, dispatcher, queue) declares its read-only views as data in `declared_views.rs`: the fantastic TUI draws them from `view.tui`, written into the records at every start, and the team page draws the same declaration for cadencer, puller, webhook, packs, pack and git. The queue, board, github and team pages stay page code (`agent_views.rs`, with the reason). No view shows a secret. |
 | `team_app` | The launcher `fantastic_team_app` for the desktop app. See The app. |
-| `team.yaml` | The lead, the worker templates, the connectors and their directives, the queue, the roles and their limits. |
+| `crates/team/preset/app_team/` | The app's preset: a blueprint folder (the lead, the roles registry with its tiers and limits, the tasks registry, the queue, the board, the GitHub connector). |
 
 ## Updating fantastic
 

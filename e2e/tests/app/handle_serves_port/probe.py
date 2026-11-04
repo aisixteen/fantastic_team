@@ -8,9 +8,10 @@ from helpers import app, run_flow, team as team_mod, web
 from helpers.verdict import Verdict
 
 
-def others(run_dir, me):
-    """Pids (not `me`) whose command line holds `--dir RUN`: a second team process."""
-    r = subprocess.run(["pgrep", "-f", "--", f"--dir {run_dir}"], capture_output=True, text=True)
+def others(binary, me):
+    """Pids (not `me`) running the team binary: a second team process. The harness's own team
+    is stopped by now, and the handle runs in-process (the example, not the binary)."""
+    r = subprocess.run(["pgrep", "-f", "--", binary + " "], capture_output=True, text=True)
     return [int(x) for x in r.stdout.split() if int(x) not in (me, os.getpid())]
 
 
@@ -19,9 +20,7 @@ def run(ctx):
     example = app.handle_example(ctx)  # a Skip when the example is not built
     h = None
     try:
-        keys = run_flow.fake_keys(ctx)
-        ctx.secrets = keys
-        ctx.boot_team({"E2E_MODEL_KEY": keys["model_key"]}, wire=["credentials"])
+        run_flow.boot(ctx, forge=False, groups={"team": {"members": ["$lead"]}})
         ctx.team.stop()  # the tree is on disk, the lock is free
         port = app.free_port()
         h = app.Proc([example, "--dir", ctx.run_dir, "--port", str(port)], app.env_of(ctx.team),
@@ -33,8 +32,10 @@ def run(ctx):
         ok = app.wait_http(page, 20)
         v.check("the page answers 200", ok)
         status, body = web.http_get(page) if ok else (0, b"")
+        status_shim, shim = web.http_get(f"http://127.0.0.1:{port}/team_page/file/shim.js") if ok else (0, b"")
         v.check("it is the team page with the socket shim",
-                b"<title>Dispatcher</title>" in body and b"window.fantastic = {" in body, str(status))
+                b"<title>Team</title>" in body and b"shim.js" in body and b"window.fantastic = {" in shim,
+                f"{status} {status_shim}")
         v.check("another file of the page is a 404",
                 web.http_get(f"http://127.0.0.1:{port}/team_page/file/other.txt")[0] == 404)
 
@@ -48,8 +49,8 @@ def run(ctx):
         ws.close()
 
         v.check("no child process", app.child_pids(h.pid) == [], str(app.child_pids(h.pid)))
-        v.check("no second team process on this directory", others(ctx.run_dir, h.pid) == [],
-                str(others(ctx.run_dir, h.pid)))
+        v.check("no second team process on this directory", others(ctx.binary, h.pid) == [],
+                str(others(ctx.binary, h.pid)))
         second = team_mod.Team(ctx.binary, ctx.run_dir, ctx.team.env)
         try:
             second.start(wait_s=20)

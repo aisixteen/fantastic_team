@@ -3,7 +3,7 @@
 A test never names a model, an endpoint or a key; its test.yaml says only which
 plug (`plug: scripted` by default). A plug has `make(test_dir, variables)` and
 returns an object with `.endpoint`, `.host`, `.start()`, `.stop()`, and:
-  `.model_name`  what team.yaml's `{{model_name}}` takes (`provides_vars`);
+  `.model_name`  what a blueprint's `{{model_name}}` takes (`provides_vars`);
   `.key_env`     the variable holding the real key, or None (the launcher reads it
                  for a real plug, and never writes it to disk);
   `.real`        true when a real model answers.
@@ -36,5 +36,5 @@ def available(name: str) -> bool:
 
 
 def provides_vars(plug) -> dict:
-    """The variables a plug gives a team.yaml."""
+    """The variables a plug gives a blueprint."""
     return {"model_name": plug.model_name}

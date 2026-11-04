@@ -1,11 +1,10 @@
-//! Per-repo configuration, `.github/team.yaml`. A repo opts in by committing
-//! this file. The text is untrusted: it is parsed and validated here, never
-//! executed. Pure: no I/O.
+//! Per-repo settings: one entry of the `repo_config` field of the puller's record
+//! (`owner/name` → settings). A repo opts in by being in the record's `repos`; a repo
+//! with no entry takes the defaults. The value is validated here, never executed.
+//! Pure: no I/O.
 
 use serde::Deserialize;
-
-/// The file a served repo commits to opt in.
-pub const FILE: &str = ".github/team.yaml";
+use serde_json::Value;
 /// The label that marks a task when the file does not name its own.
 pub const DEFAULT_LABEL: &str = "team-ready";
 
@@ -57,20 +56,19 @@ struct RawReview {
     approvers: Option<Vec<String>>,
 }
 
-/// Parse and validate the text of `.github/team.yaml`. An empty file gives the
-/// defaults. Errors name the offending key or value.
-pub fn parse(text: &str) -> Result<RepoConfig, String> {
-    let raw: Raw = if text.trim().is_empty() {
-        Raw::default()
-    } else {
-        serde_yaml::from_str(text).map_err(|e| format!("team.yaml: {e}"))?
+/// Validate one repo's entry of the record's `repo_config`. No entry (or `null`, or an
+/// empty map) gives the defaults. Errors name the offending key or value.
+pub fn from_record(entry: Option<&Value>) -> Result<RepoConfig, String> {
+    let raw: Raw = match entry {
+        None | Some(Value::Null) => Raw::default(),
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("repo_config: {e}"))?,
     };
 
     let task_labels = raw
         .task_labels
         .unwrap_or_else(|| vec![DEFAULT_LABEL.to_string()]);
     if task_labels.is_empty() || task_labels.iter().any(|l| l.trim().is_empty()) {
-        return Err("team.yaml: task_labels must be a non-empty list of label names".into());
+        return Err("repo_config: task_labels must be a non-empty list of label names".into());
     }
 
     let paths = raw.paths.unwrap_or_default();
@@ -81,7 +79,7 @@ pub fn parse(text: &str) -> Result<RepoConfig, String> {
             || p.split('/').any(|seg| seg == "..");
         if escapes {
             return Err(format!(
-                "team.yaml: path `{p}` must be relative, with no `..` segment"
+                "repo_config: path `{p}` must be relative, with no `..` segment"
             ));
         }
     }
@@ -91,7 +89,7 @@ pub fn parse(text: &str) -> Result<RepoConfig, String> {
         Some(r) => (r.approvals.unwrap_or(1), r.approvers.unwrap_or_default()),
     };
     if approvals == 0 {
-        return Err("team.yaml: review.approvals must be at least 1".into());
+        return Err("repo_config: review.approvals must be at least 1".into());
     }
 
     Ok(RepoConfig {
@@ -109,16 +107,21 @@ pub fn parse(text: &str) -> Result<RepoConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn parse(v: Value) -> Result<RepoConfig, String> {
+        from_record(Some(&v))
+    }
 
     #[test]
     fn parses_full_config() {
-        let cfg = parse(
-            "task_labels: [do-it, team-ready]\n\
-             paths: [src/**, docs/*.md]\n\
-             build: cargo build\n\
-             test: cargo test\n\
-             review:\n  approvals: 2\n  approvers: [alice, bob]\n",
-        )
+        let cfg = parse(json!({
+            "task_labels": ["do-it", "team-ready"],
+            "paths": ["src/**", "docs/*.md"],
+            "build": "cargo build",
+            "test": "cargo test",
+            "review": {"approvals": 2, "approvers": ["alice", "bob"]},
+        }))
         .unwrap();
         assert_eq!(cfg.task_labels, vec!["do-it", "team-ready"]);
         assert_eq!(cfg.paths, vec!["src/**", "docs/*.md"]);
@@ -129,29 +132,34 @@ mod tests {
     }
 
     #[test]
-    fn empty_file_gets_defaults() {
-        let cfg = parse("").unwrap();
-        assert_eq!(cfg.task_labels, vec![DEFAULT_LABEL]);
-        assert!(cfg.paths.is_empty());
-        assert_eq!(cfg.review.approvals, 1);
-        assert!(cfg.build.is_none() && cfg.test.is_none());
+    fn no_entry_gets_defaults() {
+        for cfg in [
+            from_record(None).unwrap(),
+            parse(Value::Null).unwrap(),
+            parse(json!({})).unwrap(),
+        ] {
+            assert_eq!(cfg.task_labels, vec![DEFAULT_LABEL]);
+            assert!(cfg.paths.is_empty());
+            assert_eq!(cfg.review.approvals, 1);
+            assert!(cfg.build.is_none() && cfg.test.is_none());
+        }
     }
 
     #[test]
     fn rejects_unknown_key() {
-        let err = parse("buidl: make\n").unwrap_err();
+        let err = parse(json!({"buidl": "make"})).unwrap_err();
         assert!(err.contains("buidl"), "{err}");
     }
 
     #[test]
     fn rejects_parent_dir_in_paths() {
-        let err = parse("paths: [\"../x\"]\n").unwrap_err();
+        let err = parse(json!({"paths": ["../x"]})).unwrap_err();
         assert!(err.contains("../x"), "{err}");
     }
 
     #[test]
     fn rejects_zero_approvals() {
-        let err = parse("review:\n  approvals: 0\n").unwrap_err();
+        let err = parse(json!({"review": {"approvals": 0}})).unwrap_err();
         assert!(err.contains("approvals"), "{err}");
     }
 }

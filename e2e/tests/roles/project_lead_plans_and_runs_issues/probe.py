@@ -4,7 +4,7 @@ import os
 import shutil
 import time
 
-from helpers import run_flow, team as T
+from helpers import run_flow, stock as S, team as T
 from helpers.verdict import Verdict
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
@@ -51,13 +51,19 @@ def run(ctx):
     w = os.path.join(roles_dir, "worker.md")
     text = open(w).read()
     open(w, "w").write(text.replace('  queue: "*"\n', '  queue: "*"\n  github: [issue_view, pr_create, pr_status]\n', 1))
-    keys = run_flow.fake_keys(ctx)
-    ctx.secrets = keys
-    team = ctx.boot_team({"E2E_MODEL_KEY": keys["model_key"], "E2E_APP_ID": keys["app_id"],
-                          "E2E_APP_PEM": keys["pem"]},
-                         wire=["credentials", "github", "worker_files"])
+    team = ctx.boot_team(puller=False, board=True, board_store="queue", groups={},
+                         limits={"total": 5, "per_role": {"worker": 2}},
+                         roles_tiers={"strong": S.lead_tier(ctx),
+                                      # the small tier names a ref the store does not hold: a spawned
+                                      # worker's first message is refused until the operator gives it the real ref
+                                      "small": S.lead_tier(ctx, credentials={"store": "credentials",
+                                                                             "ref": "model/unprovisioned"}),
+                                      "issue_keeper": S.inert_tier(ctx)})
 
-    # the probe plays the user: it starts the project_lead through the registry
+    # the probe plays the user: it starts the project_lead through the registry. A spawner grants only
+    # what it holds, so the operator holds what the card grants first.
+    S.operator_holds(team, {"github": "*", "board": "*", "queue": "*", "tasks": "*", "roles": "*",
+                            "kernel_state": "*", "canvas_page": ["new_canvas"]})
     made = team.send("roles", {"type": "spawn", "role": "project_lead"})["result"]
     pl = made.get("id")
     v.check("the registry spawned the project_lead", bool(pl) and made.get("tier") == "strong", str(made))

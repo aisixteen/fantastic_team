@@ -23,19 +23,10 @@ ports:
 
 
 def boot_plain(ctx, name: str) -> team_mod.Team:
-    """Boot a team in `<run_dir>/<name>` from the test's team.yaml. No `wire`: the packs
-    tests need no credentials grant, puller or queue folder."""
-    d = os.path.join(ctx.run_dir, name)
-    os.makedirs(d, exist_ok=True)
-    t = team_mod.Team(ctx.binary, d, {})
-    team_mod.boot(t, os.path.join(ctx.dir, "team.yaml"), dict(ctx.vars, run_dir=d))
-    # The harness boots twice (see helpers/team.py): the first start seeds the base tree, whose
-    # `files` and `user` agents then take the ids the team plan's own were to have, and their
-    # `callable_by` does not name the pack agent as the plan writes it. Grant it, keeping the rest.
-    grant(t, "files", "pack", "*")
-    grant(t, "files", "pack_listing", "*")
-    grant(t, "user", "pack", ["import_subtree", "send"])
-    return t
+    """Boot a team in `<run_dir>/<name>`: fantastic's CLI, the test's blueprint (a lead), the
+    github connector (no git, puller or queue folder) and the pack agents."""
+    from . import stock
+    return stock.boot(ctx, sub=name, packs=True, git=False, puller=False)
 
 
 def grant(team: team_mod.Team, agent: str, caller: str, verbs) -> None:

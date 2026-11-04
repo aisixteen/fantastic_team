@@ -2,7 +2,7 @@
 
 One live turn of the page's chat with reasoning and a tool call, against the real binary and the scripted model, over a websocket.
 
-Same setup as `chat_history_send_stream` (a lead in the `team` group, `--port`, `canvas_ws` given the page's chat grant by the harness; `watch` on `queue` too, because a tool call part is sent to the watchers of its addressee). The script: turn 1 thinks (`thinking`), says "checking" and calls `queue` `read`; turn 2 waits 3 s (`delay`), says "done" and ends the chain; turn 3 answers a send that carries an attachment.
+Same setup as `chat_history_send_stream` (a lead in the `team` group, `canvas --port`, `canvas_ws` given the page's chat grant by the harness; `watch` on `queue` too, because a tool call part is sent to the watchers of its addressee). The script: turn 1 thinks (`thinking`), says "checking" and calls `queue` `read`; turn 2 waits 3 s (`delay`), says "done" and ends the chain; turn 3 answers a send that carries an attachment.
 
 Asserts, from what the live verbs and events return:
 - `status` mid-turn (asked from a second socket) says the turn is generating, is the page's own (`is_mine`) and gives its phase; it is idle after.

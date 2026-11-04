@@ -1138,27 +1138,6 @@ mod tests {
         bootstrap::shutdown(dir.path()).unwrap();
     }
 
-    /// The binary's order: `run_at_start` (a `team.yaml`), then `--port`'s records.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn run_at_start_then_persist_web_serves_the_page_on_the_first_start() {
-        let _web = WEB.lock().await;
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join(crate::config::FILE_NAME), "{}\n").unwrap();
-        let d = dir.path().to_path_buf();
-        std::thread::spawn(move || crate::tree::run_at_start(&d, None, false))
-            .join()
-            .unwrap()
-            .unwrap();
-        let port = free_port();
-        persist(dir.path(), port).await.unwrap();
-        assert!(dir.path().join(SEEDED_STORE).is_file(), "the seed");
-        let k = start(dir.path()).await.unwrap();
-        let resp = http_get(port, page::PAGE_PATH).await;
-        assert_eq!(status_of(&resp), 200, "{resp}");
-        k.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-    }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn persist_web_busy_port_fails_and_releases_the_lock() {
         let _web = WEB.lock().await;
