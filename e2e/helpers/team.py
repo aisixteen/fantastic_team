@@ -1,7 +1,10 @@
 """Start and stop the team binary in a run dir, and talk to it.
 
-The binary runs headless (`--dir RUN`). Everything it is told goes through
-`fantastic_team send '<item>'` (attach-only, over `.fantastic/cli/mcp.sock`).
+The binary is fantastic's command line, run in the run folder (fantastic has no `--dir`:
+it works in the directory it is started in): `--headless` by default, `canvas --port N`
+for the web. Everything it is told goes through `fantastic_team send '<item>'` or
+`fantastic_team import <folder> --parent user --approve` (attach-only, over
+`.fantastic/cli/mcp.sock`).
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import urllib.error
 import urllib.request
 
 SOCK = os.path.join(".fantastic", "cli", "mcp.sock")
+HEADLESS = ("--headless",)  # no screen, no port; the default start
 
 
 def free_port() -> int:
@@ -64,11 +68,12 @@ class Team:
         with open(os.path.join(self.dir, "team.yaml"), "w") as f:
             f.write(text)
 
-    def argv(self, extra_args=()) -> list[str]:
-        """The command line of a start: `--dir D`, then `extra_args` (`["--port", "8123"]`)."""
-        return [self.binary, "--dir", self.dir, *map(str, extra_args)]
+    def argv(self, extra_args=HEADLESS) -> list[str]:
+        """The command line of a start: fantastic's own words, run in the run folder
+        (`["--headless"]`, `["canvas", "--port", "8123"]`, `["--headless", "ai", "anthropic", ...]`)."""
+        return [self.binary, *map(str, extra_args)]
 
-    def start(self, wait_s: float = 60.0, extra_args=()) -> None:
+    def start(self, wait_s: float = 60.0, extra_args=HEADLESS) -> None:
         extra = list(map(str, extra_args))
         self.port = int(extra[extra.index("--port") + 1]) if "--port" in extra else None
         log = open(self.log_path, "wb")
@@ -83,6 +88,24 @@ class Team:
                 return
             time.sleep(0.2)
         raise RuntimeError(f"team binary did not open {SOCK} in {wait_s}s:\n{self.log()}")
+
+    def import_blueprint(self, folder: str, parent: str = "user", binds=None,
+                         timeout: float = 120.0) -> str:
+        """`fantastic_team import FOLDER --parent PARENT --bind @p=id ... --approve` on the running
+        team; the command's output (`imported N: id, id`). Raises when fantastic refuses."""
+        cmd = [self.binary, "import", folder, "--parent", parent, "--approve"]
+        for port, agent in (binds or {}).items():
+            cmd += ["--bind", f"{port}={agent}"]
+        r = subprocess.run(cmd, env=self.env, cwd=self.dir, capture_output=True, text=True,
+                           timeout=timeout)
+        if r.returncode != 0 or not r.stdout.startswith("imported"):
+            raise RuntimeError(f"import {folder} failed ({r.returncode}): {r.stdout}{r.stderr}")
+        return r.stdout.strip()
+
+    def agents(self) -> dict:
+        """Every agent record, by id (`list_agents` on the kernel)."""
+        r = self.send("kernel", {"type": "list_agents"})
+        return {a["id"]: a for a in r["result"]["agents"]}
 
     def send(self, target: str, payload: dict, timeout: float = 120.0) -> dict:
         item = json.dumps({"target": target, "payload": payload})
@@ -154,7 +177,7 @@ def boot(team: "Team", yaml_template: str, variables: dict, port: int | None = N
             raise RuntimeError(f"cannot add the canvas: {r}")
     team.stop()
     team.write_yaml(yaml_template, variables)
-    team.start(extra_args=["--port", port] if port else ())
+    team.start(extra_args=["canvas", "--port", port] if port else HEADLESS)
 
 
 def wire(team: "Team", only=None) -> None:

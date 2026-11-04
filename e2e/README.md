@@ -31,6 +31,36 @@ ANTHROPIC_API_KEY=... python3 e2e/run.py --only-turns
 
 Each run writes `cost.json` in its run folder (tokens, requests, model, the USD estimate if priced). It holds no key. The relay forwards the team's own `x-api-key` and streams the reply back unchanged; it never reads or stores the key value.
 
+## The cli group (#219)
+
+`tests/cli/*` are the tests for the command line being fantastic's and the config being fantastic's records. They hold no `team.yaml`: each folder has `test.yaml`, `README.md`, `script.json`, `probe.py` and a `blueprint/` folder (a fantastic blueprint: `blueprint.yaml` with `ports` and `agents`). All six are free (scripted model, no key, no network) and need no forge. Run them with `python3 e2e/run.py --only cli/<id> --bin ABS_PATH`.
+
+The probe starts the binary the way fantastic is started, in the run folder (fantastic has no `--dir`; it works in the directory it is started in): `--headless`, or `canvas --port N`, or the recipe `--headless ai anthropic --model M --endpoint URL`. It makes the credential store (`backend: env`, the model's key in the team's environment only) and an exec agent in the fixture repo with `send` (`create_agent`), then imports the blueprint under `user` (`fantastic_team import blueprint --parent user --bind ... --approve`) and hands the lead its task with `send`. `helpers/cli.py` has the steps; `Team.import_blueprint` and `Team.agents` are in `helpers/team.py`. The role cards are not in a blueprint (an import counts a card as code): they sit in the test's `roles/` folder, which the probe copies next to the kernel, where `role_dirs: [roles]` reads them. `FANTASTIC_AGENTIC_RESOURCES=1` turns the registry on for the tests that spawn.
+
+The shared fixture is a local git repo with one failing test (`test_calc.py` checks `adder.add` and `muler.mul`, both wrong). Solved means the test fails on the start commit, passes on HEAD, and the work tree is clean: the fix is a commit. Two bugs in two files, so two workers can each fix one.
+
+| test | start | does | checks |
+| --- | --- | --- | --- |
+| `single_lead` | a lead, once from a blueprint, once from the recipe + `send` (no file) | solves | solved; the records are the ones it started with |
+| `lead_spawns_two` | a lead with the registry and the `worker` card | spawns 2 workers, they solve, the lead deletes them | solved; 2 spawns; the records are the ones it started with |
+| `precreated_1_2` | a lead and 2 workers in the blueprint | solve | solved; the same 3 under the same parents, nothing extra |
+| `precreated_tree` | a lead, 2 sub-leads, a worker under each, in the blueprint | solve | solved; the tree unchanged |
+| `leads_spawn_leads` | a lead with the `sublead` and `worker` cards | spawns 2 sub-leads, they spawn workers, solve, each parent deletes what it spawned | solved; 4 spawns; no spawned agent left, no orphans |
+| `headless_and_canvas` | `--headless`, then `canvas --port N` | an agent makes a canvas with `create_agent` | headless opens no port and needs no terminal; `canvas` serves; the canvas made with no `canvas` word |
+
+Facts found while writing them (about fantastic at this commit, not decisions of the suite):
+
+1. Fantastic renames every imported id with `_1` (`lead_1`, `roles_1`, `w1_1`), so a script names those. Spawned ids are minted (`anthropic_backend_7a308a`).
+2. A spawned agent is not named on the credential store's `callable_by`, so a tier with `credentials` is refused its first turn and the agent never asks the model. The spawned tiers here carry no `credentials` (the record's own rule: no `credentials` is a keyless server, which the scripted plug is).
+3. The registry's `spawn` sends the task detached, so the lead's turn goes on at once; the plug's lanes (below) keep the order.
+4. `delete_agent` of a parent takes its children with it; a spawned agent carries `spawned_by`, which is how the tests see that none is left.
+
+### The scripted plug with several agents: lanes
+
+One plug serves every agent, and their requests race. A script turn may carry `"lane": "w1"`: it goes to the agent whose first message holds `[lane:w1]` (a spawn's `task`, or the `text` of a `send`); turns with no lane are lane `main`. Each lane plays its own turns in order. A turn may carry `"after": ["w1", "w2"]`: it is held until those lanes have been served all their turns, so one agent works after another (two commits never meet on the git lock) and a lead deletes workers only after they are done. `{{id:N}}` in a turn is the id in the Nth `<id>...</id>` of the request body (the reply of a `spawn`, in the order the agent saw it). A script with no lane anywhere is the old single ordered script. The selftest covers all three.
+
+The older tests below are still on `team.yaml`, `--dir` and the two-step boot (their move to blueprints is part of #219 and not done); `run.py --only-free` runs them too, and they fail until then.
+
 ## Tiers
 
 | costs | what answers | status |
@@ -43,7 +73,7 @@ Each run writes `cost.json` in its run folder (tokens, requests, model, the USD 
 
 - `run.py`: the launcher.
 - `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted` or `plug: anthropic`); a test never names a model, an endpoint or a key. A team.yaml takes `{{model_name}}` (the plug's model) and `{{model_endpoint}}`.
-- `helpers/`: `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start with extra args such as `--port`, stop, `send`, wiring, the page's chat grant), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks), `packs.py` (the packs tests: a plain team, a source worker, `pack` and `install` through `send`), `packs_evals.py` (the eval and verdict tests: build and pack a worker, drive `fantastic_team packs ...`, the pack agents' grants), `panel_dom.js` (the packs panel on a stub DOM against the live team; needs `node`), `packs_pub.py` (the pack publishing tests, #42: write pack folders through the `files` agent, pack, publish, trust a signer, the content hash), `registry.py` (`FakeRegistry`, an https server with a throwaway self-signed certificate).
+- `helpers/`: `cli.py` (the cli group: the fixture repo, fantastic's start, blueprint import, the shared script turns), `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start with fantastic's words such as `canvas --port N`, stop, `send`, `import_blueprint`, wiring, the page's chat grant), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks), `packs.py` (the packs tests: a plain team, a source worker, `pack` and `install` through `send`), `packs_evals.py` (the eval and verdict tests: build and pack a worker, drive `fantastic_team packs ...`, the pack agents' grants), `panel_dom.js` (the packs panel on a stub DOM against the live team; needs `node`), `packs_pub.py` (the pack publishing tests, #42: write pack folders through the `files` agent, pack, publish, trust a signer, the content hash), `registry.py` (`FakeRegistry`, an https server with a throwaway self-signed certificate).
 - `helpers/web.py`, `helpers/app.py`: HTTP and websocket client; the app shell and handle driver as processes.
 - `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`, `build`: `any` (default), `general` or `github`; `run.py --build` runs the tests for `any` and that build), `team.yaml`, `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code).
 - `ui/sidebar_opens_agent_full_screen` (free): drives the served team page with `helpers/page_driver.js` (the page's own script on a stub DOM, over the live `/team_ws/ws`); needs node >= 22, else it prints `SKIP` and passes.

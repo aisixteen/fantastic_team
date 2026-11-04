@@ -1,0 +1,77 @@
+# A lead, two sub-leads (s1, s2), and one worker under each (w1, w2): the whole tree in the blueprint.
+# Workers are keyless: the scripted server needs no key. Import wires both ends of every grant here.
+ports:
+  "@memory":
+    kind: memory
+  "@credentials":
+    kind: credentials
+  "@exec":
+    kind: exec
+agents:
+  - id: lead
+    handler_module: anthropic_backend.tools
+    model: scripted-model
+    endpoint: "{{model_endpoint}}"
+    credentials:
+      store: "@credentials"
+      ref: "model/{{model_host}}"
+    memory_store_id: "@memory"
+    can_call:
+      "$self": "*"
+      "@memory": "*"
+      s1: "*"
+      s2: "*"
+    callable_by:
+      "$self": "*"
+      "$parent": "*"
+    agents:
+      - id: s1
+        handler_module: anthropic_backend.tools
+        model: scripted-model
+        endpoint: "{{model_endpoint}}"
+        memory_store_id: "@memory"
+        can_call:
+          "$self": "*"
+          "@memory": "*"
+          w1: "*"
+        callable_by:
+          "$self": "*"
+          "$parent": "*"
+        agents:
+          - id: w1
+            handler_module: anthropic_backend.tools
+            model: scripted-model
+            endpoint: "{{model_endpoint}}"
+            memory_store_id: "@memory"
+            can_call:
+              "$self": "*"
+              "@memory": "*"
+              "@exec": "*"
+            callable_by:
+              "$self": "*"
+              "$parent": "*"
+      - id: s2
+        handler_module: anthropic_backend.tools
+        model: scripted-model
+        endpoint: "{{model_endpoint}}"
+        memory_store_id: "@memory"
+        can_call:
+          "$self": "*"
+          "@memory": "*"
+          w2: "*"
+        callable_by:
+          "$self": "*"
+          "$parent": "*"
+        agents:
+          - id: w2
+            handler_module: anthropic_backend.tools
+            model: scripted-model
+            endpoint: "{{model_endpoint}}"
+            memory_store_id: "@memory"
+            can_call:
+              "$self": "*"
+              "@memory": "*"
+              "@exec": "*"
+            callable_by:
+              "$self": "*"
+              "$parent": "*"

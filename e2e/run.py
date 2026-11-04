@@ -10,7 +10,8 @@
     python3 e2e/run.py --bin PATH ...         use a built binary instead of building
 
 A test is a folder `e2e/tests/<group>/<id>/` with `test.yaml` (`costs`, `timeout`,
-`plug`, `build`), `team.yaml`, a plug's input (`script.json` for the scripted plug) and
+`plug`, `build`), a blueprint folder (the `cli/` group; the older tests still hold a `team.yaml`
+that moves to one), a plug's input (`script.json` for the scripted plug) and
 `probe.py`, whose `run(ctx)` returns the exit code of its `Verdict`.
 A test whose plug has no key in the environment is skipped (`SKIP`), not failed.
 Runs live under `e2e/runs/<stamp>/<group>/<id>/` (gitignored: they hold model output).
@@ -43,6 +44,7 @@ from backends import PLUGS, available, provides_vars, scripted  # noqa: E402
 from backends import anthropic as relay_mod  # noqa: E402
 from helpers import forge as forge_mod  # noqa: E402
 from helpers import app as app_mod  # noqa: E402
+from helpers import cli as cli_mod  # noqa: E402
 from helpers import packs_pub as packs_mod  # noqa: E402
 from helpers import registry as registry_mod  # noqa: E402
 from helpers import run_flow  # noqa: E402
@@ -344,6 +346,8 @@ def selftest() -> int:
     selftest_scripted_thinking(v)
     selftest_web(v)
     selftest_team_args(v)
+    selftest_scripted_lanes(v)
+    selftest_cli_fixture(v)
     selftest_app_helpers(v)
     selftest_new_tests_collect(v)
     return v.finish()
@@ -674,31 +678,90 @@ def selftest_web(v: Verdict) -> None:
 
 
 def selftest_team_args(v: Verdict) -> None:
-    """Team.start passes extra_args after `--dir D`; boot's port goes to the final start only."""
+    """Team.start runs fantastic's own words in the run folder: `--headless` unless told, no `--dir`."""
     tmp = tempfile.mkdtemp(prefix="e2e-args-")
     t = None
     try:
         stub = os.path.join(tmp, "stub")
         with open(stub, "w") as f:
-            f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" > argv.txt\nmkdir -p .fantastic/cli\n"
+            f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" > argv.txt\npwd > cwd.txt\nmkdir -p .fantastic/cli\n"
                     ": > .fantastic/cli/mcp.sock\nexec sleep 20\n")
         os.chmod(stub, 0o755)
         t = team_mod.Team(stub, tmp, {})
-        t.start(wait_s=10, extra_args=["--port", 18080])
+        t.start(wait_s=10, extra_args=["canvas", "--port", 18080])
         argv = open(os.path.join(tmp, "argv.txt")).read().split("\n")[:-1]
-        v.check("Team.start puts extra_args after --dir", argv == ["--dir", tmp, "--port", "18080"], str(argv))
+        v.check("Team.start passes fantastic's words as they are", argv == ["canvas", "--port", "18080"], str(argv))
         v.check("Team.port is the port of the start", t.port == 18080)
+        v.check("it runs in the run folder (fantastic has no --dir)",
+                os.path.realpath(open(os.path.join(tmp, "cwd.txt")).read().strip()) == os.path.realpath(tmp))
         t.stop()
         os.remove(os.path.join(tmp, ".fantastic", "cli", "mcp.sock"))
         t.start(wait_s=10)
         argv = open(os.path.join(tmp, "argv.txt")).read().split("\n")[:-1]
-        v.check("Team.start with no extra_args is [--dir D] only, and clears the port",
-                argv == ["--dir", tmp] and t.port is None, str(argv))
-        v.check("Team.argv builds the same command line", t.argv(["--port", 7]) == [stub, "--dir", tmp, "--port", "7"])
+        v.check("Team.start with no extra_args is [--headless] only, and clears the port",
+                argv == ["--headless"] and t.port is None, str(argv))
+        v.check("Team.argv builds the same command line",
+                t.argv(["canvas", "--port", 7]) == [stub, "canvas", "--port", "7"] and "--dir" not in t.argv())
     finally:
         if t:
             t.stop()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def selftest_cli_fixture(v: Verdict) -> None:
+    """The cli group's fixture: unsolved at first, an edit alone is not solved, a commit is."""
+    tmp = tempfile.mkdtemp(prefix="e2e-fixture-")
+    try:
+        repo = cli_mod.make_fixture(tmp)
+        v.check("the fixture's test fails", not cli_mod.test_passes(repo))
+        v.check("the fixture is not solved", not cli_mod.solved(repo)[0])
+        for f in (("adder.py", "a - b", "a + b"), ("muler.py", "a + b", "a * b")):
+            p = os.path.join(repo, f[0])
+            with open(p) as fh:
+                text = fh.read().replace(f[1], f[2])
+            with open(p, "w") as fh:
+                fh.write(text)
+        v.check("the fix in the work tree, uncommitted, is not solved", not cli_mod.solved(repo)[0])
+        cli_mod.git(repo, "commit", "-q", "-a", "-m", "fix")
+        v.check("the fix committed is solved", cli_mod.solved(repo)[0], cli_mod.solved(repo)[1])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def selftest_scripted_lanes(v: Verdict) -> None:
+    """Lanes: each agent (by the marker in its first message) plays its own turns in order, and
+    `after` holds a turn until the named lanes have played out."""
+    script = [{"text": "main-1"}, {"text": "a-1", "lane": "a"}, {"text": "a-2", "lane": "a"},
+              {"text": "b-1", "lane": "b", "after": ["a"]}]
+    m = scripted.ScriptedModel(script).start()
+    try:
+        def ask(marker):
+            body = json.dumps({"messages": [{"role": "user", "content": f"go {marker}"}]}).encode()
+            req = urllib.request.Request(m.url + "/v1/messages", data=body, method="POST")
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return scripted.parse_stream(r.read())
+
+        got = {}
+        tb = threading.Thread(target=lambda: got.setdefault("b", ask("[lane:b]")))
+        tb.start()
+        time.sleep(0.5)
+        v.check("a turn with `after` is held while the lane it waits for has turns left", "b" not in got)
+        outs = [ask("[lane:a]"), ask("[lane:a]")]
+        tb.join(20)
+        v.check("lane a plays a-1, a-2 in order", outs == ["a-1", "a-2"], str(outs))
+        v.check("the held turn is answered once lane a is played out", got.get("b") == "b-1", str(got))
+        v.check("a request with no marker is the main lane", ask("plain") == "main-1")
+        v.check("every turn played, none past the end", m.consumed and m.request_lanes[-1] == "main",
+                str(m.request_lanes))
+        try:
+            ask("[lane:a]")
+        except urllib.error.HTTPError:
+            pass
+        v.check("{{id:N}} is the Nth <id> in the request body",
+                m.resolve_ids("x {{id:2}} {{id:3}}", "<id>a1</id> <id>b2</id>") == "x b2 {{id:3}}")
+        v.check("a lane asked past its end is an overrun, not another lane's turn", m.overrun == 1)
+    finally:
+        m.stop()
 
 
 def selftest_app_helpers(v: Verdict) -> None:

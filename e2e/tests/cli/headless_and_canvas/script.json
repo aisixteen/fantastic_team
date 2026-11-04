@@ -1,0 +1,23 @@
+[
+ {
+  "say": "Making a canvas.",
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "create_agent",
+    "args": {
+     "id": "sketch",
+     "parent_id": "lead_1",
+     "handler_module": "canvas_page.tools"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ }
+]
