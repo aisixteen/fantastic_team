@@ -2,6 +2,9 @@
 
 Issue #41: the web UI shows a pack's pass rate, time and cost.
 
-The packs panel (`crates/team/web/packs.html`) runs in `e2e/helpers/panel_dom.js`: node, a stub DOM, no dependencies, and a `fantastic.send` that runs `fantastic_team send` against the LIVE team (so the verbs, the evals and the scripted lead are real). The probe packs a worker with one eval, then presses the panel's Eval button and its install (Preview) button with the worker field set, and asserts that the result text of each holds `pass rate 100%`, a `time <n>s` and the `cost`, and that the install happened.
+The team page (`crates/team/web/team.html`) runs in `e2e/helpers/page_driver.js` (via `helpers/page.py`): node >= 22, a stub DOM and the page's own script `page.js`, bridged to the LIVE `/team_ws/ws` of a team the binary serves with `webui --port N` (`stock.serve_webui`), so the verbs, the socket leg's grants, the evals and the scripted lead are real. The old `packs.html` panel is gone (#212); its two buttons moved into the team page (#225):
 
-Needs `node`; without it the test prints `SKIP: node not found` and passes. No browser, WebKit or display is needed.
+- the Eval button of a listed pack's card (the probe packs a worker with one eval, publishes it so the page has a card, selects the card and presses Eval; the page asks for the pack folder and the worker): the page shows the reply as JSON in the packs note, and the test asserts it holds `pass_rate` 1, `total_time_s` and `total_cost`;
+- the Pack install form with a worker set: the evals run first and the page writes `Pass rate: 100%`, `Time: <n> s` and `Cost: ...`; the install did happen (the template is on disk).
+
+Needs node >= 22; without it the test prints `SKIP` and passes. No browser, WebKit or display is needed.

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 
 from . import forge as forge_mod, run_flow, team as T
 from .records import ROOT, create as _create, link, merge, update
@@ -322,6 +323,26 @@ def serve_team_page(team, port: int, workers=()) -> None:
     if r.get("status") != "completed" or (r.get("result") or {}).get("error"):
         raise RuntimeError(f"cannot boot the web host: {r}")
     team.port = port
+
+
+def serve_webui(team, port: int, wait_s: float = 30.0) -> None:
+    """Serve the team page from the binary: stop the headless team and start it again with the
+    `webui --port N` word (#224). The binary makes the `web` host, the page and the socket leg and
+    grants the leg what the page sends to, for the agents that exist when it starts (the dispatcher,
+    the cadencer, the user, the pack agents, the chat verbs of a group's workers). Make those agents
+    first; the folder keeps them across the restart."""
+    team.stop()
+    sock = os.path.join(team.dir, T.SOCK)
+    if os.path.exists(sock):
+        os.remove(sock)
+    team.start(extra_args=["webui", "--port", port])
+    end = time.time() + wait_s
+    status = 0
+    while time.time() < end and status != 200:
+        status, _ = T.http_get(port, "/team_page/file/index.html")
+        time.sleep(0.2)
+    if status != 200:
+        raise RuntimeError(f"the team page is not served on {port}: HTTP {status}\n{team.log()[-500:]}")
 
 
 def grant_chat(team, leg: str, workers, verbs=CHAT) -> None:

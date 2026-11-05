@@ -1,11 +1,11 @@
-"""The pack browser panel's contract. There is no browser or display here, so the panel's page
-is read as the team persisted it (an agent on the canvas), and the exact verbs and payloads the
-page sends are driven by hand: list, show, the install preview then approve, eval, and the
-browser view-model with and without opt-in."""
+"""The packs section of the team page and the verbs it sends. There is no browser or display here, so the
+page is read as the binary serves it (`webui`: the page script and the socket leg's grants), and the exact
+verbs and payloads the page and the pack agents answer are driven by hand: list, show, the install preview
+then approve, eval, and the browser view-model with and without opt-in."""
 
-import os
+import re
 
-from helpers import app, packs_pub as P, stock as S
+from helpers import packs_pub as P, stock as S, team as team_mod
 from helpers import run_flow
 from helpers.verdict import Verdict
 
@@ -20,22 +20,24 @@ def ids(t):
 
 def run(ctx):
     v = Verdict("packs/web_browser")
-    S.boot(ctx, forge=False, packs=True, port=app.free_port())
+    S.boot(ctx, forge=False, packs=True)
     t = ctx.team
+    port = team_mod.free_port()
+    S.serve_webui(t, port)  # `webui --port N`: the page, its socket leg and the leg's grants
 
-    # 1. the panel the team serves: an agent on the canvas, with the page and its two grants
-    path = os.path.join(ctx.run_dir, ".fantastic", "agents", "canvas_page", "agents", "packs_view",
-                        "agent.yaml")
-    text = open(path).read() if os.path.exists(path) else ""
-    page, _, grants = text.partition("\ncan_call:")
-    v.check("the packs_view panel is on the canvas", "id: packs_view" in text and "parent_id: canvas_page" in text)
-    v.check("its page sends pack_listing, install and eval",
-            "pack_listing" in page and "'install'" in page and "'eval'" in page and "'list'" in page)
-    can_call = [l.split(":")[0].strip() for l in grants.split("callable_by:")[0].splitlines()[1:] if l.strip()]
-    v.check("it may call the pack and pack_listing agents and nothing else",
-            sorted(can_call) == ["$self", "pack", "pack_listing"], str(can_call))
-    v.check("its page makes no request of its own (no fetch, no XMLHttpRequest)",
-            "fetch(" not in page and "XMLHttpRequest" not in page)
+    # 1. the section the team serves: the page's script and what its socket leg may call
+    status, _ = team_mod.http_get(port, "/team_page/file/index.html")
+    _, page = team_mod.http_get(port, "/team_page/file/page.js")
+    v.check("the team page is served", status == 200 and "function loadPacks(" in page, f"HTTP {status}")
+    v.check("its script sends browser, show, fetch to pack_listing and install, eval to pack",
+            all(x in page for x in ("askNode('pack_listing', { type: 'browser'", "type: 'show'", "type: 'fetch'",
+                                     "askNode('pack', payload)", "type: 'install'", "type: 'eval'")))
+    leg = t.agents().get("team_ws", {}).get("can_call", {})
+    v.check("its socket leg may call the pack agents with exactly the verbs the page sends",
+            sorted(leg.get("pack", [])) == ["eval", "install"]
+            and sorted(leg.get("pack_listing", [])) == ["browser", "fetch", "show"], str(leg))
+    v.check("the page makes no request of its own (no fetch call, no XMLHttpRequest)",
+            re.search(r"\bfetch\(", page) is None and "XMLHttpRequest" not in page)
 
     # publish notes 1.0.0 (a blueprint and an eval) and trust the signer
     P.make_worker(t, "notes", "1.0.0", [], extra_files={"blueprint/blueprint.yaml": BLUEPRINT})
@@ -45,7 +47,7 @@ def run(ctx):
     pub = P.publish(t, "packs/notes-1.0.0", URL.format(v="1.0.0"), ["read"])
     P.trust(t, pub["published"]["signer_key"])
 
-    # 2. list and show, as the page sends them
+    # 2. list and show (the page sends show; list is the agent's own verb)
     lst = P.listing(t, "list", query="")
     v.check("list shows notes", [p["name"] for p in lst.get("packs", [])] == ["notes"], str(lst))
     v.check("list with a query matches case-insensitively",
@@ -57,7 +59,7 @@ def run(ctx):
             show.get("ports") == [] and show.get("grants") == ["read"] and "price" in show
             and show.get("install_decision") == {"allow": True}, str(show))
 
-    # 3. the install, in the panel's two steps
+    # 3. the install, in two steps (the page's form sends the first payload; the second is the operator's approval)
     before = ids(t)
     payload = {"type": "install", "pack": "packs/notes-1.0.0", "into": "templates",
                "bindings": {}, "parent_id": ctx.lead}
@@ -90,7 +92,7 @@ def run(ctx):
             == pub2["published"]["hash"] and diff.get("added_ports") == ["@connector:github"]
             and diff.get("added_grants") == ["write"] and "note" not in on, str(on))
 
-    # 5. eval, as the page sends it: the lead answers from the scripted model
+    # 5. eval, as the page's Eval button sends it: the lead answers from the scripted model
     served = ctx.model.served
     P.make_worker(t, "checker", "1.0.0", [], extra_files={"evals/one.yaml": EVAL})
     P.pack(t, "workers/checker", "packs/checker-1.0.0")
