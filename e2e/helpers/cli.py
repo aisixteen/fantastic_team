@@ -207,7 +207,7 @@ def model_credentials(ctx) -> dict | None:
 
 def make_registry(ctx, total: int, parent: str = LEAD, roles: str | None = None,
                   credentials: dict | None = None) -> str:
-    """The roles registry `roles` (fantastic's `agentic_resources`) under `parent`: one tier
+    """The roles registry `roles` (`agentic_resources`) under `parent`: one tier
     `small` (the plug's model), the role cards of `roles` (a folder; default the test's own
     `roles/`) copied next to the kernel (where `role_dirs: [roles]` reads them), `limits.total`.
     The lead may call it. `credentials` is the tier's own, for a plug whose workers need a key

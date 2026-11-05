@@ -1,6 +1,6 @@
 //! The role cards of the coder team, as files in `roles/` and embedded here.
 //! A card is a `---` header (name, purpose, tier, grants) and the directive text;
-//! fantastic's roles registry (`agentic_resources`) reads them from the folders
+//! the roles registry (`agentic_resources`, crates/agentic_resources) reads them from the folders
 //! the registry record's `role_dirs` names. A card names a tier KEY (a key of the
 //! registry record's `tiers`), never
 //! a provider or a model; the text names none either.
@@ -15,8 +15,8 @@ pub const ISSUE_KEEPER: &str = include_str!("../../../roles/issue_keeper.md");
 pub const ISSUE_WRITER: &str = include_str!("../../../roles/issue_writer.md");
 /// The spec-reviewer card (`roles/spec_reviewer.md`).
 pub const SPEC_REVIEWER: &str = include_str!("../../../roles/spec_reviewer.md");
-/// The coder project-lead card (`roles/project_lead.md`); it replaces fantastic's
-/// generic card of the same name.
+/// The coder project-lead card (`roles/project_lead.md`); the registry ships no
+/// built-in card, so this is the only `project_lead`.
 pub const PROJECT_LEAD: &str = include_str!("../../../roles/project_lead.md");
 
 /// Every card, by file name.
@@ -43,7 +43,7 @@ pub const CODER_ROLES: [&str; 6] = [
 #[cfg(test)]
 fn card_grants_tasks(file: &str) -> bool {
     let text = ALL.iter().find(|(f, _)| *f == file).unwrap().1;
-    fantastic_agentic_resources::cards::parse_card(text, file)
+    team_agentic_resources::cards::parse_card(text, file)
         .unwrap()
         .grants
         .contains_key("tasks")
@@ -52,8 +52,8 @@ fn card_grants_tasks(file: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fantastic_agentic_resources::cards::{self, parse_card};
     use std::collections::BTreeSet;
+    use team_agentic_resources::cards::{self, parse_card};
 
     fn card(file: &str) -> cards::Card {
         let text = ALL.iter().find(|(f, _)| *f == file).unwrap().1;

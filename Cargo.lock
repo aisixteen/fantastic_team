@@ -1302,18 +1302,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fantastic-agentic-resources"
-version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#5e74eb5e7888c8d0f85d0b4e08056c99cbf2e7c0"
-dependencies = [
- "async-trait",
- "fantastic-bundle",
- "fantastic-kernel",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "fantastic-ai-core"
 version = "0.1.0"
 source = "git+https://github.com/aisixteen/fantastic?branch=main#5e74eb5e7888c8d0f85d0b4e08056c99cbf2e7c0"
@@ -1623,24 +1611,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fantastic-task-registry"
-version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#5e74eb5e7888c8d0f85d0b4e08056c99cbf2e7c0"
-dependencies = [
- "async-trait",
- "fantastic-bundle",
- "fantastic-kernel",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "fantastic-team"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "ed25519-dalek",
- "fantastic-agentic-resources",
  "fantastic-anthropic-backend",
  "fantastic-bundle",
  "fantastic-core",
@@ -1650,7 +1625,6 @@ dependencies = [
  "fantastic-kernel",
  "fantastic-ram-store",
  "fantastic-sqlite-store",
- "fantastic-task-registry",
  "fantastic-team-secrets-guard",
  "fantastic-tui",
  "fantastic-user",
@@ -1665,8 +1639,10 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "team-agentic-resources",
  "team-git-connector",
  "team-github-connector",
+ "team-task-registry",
  "tempfile",
  "tokio",
  "wiremock",
@@ -5703,6 +5679,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "team-agentic-resources"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-core",
+ "fantastic-kernel",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "team-git-connector"
 version = "0.1.0"
 dependencies = [
@@ -5737,6 +5726,20 @@ dependencies = [
  "tempfile",
  "tokio",
  "wiremock",
+]
+
+[[package]]
+name = "team-task-registry"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-core",
+ "fantastic-kernel",
+ "fantastic-ram-store",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
