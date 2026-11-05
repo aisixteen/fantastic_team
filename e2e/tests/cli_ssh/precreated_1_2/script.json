@@ -1,0 +1,527 @@
+[
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "start",
+    "args": {
+     "command": "ssh",
+     "args": [
+      "-p",
+      "{{ssh_port}}",
+      "-i",
+      "{{ssh_key}}",
+      "-o",
+      "IdentitiesOnly=yes",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=no",
+      "-o",
+      "UserKnownHostsFile=/dev/null",
+      "-o",
+      "LogLevel=ERROR",
+      "-o",
+      "ConnectTimeout=10",
+      "-o",
+      "ExitOnForwardFailure=yes",
+      "-L",
+      "{{tunnel_port}}:127.0.0.1:{{tunnel_port}}",
+      "team@127.0.0.1",
+      "mkdir -p w && cd w && echo $$ > team.pid && exec fantastic_team --headless >> team.log 2>&1"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "ssh",
+     "args": [
+      "-p",
+      "{{ssh_port}}",
+      "-i",
+      "{{ssh_key}}",
+      "-o",
+      "IdentitiesOnly=yes",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=no",
+      "-o",
+      "UserKnownHostsFile=/dev/null",
+      "-o",
+      "LogLevel=ERROR",
+      "-o",
+      "ConnectTimeout=10",
+      "team@127.0.0.1",
+      "for i in $(seq 150); do [ -S w/.fantastic/cli/mcp.sock ] && break; sleep 0.2; done && cd w && [ -S .fantastic/cli/mcp.sock ] && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"create_agent\",\"id\":\"web\",\"parent_id\":\"user\",\"handler_module\":\"web.tools\",\"port\":{{tunnel_port}}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"create_agent\",\"id\":\"remote_ws\",\"parent_id\":\"web\",\"handler_module\":\"web_ws.tools\",\"ingress_rule\":\"allow_all_ingress\",\"callable_by\":{\"$self\":\"*\",\"web\":[\"get_routes\"]},\"can_call\":{\"$self\":\"*\",\"user\":[\"forward\"]}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"update_agent\",\"id\":\"web\",\"can_call\":{\"$self\":\"*\",\"remote_ws\":[\"get_routes\"]}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"list_agents\"}}' | python3 -c 'import json,sys; a={x[\"id\"]:x for x in json.load(sys.stdin)[\"result\"][\"agents\"]}; cb=a[\"user\"].get(\"callable_by\") or {}; cb[\"remote_ws\"]=[\"forward\",\"send\"]; sys.stdout.write(json.dumps({\"target\":\"kernel\",\"payload\":{\"type\":\"update_agent\",\"id\":\"user\",\"callable_by\":cb}}))' | xargs -0 fantastic_team send > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"id\":\"worker_exec\",\"parent_id\":\"user\",\"handler_module\":\"exec_bridge.tools\",\"ingress_rule\":\"allow_all_ingress\",\"cwd\":\"/home/team/w/repo\",\"allowed\":[\".*\"],\"inherit_env\":[\"PATH\",\"LANG\",\"HOME\"],\"env\":{\"GIT_CONFIG_NOSYSTEM\":\"1\",\"GIT_TERMINAL_PROMPT\":\"0\",\"PYTHONDONTWRITEBYTECODE\":\"1\"},\"type\":\"create_agent\"}}' > /dev/null && fantastic_team send '{\"target\":\"web\",\"payload\":{\"type\":\"boot\"}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"list_agents\"}}' | python3 -c 'import json,sys; print(\" \".join(sorted(a[\"id\"] for a in json.load(sys.stdin)[\"result\"][\"agents\"])))'"
+     ],
+     "wait_s": 60
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "ssh",
+     "args": [
+      "-p",
+      "{{ssh_port}}",
+      "-i",
+      "{{ssh_key}}",
+      "-o",
+      "IdentitiesOnly=yes",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=no",
+      "-o",
+      "UserKnownHostsFile=/dev/null",
+      "-o",
+      "LogLevel=ERROR",
+      "-o",
+      "ConnectTimeout=10",
+      "team@127.0.0.1",
+      "cd w && git clone -q {{remote_git_url}} repo && git -C repo log --oneline"
+     ],
+     "wait_s": 60
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "create_agent",
+    "args": {
+     "id": "remote",
+     "parent_id": "user",
+     "handler_module": "ws_bridge.tools",
+     "ingress_rule": "allow_all_ingress",
+     "transport": "ws",
+     "host": "127.0.0.1",
+     "port": "{{tunnel_port}}",
+     "peer_id": "remote_ws"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "remote",
+    "type": "forward",
+    "args": {
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "kernel",
+      "payload": {
+       "type": "create_agent",
+       "id": "w2",
+       "parent_id": "user",
+       "handler_module": "anthropic_backend.tools",
+       "model": "scripted-model",
+       "endpoint": "{{remote_endpoint}}",
+       "memory_store_id": "memory"
+      }
+     },
+     "forward_timeout": 120
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "w1",
+    "type": "send",
+    "args": {
+     "text": "[lane:w1] Fix adder.py, commit and push."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "remote",
+    "type": "forward",
+    "args": {
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "w2",
+      "payload": {
+       "type": "send",
+       "text": "[lane:w2] Pull, fix muler.py, commit and push."
+      }
+     },
+     "forward_timeout": 120
+    }
+   }
+  ],
+  "after": [
+   "w1"
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "remote",
+    "type": "forward",
+    "args": {
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "w2",
+      "payload": {
+       "type": "history"
+      }
+     },
+     "forward_timeout": 120
+    }
+   }
+  ],
+  "after": [
+   "w2"
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "remote",
+    "type": "forward",
+    "args": {
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "kernel",
+      "payload": {
+       "type": "delete_agent",
+       "id": "w2"
+      }
+     },
+     "forward_timeout": 120
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "remote"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "ssh",
+     "args": [
+      "-p",
+      "{{ssh_port}}",
+      "-i",
+      "{{ssh_key}}",
+      "-o",
+      "IdentitiesOnly=yes",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=no",
+      "-o",
+      "UserKnownHostsFile=/dev/null",
+      "-o",
+      "LogLevel=ERROR",
+      "-o",
+      "ConnectTimeout=10",
+      "team@127.0.0.1",
+      "cd w && p=$(cat team.pid) && kill -TERM $p && for i in $(seq 150); do kill -0 $p 2>/dev/null || exit 0; sleep 0.2; done; exit 1"
+     ],
+     "wait_s": 60
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "await"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "pull",
+      "-q",
+      "--ff-only"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "-c",
+      "import pathlib; p = pathlib.Path('adder.py'); p.write_text(p.read_text().replace('a - b', 'a + b'))"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "-c",
+      "user.name=Worker",
+      "-c",
+      "user.email=worker@example.invalid",
+      "commit",
+      "-q",
+      "-a",
+      "-m",
+      "Fix add"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "push",
+      "-q",
+      "origin",
+      "HEAD:main"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "lane": "w1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "pull",
+      "-q",
+      "--ff-only"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w2"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w2"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "-c",
+      "import pathlib; p = pathlib.Path('muler.py'); p.write_text(p.read_text().replace('a + b', 'a * b'))"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w2"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w2"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "-c",
+      "user.name=Worker",
+      "-c",
+      "user.email=worker@example.invalid",
+      "commit",
+      "-q",
+      "-a",
+      "-m",
+      "Fix mul"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w2"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "push",
+      "-q",
+      "origin",
+      "HEAD:main"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "w2"
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "lane": "w2"
+ }
+]

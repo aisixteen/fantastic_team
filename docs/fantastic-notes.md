@@ -83,6 +83,10 @@ Installing stays `pack_bundle install` from a local pack directory.
 
 Not built yet: setting `trusted_keys` for the listing (`tree.rs` leaves it unset, so a real team skips every signed entry), a key-generation command and key rotation, a richer automated review step (publish runs the pack scan only), report and takedown (a signed re-publish with `revoked: true`, then a `revoke` verb), fetching index and pack files by url, the aisixteen.com listing site and the in-app browser, evals, measured record and price inside the signed payload (the payload does not cover them, so they are not trusted), install from the registry by hash (resolve, fetch, then `pack_bundle::install`).
 
+## Pin at `5e74eb5`
+
+`Cargo.lock` now pins fantastic `5e74eb5` (#469: the CLI host registers `ws_bridge.tools` and `relay_connector.tools`, so a kernel bridges to another kernel; it brings #467's reach fix `815b0c9`, a new agent's grants written before the call that made it returns). Team change: none in code; the ssh twins of the cli e2e scenarios use the bridge (#242, `e2e/helpers/ssh_twins.py`).
+
 ## Pin at `8eaa08a`
 
 `Cargo.lock` now pins fantastic `8eaa08a` (#453: declared TUI views, `view.tui` on a record). Team declares `view.tui` for its agent kinds in `declared_views.rs` (#207); fantastic's panel parser is private, so team validates the shape itself.

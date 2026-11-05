@@ -51,7 +51,9 @@ from helpers import cli as cli_mod  # noqa: E402
 from helpers import fake_vllm  # noqa: E402
 from helpers import packs_pub as packs_mod  # noqa: E402
 from helpers import podman_remote  # noqa: E402
+from helpers import gpu_ssh  # noqa: E402
 from helpers import registry as registry_mod  # noqa: E402
+from helpers import ssh_twins  # noqa: E402
 from helpers import run_flow  # noqa: E402
 from helpers import stock as stock_mod  # noqa: E402
 from helpers import team as team_mod  # noqa: E402
@@ -62,8 +64,11 @@ from helpers.verdict import Skip, Verdict  # noqa: E402
 KEY_SHAPE = re.compile("sk-" "ant-" r"[A-Za-z0-9_\-]{20,}")
 BUILD = "general"  # set by --build; the worker's exec record follows it (helpers/stock.py)
 TURNS_TESTS = ["turns/task/worker_finishes_small_spec", "turns/secrets/real_key_stays_in_x_api_key"]
-GPU_TESTS = [f"gpu_cli/{n}" for n in ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tree",
-                                      "leads_spawn_leads", "headless_and_canvas")]
+CLI_SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tree", "leads_spawn_leads",
+                 "headless_and_canvas")
+# the gpu tier: the six cli scenarios (#237) and their ssh twins (#242)
+GPU_TESTS = [f"{g}/{n}" for g in ("gpu_cli", "gpu_cli_ssh") for n in CLI_SCENARIOS]
+SSH_TESTS = [f"cli_ssh/{n}" for n in CLI_SCENARIOS]
 
 
 # --- tests -------------------------------------------------------------------
@@ -360,6 +365,7 @@ def selftest() -> int:
     selftest_new_tests_collect(v)
     selftest_no_blueprints(v)
     selftest_podman_remote(v)
+    selftest_ssh_twins(v)
     return v.finish()
 
 
@@ -686,7 +692,7 @@ def selftest_gpu(v: Verdict) -> None:
     bad = []
     for n in GPU_TESTS:
         t = by.get(n)
-        twin = by.get(n.replace("gpu_cli/", "cli/"))
+        twin = by.get(n.replace("gpu_cli_ssh/", "cli_ssh/").replace("gpu_cli/", "cli/"))
         files = t and all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "probe.py"))
         if not (t and twin and files and t["costs"] == "gpu" and t["plug"] == "vllm" and t["build"] == "any"
                 and not os.path.exists(os.path.join(t["dir"], "script.json"))):
@@ -1257,6 +1263,104 @@ def selftest_podman_remote(v: Verdict) -> None:
             r.stop()
             v.check("stop after teardown removes nothing twice", open(log).read() == "")
     finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def selftest_ssh_twins(v: Verdict) -> None:
+    """The ssh twins (#242) without Podman: the scripts match their builders, every placeholder is
+    bound, the plug's late binding and minted ids, the role cards' quoting, the gpu twins' plain-words
+    wiring, and the fixture published to a git server the local clone pushes to with no token in
+    a command."""
+    T = ssh_twins
+    v.check("each cli_ssh script.json is what helpers/ssh_twins.py writes (python3 -m helpers.ssh_twins --write)",
+            T.stale_scripts() == [], str(T.stale_scripts()))
+    by = {t["name"]: t for t in discover()}
+    bad = []
+    for n in SSH_TESTS:
+        t = by.get(n)
+        ok = t and collect_probe(t["dir"])[0] and t["costs"] == "free" and t["plug"] == "scripted" and all(
+            os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py"))
+        if not ok:
+            bad.append(n)
+    v.check("the six cli_ssh twins exist, collect, and are free on the scripted plug", not bad, str(bad))
+    values = {"ssh_port": "2200", "ssh_key": "/k/id", "tunnel_port": "4100",
+              "remote_endpoint": "http://host.containers.internal:9/v1/messages",
+              "remote_git_url": "http://host.containers.internal:8/acme/widgets.git"}
+    left = []
+    for n in CLI_SCENARIOS:
+        m = scripted.ScriptedModel(T.SCRIPTS[n]())
+        try:
+            m.bind(**values)
+        except ValueError as e:
+            left.append(f"{n}: {e}")
+    v.check("every placeholder of the six scripts is one the box binds", not left, str(left))
+    m = scripted.ScriptedModel([{"text": "{{a}} {{b}}"}], {"a": "1"})
+    try:
+        m.bind()
+        unbound = False
+    except ValueError:
+        unbound = True
+    v.check("a placeholder left open at load stays as written, and bind refuses one still open",
+            m.turns == ["1 {{b}}"] and unbound, str(m.turns))
+    v.check("bind fills it", m.bind(b="2").turns == ["1 2"], str(m.turns))
+    v.check("{{minted:N}} is the Nth distinct minted id, other <id> tags skipped",
+            m.resolve_ids("{{minted:1}} {{minted:2}}",
+                          "<id>w2</id><id>anthropic_backend_0a1b2c</id><id>roles</id><id>anthropic_backend_0a1b2c</id>"
+                          "<id>129</id><id>anthropic_backend_ffee00</id>") == "anthropic_backend_0a1b2c anthropic_backend_ffee00")
+    try:
+        T.setup_command({"x.md": "it's"})
+        refused = False
+    except ValueError:
+        refused = True
+    v.check("a role card with a single quote is refused (it rides in a quoted shell word)", refused)
+    v.check("the remote kernel starts in the tunnel's ssh session, its pid kept, the roles bundle when asked",
+            T.kernel_start_command(True) == "mkdir -p w && cd w && echo $$ > team.pid && "
+            "FANTASTIC_AGENTIC_RESOURCES=1 exec fantastic_team --headless >> team.log 2>&1")
+    tmp = tempfile.mkdtemp(prefix="e2e-ssh-twins-")
+    forge = None
+    try:
+        bare = forge_mod.make_bare(os.path.join(tmp, "forge"))
+        forge_mod.seed_clone(bare, os.path.join(tmp, "seed"))
+        forge = forge_mod.Forge(os.path.join(tmp, "forge")).start()
+
+        class Plug:
+            keyed = False
+            endpoint = "http://127.0.0.1:9/v1"
+
+            def ai_record(self):
+                return {"handler_module": "vllm_backend.tools", "model": "m", "endpoint": self.endpoint}
+
+        class Ctx:
+            pass
+        ctx = Ctx()
+        ctx.run_dir = ctx.work = tmp
+        ctx.forge, ctx.model = forge, Plug()
+        os.makedirs(os.path.join(tmp, "sandbox"))
+        ctx.repo = cli_mod.make_fixture(tmp)
+        box = T.Box(ctx)
+        box.publish()
+        top = subprocess.run(["git", "-C", bare, "log", "--format=%s", "main"], capture_output=True, text=True).stdout
+        v.check("publish: the fixture is the git server's main", top.split("\n")[0] == "calc with two bugs", top)
+        with open(os.path.join(ctx.repo, "adder.py"), "a") as f:
+            f.write("# pushed\n")
+        env = dict(os.environ, HOME=os.path.join(tmp, "sandbox"), GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0")
+        git = lambda *a: subprocess.run(["git", "-c", "user.name=W", "-c", "user.email=w@example.invalid", *a],
+                                        cwd=ctx.repo, env=env, capture_output=True, text=True)
+        git("commit", "-q", "-a", "-m", "pushed")
+        r = git("push", "-q", "origin", "HEAD:main")
+        top = subprocess.run(["git", "-C", bare, "log", "--format=%s", "-1", "main"], capture_output=True, text=True).stdout
+        v.check("the local clone pushes over HTTP with the sandbox's git config (no token in the command)",
+                r.returncode == 0 and top.strip() == "pushed" and forge.token not in git("remote", "-v").stdout,
+                r.stderr[-300:])
+        box.remote.port, box.remote.key = 2200, "/k/id"
+        text = gpu_ssh.wiring(ctx, box, {"worker.md": "card"})
+        v.check("the gpu twins' plain words name the box (port, key, login), the tunnel and the git server via the gateway",
+                all(x in text for x in ("2200", "/k/id", "team@127.0.0.1", f"{box.tunnel_port}:127.0.0.1:{box.tunnel_port}",
+                                         "host.containers.internal", T.BRIDGE, T.LEG, "worker.md")), text[:300])
+        v.check("and never the git server's token", forge.token not in text)
+    finally:
+        if forge:
+            forge.stop()
         shutil.rmtree(tmp, ignore_errors=True)
 
 
