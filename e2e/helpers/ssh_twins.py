@@ -636,14 +636,6 @@ def hand(ctx, lead: str, text: str, upto: int | None = None, wait_s: float = 240
     return r.get("status") == "completed" and ctx.model.served >= want
 
 
-if __name__ == "__main__":
-    if sys.argv[1:] == ["--write"]:
-        write_scripts()
-        print("wrote " + ", ".join(script_path(n) for n in SCENARIOS))
-        sys.exit(0)
-    sys.exit("usage (from e2e/): python3 -m helpers.ssh_twins --write")
-
-
 def came_back(ctx, lane: str | None, evidence: str) -> bool:
     """True when a request of the lead (the main lane) ends with a reply of the bridge's `forward`
     holding the remote agent's conversation (its task, `[lane:L]`) or, `lane` None, the box's own
@@ -679,3 +671,48 @@ def forward_replies(ctx) -> list[str]:
         if at == "main" and f"· {BRIDGE} forward ·" in text:
             out.append(text)
     return out
+
+
+# ---- the canvas twins: the remote agents, listed through a local socket ------------------
+
+# What a local page asks over its socket: `user.forward` to the bridge, which asks the remote
+# `user` to forward `list_agents` to the remote kernel.
+ASK = {"type": "forward", "target": "user", "payload": {"type": "forward", "target": "kernel",
+                                                         "payload": {"type": "list_agents"}}}
+
+
+def remote_agents(reply) -> dict:
+    """The remote kernel's records out of a forwarded `list_agents` (the reply may be wrapped)."""
+    r = reply or {}
+    for _ in range(3):
+        if isinstance(r, dict) and "agents" in r:
+            return {a.get("id"): a for a in r["agents"]}
+        r = r.get("result") if isinstance(r, dict) else None
+    return {}
+
+
+def ask_through(port, path: str = "/team_ws/ws") -> dict:
+    """`ASK` over a local page's socket (`path`: its leg's, the team page's by default)."""
+    try:
+        ws = web.WsClient(int(port), path=path)
+        reply = ws.call("user", {"type": "forward", "target": BRIDGE, "payload": ASK}, timeout=60)
+        ws.close()
+        return reply
+    except OSError as e:
+        return {"error": str(e)}
+
+
+def shows_canvas(v, label: str, reply) -> None:
+    agents = remote_agents(reply)
+    sk = agents.get("sketch") or {}
+    v.check(f"{label} lists the remote agents through the bridge: rlead and the canvas it made",
+            "rlead" in agents and sk.get("handler_module") == "canvas_page.tools" and sk.get("parent_id") == "rlead",
+            str(sorted(agents))[:300] if agents else str(reply)[:400])
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--write"]:
+        write_scripts()
+        print("wrote " + ", ".join(script_path(n) for n in SCENARIOS))
+        sys.exit(0)
+    sys.exit("usage (from e2e/): python3 -m helpers.ssh_twins --write")

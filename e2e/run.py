@@ -1316,6 +1316,25 @@ def selftest_ssh_twins(v: Verdict) -> None:
     v.check("the remote kernel starts in the tunnel's ssh session, its pid kept, the roles bundle when asked",
             T.kernel_start_command(True) == "mkdir -p w && cd w && echo $$ > team.pid && "
             "FANTASTIC_AGENTIC_RESOURCES=1 exec fantastic_team --headless >> team.log 2>&1")
+    from helpers import gpu_cli as gpu_mod
+
+    class History:
+        """A lead whose last row is an assistant `done` (the grep finds it)."""
+        rows = [{"id": 1, "kind": "user"}, {"id": 2, "kind": "assistant"}]
+
+        def send(self, _id, payload, timeout=60):
+            if payload["type"] == "history":
+                return {"result": {"rows": list(self.rows), "next": None}}
+            return {"result": {"total": 1}}
+    lead = History()
+    watch = gpu_mod.Lead(lead, "lead")
+    watch.refresh()
+    watch.since, watch.rows, watch._after = len(watch.rows), [], None
+    early = watch.said_done()
+    watch.rows, watch._after = [], None
+    lead.rows = lead.rows + [{"id": 3, "kind": "user"}, {"id": 4, "kind": "assistant"}]
+    v.check("a lead told twice: its first `done` does not count, a `done` after the new message does (gpu_ssh.play)",
+            not early and watch.said_done(), f"early {early}")
     tmp = tempfile.mkdtemp(prefix="e2e-ssh-twins-")
     forge = None
     try:

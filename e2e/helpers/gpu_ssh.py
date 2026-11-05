@@ -108,6 +108,14 @@ TASKS = {
         "(do not do step 6 yet) and end your run with the `done` call."),
 }
 
+PAUSE = ("Delete the bridge and stop the remote kernel as step 6 says, but keep `sketch` and `rlead` on it; "
+         "end your run with the `done` call.")
+
+RESTART = ("Your kernel was restarted. Start the remote again: step (1) again (the tunnel and the remote kernel, "
+           "in one job); then, in the box, once `~/w/.fantastic/cli/mcp.sock` exists, send `{\"type\":\"boot\"}` "
+           f"to `{T.WEB}` (its record is kept, not booted); then step (4), the bridge, again. Make nothing else; "
+           "end your run with the `done` call.")
+
 CLEANUP = ("Now clean up as step 6 says: delete `sketch` and `rlead` on the remote kernel through the bridge, "
            "delete the bridge, stop the remote kernel, pull your clone.")
 
@@ -115,6 +123,8 @@ CLEANUP = ("Now clean up as step 6 says: delete `sketch` and `rlead` on the remo
 def play(ctx, v, lead: str, text: str, label: str = "") -> gpu.Lead:
     """Hand `lead` its task in plain words and wait for its `done` (as `gpu_cli.play`)."""
     watch = gpu.Lead(ctx.team, lead)
+    watch.refresh()  # a lead told before: its earlier `done` does not count
+    watch.since = len(watch.rows)
     started = time.time()
     gpu.hand_task(ctx, lead, text + gpu.END)
     how = gpu.wait_done(ctx, watch, max(60.0, ctx.test["timeout"] - gpu.CHECK_MARGIN_S))

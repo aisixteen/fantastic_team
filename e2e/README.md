@@ -137,9 +137,9 @@ Facts found while building them (fantastic at 5e74eb5):
 1. `job_done` of a `start`ed job wakes its starter as a turn of its own. The remote kernel's SIGTERM therefore brings two messages in either order (the stop's reply, the tunnel's `job_done`); the script answers the first with `await`. An open forwarded channel (the bridge's socket) keeps the tunnel's ssh session up after the remote kernel ends, so the bridge is deleted (or its kernel stopped) before the stop.
 2. The `web` host is not booted when a kernel loads its record (`--headless`): after a restart of the remote kernel the lead sends `boot` to `web` again.
 3. An AI agent whose kernel restarts asks the model once on its next message to rebuild its working context (ai-core's recall); the canvas twin's script answers that request.
-4. A spawned agent's conversation is read by its spawner only: `agentic_resources` writes the spawner `pause`/`resume`/`stop` on it, and that write and the reach's `*` race (seen both ways for `history` through `user`). The spawn twins read the box clone's last commit instead.
+4. A spawned agent's conversation is read by its spawner only: `agentic_resources` writes the spawner `pause`/`resume`/`stop` on it, and that write replaces the reach's `*` when it lands second (fantastic `src/lib/rust/crates/bundles/fantastic-agentic-resources/src/lib.rs:684`, `m.insert`; seen both ways for `history` through `user`). The spawn twins read the box clone's last commit instead.
 5. `webui` after `canvas` in one folder: both legs are recorded and mount the one `/{host}/ws` route, the second wins (`crates/team/src/webui.rs:10-12`), so `/team_ws/ws` is answered by `canvas_ws` there; the canvas twin calls `user.forward` on it, as the canvas page does.
-6. The gpu twins: the vllm plug polls the local team's agents only, so the remote agents' requests are not in `cost.json` nor under `E2E_MAX_REQUESTS`; a keyed server is a `SKIP` (the box holds no key). `gpu_cli_ssh/single_lead` plays part A only; `gpu_cli_ssh/headless_and_canvas` the canvas half.
+6. The gpu twins: the vllm plug polls the local team's agents only, so the remote agents' requests are not in `cost.json` nor under `E2E_MAX_REQUESTS`; a keyed server is a `SKIP` (the box holds no key).
 
 ## The stock team of the older tests (`helpers/stock.py`)
 

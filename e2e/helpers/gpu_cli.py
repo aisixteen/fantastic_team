@@ -70,6 +70,7 @@ class Lead:
         self.team, self.id = team, lead
         self.rows: list[dict] = []
         self._after = None
+        self.since = 0  # `done` counts only in a row past this many (a lead told twice, #242)
 
     def refresh(self) -> None:
         while True:
@@ -86,7 +87,7 @@ class Lead:
     def said_done(self) -> bool:
         try:
             self.refresh()
-            last = self.rows[-1] if self.rows else None
+            last = self.rows[-1] if len(self.rows) > self.since else None
             if not last or last.get("kind") != "assistant":
                 return False
             hit = self.team.send(self.id, {"type": "grep", "query": DONE_CALL, "ids": [last["id"]]},

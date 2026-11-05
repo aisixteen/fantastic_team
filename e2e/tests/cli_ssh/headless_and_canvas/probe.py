@@ -12,30 +12,8 @@ import os
 import subprocess
 import time
 
-from helpers import cli, cli_scenarios as S, podman_remote, ssh_twins as T, team as team_mod, web
+from helpers import cli, cli_scenarios as S, podman_remote, ssh_twins as T, team as team_mod
 from helpers.verdict import Skip, Verdict
-
-ASK = {"type": "forward", "target": "user", "payload": {"type": "forward", "target": "kernel",
-                                                         "payload": {"type": "list_agents"}}}
-
-
-def remote_agents(reply) -> dict:
-    """The remote kernel's records out of a forwarded `list_agents` (the reply may be wrapped)."""
-    r = reply or {}
-    for _ in range(3):
-        if isinstance(r, dict) and "agents" in r:
-            return {a.get("id"): a for a in r["agents"]}
-        r = r.get("result") if isinstance(r, dict) else None
-    return {}
-
-
-def shows_canvas(v, label: str, reply) -> None:
-    agents = remote_agents(reply)
-    sk = agents.get("sketch") or {}
-    v.check(f"{label} lists the remote agents through the bridge: rlead and the canvas it made",
-            "rlead" in agents and sk.get("handler_module") == "canvas_page.tools" and sk.get("parent_id") == "rlead",
-            str(sorted(agents))[:300] if agents else str(reply)[:400])
-
 
 def fresh(ctx) -> None:
     sock = os.path.join(ctx.work, team_mod.SOCK)
@@ -71,13 +49,8 @@ def run(ctx):
         ports = cli.listeners(team.proc.pid)
         v.check("the local kernel listens on the canvas port and the tunnel's local end only (the bridge dials out)",
                 ports == {str(port), str(box.tunnel_port)}, str(ports))
-        try:
-            ws = web.WsClient(int(port), path="/canvas_ws/ws")
-            reply = ws.call("user", {"type": "forward", "target": T.BRIDGE, "payload": ASK}, timeout=60)
-            ws.close()
-        except OSError as e:
-            reply = {"error": str(e)}
-        shows_canvas(v, "the local canvas's socket (canvas_ws -> user.forward -> the bridge)", reply)
+        T.shows_canvas(v, "the local canvas's socket (canvas_ws -> user.forward -> the bridge)",
+                       T.ask_through(port, "/canvas_ws/ws"))
         v.check("1b: the lead deleted the bridge and stopped the remote kernel", T.hand(ctx, cli.LEAD, "Delete the bridge and stop the remote kernel for now.",
                                                               upto=one + lanes + pause), f"served {ctx.model.served}")
         team.stop()
@@ -89,13 +62,7 @@ def run(ctx):
         v.check("2: the lead started the remote again and made the bridge again",
                 T.hand(ctx, cli.LEAD, "Start the remote kernel again and make the bridge again.",
                        upto=one + lanes + pause + two), f"served {ctx.model.served}")
-        try:
-            ws = web.WsClient(int(wport))
-            reply = ws.call("user", {"type": "forward", "target": T.BRIDGE, "payload": ASK}, timeout=60)
-            ws.close()
-        except OSError as e:
-            reply = {"error": str(e)}
-        shows_canvas(v, "the team page's socket (/team_ws/ws -> user.forward -> the bridge)", reply)
+        T.shows_canvas(v, "the team page's socket (/team_ws/ws -> user.forward -> the bridge)", T.ask_through(wport))
         v.check("3: the lead deleted the remote agents, the bridge, and stopped the remote",
                 T.hand(ctx, cli.LEAD, "Clean up the remote and stop it.") and ctx.model.consumed,
                 f"served {ctx.model.served} of {len(ctx.model.turns)}")
