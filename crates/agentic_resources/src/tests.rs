@@ -1469,7 +1469,7 @@ async fn reaches(r: &Rig, lead: &str, child: &str) {
 #[tokio::test]
 async fn spawn_under_reach_keeps_the_spawners_star() {
     let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp, &["lead"], &[("writer.md", REVIEWER)]).await;
+    let r = rig(&tmp, &["lead"], &[("reviewer.md", REVIEWER)]).await;
     let lead = r.callers[0].clone();
     reach(&r, std::slice::from_ref(&lead));
     let id = id_of(&r.spawn_as(&lead, json!({"role": "reviewer"})).await);
@@ -1497,7 +1497,7 @@ async fn spawn_from_under_reach_keeps_the_spawners_star() {
 async fn spawn_merges_verbs_the_spawner_already_holds() {
     // an edge already there with verbs (not `*`) gains the parent's three, keeps its own
     let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp, &["lead"], &[("writer.md", REVIEWER)]).await;
+    let r = rig(&tmp, &["lead"], &[("reviewer.md", REVIEWER)]).await;
     let lead = r.callers[0].clone();
     let weak = Arc::downgrade(&r.kernel);
     let l = lead.clone();
