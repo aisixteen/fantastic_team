@@ -156,7 +156,7 @@ def make_lead(ctx, team, tools=None, subtree: bool = True) -> str:
 
 def make_registry(ctx, team, tiers: dict, limits: dict | None = None, cards: bool = False,
                   role_dirs=("roles",)) -> None:
-    """The roles registry (fantastic's `agentic_resources`) with the given `tiers` and limits.
+    """The roles registry (`agentic_resources`) with the given `tiers` and limits.
     Without `cards` it has no `role_dirs`: the dispatcher makes workers from its tiers only."""
     lead = ctx.lead
     create(team, id="roles", parent_id=ROOT, handler_module="agentic_resources.tools",

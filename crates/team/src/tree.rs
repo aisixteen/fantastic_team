@@ -27,7 +27,7 @@ pub const BOARD_ID: &str = "board";
 pub const CADENCER_ID: &str = "cadencer";
 /// The roles registry's conventional agent id.
 pub const ROLES_ID: &str = "roles";
-/// The task registry's conventional agent id (fantastic's `task_registry`).
+/// The task registry's conventional agent id (`task_registry`, crates/task_registry).
 pub const TASKS_ID: &str = "tasks";
 /// The kernel verbs the dispatcher may call on the root to add and remove a worker
 /// (`control` with `add_worker` / `remove_worker`) and to keep the groups lists current.

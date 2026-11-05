@@ -50,11 +50,11 @@ pub mod worker_exec;
 /// This repo's bundles, added to the registry of fantastic's shell AFTER its
 /// stock set (an `fantastic_tui::Extra`): the git and github connectors. The
 /// worker exec restriction ([`worker_exec`]), the config ([`config`]) and the
-/// role cards ([`roles`]) are records and files, not bundles; the one other
-/// bundle is fantastic's roles registry (`agentic_resources.tools`), inert in
-/// a team whose registry record has no `role_dirs`; the task registry
-/// (`task_registry.tools`, fantastic#429) is inert in a team whose registry record
-/// has no `task_store_id`.
+/// role cards ([`roles`]) are records and files, not bundles; the roles registry
+/// (`agentic_resources.tools`, crates/agentic_resources) is inert in a team whose
+/// registry record has no `role_dirs`; the task registry (`task_registry.tools`,
+/// crates/task_registry) is inert in a team whose registry record has no
+/// `task_store_id`.
 pub fn register_team(reg: &mut BundleRegistry) {
     reg.register(
         team_git_connector::HANDLER_MODULE,
@@ -65,12 +65,12 @@ pub fn register_team(reg: &mut BundleRegistry) {
         team_github_connector::GithubConnectorBundle,
     );
     reg.register(
-        fantastic_agentic_resources::HANDLER_MODULE,
-        fantastic_agentic_resources::AgenticResourcesBundle,
+        team_agentic_resources::HANDLER_MODULE,
+        team_agentic_resources::AgenticResourcesBundle,
     );
     reg.register(
-        fantastic_task_registry::HANDLER_MODULE,
-        fantastic_task_registry::TaskRegistryBundle::default(),
+        team_task_registry::HANDLER_MODULE,
+        team_task_registry::TaskRegistryBundle::default(),
     );
     // The model backend and the credential store the new team's records name (`new_team`).
     reg.register(

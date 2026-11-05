@@ -1,6 +1,6 @@
 # cli/lead_spawns_two
 
-A lead with a roles registry (fantastic's `agentic_resources`, switched on by
+A lead with a roles registry (`agentic_resources`, switched on by
 `FANTASTIC_AGENTIC_RESOURCES=1`; the card `roles/worker.md`, the tier `small`) spawns two workers.
 They solve the shared fixture, one bug each (`adder.py`, `muler.py`) with a commit apiece, and the
 lead deletes them with `delete_agent`.

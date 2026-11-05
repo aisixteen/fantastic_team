@@ -25,9 +25,9 @@ use crate::tree::{BOARD_ID, ROLES_ID, ROOT_ID, TASKS_ID};
 
 /// The main lead: the agent the person chats with.
 pub const LEAD: &str = "lead";
-/// The roles registry (fantastic's `agentic_resources`).
+/// The roles registry (`agentic_resources`, crates/agentic_resources).
 pub const ROLES: &str = ROLES_ID;
-/// The task registry (fantastic's `task_registry`).
+/// The task registry (`task_registry`, crates/task_registry).
 pub const TASKS: &str = TASKS_ID;
 /// The queue store: tasks wait there and the board keeps its cache there.
 pub const QUEUE: &str = "queue";
@@ -432,7 +432,7 @@ mod tests {
             .map(|p| p["id"].as_str().unwrap().to_string())
             .collect();
         for (file, text) in roles::ALL {
-            let c = fantastic_agentic_resources::cards::parse_card(text, file).unwrap();
+            let c = team_agentic_resources::cards::parse_card(text, file).unwrap();
             for tool in c.grants.keys() {
                 let known = made.contains(tool)
                     || ["$registry", "kernel", "kernel_state", "canvas_page"]
