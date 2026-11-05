@@ -140,6 +140,8 @@ def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | Non
     os.makedirs(os.path.join(ctx.work, "sandbox"), exist_ok=True)
     ctx.team = team_mod.Team(ctx.binary, ctx.work, env)
     ctx.team.start(extra_args=extra_args)
+    if hasattr(ctx.model, "watch"):  # the vllm plug counts the agents' usage through the team
+        ctx.model.watch(ctx.team)
     return ctx.team
 
 
@@ -159,19 +161,19 @@ MODEL = "scripted-model"
 
 def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool = False,
                **extra) -> str:
-    """One AI agent of the scripted model: `create_agent` under `parent` with the fixed id `id`.
+    """One AI agent of the plug's model: `create_agent` under `parent` with the fixed id `id`.
     `grants` is its `can_call` beyond `$self` and the shared `memory` store (agent -> verbs,
     `"*"` for every verb). An edge is written on both ends: the caller's `can_call` in this
     payload, the callee's `callable_by` for the callees that exist already (a child made later
     admits its parent through `$parent`). `key` gives it the model's credential ref (a spawned
     agent has none: a spawn does not open the credential store). Returns `id`."""
     team = ctx.team
+    key = key and ctx.model.keyed  # a keyless server (the vllm plug without a door key) reads no key
     can_call = {"$self": "*", "memory": "*", **({"credentials": "*"} if key else {}), **(grants or {})}
-    rec = {"id": id, "parent_id": parent, "handler_module": "anthropic_backend.tools",
-           "model": MODEL, "endpoint": ctx.model.endpoint, "memory_store_id": "memory",
+    rec = {"id": id, "parent_id": parent, **ctx.model.ai_record(), "memory_store_id": "memory",
            "can_call": can_call, "callable_by": {"$self": "*", "$parent": "*"}}
     if key:
-        rec["credentials"] = {"store": "credentials", "ref": f"model/{ctx.model.host}"}
+        rec["credentials"] = model_credentials(ctx)
     rec.update(extra)
     records.create(team, rec)
     have = team.agents()
@@ -189,16 +191,35 @@ def make_lead(ctx, grants: dict | None = None, subtree: bool = False) -> str:
     return lead
 
 
-def make_registry(ctx, total: int, parent: str = LEAD) -> str:
+TESTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests")
+
+
+def roles_dir(name: str) -> str:
+    """The role cards of the cli test `name`: the gpu twin of a test reads the same cards."""
+    return os.path.join(TESTS, "cli", name, "roles")
+
+
+def model_credentials(ctx) -> dict | None:
+    """The `credentials` an AI of this plug carries (the store and the model's ref), or None for
+    a keyless server."""
+    return {"store": "credentials", "ref": f"model/{ctx.model.host}"} if ctx.model.keyed else None
+
+
+def make_registry(ctx, total: int, parent: str = LEAD, roles: str | None = None,
+                  credentials: dict | None = None) -> str:
     """The roles registry `roles` (fantastic's `agentic_resources`) under `parent`: one tier
-    `small` (the scripted model), the role cards of the test's `roles/` folder copied next to
-    the kernel (where `role_dirs: [roles]` reads them), `limits.total`. The lead may call it."""
+    `small` (the plug's model), the role cards of `roles` (a folder; default the test's own
+    `roles/`) copied next to the kernel (where `role_dirs: [roles]` reads them), `limits.total`.
+    The lead may call it. `credentials` is the tier's own, for a plug whose workers need a key
+    (a spawned agent is not on the credential store's `callable_by`: the scripted tiers carry none)."""
     team = ctx.team
-    shutil.copytree(os.path.join(ctx.dir, "roles"), os.path.join(ctx.work, "roles"))
+    shutil.copytree(roles or os.path.join(ctx.dir, "roles"), os.path.join(ctx.work, "roles"))
+    tier = {**ctx.model.ai_record(), "memory_store_id": "memory"}
+    if credentials:
+        tier["credentials"] = credentials
     records.create(team, {"id": "roles", "parent_id": parent, "handler_module": "agentic_resources.tools",
                           "role_dirs": ["roles"], "limits": {"total": total},
-                          "tiers": {"small": {"handler_module": "anthropic_backend.tools", "model": MODEL,
-                                              "endpoint": ctx.model.endpoint, "memory_store_id": "memory"}},
+                          "tiers": {"small": tier},
                           "can_call": {"$self": "*"}, "callable_by": {"$self": "*", "$parent": "*"}})
     records.link(team, "roles", "memory")
     records.link(team, parent, "roles", ["roles", "role", "spawn", "get_count", "fleet"])
@@ -231,36 +252,6 @@ def wait_served(ctx, wait_s: float = 120.0) -> bool:
 
 def dump(obj) -> str:
     return json.dumps(obj, sort_keys=True)[:600]
-
-
-def precreated(ctx, v, expect: dict, lanes: set[str], task: str) -> None:
-    """The shared run of the tests whose whole tree is made with `create_agent` before the task:
-    make the agents of `expect` (id -> parent, parents first), hand the lead its task, then check:
-    solved; the tree is exactly `expect` and unchanged by the run; every lane in `lanes` asked
-    the model. An agent may call its children; one with no child may call the exec agent."""
-    start(ctx)
-    add_base(ctx)
-    base = set(ids(ctx.team))
-    for id, parent in expect.items():
-        kids = {c: "*" for c, p in expect.items() if p == id}
-        make_agent(ctx, id, parent, kids or {EXEC: "*"}, key=(id == LEAD))
-    before = tree(ctx.team)
-    v.check("the tree is the one made and the base, nothing else",
-            set(before) == base | set(expect), str(sorted(set(before) - base)))
-    v.check("each agent sits under the parent it was made under",
-            all(before[i][1] == p for i, p in expect.items()),
-            str({i: before[i][1] for i in expect}))
-    ctx.team.send(LEAD, {"type": "send", "text": task})
-    v.check("the scripted model played every turn, none past the end",
-            wait_served(ctx, 120) and ctx.model.consumed,
-            f"served {ctx.model.served} of {len(ctx.model.turns)}")
-    ok, why = solved(ctx.repo)
-    v.check("solved (the test passes on HEAD, the fix is committed)", ok, why)
-    v.check("each agent of the tree that was told a task asked the model", lanes <= set(ctx.model.request_lanes),
-            str(sorted(set(ctx.model.request_lanes))))
-    after = tree(ctx.team)
-    v.check("the same agents under the same parents, nothing extra", after == before,
-            f"before {sorted(before)} after {sorted(after)}")
 
 
 ALT_SCREEN = ("\x1b[?1049h", "\x1b[?25l", "\x1b[2J")

@@ -75,6 +75,7 @@ def _price(name: str) -> float | None:
 
 class AnthropicRelay:
     real = True  # a real model answers: the launcher reads the key for the team
+    keyed = True  # a key is always needed
 
     def __init__(self, variables: dict) -> None:
         self.run_dir = variables["run_dir"]

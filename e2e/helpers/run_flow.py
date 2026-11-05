@@ -14,7 +14,7 @@ def fake_keys(ctx) -> dict:
     """The model key, an app id and a throwaway app PEM.
 
     A fake plug gets a fake model key (built from pieces). A real plug (`ctx.model.real`)
-    gets its key from the environment, at run time; it goes into the team's environment
+    gets its key from the environment, at run time (none for a keyless server); it goes into the team's environment
     only, never onto disk. The app id and the PEM stay throwaway."""
     sdir = os.path.join(ctx.run_dir, "secrets")
     os.makedirs(sdir, exist_ok=True)
@@ -26,8 +26,10 @@ def fake_keys(ctx) -> dict:
     with open(pem) as f:
         pem_text = f.read()
     body = [l for l in pem_text.splitlines() if l and not l.startswith("-----")]
-    if ctx.model.real:
-        model_key = os.environ.get(ctx.model.key_env or "", "")
+    if ctx.model.real and ctx.model.key_env is None:
+        model_key = ""  # a real server with no door key (the vllm plug without VLLM_API_KEY)
+    elif ctx.model.real:
+        model_key = os.environ.get(ctx.model.key_env, "")
         if not model_key:
             raise RuntimeError("a real plug needs its key in the environment")
     else:
