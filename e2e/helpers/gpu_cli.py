@@ -52,6 +52,10 @@ TASKS = {
         "one for adder.py and one for muler.py, each task naming its file. Each sub-lead spawns one worker "
         "for its file. " + COMMIT + "Tell them that the worker commits this way." + DELETE +
         " Check that the test passes at the end." + END),
+    "headless_and_canvas": (
+        "Make a canvas for your notes: call `create_agent` on `kernel` with the id `sketch`, `parent_id` "
+        "`lead` (yourself) and `handler_module` `canvas_page.tools`. Make nothing else and change no file. "
+        "Then end your run with the `done` call."),
 }
 
 
@@ -66,6 +70,7 @@ class Lead:
         self.team, self.id = team, lead
         self.rows: list[dict] = []
         self._after = None
+        self.since = 0  # `done` counts only in a row past this many (a lead told twice, #242)
 
     def refresh(self) -> None:
         while True:
@@ -82,7 +87,7 @@ class Lead:
     def said_done(self) -> bool:
         try:
             self.refresh()
-            last = self.rows[-1] if self.rows else None
+            last = self.rows[-1] if len(self.rows) > self.since else None
             if not last or last.get("kind") != "assistant":
                 return False
             hit = self.team.send(self.id, {"type": "grep", "query": DONE_CALL, "ids": [last["id"]]},

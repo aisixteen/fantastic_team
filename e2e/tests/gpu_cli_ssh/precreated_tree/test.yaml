@@ -1,0 +1,4 @@
+costs: gpu
+timeout: 3600
+plug: vllm
+build: any

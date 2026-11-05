@@ -28,8 +28,12 @@ before it have run). A script with no `lane` anywhere is the old single ordered 
 
 SPAWNED IDS. A spawned agent's id is minted (`anthropic_backend_7a308a`), so a script cannot
 name it. `{{id:N}}` in a turn is the id in the Nth `<id>...</id>` of the request's body (the
-reply of a `spawn`, in the order the agent saw them), filled when the turn is served.
-Strings may hold `{{name}}` placeholders, filled from `variables`.
+reply of a `spawn`, in the order the agent saw them), filled when the turn is served;
+`{{minted:N}}` is the Nth distinct minted id among them (`<handler>_<hex>`), whatever other
+`<id>` tags the body holds (a forwarded `create_agent`'s reply names its id too).
+Strings may hold `{{name}}` placeholders, filled from `variables`. A name the variables do not
+hold is left as written, for `bind`: a test whose values exist only once it runs (the ssh twins'
+port, key and tunnel, #242) binds them before the team asks the model.
 
 It records every request body and every `x-api-key`; a request past the end of
 the script gets a 500, and `exhausted` says so.
@@ -79,8 +83,9 @@ def render_turn(turn: dict) -> str:
 
 
 def fill(obj, variables: dict):
+    """`{{name}}` -> `variables[name]`; a name not in `variables` stays as written (see `bind`)."""
     if isinstance(obj, str):
-        return re.sub(r"\{\{(\w+)\}\}", lambda m: str(variables[m.group(1)]), obj)
+        return re.sub(r"\{\{(\w+)\}\}", lambda m: str(variables.get(m.group(1), m.group(0))), obj)
     if isinstance(obj, list):
         return [fill(x, variables) for x in obj]
     if isinstance(obj, dict):
@@ -152,10 +157,11 @@ class ScriptedModel:
         return {}
 
     def __init__(self, script: list[dict], variables: dict | None = None) -> None:
-        self.turns = [render_turn(fill(t, variables or {})) for t in script]
-        self.thinking = [fill(t, variables or {}).get("thinking") for t in script]
+        self.script = script
+        self.variables = dict(variables or {})
+        self.render()
         self.delays = [float(t.get("delay") or 0) for t in script]
-        filled = [fill(t, variables or {}) for t in script]
+        filled = [fill(t, self.variables) for t in script]
         self.laned = any("lane" in t for t in filled)
         self.lanes = [t.get("lane", "main") for t in filled]
         self.after = [list(t.get("after") or []) for t in filled]
@@ -212,6 +218,21 @@ class ScriptedModel:
         self.endpoint = self.url + "/v1/messages"
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 
+    def render(self) -> None:
+        filled = [fill(t, self.variables) for t in self.script]
+        self.turns = [render_turn(t) for t in filled]
+        self.thinking = [t.get("thinking") for t in filled]
+
+    def bind(self, **variables) -> "ScriptedModel":
+        """Fill the placeholders left open at load with values known only once the test runs.
+        Call it before the team asks the model; a name still open after it is an error."""
+        self.variables.update(variables)
+        self.render()
+        left = sorted({m for t in self.turns for m in re.findall(r"\{\{(\w+)\}\}", t)})
+        if left:
+            raise ValueError(f"scripted model: placeholders with no value: {left}")
+        return self
+
     def play(self, raw: str, key: str | None = None) -> tuple[str, str | None] | None:
         """Serve one request body: record it, pick the turn of its lane, wait for the lanes the
         turn is `after`, and return (text, thinking) -- or None when the script is exhausted. The
@@ -255,16 +276,21 @@ class ScriptedModel:
 
     @staticmethod
     def resolve_ids(text: str, raw: str) -> str:
-        """Fill `{{id:N}}` from the Nth `<id>X</id>` in the request body."""
-        if "{{id:" not in text:
+        """Fill `{{id:N}}` from the Nth `<id>X</id>` in the request body, and `{{minted:N}}` from
+        the Nth distinct minted id in an `<id>` (`<handler>_<6+ hex>`, a spawn's), in order."""
+        if "{{id:" not in text and "{{minted:" not in text:
             return text
         found = re.findall(r"<id>(\w+)</id>", raw)
+        minted = list(dict.fromkeys(re.findall(r"<id>(\w+_[0-9a-f]{6,})</id>", raw)))
 
-        def pick(m):
-            n = int(m.group(1))
-            return found[n - 1] if 0 < n <= len(found) else m.group(0)
+        def pick(among):
+            def go(m):
+                n = int(m.group(1))
+                return among[n - 1] if 0 < n <= len(among) else m.group(0)
+            return go
 
-        return re.sub(r"\{\{id:(\d+)\}\}", pick, text)
+        text = re.sub(r"\{\{id:(\d+)\}\}", pick(found), text)
+        return re.sub(r"\{\{minted:(\d+)\}\}", pick(minted), text)
 
     def lane_turns(self, lane: str) -> list[int]:
         return [i for i, l in enumerate(self.lanes) if l == lane]
