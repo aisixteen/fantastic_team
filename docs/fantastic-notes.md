@@ -94,3 +94,7 @@ Not built yet: setting `trusted_keys` for the listing (`tree.rs` leaves it unset
 ## Pin at `22f88cb`
 
 `Cargo.lock` now pins fantastic `22f88cb`. It brings the route-clash refusal (fantastic#446: web boot fails and `mount` errors when two children declare the same literal route), `?canvas=<id>` in the canvas page, and ai_core `embed`/`unembed` (history rows `{kind:"embed"|"unembed", head:<agent id>}`, no role). Team's page, ws and canvas routes are distinct, so none clashes.
+
+## Pin at `5e74eb5`
+
+`Cargo.lock` now pins fantastic `5e74eb5` (#467/#468: reach writes a new agent's `*` grants before `create_agent` returns; #469/#470: the CLI host registers `ws_bridge` and `relay_connector`). The roles registry `agentic_resources` and the task registry `task_registry` moved from fantastic into this repo (#245): `crates/agentic_resources` (package `team-agentic-resources`) and `crates/task_registry` (package `team-task-registry`), copied from fantastic `5e74eb5` with the same handler names, verbs, fields and refusals. Two changes: the registry ships no built-in `project_lead` card (team's `roles/project_lead.md` is the only one), and `spawn` (plain and `from`) MERGES the parent's `pause`/`resume`/`stop` into what the parent already holds on the child instead of overwriting it, so under reach the spawner keeps `*` (`send`, `history`) on what it spawned. No fantastic bundle crate for either registry is left in `Cargo.lock`; fantastic deletes its copies after this (fantastic#471).

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/team", "crates/secrets_guard", "crates/git_connector", "crates/github_connector", "crates/team_app"]
+members = ["crates/team", "crates/secrets_guard", "crates/git_connector", "crates/github_connector", "crates/team_app", "crates/agentic_resources", "crates/task_registry"]
 
 [workspace.package]
 version = "0.1.0"
@@ -36,8 +36,6 @@ fantastic-file = { git = "https://github.com/aisixteen/fantastic", branch = "mai
 fantastic-credential-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-anthropic-backend = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-user = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-agentic-resources = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-task-registry = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-ram-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-sqlite-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 async-trait = "0.1"
