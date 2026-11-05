@@ -52,6 +52,10 @@ TASKS = {
         "one for adder.py and one for muler.py, each task naming its file. Each sub-lead spawns one worker "
         "for its file. " + COMMIT + "Tell them that the worker commits this way." + DELETE +
         " Check that the test passes at the end." + END),
+    "headless_and_canvas": (
+        "Make a canvas for your notes: call `create_agent` on `kernel` with the id `sketch`, `parent_id` "
+        "`lead` (yourself) and `handler_module` `canvas_page.tools`. Make nothing else and change no file. "
+        "Then end your run with the `done` call."),
 }
 
 
