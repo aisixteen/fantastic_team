@@ -80,6 +80,7 @@ fn run_to_end(dir: &Path, args: &[&str]) -> Output {
 fn get(port: u16, path: &str) -> Option<(u16, String)> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let mut c = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
+    c.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n");
     c.write_all(req.as_bytes()).ok()?;
     let mut buf = Vec::new();
@@ -92,7 +93,14 @@ fn get(port: u16, path: &str) -> Option<(u16, String)> {
 const PAGE: &str = "/team_page/file/index.html";
 
 fn wait_page(child: &mut Running, port: u16) -> String {
-    let end = Instant::now() + Duration::from_secs(60);
+    wait_page_within(child, port, Duration::from_secs(60))
+}
+
+/// Poll the page until it answers 200; panics when the process exits or `limit` passes.
+/// One `get` is one try: a process that is up and listening can be slow to accept for a
+/// moment on a loaded machine (#241), so "answers" is judged over `limit`, not one try.
+fn wait_page_within(child: &mut Running, port: u16, limit: Duration) -> String {
+    let end = Instant::now() + limit;
     loop {
         if let Some(st) = child.0.try_wait().unwrap() {
             panic!("the binary exited with {st} before the page answered on {port}");
@@ -296,7 +304,14 @@ fn a_kernel_already_running_here_refuses_webui() {
         team.0.try_wait().unwrap().is_none(),
         "the running team is untouched"
     );
-    assert_eq!(get(port, PAGE).map(|r| r.0), Some(200));
+    // The refusal wrote nothing into the running team's records: its web host still
+    // names its own port, not the refused command's.
+    let rec = std::fs::read_to_string(dir.path().join(".fantastic/agents/web/agent.yaml")).unwrap();
+    assert!(rec.contains(&format!("port: {port}")), "{rec}");
+    // And the team still serves. The refused start is over; the question is whether the
+    // running team answers, which `wait_page_within` asks until it does or the limit
+    // passes (#241: a single try raced the team's own accept on a loaded machine).
+    wait_page_within(&mut team, port, Duration::from_secs(30));
 }
 
 #[test]
@@ -325,4 +340,37 @@ fn headless_over_webui_records_opens_no_port() {
         );
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// #241: a listener that is up but accepts late is answered by `wait_page_within`, which
+/// judges over its limit; one that never answers fails at the limit, and a process that
+/// exited fails at once. (A single `get` against the late listener has already given up.)
+#[test]
+fn wait_page_within_rides_out_a_late_accept_and_fails_when_nothing_answers() {
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let mut team = start(dir.path(), &["--headless"]);
+    // the listener is bound but does not accept for a while
+    let late = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        let (mut c, _) = listener.accept().unwrap();
+        let mut req = [0u8; 512];
+        let _ = c.read(&mut req);
+        let _ = c.write_all(b"HTTP/1.0 200 OK\r\n\r\nok");
+    });
+    let body = wait_page_within(&mut team, port, Duration::from_secs(20));
+    assert!(body.ends_with("ok"), "{body}");
+    late.join().unwrap();
+    // nothing answers on a bound port that never accepts: the limit is the failure
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let silent_port = silent.local_addr().unwrap().port();
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_page_within(&mut team, silent_port, Duration::from_millis(800))
+    }));
+    assert!(
+        failed.is_err(),
+        "a port that never answers must fail at the limit"
+    );
 }
