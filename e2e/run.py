@@ -4,6 +4,8 @@
     python3 e2e/run.py --only-free            every free test (no network, no key)
     python3 e2e/run.py --only-turns           the turns tier: a real model, by hand (skips without a key)
     python3 e2e/run.py --only-turns --dry-run discover the turns tests and collect their probes; start nothing
+    python3 e2e/run.py --only-gpu             the gpu tier: a vLLM server, by hand (skips without VLLM_ENDPOINT and its kin)
+    python3 e2e/run.py --only-gpu --dry-run   discover the gpu tests and collect their probes; start nothing
     python3 e2e/run.py --only task/one_issue_to_draft_pr
     python3 e2e/run.py --build github         the tests for the GitHub build (default: general)
     python3 e2e/run.py --selftest             prove the harness itself, no binary
@@ -12,7 +14,8 @@
 A test is a folder `e2e/tests/<group>/<id>/` with `test.yaml` (`costs`, `timeout`,
 `plug`, `build`), a plug's input (`script.json` for the scripted plug) and
 `probe.py`, whose `run(ctx)` returns the exit code of its `Verdict`.
-A test whose plug has no key in the environment is skipped (`SKIP`), not failed.
+A test whose plug has no key (or, for vllm, no server variables) in the environment is skipped
+(`SKIP`), not failed. `--only-free` never selects a turns or gpu test, and CI never runs them.
 Runs live under `e2e/runs/<stamp>/<group>/<id>/` (gitignored: they hold model output).
 """
 
@@ -39,11 +42,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from backends import PLUGS, available, provides_vars, scripted  # noqa: E402
+from backends import PLUGS, available, provides_vars, scripted, why_not  # noqa: E402
+from backends import vllm as vllm_mod  # noqa: E402
 from backends import anthropic as relay_mod  # noqa: E402
 from helpers import forge as forge_mod  # noqa: E402
 from helpers import app as app_mod  # noqa: E402
 from helpers import cli as cli_mod  # noqa: E402
+from helpers import fake_vllm  # noqa: E402
 from helpers import packs_pub as packs_mod  # noqa: E402
 from helpers import registry as registry_mod  # noqa: E402
 from helpers import run_flow  # noqa: E402
@@ -56,6 +61,8 @@ from helpers.verdict import Skip, Verdict  # noqa: E402
 KEY_SHAPE = re.compile("sk-" "ant-" r"[A-Za-z0-9_\-]{20,}")
 BUILD = "general"  # set by --build; the worker's exec record follows it (helpers/stock.py)
 TURNS_TESTS = ["turns/task/worker_finishes_small_spec", "turns/secrets/real_key_stays_in_x_api_key"]
+GPU_TESTS = [f"gpu_cli/{n}" for n in ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tree",
+                                      "leads_spawn_leads")]
 
 
 # --- tests -------------------------------------------------------------------
@@ -89,14 +96,16 @@ def discover() -> list[dict]:
     return sorted(out, key=lambda t: t["name"])
 
 
-def pick(tests: list[dict], only=(), only_free=False, only_turns=False) -> list[dict]:
-    """The tests a command line selects. --only-free never selects a turns test."""
+def pick(tests: list[dict], only=(), only_free=False, only_turns=False, only_gpu=False) -> list[dict]:
+    """The tests a command line selects. --only-free never selects a turns or gpu test."""
     if only:
         tests = [t for t in tests if t["name"] in only]
     if only_free:
         tests = [t for t in tests if t["costs"] == "free"]
     if only_turns:
         tests = [t for t in tests if t["costs"] == "turns"]
+    if only_gpu:
+        tests = [t for t in tests if t["costs"] == "gpu"]
     return tests
 
 
@@ -181,6 +190,8 @@ def run_test(test: dict, binary: str, stamp_dir: str) -> str:
         traceback.print_exc()
     finally:
         if ctx and ctx.team:
+            if hasattr(model, "finish"):  # the vllm plug reads the agents' usage before they go
+                model.finish(ctx.team)
             code = ctx.team.stop()
             print(f"  team stopped (exit {code})")
             if not ok and skipped is None:
@@ -217,7 +228,8 @@ def dry_run(tests: list[dict]) -> int:
     bad = 0
     for t in tests:
         ok, detail = collect_probe(t["dir"])
-        note = "" if available(t["plug"]) else "  (no key: would SKIP)"
+        why = why_not(t["plug"])
+        note = "" if why is None else f"  (would SKIP: {why})"
         print(f"{'COLLECT' if ok else 'FAIL'} {t['name']}  (costs: {t['costs']}, plug: {t['plug']})"
               f"{note}  {detail}")
         bad += not ok
@@ -331,8 +343,11 @@ def selftest() -> int:
             and names.get("exec/github_refuses_forge_calls") == "github")
     selftest_registry(v)
     selftest_relay(v)
+    selftest_fake_vllm(v)
+    selftest_vllm_plug(v)
     selftest_selection(v)
     selftest_turns(v)
+    selftest_gpu(v)
     selftest_source(v)
     selftest_skip(v)
     selftest_scripted_thinking(v)
@@ -446,6 +461,238 @@ def selftest_relay(v: Verdict) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+VLLM_ENV = ("VLLM_ENDPOINT", "FANTASTIC_AI_MODEL", "VLLM_KV_SLOTS", "VLLM_KV_OVERFLOW", "VLLM_API_KEY",
+            "MAX_TOKENS", "E2E_MAX_REQUESTS", "E2E_PRICE_IN_PER_MTOK", "E2E_PRICE_OUT_PER_MTOK")
+
+
+class vllm_env:
+    """The vllm plug's variables for a block: set the given ones, clear the rest, restore after."""
+
+    def __init__(self, **given: str) -> None:
+        self.given = given
+
+    def __enter__(self):
+        self.saved = {k: os.environ.get(k) for k in VLLM_ENV}
+        for k in VLLM_ENV:
+            os.environ.pop(k, None)
+        os.environ.update(self.given)
+
+    def __exit__(self, *_):
+        for k, val in self.saved.items():
+            if val is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = val
+
+
+class FakeUsageTeam:
+    """Stands in for a Team: vllm agents that keep usage counts (the `usage` verb), a stop()."""
+
+    def __init__(self, agents: dict) -> None:
+        self.counts = agents  # id -> {requests, prompt_tokens, output_tokens}
+        self.stopped = False
+        self.proc = self
+        self.sent: list[tuple[str, dict]] = []
+
+    def poll(self):
+        return 0 if self.stopped else None
+
+    def agents(self) -> dict:
+        out = {i: {"handler_module": "vllm_backend.tools"} for i in self.counts}
+        out["credentials"] = {"handler_module": "credential_store.tools"}
+        return out
+
+    def send(self, target: str, payload: dict, timeout: float = 0) -> dict:
+        self.sent.append((target, payload))
+        if payload.get("type") == "usage" and target in self.counts:
+            return {"status": "completed", "result": dict(self.counts[target])}
+        return {"status": "failed", "result": {"error": "no such verb"}}
+
+    def stop(self):
+        self.stopped = True
+
+
+def selftest_fake_vllm(v: Verdict) -> None:
+    """The fake vLLM server answers the routes `vllm_backend` calls, in the shape it decodes."""
+    srv = fake_vllm.FakeVllm(text="hello there", key="door-" + secrets.token_hex(6)).start()
+    try:
+        def call(method, path, key=None, body=None):
+            req = urllib.request.Request(srv.url + path, method=method, data=body,
+                                         headers={"Content-Type": "application/json",
+                                                  **({"Authorization": f"Bearer {key}"} if key else {})})
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    return r.status, r.read()
+            except urllib.error.HTTPError as e:
+                return e.code, e.read()
+
+        chat = json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": True,
+                           "stream_options": {"include_usage": True}}).encode()
+        s401, _ = call("POST", "/v1/chat/completions", None, chat)
+        s200, raw = call("POST", "/v1/chat/completions", srv.key, chat)
+        got = fake_vllm.parse_chat_stream(raw)
+        v.check("the fake vLLM wants the door's key: no Bearer is a 401, the key is a 200 stream",
+                s401 == 401 and s200 == 200 and srv.refused == 1 and srv.auths == [f"Bearer {srv.key}"],
+                f"{s401} {s200} {srv.auths}")
+        v.check("the stream is a vLLM one: text, a stop, the usage-only frame, [DONE]",
+                got["text"] == "hello there" and got["finish"] == "stop" and got["done"]
+                and got["usage"]["prompt_tokens"] >= 1 and got["usage"]["completion_tokens"] >= 1, str(got))
+        smodels, mraw = call("GET", "/v1/models", srv.key)
+        listed = json.loads(mraw)["data"][0]
+        v.check("GET /v1/models lists the served model with its max_model_len",
+                smodels == 200 and listed["id"] == fake_vllm.MODEL and listed["max_model_len"] > 0, str(listed))
+        v.check("it counts the requests and tokens it served",
+                srv.served == 1 and srv.prompt_tokens == got["usage"]["prompt_tokens"], str(srv.served))
+    finally:
+        srv.stop()
+    scripted_srv = fake_vllm.FakeVllm(script=[{"text": "first", "thinking": "hm"}, {"text": "second"}]).start()
+    try:
+        def ask():
+            req = urllib.request.Request(scripted_srv.url + "/v1/chat/completions", method="POST", data=json.dumps(
+                {"model": "m", "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "q"}]}).encode())
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return fake_vllm.parse_chat_stream(r.read())
+        a, b = ask(), ask()
+        v.check("a script plays through the fake in order, the thinking on the reasoning channel",
+                (a["text"], a["reasoning"], b["text"]) == ("first", "hm", "second"), f"{a} {b}")
+        try:
+            ask()
+            exhausted = False
+        except urllib.error.HTTPError as e:
+            exhausted = e.code == 500
+        v.check("a request past the end of the script is a 500", exhausted)
+    finally:
+        scripted_srv.stop()
+    lanes = scripted.ScriptedModel([{"text": "m", "lane": "main"}, {"text": "w", "lane": "w1"}])
+    try:
+        body = json.dumps({"messages": [{"role": "system", "content": "[lane:w1] in the system text"},
+                                        {"role": "user", "content": "task [lane:w1]"}]})
+        v.check("a lane is read off the first non-system message (an OpenAI body opens with the system one)",
+                lanes.lane_of(body) == "w1")
+    finally:
+        lanes.httpd.server_close()
+
+
+def selftest_vllm_plug(v: Verdict) -> None:
+    """The vllm plug: what it needs, what its records say, what it counts and its cap."""
+    with vllm_env():
+        v.check("with none of its variables the plug cannot run, and says which are missing",
+                not vllm_mod.available() and all(n in vllm_mod.problem() for n, _ in vllm_mod.REQUIRED),
+                str(vllm_mod.problem()))
+    base = {"VLLM_ENDPOINT": "https://gpu.example.invalid/v1", "FANTASTIC_AI_MODEL": "m-1",
+            "VLLM_KV_SLOTS": "2", "VLLM_KV_OVERFLOW": "evict"}
+    for gone in base:
+        with vllm_env(**{k: val for k, val in base.items() if k != gone}):
+            v.check(f"without {gone} the plug cannot run (the test SKIPs)",
+                    not vllm_mod.available() and gone in vllm_mod.problem(), str(vllm_mod.problem()))
+    for bad, why in (({"VLLM_KV_SLOTS": "3"}, "3 slots: the shared GPU keeps at most 2"),
+                     ({"VLLM_KV_SLOTS": "0"}, "0 slots"), ({"VLLM_KV_SLOTS": "two"}, "slots that are no number"),
+                     ({"VLLM_KV_OVERFLOW": "drop"}, "an overflow policy that is neither evict nor reject"),
+                     ({"VLLM_ENDPOINT": "gpu.example.invalid"}, "an endpoint with no scheme")):
+        with vllm_env(**{**base, **bad}):
+            v.check(f"{why} is refused", not vllm_mod.available(), str(vllm_mod.problem()))
+    with vllm_env(**base):
+        v.check("all four variables, 2 slots: the plug can run", vllm_mod.available(), str(vllm_mod.problem()))
+        v.check("why_not names nothing for it, and the launcher's table agrees", why_not("vllm") is None
+                and available("vllm") and why_not("scripted") is None)
+    tmp = tempfile.mkdtemp(prefix="e2e-vllm-")
+    try:
+        key = "door-" + secrets.token_hex(8)  # a key of this run only
+        with vllm_env(**base, VLLM_API_KEY=key, MAX_TOKENS="4096", E2E_MAX_REQUESTS="5"):
+            plug = vllm_mod.make(tmp, {"run_dir": tmp}).start()
+            rec = plug.ai_record()
+            runner = vllm_mod.runner_params()
+            v.check("the AI record is a vllm_backend one that points straight at the server, with the slots, "
+                    "the overflow policy and the output cap",
+                    rec["handler_module"] == "vllm_backend.tools" and rec["endpoint"] == base["VLLM_ENDPOINT"]
+                    and rec["model"] == "m-1" and rec["kv_slots"] == 2 and rec["kv_overflow"] == "evict"
+                    and rec["max_tokens"] == 4096, str(rec))
+            v.check("the sampling knobs are the ones beside the plug (the CoT-repetition fix)",
+                    runner.get("no_repeat_ngram_size") == 3 and runner.get("repetition_penalty") == 1.05
+                    and rec["no_repeat_ngram_size"] == 3 and "thinking_token_budget" not in rec, str(rec))
+            v.check("the plug is keyed by the NAME of the variable; the credential ref is bound to the endpoint's host",
+                    plug.key_env == "VLLM_API_KEY" and plug.keyed and plug.host == "gpu.example.invalid"
+                    and plug.real and key not in json.dumps(rec))
+            ra = plug.recipe_args()
+            v.check("the recipe is `ai vllm -p PORT --host H --kv-overflow O`; update_agent carries the rest",
+                    ra == ["--headless", "ai", "vllm", "-p", "443", "--host", "gpu.example.invalid",
+                           "--kv-overflow", "evict"] and plug.recipe_fields()["endpoint"] == base["VLLM_ENDPOINT"]
+                    and plug.recipe_fields()["kv_slots"] == 2 and "handler_module" not in plug.recipe_fields(),
+                    f"{ra} {plug.recipe_fields()}")
+            plug.stop()
+
+            # usage, as the agents keep it; the poller sums it, a deleted agent keeps its last counts
+            team = FakeUsageTeam({"lead": {"requests": 2, "prompt_tokens": 100, "output_tokens": 30},
+                                  "w1": {"requests": 1, "prompt_tokens": 40, "output_tokens": 10}})
+            plug = vllm_mod.make(tmp, {"run_dir": tmp})
+            plug.poll_s = 0.05
+            plug.watch(team)
+            end = time.time() + 5
+            while time.time() < end and plug.requests < 3:
+                time.sleep(0.05)
+            del team.counts["w1"]  # the worker was deleted by its parent
+            team.counts["lead"]["requests"] = 4
+            team.counts["lead"]["prompt_tokens"] = 160
+            plug.finish(team)
+            t = plug.totals()
+            v.check("the plug sums the usage of every vllm agent, a deleted one included, and asks only them",
+                    (t["requests"], t["input_tokens"], t["output_tokens"]) == (5, 200, 40)
+                    and all(tgt in ("lead", "w1") for tgt, p in team.sent if p.get("type") == "usage"),
+                    str(t))
+            v.check("below the cap the run goes on", not plug.capped and not team.stopped and not plug.errored)
+            team.counts["lead"]["requests"] = 6  # one past E2E_MAX_REQUESTS=5
+            end = time.time() + 5
+            while time.time() < end and not team.stopped:
+                time.sleep(0.05)
+            v.check("past E2E_MAX_REQUESTS the plug stops the team: the run ends, errored",
+                    team.stopped and plug.capped and plug.errored and not plug.consumed, str(plug.totals()))
+            os.environ["E2E_PRICE_IN_PER_MTOK"] = "1"
+            os.environ["E2E_PRICE_OUT_PER_MTOK"] = "2"
+            plug.stop()
+            raw = open(os.path.join(tmp, "cost.json")).read()
+            cost = json.loads(raw)
+            v.check("cost.json has the model, the requests and the tokens from the replies' usage, priced when "
+                    "both prices are set",
+                    cost["model"] == "m-1" and cost["requests"] == 7 and cost["input_tokens"] == 200
+                    and cost["output_tokens"] == 40 and abs(cost["usd_estimate"] - 0.00028) < 1e-9, raw)
+            v.check("the key is never in cost.json or on a file of the run", key not in raw
+                    and holding(tmp, key) == [], str(holding(tmp, key)))
+        with vllm_env(**base):
+            keyless = vllm_mod.make(tmp, {"run_dir": tmp})
+            v.check("without VLLM_API_KEY the plug is keyless: no key variable, no credentials on the records",
+                    keyless.key_env is None and not keyless.keyed)
+            keyless.stop()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def selftest_gpu(v: Verdict) -> None:
+    """Run the launcher as a child with none of the vllm variables: the gpu tests skip, exit 0,
+    and `--only-gpu --dry-run` collects their probes and starts nothing."""
+    env = {k: val for k, val in os.environ.items() if k not in VLLM_ENV}
+    me = os.path.abspath(__file__)
+    r = subprocess.run([sys.executable, me, "--only-gpu"], env=env, capture_output=True, text=True, timeout=120)
+    skips = all(f"SKIP {n} " in r.stdout for n in GPU_TESTS)
+    v.check("the gpu tests skip without the variables and the run exits 0",
+            r.returncode == 0 and skips, (r.stdout + r.stderr)[-800:])
+    r = subprocess.run([sys.executable, me, "--only-gpu", "--dry-run"], env=env, capture_output=True,
+                       text=True, timeout=120)
+    collects = all(f"COLLECT {n} " in r.stdout for n in GPU_TESTS)
+    v.check("the gpu tests collect under --only-gpu --dry-run without the variables",
+            r.returncode == 0 and collects and "5/5 probes collect" in r.stdout, (r.stdout + r.stderr)[-800:])
+    by = {t["name"]: t for t in discover()}
+    bad = []
+    for n in GPU_TESTS:
+        t = by.get(n)
+        twin = by.get(n.replace("gpu_cli/", "cli/"))
+        files = t and all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "probe.py"))
+        if not (t and twin and files and t["costs"] == "gpu" and t["plug"] == "vllm" and t["build"] == "any"
+                and not os.path.exists(os.path.join(t["dir"], "script.json"))):
+            bad.append(n)
+    v.check("each gpu test has a cli twin, its README, test.yaml and probe, costs gpu on the vllm plug, no script.json",
+            not bad, str(bad))
+
+
 def selftest_selection(v: Verdict) -> None:
     allt = discover()
     free = pick(allt, only_free=True)
@@ -454,6 +701,12 @@ def selftest_selection(v: Verdict) -> None:
             free and not any(t["costs"] == "turns" for t in free))
     v.check("--only-turns selects the turns tests and only them",
             {t["name"] for t in turns} == set(TURNS_TESTS), str([t["name"] for t in turns]))
+    gpu = pick(allt, only_gpu=True)
+    v.check("--only-free never selects a gpu test; --only-gpu selects the gpu tests and only them",
+            not any(t["costs"] == "gpu" for t in free) and {t["name"] for t in gpu} == set(GPU_TESTS)
+            and not any(t["costs"] == "gpu" for t in turns), str([t["name"] for t in gpu]))
+    v.check("--only-turns never selects a gpu test",
+            not any(t["costs"] == "gpu" for t in turns))
     tmp = tempfile.mkdtemp(prefix="e2e-probe-")
     try:
         with open(os.path.join(tmp, "probe.py"), "w") as f:
@@ -853,6 +1106,8 @@ def main() -> int:
     ap.add_argument("--only-free", action="store_true", help="run only tests whose costs is free")
     ap.add_argument("--only-turns", action="store_true",
                     help="run only tests whose costs is turns (a real model; by hand, never CI)")
+    ap.add_argument("--only-gpu", action="store_true",
+                    help="run only tests whose costs is gpu (a vLLM server; by hand, never CI)")
     ap.add_argument("--dry-run", action="store_true",
                     help="discover the selected tests and collect their probes; start nothing")
     ap.add_argument("--only", action="append", default=[], metavar="GROUP/ID")
@@ -872,7 +1127,7 @@ def main() -> int:
         missing = set(a.only) - {t["name"] for t in tests}
         if missing:
             sys.exit(f"no such test: {', '.join(sorted(missing))}")
-    tests = pick(tests, a.only, a.only_free, a.only_turns)
+    tests = pick(tests, a.only, a.only_free, a.only_turns, a.only_gpu)
     if a.list:
         for t in tests:
             print(f"{t['name']}\t{t['costs']}\t{t['plug']}\t{t['build']}")
@@ -883,7 +1138,7 @@ def main() -> int:
         return dry_run(tests)
     for t in tests:
         if not available(t["plug"]):
-            print(f"SKIP {t['name']} (no key in the environment)")
+            print(f"SKIP {t['name']} ({why_not(t['plug'])})")
     tests = [t for t in tests if available(t["plug"])]
     if not tests:
         print("nothing to run")

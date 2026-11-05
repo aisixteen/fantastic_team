@@ -8,14 +8,15 @@ returns an object with `.endpoint`, `.host`, `.start()`, `.stop()`, and:
                  for a real plug, and never writes it to disk);
   `.real`        true when a real model answers.
 
-Two plugs exist:
+Three plugs exist:
   `scripted`  a fake of the Messages wire that plays a script: free, no network.
   `anthropic` a recording relay to a real model (aisixteen/fantastic#302): the turns
               tier, run by hand, skipped without E2E_ANTHROPIC_KEY or ANTHROPIC_API_KEY.
-The gpu tier (a local-model plug, aisixteen/fantastic#303) is not built.
+  `vllm`      a vLLM server reached directly, no relay (the gpu tier, `backends/vllm.py`): run by
+              hand, skipped without VLLM_ENDPOINT, FANTASTIC_AI_MODEL, VLLM_KV_SLOTS, VLLM_KV_OVERFLOW.
 """
 
-from . import anthropic, scripted
+from . import anthropic, scripted, vllm
 
 
 def _scripted(test_dir, variables):
@@ -26,13 +27,24 @@ def _anthropic(test_dir, variables):
     return anthropic.make(test_dir, variables)
 
 
-PLUGS = {"scripted": _scripted, "anthropic": _anthropic}
-AVAILABLE = {"scripted": lambda: True, "anthropic": anthropic.available}
+def _vllm(test_dir, variables):
+    return vllm.make(test_dir, variables)
+
+
+PLUGS = {"scripted": _scripted, "anthropic": _anthropic, "vllm": _vllm}
+#: Why a plug cannot run here (None when it can): a real plug needs its key or its server's variables.
+WHY_NOT = {"scripted": lambda: None,
+           "anthropic": lambda: None if anthropic.available() else "no key in the environment",
+           "vllm": vllm.problem}
+
+
+def why_not(name: str) -> str | None:
+    return WHY_NOT[name]()
 
 
 def available(name: str) -> bool:
-    """True when the plug can run here (a real plug needs its key in the environment)."""
-    return AVAILABLE[name]()
+    """True when the plug can run here (a real plug needs its key or its variables in the environment)."""
+    return why_not(name) is None
 
 
 def provides_vars(plug) -> dict:

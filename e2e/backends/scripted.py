@@ -137,6 +137,19 @@ class ScriptedModel:
     model_name = MODEL  # what the lead's `model` field takes (`ctx.vars['model_name']`)
     key_env = None  # no real key
     real = False  # a script answers; nothing is sent upstream
+    keyed = True  # the agents read a (fake) key from the credential store
+
+    def ai_record(self) -> dict:
+        """The fields of an AI record that talks to this plug (the anthropic backend)."""
+        return {"handler_module": "anthropic_backend.tools", "model": MODEL, "endpoint": self.endpoint}
+
+    def recipe_args(self) -> list[str]:
+        """fantastic's recipe that makes the root AI `ai` on this plug."""
+        return ["--headless", "ai", "anthropic", "--model", MODEL, "--endpoint", self.endpoint]
+
+    def recipe_fields(self) -> dict:
+        """What the recipe leaves for `update_agent` besides the key (nothing: it names it all)."""
+        return {}
 
     def __init__(self, script: list[dict], variables: dict | None = None) -> None:
         self.turns = [render_turn(fill(t, variables or {})) for t in script]
@@ -184,30 +197,12 @@ class ScriptedModel:
                 raw = self.rfile.read(n).decode("utf-8", "replace")
                 if self.path != "/v1/messages":
                     return self._send(404, b'{"type":"error","error":{"type":"not_found_error","message":"no"}}')
-                with outer.lock:
-                    outer.raw_bodies.append(raw)
-                    try:
-                        outer.requests.append(json.loads(raw))
-                    except ValueError:
-                        outer.requests.append({})
-                    outer.keys.append(self.headers.get("x-api-key"))
-                    lane = outer.lane_of(raw)
-                    outer.request_lanes.append(lane)
-                    i = outer.next_index(lane)
-                    outer.served += 1
-                    if i is None:
-                        outer.overrun += 1
-                        i = len(outer.turns)
-                    else:
-                        outer.cursor[lane] = outer.cursor.get(lane, 0) + 1
-                if i >= len(outer.turns):
+                played = outer.play(raw, self.headers.get("x-api-key"))
+                if played is None:
                     return self._send(500, json.dumps({"type": "error", "error": {
                         "type": "api_error", "message": "scripted model: script exhausted"}}).encode())
-                outer.hold(outer.after[i])
-                text = outer.resolve_ids(outer.turns[i], raw)
-                if outer.delays[i]:
-                    time.sleep(outer.delays[i])
-                data = b"".join(stream_frames(text, thinking=outer.thinking[i]))
+                text, thinking = played
+                data = b"".join(stream_frames(text, thinking=thinking))
                 self._send(200, data, "text/event-stream; charset=utf-8")
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -217,13 +212,43 @@ class ScriptedModel:
         self.endpoint = self.url + "/v1/messages"
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 
+    def play(self, raw: str, key: str | None = None) -> tuple[str, str | None] | None:
+        """Serve one request body: record it, pick the turn of its lane, wait for the lanes the
+        turn is `after`, and return (text, thinking) -- or None when the script is exhausted. The
+        Messages handler and a fake of another wire (`helpers/fake_vllm.py`) both play through here."""
+        with self.lock:
+            self.raw_bodies.append(raw)
+            try:
+                self.requests.append(json.loads(raw))
+            except ValueError:
+                self.requests.append({})
+            self.keys.append(key)
+            lane = self.lane_of(raw)
+            self.request_lanes.append(lane)
+            i = self.next_index(lane)
+            self.served += 1
+            if i is None:
+                self.overrun += 1
+                i = len(self.turns)
+            else:
+                self.cursor[lane] = self.cursor.get(lane, 0) + 1
+        if i >= len(self.turns):
+            return None
+        self.hold(self.after[i])
+        text = self.resolve_ids(self.turns[i], raw)
+        if self.delays[i]:
+            time.sleep(self.delays[i])
+        return text, self.thinking[i]
+
     def lane_of(self, raw: str) -> str:
-        """The lane of a request: the `[lane:NAME]` marker in its first message."""
+        """The lane of a request: the `[lane:NAME]` marker in its first message (a system message
+        is not one: an OpenAI-shaped body opens with it)."""
         if not self.laned:
             return "main"
         try:
-            first = json.loads(raw).get("messages", [{}])[0]
-        except (ValueError, IndexError, AttributeError):
+            msgs = [m for m in json.loads(raw).get("messages", []) if m.get("role") != "system"]
+            first = msgs[0]
+        except (ValueError, IndexError, AttributeError, TypeError):
             return "main"
         m = re.search(r"\[lane:(\w+)\]", json.dumps(first))
         return m.group(1) if m else "main"

@@ -4,3 +4,4 @@
 .env
 .cargo/config.toml
 /crates/team_app/gen/
+e2e/backends/sampling.json

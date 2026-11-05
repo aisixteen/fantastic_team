@@ -7,13 +7,15 @@ python3 e2e/run.py --only-free          every free test; no network, no key; bui
 python3 e2e/run.py --only task/one_issue_to_draft_pr --bin PATH   (PATH absolute)
 python3 e2e/run.py --only-turns         the turns tests, a real model, by hand; SKIP without a key
 python3 e2e/run.py --only-turns --dry-run   discover the turns tests and collect their probes; starts nothing
+python3 e2e/run.py --only-gpu           the gpu tests, a vLLM server (the shared RTX 6000), by hand; SKIP without its variables
+python3 e2e/run.py --only-gpu --dry-run discover the gpu tests and collect their probes; starts nothing
 python3 e2e/run.py --build github --bin PATH   the tests for the GitHub build (default: general)
 python3 e2e/run.py --selftest           the harness proves itself, no binary
 python3 e2e/run.py --only app/attach_remote --bin /ABSOLUTE/path/fantastic_team   a test that needs the app: build it next to the binary first
 python3 e2e/run.py --list
 ```
 
-Needs `python3`, `git` (with `git http-backend`) and `openssl` (a throwaway app key is made per run, never committed; without openssl the launcher says so and runs nothing). Exit code is non-zero when any test fails; a test whose plug has no key is printed as `SKIP` and does not fail the run. A workflow (#46) calls `--only-free`; there is no workflow here, CI is manual, and CI never runs the turns tier.
+Needs `python3`, `git` (with `git http-backend`) and `openssl` (a throwaway app key is made per run, never committed; without openssl the launcher says so and runs nothing). Exit code is non-zero when any test fails; a test whose plug has no key is printed as `SKIP` and does not fail the run. A workflow (#46) calls `--only-free`; there is no workflow here, CI is manual, and CI never runs the turns or the gpu tier (`--only-free` selects neither).
 
 ## The turns tier, by hand
 
@@ -31,11 +33,50 @@ ANTHROPIC_API_KEY=... python3 e2e/run.py --only-turns
 
 Each run writes `cost.json` in its run folder (tokens, requests, model, the USD estimate if priced). It holds no key. The relay forwards the team's own `x-api-key` and streams the reply back unchanged; it never reads or stores the key value.
 
+## The gpu tier, by hand (#237)
+
+The five solving cli scenarios on a real model, the shared RTX 6000 behind vLLM, with no script: `tests/gpu_cli/{single_lead,lead_spawns_two,precreated_1_2,precreated_tree,leads_spawn_leads}`. The model finds the bug, decides to spawn, and cleans up after itself. `costs: gpu` is a tier `run.py` knows: `--only-gpu` runs it, `--only-free` and CI never do. No Anthropic call and no GPU call is made by the selftests or the CI run.
+
+```
+VLLM_ENDPOINT=https://.../v1 FANTASTIC_AI_MODEL=... VLLM_KV_SLOTS=2 VLLM_KV_OVERFLOW=evict \
+    python3 e2e/run.py --only gpu_cli/single_lead --bin /ABSOLUTE/path/fantastic_team     # one test at a time
+python3 e2e/run.py --only-gpu --dry-run      # collects the five probes, starts nothing, needs no variable
+```
+
+The same variables as fantastic's `vllm` plug (aisixteen/fantastic `e2e/backends/__init__.py`, `_vllm`). If a required one is missing the test prints `SKIP <name> (<why>)` and the run still exits 0, as a turns test without its key:
+
+- `VLLM_ENDPOINT`: the server's `/v1` URL. No host is guessed. The AI records point straight at it (no relay).
+- `FANTASTIC_AI_MODEL`: the served model's name.
+- `VLLM_KV_SLOTS`: how many conversations may be live on the endpoint. **1 or 2.** The server's slots are shared with production, so a larger number is refused (`SKIP`, with the reason); the backend then rotates the least-recently-used conversation out (`evict`) or refuses the newcomer (`reject`) when a third agent talks. The trees of 3 to 5 agents therefore take turns on the 2 slots.
+- `VLLM_KV_OVERFLOW`: `evict` or `reject`.
+- `VLLM_API_KEY` (optional): the door's key. The credential store reads it from the team's environment (`backend: env`, the ref bound to the endpoint's host); it is never written to disk or printed, and a test checks that no file of the run holds it. Without it the records carry no `credentials` and the server is reached keyless.
+- `MAX_TOKENS`: one completion's cap (default 65536, an output reserve, not the window).
+- `E2E_MAX_REQUESTS`: a hard cap on model requests per run (default 200). The plug stops the team when it is passed, so the run ends and the test fails instead of looping.
+- `E2E_PRICE_IN_PER_MTOK` and `E2E_PRICE_OUT_PER_MTOK`: USD per million tokens, for the estimate in `cost.json`.
+
+The sampling knobs (`no_repeat_ngram_size`, `repetition_penalty`, the measured fix for the chain-of-thought repetition loop) are `backends/sampling.default.json`'s; a `sampling.json` beside it overrides them. `thinking_token_budget` is left to the backend's own default.
+
+**Cost.** There is no relay to count with, so the plug asks the team: every vllm agent keeps its counts (the `usage` verb: requests, prompt and output tokens from the replies' `usage` frame), the plug sums them every two seconds and once more before the team stops (a deleted worker keeps the counts last seen). `cost.json` in the run folder has the model, requests, tokens and the USD estimate if priced. It holds no key.
+
+Each test, in `tests/gpu_cli/<id>/`, is the same scenario as `tests/cli/<id>/`: `helpers/cli_scenarios.py` builds the team (the same `send` + `create_agent` calls, the same fixed ids, the same role cards, `cli/<id>/roles/`) and runs the same outcome checks; only the model differs. The probe hands the lead the task in plain words (`helpers/gpu_cli.py`, `TASKS`: what is broken, `python3 test_calc.py`, that the fix is a commit, how the work is split, and that whoever spawns an agent deletes it), waits for the lead to answer `done` (its last `history` row holds the `done` call) or for the test's `timeout`, then checks: solved (the test passes on HEAD, fails on the start commit, the tree is clean), the record set, the spawns and deletes, no orphans, the registry counts none running. The checks about the scripted model (every turn served, a lane per agent) have no twin. Which tool the model called first and how many turns it took are not asserted; the log has `report:` lines for them.
+
+Open bug: the spawn scenarios (`lead_spawns_two`, `leads_spawn_leads`) spawn workers whose tier carries the model's `credentials`; until aisixteen/fantastic#467 (the reach race) is in the binary, they are expected to fail their first worker turn. `single_lead`, `precreated_1_2` and `precreated_tree` spawn nothing. `cli/headless_and_canvas` has no gpu twin: it checks surfaces and asks no model.
+
+**Trying the gpu tests without a GPU.** `helpers/fake_vllm.py` is a fake vLLM `/v1` server (the routes `vllm_backend` calls: `GET /v1/models`, `POST /v1/chat/completions` as SSE with the usage frame) that can play a cli test's `script.json`:
+
+```
+python3 e2e/helpers/fake_vllm.py --script e2e/tests/cli/single_lead/script.json    # prints the url
+VLLM_ENDPOINT=<url> FANTASTIC_AI_MODEL=fake-model VLLM_KV_SLOTS=2 VLLM_KV_OVERFLOW=evict \
+    python3 e2e/run.py --only gpu_cli/single_lead --bin /ABSOLUTE/path/fantastic_team
+```
+
+The selftest (`run.py --selftest`) covers the fake, the plug (what it needs, its records, the usage sum, the cap, `cost.json`, the key) and the gpu tier's selection and collection.
+
 ## The cli group (#219)
 
 `tests/cli/*` are the tests for the command line being fantastic's and the config being fantastic's records. They hold no `team.yaml`: each folder has `test.yaml`, `README.md`, `script.json` and `probe.py`; no test holds a blueprint, and every agent is made with `send` + `create_agent`. All six are free (scripted model, no key, no network) and need no forge. Run them with `python3 e2e/run.py --only cli/<id> --bin ABS_PATH`.
 
-The probe starts the binary the way fantastic is started, in the run folder (fantastic has no `--dir`; it works in the directory it is started in): `--headless`, or `canvas --port N`, or the recipe `--headless ai anthropic --model M --endpoint URL`. It makes the credential store (`backend: env`, the model's key in the team's environment only) and an exec agent in the fixture repo with `send` (`create_agent`), then makes its agents with `send` (`create_agent` under fixed ids: `lead`, `roles`, `w1`, `s1`...; the caller's `can_call` in the payload, the callee's `callable_by` merged into what it has) and hands the lead its task with `send`. `helpers/cli.py` (`make_agent`, `make_lead`, `make_registry`) and `helpers/records.py` (`create`, `update`, `merge`, `link`) have the steps; `Team.agents` is in `helpers/team.py`. The role cards sit in the test's `roles/` folder, which the probe copies next to the kernel, where `role_dirs: [roles]` reads them. `FANTASTIC_AGENTIC_RESOURCES=1` turns the registry on for the tests that spawn.
+The probe starts the binary the way fantastic is started, in the run folder (fantastic has no `--dir`; it works in the directory it is started in): `--headless`, or `canvas --port N`, or the recipe `--headless ai anthropic --model M --endpoint URL`. It makes the credential store (`backend: env`, the model's key in the team's environment only) and an exec agent in the fixture repo with `send` (`create_agent`), then makes its agents with `send` (`create_agent` under fixed ids: `lead`, `roles`, `w1`, `s1`...; the caller's `can_call` in the payload, the callee's `callable_by` merged into what it has) and hands the lead its task with `send`. `helpers/cli.py` (`make_agent`, `make_lead`, `make_registry`) and `helpers/cli_scenarios.py` (the five scenarios' steps and outcome checks, shared with the gpu twins) and `helpers/records.py` (`create`, `update`, `merge`, `link`) have the steps; `Team.agents` is in `helpers/team.py`. The role cards sit in the test's `roles/` folder, which the probe copies next to the kernel, where `role_dirs: [roles]` reads them. `FANTASTIC_AGENTIC_RESOURCES=1` turns the registry on for the tests that spawn.
 
 The shared fixture is a local git repo with one failing test (`test_calc.py` checks `adder.add` and `muler.mul`, both wrong). Solved means the test fails on the start commit, passes on HEAD, and the work tree is clean: the fix is a commit. Two bugs in two files, so two workers can each fix one.
 
@@ -76,12 +117,12 @@ The GitHub build's tests (`build: github`) get the worker exec the patch gives (
 | --- | --- | --- |
 | `free` | a scripted model (`backends/scripted.py`) and a fake forge (`helpers/forge.py`) | built |
 | `turns` | a real model through the `anthropic` plug (aisixteen/fantastic#302), run by hand, needs `ANTHROPIC_API_KEY` or `E2E_ANTHROPIC_KEY` | built |
-| `gpu` | a local-model plug on the GPU box (aisixteen/fantastic#303) | not built |
+| `gpu` | a vLLM server reached directly, through the `vllm` plug (`backends/vllm.py`, #237), run by hand, needs `VLLM_ENDPOINT` and its kin | built |
 
 ## Layout
 
 - `run.py`: the launcher.
-- `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted` or `plug: anthropic`); a test never names a model, an endpoint or a key. A test takes the plug's model, endpoint and host from `ctx.vars` (`model_name`, `model_endpoint`, `model_host`).
+- `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted`, `plug: anthropic` or `plug: vllm`); a test never names a model, an endpoint or a key. A test takes the plug's model, endpoint and host from `ctx.vars` (`model_name`, `model_endpoint`, `model_host`).
 - `helpers/`: `cli.py` (the cli group: the fixture repo, fantastic's start, `create_agent` helpers, the shared script turns), `records.py` (`create`, `update`, `merge`, `link`), `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start with fantastic's words such as `canvas --port N`, stop, `send`, wiring, the page's chat grant), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks), `packs.py` (the packs tests: a plain team, a source worker, `pack` and `install` through `send`), `packs_evals.py` (the eval and verdict tests: build and pack a worker, drive `fantastic_team packs ...`, the pack agents' grants), `page.py` and `page_driver.js` (the team page's own script on a stub DOM over the live `/team_ws/ws`; needs `node` >= 22), `packs_pub.py` (the pack publishing tests, #42: write pack folders through the `files` agent, pack, publish, trust a signer, the content hash), `registry.py` (`FakeRegistry`, an https server with a throwaway self-signed certificate).
 - `helpers/web.py`, `helpers/app.py`: HTTP and websocket client; the app shell and handle driver as processes.
 - `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`, `build`: `any` (default), `general` or `github`; `run.py --build` runs the tests for `any` and that build), `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code).
