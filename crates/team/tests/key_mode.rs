@@ -135,13 +135,28 @@ impl Site {
     }
 }
 
+/// How long a SIGTERM stop may take (the shell drains, the watchdog allows 4s).
+const STOP_BOUND: Duration = Duration::from_secs(30);
+
 struct Kernel {
     child: Child,
 }
 
 impl Kernel {
+    /// Stop it as a person does: SIGTERM, then wait (bounded) for it to exit. The records
+    /// reach the disk before it does; a hang past the bound fails the test.
     async fn stop(mut self) {
-        self.child.kill().await.unwrap();
+        let pid = self.child.id().expect("the kernel is running");
+        let st = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()
+            .unwrap();
+        assert!(st.success(), "kill -TERM {pid}");
+        let exit = tokio::time::timeout(STOP_BOUND, self.child.wait())
+            .await
+            .unwrap_or_else(|_| panic!("the kernel was still running {STOP_BOUND:?} after SIGTERM"))
+            .unwrap();
+        assert_eq!(exit.code(), Some(0), "a SIGTERM stop exits cleanly: {exit}");
     }
 }
 
