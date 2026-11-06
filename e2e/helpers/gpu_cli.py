@@ -164,6 +164,11 @@ def report(ctx, watch: Lead | None = None) -> None:
     totals = ctx.model.totals()
     print(f"  report: {getattr(ctx, 'elapsed', 0):.0f}s, {totals['requests']} requests, "
           f"{totals['input_tokens']} tokens in, {totals['output_tokens']} out (cost.json on stop)")
+    if totals.get("agents"):  # the agents' own counts: cache reads and writes, the cost when priced
+        a = totals["agents"]
+        print(f"  report: agents: {a['requests']} requests, {a['input_tokens']} in, "
+              f"{a['cache_write_tokens']} cache write, {a['cache_read_tokens']} cache read, "
+              f"{a['output_tokens']} out, cost_usd {a['cost_usd'] or 'unpriced'}")
     calls = Counter(f"{a} {verb}" for a, verb in team_mod.log_calls(ctx.team.log()))
     print(f"  report: calls {dict(calls.most_common(12))}")
     if watch and watch.rows:

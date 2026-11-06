@@ -30,6 +30,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DEFAULT_MODEL = "claude-haiku-5-5"  # the one place a model is named
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 DEFAULT_CAP = 60
+CACHING = ("none", "cleanup", "provider_cache")  # ai_core's modes
+POLL_S = 2.0  # seconds between two reads of the agents' usage
+USAGE_KEYS = ("requests", "input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens",
+              "prompt_tokens", "saved_tokens", "cost_usd")
 KEY_ENVS = ("E2E_ANTHROPIC_KEY", "ANTHROPIC_API_KEY")
 HOP_REQUEST = {"host", "content-length", "connection", "accept-encoding", "transfer-encoding",
                "keep-alive"}
@@ -82,6 +86,10 @@ class AnthropicRelay:
         self.key_env = key_env()  # the variable's name only
         self.model_name = os.environ.get("E2E_MODEL") or DEFAULT_MODEL
         self.upstream = os.environ.get("E2E_UPSTREAM", DEFAULT_UPSTREAM).rstrip("/")
+        # ai_core's caching mode for the records; on (provider_cache) by default, as fantastic's plug
+        self.caching = os.environ.get("ANTHROPIC_CACHING") or "provider_cache"
+        if self.caching not in CACHING:
+            raise RuntimeError(f"ANTHROPIC_CACHING={self.caching!r} is not one of {' | '.join(CACHING)}")
         self.cap = int(os.environ.get("E2E_MAX_REQUESTS", DEFAULT_CAP))
         self.requests: list[dict] = []  # parsed JSON bodies of POST /v1/messages, in order
         self.raw_bodies: list[str] = []
@@ -91,6 +99,12 @@ class AnthropicRelay:
         self.errors = 0  # upstream errors and cap refusals
         self.usage_in = 0
         self.usage_out = 0
+        # the agents' own counts (anthropic_backend `usage`), cache reads and writes included: the
+        # relay sees the stream's usage only, which leaves cached input out
+        self.agent_usage: dict[str, dict] = {}
+        self._team = None
+        self._quit = threading.Event()
+        self._poller: threading.Thread | None = None
         self.lock = threading.Lock()
         self._stopped = False
         outer = self
@@ -190,11 +204,66 @@ class AnthropicRelay:
         self.endpoint = self.url + "/v1/messages"
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 
+    # -- what the test's AI records say (the cli scenarios, run with BACKEND=anthropic) ----
+    def ai_record(self) -> dict:
+        """The fields of an AI record that talks to the model through this relay."""
+        return {"handler_module": "anthropic_backend.tools", "model": self.model_name,
+                "endpoint": self.endpoint, "caching": self.caching}
+
+    def recipe_args(self) -> list[str]:
+        """fantastic's recipe that makes the root AI `ai` on this relay."""
+        return ["--headless", "ai", "anthropic", "--model", self.model_name, "--endpoint", self.endpoint]
+
+    def recipe_fields(self) -> dict:
+        """What the recipe leaves for `update_agent` besides the key: the caching mode."""
+        return {"caching": self.caching}
+
+    def watch(self, team) -> None:
+        """Poll `team` for the anthropic agents' usage until the plug stops (`helpers/cli.py start`)."""
+        self._team = team
+        if self._poller is None:
+            self._poller = threading.Thread(target=self._loop, daemon=True)
+            self._poller.start()
+
+    def _loop(self) -> None:
+        while not self._quit.wait(POLL_S):
+            self.poll()
+
+    def poll(self) -> None:
+        """Read every anthropic agent's `usage` now; a deleted agent keeps what was last seen."""
+        team = self._team
+        if team is None or not team.proc or team.proc.poll() is not None:
+            return
+        try:
+            agents = team.agents()
+        except Exception:  # the team is going down
+            return
+        for aid, rec in agents.items():
+            if rec.get("handler_module") != "anthropic_backend.tools":
+                continue
+            try:
+                r = team.send(aid, {"type": "usage"})
+            except Exception:
+                continue
+            u = r.get("result") if r.get("status") == "completed" else None
+            if isinstance(u, dict) and "requests" in u:
+                with self.lock:
+                    old = self.agent_usage.get(aid, {})
+                    self.agent_usage[aid] = {k: max(u.get(k) or 0, old.get(k) or 0) for k in USAGE_KEYS}
+
+    def finish(self, team) -> None:
+        """One last read, before the team stops."""
+        self._team = team
+        self.poll()
+
     def start(self) -> "AnthropicRelay":
         self.thread.start()
         return self
 
     def stop(self) -> None:
+        self._quit.set()
+        if self._poller:
+            self._poller.join(timeout=POLL_S * 3 + 5)
         if self._stopped:
             return
         self._stopped = True
@@ -215,7 +284,15 @@ class AnthropicRelay:
             usd = round(self.usage_in * pin / 1e6 + self.usage_out * pout / 1e6, 8)
         return {"model": self.model_name, "requests": self.count, "replies": self.served,
                 "errors": self.errors, "input_tokens": self.usage_in,
-                "output_tokens": self.usage_out, "usd_estimate": usd}
+                "output_tokens": self.usage_out, "usd_estimate": usd,
+                "agents": self.agents_total()}
+
+    def agents_total(self) -> dict | None:
+        """The agents' own counts summed (cache reads and writes, `cost_usd` when priced), or None."""
+        with self.lock:
+            if not self.agent_usage:
+                return None
+            return {k: sum(u.get(k) or 0 for u in self.agent_usage.values()) for k in USAGE_KEYS}
 
     @property
     def consumed(self) -> bool:

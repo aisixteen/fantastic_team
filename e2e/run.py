@@ -97,9 +97,22 @@ def discover() -> list[dict]:
             out.append({"name": name, "dir": dirpath,
                         "costs": meta.get("costs", "free"),
                         "timeout": int(meta.get("timeout", "180")),
-                        "plug": meta.get("plug", "scripted"),
+                        "plug": plug_of(meta),
+                        "declared_plug": meta.get("plug", "scripted"),
                         "build": meta.get("build", "any")})
     return sorted(out, key=lambda t: t["name"])
+
+
+def plug_of(meta: dict) -> str:
+    """A test's plug: its test.yaml's, except that a model test (costs gpu) takes `BACKEND`
+    when set (`vllm` or `anthropic`), as fantastic picks its backend. A free test never does."""
+    plug = meta.get("plug", "scripted")
+    backend = os.environ.get("BACKEND")
+    if backend and meta.get("costs") == "gpu":
+        if backend not in ("vllm", "anthropic"):
+            raise SystemExit(f"BACKEND must be vllm or anthropic, got {backend!r}")
+        return backend
+    return plug
 
 
 def pick(tests: list[dict], only=(), only_free=False, only_turns=False, only_gpu=False) -> list[dict]:
@@ -677,7 +690,9 @@ def selftest_vllm_plug(v: Verdict) -> None:
 def selftest_gpu(v: Verdict) -> None:
     """Run the launcher as a child with none of the vllm variables: the gpu tests skip, exit 0,
     and `--only-gpu --dry-run` collects their probes and starts nothing."""
-    env = {k: val for k, val in os.environ.items() if k not in VLLM_ENV}
+    # none of any model plug's variables: BACKEND would point the gpu tests at another plug
+    model_env = (*VLLM_ENV, "BACKEND", "E2E_MODEL", *relay_mod.KEY_ENVS)
+    env = {k: val for k, val in os.environ.items() if k not in model_env}
     me = os.path.abspath(__file__)
     r = subprocess.run([sys.executable, me, "--only-gpu"], env=env, capture_output=True, text=True, timeout=120)
     skips = all(f"SKIP {n} " in r.stdout for n in GPU_TESTS)
@@ -694,7 +709,7 @@ def selftest_gpu(v: Verdict) -> None:
         t = by.get(n)
         twin = by.get(n.replace("gpu_cli_ssh/", "cli_ssh/").replace("gpu_cli/", "cli/"))
         files = t and all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "probe.py"))
-        if not (t and twin and files and t["costs"] == "gpu" and t["plug"] == "vllm" and t["build"] == "any"
+        if not (t and twin and files and t["costs"] == "gpu" and t["declared_plug"] == "vllm" and t["build"] == "any"
                 and not os.path.exists(os.path.join(t["dir"], "script.json"))):
             bad.append(n)
     v.check("each gpu test has a cli twin, its README, test.yaml and probe, costs gpu on the vllm plug, no script.json",
