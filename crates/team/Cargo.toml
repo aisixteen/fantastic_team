@@ -24,6 +24,7 @@ fantastic-ram-store.workspace = true
 fantastic-sqlite-store.workspace = true
 team-agentic-resources = { path = "../agentic_resources" }
 team-task-registry = { path = "../task_registry" }
+team-cabinet = { path = "../cabinet" }
 fantastic-user.workspace = true
 fantastic-anthropic-backend.workspace = true
 fantastic-credential-store.workspace = true
