@@ -35,7 +35,7 @@
     "type": "spawn",
     "args": {
      "role": "worker",
-     "task": "The queue is queue. Your id is the id in your own reflect. Work on issue 1, then report done."
+     "task": "The queue is queue. Your id is the id in your own reflect. Work on issue 1, then send your parent a message when you are done."
     }
    }
   ]
@@ -51,17 +51,24 @@
  {
   "calls": [
    {
-    "target": "roles",
-    "type": "report",
+    "target": "{{pl}}",
+    "type": "send",
     "args": {
-     "state": "done",
-     "result": "PR opened for issue 1"
+     "text": "Issue 1 is done: PR opened for issue 1."
     }
    }
   ]
  },
  {
-  "say": "Issue 1 is done: the pull request is open.",
+  "say": "Worker 1 says issue 1 is done.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "I told my parent that issue 1 is done.",
   "calls": [
    {
     "name": "done"
@@ -76,7 +83,7 @@
     "type": "spawn",
     "args": {
      "role": "worker",
-     "task": "The queue is queue. Your id is the id in your own reflect. Work on issue 2, then report done."
+     "task": "The queue is queue. Your id is the id in your own reflect. Work on issue 2, then send your parent a message when you are done."
     }
    }
   ]
@@ -92,17 +99,24 @@
  {
   "calls": [
    {
-    "target": "roles",
-    "type": "report",
+    "target": "{{pl}}",
+    "type": "send",
     "args": {
-     "state": "done",
-     "result": "PR opened for issue 2"
+     "text": "Issue 2 is done: PR opened for issue 2."
     }
    }
   ]
  },
  {
-  "say": "Issue 2 is done: the pull request is open.",
+  "say": "Worker 2 says issue 2 is done.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "I told my parent that issue 2 is done.",
   "calls": [
    {
     "name": "done"

@@ -30,13 +30,17 @@ COMMIT = ("The fix must be a git commit, with a clean work tree afterwards. git 
 END = " When the test passes on the committed tree, end your run with the `done` call."
 DELETE = (" Whoever spawns an agent deletes it with `delete_agent` on `kernel` when its work is done, "
           "and never deletes an agent it did not spawn.")
+# a spawned agent tells its parent with a plain `send` (team#247): the message starts the parent's turn
+TELL = (" A spawned agent may `send` its parent (the agent that spawned it), and that message starts "
+        "the parent's next turn.")
 
 TASKS = {
     "single_lead": BROKEN + "Find the bugs yourself, fix them and commit the fix." + " " + COMMIT.strip() + END,
     "lead_spawns_two": (
         BROKEN + "Do not fix it yourself: spawn two workers with the role `worker` (`spawn` on `roles`), "
         "one for adder.py and one for muler.py, each task naming its file. " + COMMIT +
-        "Tell each worker to commit its fix this way." + DELETE + " Check that the test passes at the end." + END),
+        "Tell each worker to commit its fix this way, and: \"send your parent a message when you are done\"." + TELL
+        + DELETE + " Check that the test passes at the end." + END),
     "precreated_1_2": (
         BROKEN + "Two workers already exist, `w1` and `w2`, and can run the exec agent. Do not fix it "
         "yourself: send `w1` a message to fix adder.py and `w2` one to fix muler.py (verb `send`). " + COMMIT +
@@ -50,7 +54,8 @@ TASKS = {
     "leads_spawn_leads": (
         BROKEN + "Do not fix it yourself: spawn two sub-leads with the role `sublead` (`spawn` on `roles`), "
         "one for adder.py and one for muler.py, each task naming its file. Each sub-lead spawns one worker "
-        "for its file. " + COMMIT + "Tell them that the worker commits this way." + DELETE +
+        "for its file. " + COMMIT + "Tell them that the worker commits this way, and tell each one: \"send your parent a "
+        "message when you are done\"." + TELL + DELETE +
         " Check that the test passes at the end." + END),
     "headless_and_canvas": (
         "Make a canvas for your notes: call `create_agent` on `kernel` with the id `sketch`, `parent_id` "

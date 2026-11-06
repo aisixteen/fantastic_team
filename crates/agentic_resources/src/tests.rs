@@ -63,7 +63,8 @@ impl Bundle for CallerBundle {
 
 /// Stands for ai_core without the dependency: `fork {at}` makes a SIBLING with the
 /// source's record minus `callable_by`/`delete_lock`, as ai_core's fork does. `at` 99
-/// is refused `cuts_turn`, 98 `no_such_row`.
+/// is refused `cuts_turn`, 98 `no_such_row`. `call` makes a call as itself, like
+/// [`CallerBundle`].
 struct ForkBundle;
 
 #[async_trait]
@@ -84,6 +85,9 @@ impl Bundle for ForkBundle {
                 .unwrap()
                 .push((agent_id.as_str().to_string(), text));
             return Ok(Some(json!({"ok": true, "verb": "send"})));
+        }
+        if verb == "call" {
+            return CallerBundle.handle(agent_id, payload, kernel).await;
         }
         if verb != "fork" {
             return Ok(None);
@@ -149,11 +153,11 @@ impl Bundle for PickyBundle {
     }
 }
 
-const WRITER: &str = "---\nname: writer\npurpose: Writes the first draft of a text.\ntier: fast\nmodel: from-the-card\ngrants:\n  $registry: [roles, report]\n  notes: [read]\n---\nYou write clearly and briefly.\n";
+const WRITER: &str = "---\nname: writer\npurpose: Writes the first draft of a text.\ntier: fast\nmodel: from-the-card\ngrants:\n  $registry: [roles]\n  notes: [read]\n---\nYou write clearly and briefly.\n";
 const REVIEWER: &str = "---\nname: reviewer\npurpose: Reads a draft and says what to fix.\ntier: fast\n---\nYou review drafts.\n";
 /// fantastic's generic lead card, as a folder card (the registry ships none).
 const PROJECT_LEAD: &str = include_str!("../testdata/project_lead.md");
-const SUBLEAD: &str = "---\nname: sublead\npurpose: Runs a branch of the work.\ntier: fast\ngrants:\n  $registry: [roles, spawn, get_count, report]\n  notes: [read]\n---\nYou run one branch.\n";
+const SUBLEAD: &str = "---\nname: sublead\npurpose: Runs a branch of the work.\ntier: fast\ngrants:\n  $registry: [roles, spawn, get_count]\n  notes: [read]\n---\nYou run one branch.\n";
 
 fn write_cards(dir: &Path, cards: &[(&str, &str)]) {
     std::fs::create_dir_all(dir).unwrap();
@@ -319,7 +323,7 @@ fn card_parses_header_and_directive() {
     assert_eq!(c.purpose, "Writes the first draft of a text.");
     assert_eq!(c.tier, "fast");
     assert_eq!(c.grants["notes"], json!(["read"]));
-    assert_eq!(c.grants["$registry"], json!(["roles", "report"]));
+    assert_eq!(c.grants["$registry"], json!(["roles"]));
     assert_eq!(c.directive, "You write clearly and briefly.");
 }
 
@@ -466,7 +470,12 @@ async fn spawn_creates_child_with_directive_tier_grants() {
     assert_eq!(m["role"], "writer");
     assert_eq!(m["name"], "scribe");
     assert_eq!(m["can_call"]["notes"], json!(["read"]));
-    assert_eq!(m["can_call"][&r.reg], json!(["roles", "report"]));
+    assert_eq!(m["can_call"][&r.reg], json!(["roles"]));
+    assert_eq!(
+        m["can_call"][lead],
+        json!(["send"]),
+        "it may tell its parent"
+    );
 }
 
 #[tokio::test]
@@ -737,15 +746,7 @@ async fn disabled_without_registry_handler_or_config() {
     let kernel = Arc::new(new_kernel());
     root_of(&kernel, &tmp);
     create(&kernel, json!({"handler_module": HANDLER_MODULE, "id": id})).await;
-    for v in [
-        "roles",
-        "role",
-        "spawn",
-        "report",
-        "fleet",
-        "set_limit",
-        "get_count",
-    ] {
+    for v in ["roles", "role", "spawn", "fleet", "set_limit", "get_count"] {
         let out = send(&kernel, &id, json!({"type": v})).await;
         assert_eq!(
             out,
@@ -835,49 +836,166 @@ async fn spawn_task_string_is_first_message_and_object_refused() {
         .any(|(a, t)| *a == cid && t == "do it"));
 }
 
+/// Wait until `who` received a `send` with `text` (a send is answered when the
+/// parent's handler, its turn, has run).
+async fn got_send(who: &str, text: &str) -> bool {
+    for _ in 0..100 {
+        if SENT
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(a, t)| a == who && t == text)
+        {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    false
+}
+
 #[tokio::test]
-async fn report_messages_parent_and_stores_nothing() {
+async fn spawned_child_sends_its_parent_and_starts_the_parents_turn() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead", "other"], &[("writer.md", WRITER)]).await;
     let (lead, other) = (&r.callers[0], &r.callers[1]);
-    let mut inbox = r.kernel.ensure_inbox(&AgentId::from(lead.as_str()));
-    let id = r.spawn_as(lead, json!({"role": "writer"})).await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let rep = r
-        .call(
-            &id,
-            &r.reg,
-            json!({"type": "report", "state": "done", "result": {"words": 120}}),
-        )
+    let id = id_of(&r.spawn_as(lead, json!({"role": "writer"})).await);
+    // both ends of the edge child -> parent, `send` only
+    assert_eq!(r.meta(&id)["can_call"][lead], json!(["send"]));
+    assert_eq!(r.meta(lead)["callable_by"][&id], json!(["send"]));
+    // the child's `send` is admitted and runs the parent's handler: the AI parent
+    // (a scripted caller.tools agent) gets its turn with the text
+    let text = format!("{id}: done, 120 words");
+    let out = r
+        .call(&id, lead, json!({"type": "send", "text": text}))
         .await;
-    assert_eq!(rep, json!({"ok": true}), "{rep}");
+    assert_eq!(out, json!({"ok": true, "verb": "send"}), "{out}");
+    assert!(got_send(lead, &text).await, "the parent got the message");
     assert!(r.meta(&id).get("task").is_none(), "nothing is stored");
-    let mut got = None;
-    while let Some(item) = inbox.try_recv() {
-        if item.payload["type"] == "report" {
-            got = Some(item.payload);
-        }
+    // only `send`: the child does not control its parent
+    assert_eq!(
+        r.call(&id, lead, json!({"type": "pause"})).await["reason"],
+        "unauthorized"
+    );
+    // the edge is the child's own: another agent, and the child to a non-parent, are refused
+    assert_eq!(
+        r.call(other, lead, json!({"type": "send", "text": "x"}))
+            .await["reason"],
+        "unauthorized"
+    );
+    assert_eq!(
+        r.call(&id, other, json!({"type": "send", "text": "x"}))
+            .await["reason"],
+        "unauthorized"
+    );
+}
+
+#[tokio::test]
+async fn spawn_from_child_sends_the_spawner() {
+    let tmp = TempDir::new().unwrap();
+    let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
+    let lead = r.callers[0].clone();
+    let id = id_of(
+        &r.spawn_as(&lead, json!({"role": "writer", "from": from(&src, 5)}))
+            .await,
+    );
+    // the fork sits beside its source, but tells the agent that spawned it
+    assert_ne!(
+        r.kernel
+            .agents
+            .get(&AgentId::from(id.as_str()))
+            .unwrap()
+            .parent_id
+            .as_ref()
+            .map(|p| p.as_str().to_string()),
+        Some(lead.clone())
+    );
+    assert_eq!(r.meta(&id)["can_call"][&lead], json!(["send"]));
+    assert_eq!(r.meta(&lead)["callable_by"][&id], json!(["send"]));
+    let text = format!("{id}: forked work done");
+    let out = r
+        .call(&id, &lead, json!({"type": "send", "text": text}))
+        .await;
+    assert_eq!(out, json!({"ok": true, "verb": "send"}), "{out}");
+    assert!(got_send(&lead, &text).await);
+}
+
+#[tokio::test]
+async fn child_to_parent_send_is_merged_never_overwritten() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp, &["lead", "peer"], &[("writer.md", WRITER)]).await;
+    let (lead, peer) = (r.callers[0].clone(), r.callers[1].clone());
+    // the parent already admits a peer, and a host's reach writes `history` from the
+    // child to the parent on both ends before `create_agent` returns
+    r.kernel
+        .edit_callable_by(&AgentId::from(lead.as_str()), |m| {
+            grant_verbs(m, &peer, &json!(["send"]));
+            true
+        })
+        .unwrap();
+    let weak = Arc::downgrade(&r.kernel);
+    let l = lead.clone();
+    r.kernel
+        .add_state_subscriber(Arc::new(move |v: &Value, _body| {
+            if v.get("kind").and_then(Value::as_str) != Some("added") {
+                return;
+            }
+            let (Some(id), Some(k)) = (v.get("agent_id").and_then(Value::as_str), weak.upgrade())
+            else {
+                return;
+            };
+            if id == l {
+                return;
+            }
+            let (pid, cid) = (l.clone(), id.to_string());
+            k.edit_can_call(&AgentId::from(id), move |m| {
+                grant_verbs(m, &pid, &json!(["history"]));
+                true
+            })
+            .unwrap();
+            k.edit_callable_by(&AgentId::from(l.as_str()), move |m| {
+                grant_verbs(m, &cid, &json!(["history"]));
+                true
+            })
+            .unwrap();
+        }));
+    let a = id_of(&r.spawn_as(&lead, json!({"role": "writer"})).await);
+    let b = id_of(&r.spawn_as(&lead, json!({"role": "writer"})).await);
+    for id in [&a, &b] {
+        assert_eq!(r.meta(id)["can_call"][&lead], json!(["history", "send"]));
+        assert_eq!(r.meta(&lead)["callable_by"][id], json!(["history", "send"]));
+        // the card's own grants stay
+        assert_eq!(r.meta(id)["can_call"]["notes"], json!(["read"]));
     }
-    assert_eq!(
-        got.unwrap(),
-        json!({"type": "report", "from": id, "state": "done", "result": {"words": 120}})
-    );
-    // anyone else is refused, and so is a state outside the six
-    let no = r
-        .call(other, &r.reg, json!({"type": "report", "state": "done"}))
+    // what the parent held before is kept
+    assert_eq!(r.meta(&lead)["callable_by"][&peer], json!(["send"]));
+    assert_eq!(r.meta(&lead)["callable_by"]["$self"], json!("*"));
+}
+
+#[tokio::test]
+async fn operator_spawn_opens_no_edge_to_a_parent() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp, &[], &[("reviewer.md", REVIEWER)]).await;
+    let id = id_of(&r.op(json!({"type": "spawn", "role": "reviewer"})).await);
+    // no caller: the child's parent is the registry, which takes no message
+    assert_eq!(keys_of(&r, &id, "can_call"), ["$self"]);
+    // and a card that grants nothing on `$registry` opens no edge to it
+    assert!(r.meta(&r.reg)["callable_by"].get(&id).is_none());
+}
+
+#[tokio::test]
+async fn report_is_not_a_verb() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
+    let out = r
+        .op(json!({"type": "report", "state": "done", "result": "ok"}))
         .await;
-    assert_eq!(no["reason"], "not_spawned", "{no}");
-    assert_eq!(
-        r.op(json!({"type": "report", "state": "done"})).await["reason"],
-        "not_spawned"
+    assert_eq!(out["reason"], "unhandled", "{out}");
+    assert_eq!(out["verb"], "report");
+    assert!(verb_docs_json().get("report").is_none());
+    assert!(
+        !README.contains("report"),
+        "the readme names no report verb"
     );
-    let bad = r
-        .call(&id, &r.reg, json!({"type": "report", "state": "finished"}))
-        .await;
-    assert_eq!(bad["reason"], "bad_arg", "{bad}");
-    assert!(r.meta(&id).get("task").is_none());
 }
 
 #[tokio::test]
@@ -949,8 +1067,8 @@ async fn get_count_counts_every_spawned_agent() {
     assert_eq!(r.count(None).await, json!({"running": 2, "max": 2}));
     let third = r.spawn_as(lead, json!({"role": "writer"})).await;
     assert_eq!(third["reason"], "limit", "{third}");
-    // a report frees nothing; only delete_agent does
-    r.call(&a, &r.reg, json!({"type": "report", "state": "done"}))
+    // a done message to the parent frees nothing; only delete_agent does
+    r.call(&a, lead, json!({"type": "send", "text": "done"}))
         .await;
     assert_eq!(r.count(None).await["running"], 2);
     assert_eq!(
@@ -986,18 +1104,12 @@ async fn no_auto_cleanup_on_done() {
         .unwrap()
         .to_string();
     let before = r.kernel.agents.len();
-    r.call(
-        &a,
-        &r.reg,
-        json!({"type": "report", "state": "done", "result": "ok"}),
-    )
-    .await;
-    r.call(
-        &b,
-        &r.reg,
-        json!({"type": "report", "state": "failed", "result": "no"}),
-    )
-    .await;
+    for (who, text) in [(&a, "done: ok"), (&b, "failed: no")] {
+        let out = r
+            .call(who, lead, json!({"type": "send", "text": text}))
+            .await;
+        assert_eq!(out["verb"], "send", "{out}");
+    }
     assert_eq!(r.kernel.agents.len(), before, "nothing was deleted");
     let m = r.meta(&a);
     assert_eq!(
@@ -1043,9 +1155,10 @@ async fn no_card_is_built_in() {
         .as_array()
         .unwrap_or_else(|| panic!("{c}"))
         .clone();
-    for v in ["roles", "role", "spawn", "get_count", "fleet", "report"] {
+    for v in ["roles", "role", "spawn", "get_count", "fleet"] {
         assert!(grants.contains(&json!(v)), "grants {v}");
     }
+    assert!(!grants.contains(&json!("report")), "report is no verb");
     assert!(lead
         .spawn_as(&lead.callers[0], json!({"role": "project_lead"}))
         .await
@@ -1135,11 +1248,16 @@ async fn spawn_from_forks_and_applies_the_role_card() {
     assert_eq!(m["model"], "m1", "the tier's model, not the source's");
     assert_eq!(m["lead"], json!(lead));
     assert_eq!(m["can_call"]["notes"], json!(["read"]));
-    assert_eq!(m["can_call"][&r.reg], json!(["roles", "report"]));
+    assert_eq!(m["can_call"][&r.reg], json!(["roles"]));
     assert_eq!(
         r.meta(&r.reg)["callable_by"][id],
-        json!(["roles", "report"]),
-        "the registry hears its report"
+        json!(["roles"]),
+        "the registry admits what the card grants on it"
+    );
+    assert_eq!(
+        m["can_call"][lead],
+        json!(["send"]),
+        "it may tell the spawner"
     );
     // the name is applied when given
     let named = r
@@ -1174,7 +1292,12 @@ async fn spawn_from_keeps_the_source_store_and_drops_its_other_grants() {
     );
     assert!(m["can_call"].get("tier_store").is_none());
     let keys: Vec<&String> = m["can_call"].as_object().unwrap().keys().collect();
-    assert_eq!(keys.len(), 3, "store, notes, registry: {keys:?}");
+    assert_eq!(
+        keys.len(),
+        4,
+        "store, notes, registry, the spawner: {keys:?}"
+    );
+    assert_eq!(m["can_call"][&r.callers[0]], json!(["send"]));
 }
 
 #[tokio::test]
@@ -1555,7 +1678,7 @@ async fn spawn_without_reach_gives_exactly_the_parent_verbs() {
 
 // ── the card's tool grants (#436) ───────────────────────────────────
 
-const WIDE: &str = "---\nname: wide\npurpose: Reads and writes notes.\ntier: fast\ngrants:\n  $registry: [roles, report]\n  notes: [read, write]\n---\nYou write.\n";
+const WIDE: &str = "---\nname: wide\npurpose: Reads and writes notes.\ntier: fast\ngrants:\n  $registry: [roles]\n  notes: [read, write]\n---\nYou write.\n";
 const STAR: &str = "---\nname: star\npurpose: Anything on notes.\ntier: fast\ngrants:\n  notes: \"*\"\n---\nYou do all.\n";
 
 async fn notes_tool(r: &Rig) {
@@ -1672,7 +1795,7 @@ async fn refused_tool_grant_undoes_the_spawn() {
     let tmp = TempDir::new().unwrap();
     let picky = uid(&tmp, "zpicky");
     let card = format!(
-        "---\nname: two\npurpose: Two tools.\ntier: fast\ngrants:\n  $registry: [roles, report]\n  notes: [read]\n  {picky}: [read]\n---\nx\n"
+        "---\nname: two\npurpose: Two tools.\ntier: fast\ngrants:\n  $registry: [roles]\n  notes: [read]\n  {picky}: [read]\n---\nx\n"
     );
     let r = rig(&tmp, &["lead"], &[("two.md", card.as_str())]).await;
     let lead = r.callers[0].clone();
@@ -1686,6 +1809,7 @@ async fn refused_tool_grant_undoes_the_spawn() {
     let notes_before = r.meta("notes")["callable_by"].clone();
     let reg_before = keys_of(&r, &r.reg, "callable_by");
     let lead_before = keys_of(&r, &lead, "can_call");
+    let lead_cb_before = keys_of(&r, &lead, "callable_by");
     let agents_before = r.kernel.agents.len();
     let out = r
         .spawn_as(&lead, json!({"role": "two", "task": "go"}))
@@ -1701,6 +1825,11 @@ async fn refused_tool_grant_undoes_the_spawn() {
     );
     assert_eq!(keys_of(&r, &r.reg, "callable_by"), reg_before);
     assert_eq!(keys_of(&r, &lead, "can_call"), lead_before);
+    assert_eq!(
+        keys_of(&r, &lead, "callable_by"),
+        lead_cb_before,
+        "the child -> parent edge is taken back"
+    );
 }
 
 #[tokio::test]
@@ -1717,6 +1846,8 @@ async fn delete_agent_removes_the_spawned_agents_tool_entries() {
     assert!(r.meta("notes")["callable_by"].get(&id).is_none());
     assert!(r.meta(&r.reg)["callable_by"].get(&id).is_none());
     assert!(r.meta(&lead)["can_call"].get(&id).is_none());
+    assert!(r.meta(&lead)["callable_by"].get(&id).is_none());
+    assert_eq!(r.meta(&lead)["callable_by"][&keep], json!(["send"]));
     assert_eq!(r.meta("notes")["callable_by"][&keep], json!(["read"]));
 }
 
@@ -1872,7 +2003,7 @@ async fn get_count_counts_all_existing_agents() {
     let b = spawn_id(&r, lead, "writer").await;
     spawn_id(&r, lead, "reviewer").await;
     r.call(lead, &a, json!({"type": "pause"})).await;
-    r.call(&b, &r.reg, json!({"type": "report", "state": "done"}))
+    r.call(&b, lead, json!({"type": "send", "text": "done"}))
         .await;
     assert_eq!(r.count(None).await["running"], 3);
     assert_eq!(r.count(Some("writer")).await["running"], 2);
@@ -1897,16 +2028,16 @@ async fn paused_agent_keeps_its_slot_and_spawn_is_refused() {
 }
 
 #[tokio::test]
-async fn done_report_does_not_pause_the_sender() {
+async fn done_message_does_not_pause_the_sender() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
     let a = spawn_id(&r, lead, "writer").await;
     for state in ["done", "failed"] {
         let rep = r
-            .call(&a, &r.reg, json!({"type": "report", "state": state}))
+            .call(&a, lead, json!({"type": "send", "text": state}))
             .await;
-        assert_eq!(rep, json!({"ok": true}), "{rep}");
+        assert_eq!(rep, json!({"ok": true, "verb": "send"}), "{rep}");
     }
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert!(
@@ -1927,7 +2058,7 @@ async fn delete_agent_is_the_only_way_to_free_a_slot() {
     let a = spawn_id(&r, lead, "writer").await;
     spawn_id(&r, lead, "writer").await;
     r.call(lead, &a, json!({"type": "pause"})).await;
-    r.call(&a, &r.reg, json!({"type": "report", "state": "done"}))
+    r.call(&a, lead, json!({"type": "send", "text": "done"}))
         .await;
     assert_eq!(
         r.spawn_as(lead, json!({"role": "writer"})).await["reason"],
@@ -1978,15 +2109,17 @@ async fn delegated_quota_counts_paused_and_done_agents() {
         .unwrap()
         .to_string();
     let w2 = spawn_id(&r, &sub2, "writer").await;
-    r.call(&w2, &r.reg, json!({"type": "report", "state": "done"}))
+    let told = r
+        .call(&w2, &sub2, json!({"type": "send", "text": "done"}))
         .await;
+    assert_eq!(told["verb"], "send", "{told}");
     let no2 = r.spawn_as(&sub2, json!({"role": "writer"})).await;
     assert_eq!(no2["reason"], "limit", "{no2}");
     assert_eq!(no2["scope"], "subtree_role");
 }
 
 #[tokio::test]
-async fn get_count_ignores_a_resume_arg_and_registry_grants_only_report() {
+async fn get_count_ignores_a_resume_arg_and_registry_grants_only_the_card() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
@@ -2000,12 +2133,9 @@ async fn get_count_ignores_a_resume_arg_and_registry_grants_only_report() {
         .op(json!({"type": "get_count", "resume": "no_such_agent"}))
         .await;
     assert_eq!(nope, plain);
-    // the registry is only let in for `report`
-    assert_eq!(r.meta(&a)["can_call"][&r.reg], json!(["roles", "report"]));
-    assert_eq!(
-        r.meta(&r.reg)["callable_by"][&a],
-        json!(["roles", "report"])
-    );
+    // the registry is let in only for what the card grants on it
+    assert_eq!(r.meta(&a)["can_call"][&r.reg], json!(["roles"]));
+    assert_eq!(r.meta(&r.reg)["callable_by"][&a], json!(["roles"]));
 }
 
 // ── the refusal shape: `error` is a sentence, `reason` is the code ──────────
@@ -2122,7 +2252,7 @@ async fn grant_failed_refusal_reason_is_code() {
     let tmp = TempDir::new().unwrap();
     let picky = uid(&tmp, "zpicky");
     let card = format!(
-        "---\nname: two\npurpose: Two tools.\ntier: fast\ngrants:\n  $registry: [roles, report]\n  notes: [read]\n  {picky}: [read]\n---\nx\n"
+        "---\nname: two\npurpose: Two tools.\ntier: fast\ngrants:\n  $registry: [roles]\n  notes: [read]\n  {picky}: [read]\n---\nx\n"
     );
     let r = rig(&tmp, &["lead"], &[("two.md", card.as_str())]).await;
     let lead = r.callers[0].clone();
@@ -2164,22 +2294,6 @@ async fn bad_tier_refusal_reason_is_code() {
     r.kernel.update(&AgentId::from(r.reg.as_str()), patch);
     let out = r.spawn_as(&r.callers[0], json!({"role": "writer"})).await;
     assert_shape(&out, "bad_tier");
-}
-
-#[tokio::test]
-async fn not_spawned_refusal_reason_is_code() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp, &["lead", "other"], &[("writer.md", WRITER)]).await;
-    let other = &r.callers[1];
-    // not spawned by anyone: the operator has no origin agent
-    let op = r.op(json!({"type": "report", "state": "done"})).await;
-    assert_shape(&op, "not_spawned");
-    // an agent that exists but was not spawned by this registry
-    let no = r
-        .call(other, &r.reg, json!({"type": "report", "state": "done"}))
-        .await;
-    assert_shape(&no, "not_spawned");
-    assert!(no["hint"].is_string(), "{no}");
 }
 
 #[test]
