@@ -1,0 +1,23 @@
+[package]
+publish = false
+name = "team-cabinet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cabinets — a master AI opens cabinets: subcanvases, each with one worker AI that builds its own equipment and talks to its peers. Moved from fantastic (fantastic-cabinet)."
+
+[dependencies]
+fantastic-bundle.workspace = true
+fantastic-kernel.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+# the manager's lock: serial verbs hold it across their awaits
+tokio.workspace = true
+
+[dev-dependencies]
+# Every test drives a real kernel: the root's loader, a ram store for the
+# master's memory, and a scripted AI standing in for the backend.
+fantastic-core.workspace = true
+fantastic-ram-store.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }

@@ -1640,6 +1640,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "team-agentic-resources",
+ "team-cabinet",
  "team-git-connector",
  "team-github-connector",
  "team-task-registry",
@@ -5686,6 +5687,20 @@ dependencies = [
  "fantastic-bundle",
  "fantastic-core",
  "fantastic-kernel",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "team-cabinet"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-core",
+ "fantastic-kernel",
+ "fantastic-ram-store",
  "serde_json",
  "tempfile",
  "tokio",

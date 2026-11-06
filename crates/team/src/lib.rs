@@ -54,7 +54,8 @@ pub mod worker_exec;
 /// (`agentic_resources.tools`, crates/agentic_resources) is inert in a team whose
 /// registry record has no `role_dirs`; the task registry (`task_registry.tools`,
 /// crates/task_registry) is inert in a team whose registry record has no
-/// `task_store_id`.
+/// `task_store_id`; the cabinets (`cabinet.tools`, crates/cabinet) act only for
+/// a manager agent the operator makes and wires.
 pub fn register_team(reg: &mut BundleRegistry) {
     reg.register(
         team_git_connector::HANDLER_MODULE,
@@ -72,6 +73,7 @@ pub fn register_team(reg: &mut BundleRegistry) {
         team_task_registry::HANDLER_MODULE,
         team_task_registry::TaskRegistryBundle::default(),
     );
+    reg.register(team_cabinet::HANDLER_MODULE, team_cabinet::CabinetBundle);
     // The model backend and the credential store the new team's records name (`new_team`).
     reg.register(
         fantastic_anthropic_backend::HANDLER_MODULE,
@@ -306,6 +308,14 @@ mod tests {
     #[test]
     fn register_team_registers_the_task_registry() {
         assert!(registry().get("task_registry.tools").is_some());
+    }
+
+    #[test]
+    fn register_team_registers_the_cabinet() {
+        assert!(registry().get("cabinet.tools").is_some());
+        let mut reg = BundleRegistry::new();
+        register_team(&mut reg);
+        assert!(reg.get("cabinet.tools").is_some());
     }
 
     /// Boot the root and write its record without starting the kernel, so a
