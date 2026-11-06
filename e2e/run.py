@@ -1343,6 +1343,7 @@ FAKE_PODMAN = """#!/bin/sh
 printf '%s|key=%s\\n' "$*" "${AUTHORIZED_KEY:+set}" >> "$FAKE_PODMAN_LOG"
 case "$FAKE_PODMAN_MODE:$1" in
   down:info) echo "Cannot connect to Podman. Is the machine running?" >&2; exit 125 ;;
+  pasta:info) echo "false true pasta" ;;
   *:info) echo arm64 ;;
   *:image) exit 0 ;;
   *:run) echo c0ffee ;;
@@ -1356,7 +1357,7 @@ exit 0
 
 def selftest_podman_remote(v: Verdict) -> None:
     """The ssh remote's helper (#242) without Podman: SKIP without it or its machine, the ssh command
-    lines, the gateway URL, the source tag, the image files, the cache by tag, and teardown on a
+    lines, the gateway URL and its network options, the source tag, the image files, the cache by tag, and teardown on a
     failed start."""
     from helpers.verdict import Skip
     pr = podman_remote
@@ -1469,6 +1470,16 @@ def selftest_podman_remote(v: Verdict) -> None:
             open(log, "w").close()
             r.stop()
             v.check("stop after teardown removes nothing twice", open(log).read() == "")
+            runs = [c for c in calls if c.startswith("run ")]
+            v.check("a podman machine (or no pasta): the container takes no network options",
+                    pr.network_args() == [] and "--network" not in runs[0] and "--add-host" not in runs[0], str(runs))
+        with podman_env(E2E_PODMAN=fake, FAKE_PODMAN_LOG=log, FAKE_PODMAN_MODE="pasta"):
+            open(log, "w").close()
+            pr.Remote(run_dir, "img:tag", log=lambda *_: None)._run("img:tag", "ssh-ed25519 AAAA e2e")
+            runs = [c for c in open(log).read().splitlines() if c.startswith("run ")]
+            v.check("local rootless pasta: the host's loopback is mapped and the gateway name pinned to it",
+                    len(runs) == 1 and f"--network pasta:--map-host-loopback,{pr.HOST_LOOPBACK}" in runs[0]
+                    and f"--add-host {pr.GATEWAY}:{pr.HOST_LOOPBACK}" in runs[0], str(runs))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
