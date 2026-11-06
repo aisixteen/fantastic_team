@@ -133,7 +133,7 @@ class AnthropicRelay:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def _forward(self, method, body: bytes | None):
+            def _forward(self, method, body: bytes | None, count_error: bool = False):
                 headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_REQUEST}
                 req = urllib.request.Request(outer.upstream + self.path, data=body,
                                              headers=headers, method=method)
@@ -147,7 +147,11 @@ class AnthropicRelay:
                     return self._json(502, {"type": "error", "error": {
                         "type": "api_error", "message": f"e2e relay: upstream unreachable: {e.__class__.__name__}"}})
                 collected = bytearray()
-                self.send_response(resp.status if hasattr(resp, "status") else resp.code)
+                status = resp.status if hasattr(resp, "status") else resp.code
+                if count_error and status != 200:  # booked before the reply goes out: a client that
+                    with outer.lock:              # has read it sees the relay errored
+                        outer.errors += 1
+                self.send_response(status)
                 for k, v in resp.headers.items():
                     if k.lower() not in HOP_RESPONSE:
                         self.send_header(k, v)
@@ -163,7 +167,7 @@ class AnthropicRelay:
                         self.wfile.flush()
                 finally:
                     resp.close()
-                return resp.status if hasattr(resp, "status") else resp.code, bytes(collected)
+                return status, bytes(collected)
 
             def do_GET(self):
                 if not self.path.startswith("/v1/"):
@@ -194,7 +198,7 @@ class AnthropicRelay:
                     return self._json(429, {"type": "error", "error": {
                         "type": "rate_limit_error",
                         "message": f"e2e relay: request cap of {outer.cap} reached (E2E_MAX_REQUESTS)"}})
-                result = self._forward("POST", body)
+                result = self._forward("POST", body, count_error=True)
                 if result is None:
                     return
                 status, data = result
@@ -204,8 +208,6 @@ class AnthropicRelay:
                         outer.served += 1
                         outer.usage_in += tin
                         outer.usage_out += tout
-                    else:
-                        outer.errors += 1
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.port = self.httpd.server_address[1]
