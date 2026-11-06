@@ -23,7 +23,7 @@ from .verdict import Skip
 def require(ctx) -> None:
     pr.require()
     if ctx.model.keyed:
-        raise Skip("the gpu ssh twins need a keyless endpoint: the box holds no key (VLLM_API_KEY is set)")
+        raise Skip(f"the gpu ssh twins need a keyless endpoint: the box holds no key ({ctx.model.key_env} is set)")
 
 
 def remote_record(ctx, id: str, parent: str = "user") -> dict:

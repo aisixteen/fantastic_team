@@ -13,9 +13,17 @@ and the model. On stop it writes `<run_dir>/cost.json`. It gives a USD estimate 
 when E2E_PRICE_IN_PER_MTOK and E2E_PRICE_OUT_PER_MTOK are both set. A hard cap,
 E2E_MAX_REQUESTS (default 60), answers 429 past it, so a loop cannot run up the bill.
 
+The gpu tier's cli scenarios run on this plug with `BACKEND=anthropic` (#251): their AI records
+are `anthropic_backend` ones on the relay (`ai_record`, `recipe_args`, `recipe_fields`), with
+prompt caching on by default (`caching` from ANTHROPIC_CACHING: none | cleanup | provider_cache,
+default provider_cache, as fantastic's plug). The stream's usage leaves cached input out, so, as
+the vllm plug does, the relay also asks the team: every anthropic agent's `usage` (requests,
+input, cache write and read, output, prompt, saved, `cost_usd` when its record is priced) is read
+every POLL_S seconds and once before the team stops, and `cost.json` gets their sum as `agents`.
+
 Environment: E2E_ANTHROPIC_KEY or ANTHROPIC_API_KEY (one must be set, else the test is
 skipped), E2E_MODEL (the model's name; default DEFAULT_MODEL), E2E_UPSTREAM,
-E2E_MAX_REQUESTS, E2E_PRICE_IN_PER_MTOK, E2E_PRICE_OUT_PER_MTOK.
+E2E_MAX_REQUESTS, E2E_PRICE_IN_PER_MTOK, E2E_PRICE_OUT_PER_MTOK, ANTHROPIC_CACHING.
 """
 
 from __future__ import annotations
@@ -32,8 +40,9 @@ DEFAULT_UPSTREAM = "https://api.anthropic.com"
 DEFAULT_CAP = 60
 CACHING = ("none", "cleanup", "provider_cache")  # ai_core's modes
 POLL_S = 2.0  # seconds between two reads of the agents' usage
-USAGE_KEYS = ("requests", "input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens",
-              "prompt_tokens", "saved_tokens", "cost_usd")
+#: the counts of an agent's `usage` the relay sums; `cost_usd` is there only when the record is priced
+COUNT_KEYS = ("requests", "input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens",
+              "prompt_tokens", "saved_tokens")
 KEY_ENVS = ("E2E_ANTHROPIC_KEY", "ANTHROPIC_API_KEY")
 HOP_REQUEST = {"host", "content-length", "connection", "accept-encoding", "transfer-encoding",
                "keep-alive"}
@@ -105,6 +114,7 @@ class AnthropicRelay:
         self._team = None
         self._quit = threading.Event()
         self._poller: threading.Thread | None = None
+        self.poll_s = POLL_S
         self.lock = threading.Lock()
         self._stopped = False
         outer = self
@@ -226,7 +236,7 @@ class AnthropicRelay:
             self._poller.start()
 
     def _loop(self) -> None:
-        while not self._quit.wait(POLL_S):
+        while not self._quit.wait(self.poll_s):
             self.poll()
 
     def poll(self) -> None:
@@ -249,7 +259,10 @@ class AnthropicRelay:
             if isinstance(u, dict) and "requests" in u:
                 with self.lock:
                     old = self.agent_usage.get(aid, {})
-                    self.agent_usage[aid] = {k: max(u.get(k) or 0, old.get(k) or 0) for k in USAGE_KEYS}
+                    new = {k: max(int(u.get(k) or 0), int(old.get(k) or 0)) for k in COUNT_KEYS}
+                    cost = u.get("cost_usd")  # absent when the record has no prices
+                    new["cost_usd"] = None if cost is None else max(float(cost), old.get("cost_usd") or 0.0)
+                    self.agent_usage[aid] = new
 
     def finish(self, team) -> None:
         """One last read, before the team stops."""
@@ -263,7 +276,7 @@ class AnthropicRelay:
     def stop(self) -> None:
         self._quit.set()
         if self._poller:
-            self._poller.join(timeout=POLL_S * 3 + 5)
+            self._poller.join(timeout=self.poll_s * 3 + 5)
         if self._stopped:
             return
         self._stopped = True
@@ -288,15 +301,29 @@ class AnthropicRelay:
                 "agents": self.agents_total()}
 
     def agents_total(self) -> dict | None:
-        """The agents' own counts summed (cache reads and writes, `cost_usd` when priced), or None."""
+        """The agents' own counts summed (cache reads and writes), or None when no agent was read.
+        `cost_usd` is their sum when every agent's record is priced, else None (unpriced)."""
         with self.lock:
             if not self.agent_usage:
                 return None
-            return {k: sum(u.get(k) or 0 for u in self.agent_usage.values()) for k in USAGE_KEYS}
+            seen = list(self.agent_usage.values())
+        out = {k: sum(u[k] for u in seen) for k in COUNT_KEYS}
+        costs = [u["cost_usd"] for u in seen]
+        out["cost_usd"] = None if None in costs else round(sum(costs), 8)
+        return out
 
     @property
     def consumed(self) -> bool:
         return self.served >= 1 and self.errors == 0
+
+    @property
+    def capped(self) -> bool:
+        """A request past E2E_MAX_REQUESTS came (and got 429): the run must end (`gpu_cli.wait_done`)."""
+        return self.count > self.cap
+
+    @property
+    def errored_reason(self) -> str | None:
+        return f"request cap of {self.cap} reached (E2E_MAX_REQUESTS)" if self.capped else None
 
     @property
     def errored(self) -> bool:

@@ -9,6 +9,7 @@ python3 e2e/run.py --only-turns         the turns tests, a real model, by hand; 
 python3 e2e/run.py --only-turns --dry-run   discover the turns tests and collect their probes; starts nothing
 python3 e2e/run.py --only-gpu           the gpu tests, a vLLM server (the shared RTX 6000), by hand; SKIP without its variables
 python3 e2e/run.py --only-gpu --dry-run discover the gpu tests and collect their probes; starts nothing
+BACKEND=anthropic python3 e2e/run.py --only-gpu   the gpu tests on Sonnet/Haiku through the relay instead; real money, by hand
 python3 e2e/run.py --build github --bin PATH   the tests for the GitHub build (default: general)
 python3 e2e/run.py --selftest           the harness proves itself, no binary
 python3 e2e/run.py --only app/attach_remote --bin /ABSOLUTE/path/fantastic_team   a test that needs the app: build it next to the binary first
@@ -54,6 +55,18 @@ The same variables as fantastic's `vllm` plug (aisixteen/fantastic `e2e/backends
 - `E2E_MAX_REQUESTS`: a hard cap on model requests per run (default 200). The plug stops the team when it is passed, so the run ends and the test fails instead of looping.
 - `E2E_PRICE_IN_PER_MTOK` and `E2E_PRICE_OUT_PER_MTOK`: USD per million tokens, for the estimate in `cost.json`.
 
+**`BACKEND`: the other model server (#251).** The gpu tests are declared on the vllm plug; `BACKEND` picks their plug, as fantastic's own e2e picks its backend: `BACKEND=vllm` (the shared RTX, the default) or `BACKEND=anthropic` (Sonnet or Haiku through the recording relay of the turns tier, `backends/anthropic.py`). A free or turns test never reads it; any other value is refused. On the anthropic plug the AI records are `anthropic_backend` ones on the relay (the recipe is `--headless ai anthropic --model M --endpoint URL`), and they take the turns tier's variables (above) plus:
+
+- `ANTHROPIC_CACHING`: the records' `caching` (`none`, `cleanup` or `provider_cache`; default `provider_cache`, prompt caching on, as fantastic's plug).
+
+```
+BACKEND=anthropic E2E_MODEL=claude-sonnet-... ANTHROPIC_API_KEY=... E2E_MAX_REQUESTS=80 \
+    python3 e2e/run.py --only gpu_cli/single_lead --bin /ABSOLUTE/path/fantastic_team
+BACKEND=anthropic python3 e2e/run.py --only-gpu --dry-run    # the twelve on the anthropic plug, starts nothing
+```
+
+**This costs real money**: every turn is a paid model call. Run it by hand, one test at a time, and cap it with `E2E_MAX_REQUESTS` (past it the relay answers 429). Its `cost.json` has the relay's own stream counts and an `agents` block: like the vllm plug, the relay asks every `anthropic_backend` agent for its `usage` every two seconds and once before the team stops, and sums requests, input, cache write, cache read, output, prompt and saved tokens, and `cost_usd` (`null`, "unpriced" in the report, unless every record carries both prices); the stream's own count leaves cached input out. The ssh twins need a keyless endpoint, so on this plug they are a `SKIP`.
+
 The sampling knobs (`no_repeat_ngram_size`, `repetition_penalty`, the measured fix for the chain-of-thought repetition loop) are `backends/sampling.default.json`'s; a `sampling.json` beside it overrides them. `thinking_token_budget` is left to the backend's own default.
 
 **Cost.** There is no relay to count with, so the plug asks the team: every vllm agent keeps its counts (the `usage` verb: requests, prompt and output tokens from the replies' `usage` frame), the plug sums them every two seconds and once more before the team stops (a deleted worker keeps the counts last seen). `cost.json` in the run folder has the model, requests, tokens and the USD estimate if priced. It holds no key.
@@ -70,7 +83,7 @@ VLLM_ENDPOINT=<url> FANTASTIC_AI_MODEL=fake-model VLLM_KV_SLOTS=2 VLLM_KV_OVERFL
     python3 e2e/run.py --only gpu_cli/single_lead --bin /ABSOLUTE/path/fantastic_team
 ```
 
-The selftest (`run.py --selftest`) covers the fake, the plug (what it needs, its records, the usage sum, the cap, `cost.json`, the key) and the gpu tier's selection and collection.
+The selftest (`run.py --selftest`) covers the fake, the plug (what it needs, its records, the usage sum, the cap, `cost.json`, the key), the gpu tier's selection and collection, `BACKEND` (the gpu tests only; `--only-gpu --dry-run` collects the twelve with either value), the relay's records, recipe and caching, its usage poll summed into `cost.json` (a fake team, no model), and that its child runs carry no model variable: the selftest sets every one (fakes) and the child's gpu tests must still be on the vllm plug and skip. It passes with or without `BACKEND` or a key in the caller's environment.
 
 ## The cli group (#219)
 
@@ -158,7 +171,7 @@ The GitHub build's tests (`build: github`) get the worker exec the patch gives (
 | --- | --- | --- |
 | `free` | a scripted model (`backends/scripted.py`) and a fake forge (`helpers/forge.py`) | built |
 | `turns` | a real model through the `anthropic` plug (aisixteen/fantastic#302), run by hand, needs `ANTHROPIC_API_KEY` or `E2E_ANTHROPIC_KEY` | built |
-| `gpu` | a vLLM server reached directly, through the `vllm` plug (`backends/vllm.py`, #237), run by hand, needs `VLLM_ENDPOINT` and its kin | built |
+| `gpu` | a vLLM server reached directly, through the `vllm` plug (`backends/vllm.py`, #237), run by hand, needs `VLLM_ENDPOINT` and its kin; or, with `BACKEND=anthropic`, the `anthropic` plug (#251) | built |
 
 ## Layout
 
