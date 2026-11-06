@@ -565,14 +565,14 @@ mod tests {
         build(None).await
     }
 
-    /// The home and the team of [`team_with_log`]. With `Some(endpoint)` the lead stays the
-    /// real backend the app makes, pointed at `endpoint` (a scripted model on 127.0.0.1) with a
-    /// key from a file credential store; nothing else about it changes.
     /// ai_core keeps process-wide state keyed by agent id (the in-flight turns, the
     /// backends, the prompt files), and every real lead is `lead`: the tests that run one
     /// take turns, as two apps in one process never would share an id.
     static REAL_LEAD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+    /// The home and the team of [`team_with_log`]. With `Some(endpoint)` the lead stays the
+    /// real backend the app makes, pointed at `endpoint` (a scripted model on 127.0.0.1) with a
+    /// key from a file credential store; nothing else about it changes.
     async fn build(real_lead: Option<&str>) -> (tempfile::TempDir, Arc<Kernel>, SentLog) {
         let log: SentLog = Arc::default();
         let dir = tempfile::TempDir::new().unwrap();
