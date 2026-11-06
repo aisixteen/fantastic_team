@@ -836,21 +836,13 @@ async fn spawn_task_string_is_first_message_and_object_refused() {
         .any(|(a, t)| *a == cid && t == "do it"));
 }
 
-/// Wait until `who` received a `send` with `text` (a send is answered when the
-/// parent's handler, its turn, has run).
-async fn got_send(who: &str, text: &str) -> bool {
-    for _ in 0..100 {
-        if SENT
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|(a, t)| a == who && t == text)
-        {
-            return true;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    false
+/// Did `who` receive a `send` with `text`? A `send` is answered only once the
+/// receiver's handler (its turn) has run, so this is read right after the call.
+fn got_send(who: &str, text: &str) -> bool {
+    SENT.lock()
+        .unwrap()
+        .iter()
+        .any(|(a, t)| a == who && t == text)
 }
 
 #[tokio::test]
@@ -869,7 +861,7 @@ async fn spawned_child_sends_its_parent_and_starts_the_parents_turn() {
         .call(&id, lead, json!({"type": "send", "text": text}))
         .await;
     assert_eq!(out, json!({"ok": true, "verb": "send"}), "{out}");
-    assert!(got_send(lead, &text).await, "the parent got the message");
+    assert!(got_send(lead, &text), "the parent got the message");
     assert!(r.meta(&id).get("task").is_none(), "nothing is stored");
     // only `send`: the child does not control its parent
     assert_eq!(
@@ -916,7 +908,7 @@ async fn spawn_from_child_sends_the_spawner() {
         .call(&id, &lead, json!({"type": "send", "text": text}))
         .await;
     assert_eq!(out, json!({"ok": true, "verb": "send"}), "{out}");
-    assert!(got_send(&lead, &text).await);
+    assert!(got_send(&lead, &text));
 }
 
 #[tokio::test]
@@ -2328,7 +2320,6 @@ fn every_refusal_code_is_in_the_closed_set() {
         refusal::UNKNOWN_TIER,
         refusal::BAD_TIER,
         refusal::NO_ROOT,
-        refusal::NOT_SPAWNED,
         refusal::DISABLED,
     ] {
         assert!(refusal::CODES.contains(&code), "{code}");
