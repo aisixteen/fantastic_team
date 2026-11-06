@@ -9,7 +9,7 @@ use fantastic_kernel::{Item, Kernel, Status};
 use serde_json::{json, Value};
 
 use crate::cadencer::HANDLER_MODULE;
-use crate::{page, start, tree};
+use crate::{page, start, start_offline, tree};
 
 /// The dispatcher verbs the web page's socket leg may call.
 const PAGE_VERBS: [&str; 4] = ["sidebar", "tree", "open", "control"];
@@ -440,8 +440,10 @@ fn free_port(host: &str) -> Result<u16, String> {
 /// Write the web UI's records (the same ones [`serve_web`] makes, with the same
 /// grants) into `dir` without serving them, for a host that boots the directory
 /// itself: the binary's `--port` hands the records to fantastic's shell, which
-/// hydrates and boots them. Runs an offline kernel on its own runtime and
-/// releases the directory lock before it returns, on failure too. Safe to repeat.
+/// hydrates and boots them. Runs an offline kernel ([`start_offline`]: nothing in it
+/// listens, so the port answers only once the shell holds the lock and serves it) on
+/// its own runtime and releases the directory lock before it returns, on failure too.
+/// Safe to repeat.
 /// A fresh directory is seeded first (`fantastic_tui::seed_dir`: the shell's `user`
 /// and page loader), so the page is served on the first start; one that already holds
 /// a kernel is left as it is.
@@ -457,7 +459,7 @@ pub fn persist_web(
     fantastic_tui::seed_dir(dir)?;
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async {
-        let kernel = start(dir).await.map_err(|e| e.to_string())?;
+        let kernel = start_offline(dir).await.map_err(|e| e.to_string())?;
         let res = prepare_web(&kernel, port, bind).await;
         if res.is_err() {
             drop_web(&kernel).await;
@@ -1280,6 +1282,37 @@ mod tests {
             .clone();
         assert_eq!(port, json!(p2));
         k.shutdown().await;
+        bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// #241: the kernel that writes the records serves nothing. While it is up, with
+    /// the host just made (a fresh directory) and with the host loaded from its record
+    /// (the next run), the port is free; a kernel with the host then serves the page.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_offline_kernel_that_writes_the_records_opens_no_port() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let port = free_port();
+        for run in ["fresh", "recorded"] {
+            let k = start_offline(dir.path()).await.unwrap();
+            prepare_web(&k, Some(port), None).await.unwrap();
+            assert!(
+                k.agents
+                    .contains_key(&fantastic_kernel::AgentId::from(page::WEB_ID)),
+                "{run}: the host is made"
+            );
+            if let Err(e) = std::net::TcpListener::bind(("127.0.0.1", port)) {
+                panic!("{run}: the offline kernel listens on {port}: {e}");
+            }
+            k.shutdown().await;
+            fantastic_sqlite_store::close_all(&k);
+            bootstrap::shutdown(dir.path()).unwrap();
+        }
+        let k = start(dir.path()).await.unwrap();
+        let resp = http_get(port, page::PAGE_PATH).await;
+        assert_eq!(status_of(&resp), 200, "{resp}");
+        k.shutdown().await;
+        fantastic_sqlite_store::close_all(&k);
         bootstrap::shutdown(dir.path()).unwrap();
     }
 

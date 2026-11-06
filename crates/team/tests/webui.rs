@@ -67,13 +67,75 @@ fn start(dir: &Path, args: &[&str]) -> Running {
     )
 }
 
+/// How long a command that is refused may take to end.
+const REFUSAL_LIMIT: Duration = Duration::from_secs(60);
+
 fn run_to_end(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_fantastic_team"))
-        .args(args)
-        .current_dir(dir)
+    run_to_end_within(dir, args, REFUSAL_LIMIT)
+}
+
+/// Run the binary to its end, judged over `limit`, never waited on forever (#241). A
+/// command that is still running at the limit is killed and named: a refused second
+/// `webui` that got past the lock check became the directory's running team. A
+/// command that ended while its output stays open is named too: something it left
+/// behind holds its stdout or stderr. `Command::output` would hang on either.
+fn run_to_end_within(dir: &Path, args: &[&str], limit: Duration) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_fantastic_team"));
+    cmd.args(args).current_dir(dir);
+    run_within(cmd, limit)
+}
+
+/// [`run_to_end_within`] for any command.
+fn run_within(mut cmd: Command, limit: Duration) -> Output {
+    let args: Vec<String> = std::iter::once(cmd.get_program())
+        .chain(cmd.get_args())
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let mut child = cmd
         .stdin(Stdio::null())
-        .output()
-        .unwrap()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let drain = |mut pipe: Box<dyn Read + Send>| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            let _ = tx.send(buf);
+        });
+        rx
+    };
+    let stdout = drain(Box::new(child.stdout.take().unwrap()));
+    let stderr = drain(Box::new(child.stderr.take().unwrap()));
+    let pid = child.id();
+    let (tx, exited) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+    let end = Instant::now() + limit;
+    let left = || end.saturating_duration_since(Instant::now());
+    let Ok(status) = exited.recv_timeout(left()) else {
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+        panic!(
+            "{args:?} was still running after {limit:?}: it did not end, it became a running team"
+        );
+    };
+    let status = status.unwrap();
+    let out = |rx: std::sync::mpsc::Receiver<Vec<u8>>, name: &str| {
+        rx.recv_timeout(left()).unwrap_or_else(|_| {
+            panic!("{args:?} ended ({status}) but its {name} stayed open past {limit:?}: a process it left holds it")
+        })
+    };
+    let stdout = out(stdout, "stdout");
+    let stderr = out(stderr, "stderr");
+    Output {
+        status,
+        stdout,
+        stderr,
+    }
 }
 
 /// One HTTP/1.0 GET; the status and the whole response, or None while nothing listens.
@@ -129,6 +191,12 @@ fn ws_call(port: u16, target: &str, payload: serde_json::Value) -> (String, serd
         head.push(b[0]);
     }
     let head = String::from_utf8_lossy(&head).into_owned();
+    // What follows a refused upgrade is an HTTP body, not frames (#241: a 404 from a
+    // host without the socket leg read as a frame and failed the JSON parse).
+    assert!(
+        head.starts_with("HTTP/1.1 101"),
+        "no upgrade on {port}: {head}"
+    );
     let msg = serde_json::json!({"type": "call", "target": target, "payload": payload, "id": "p1"})
         .to_string();
     assert!(msg.len() < 126);
@@ -372,5 +440,44 @@ fn wait_page_within_rides_out_a_late_accept_and_fails_when_nothing_answers() {
     assert!(
         failed.is_err(),
         "a port that never answers must fail at the limit"
+    );
+}
+
+/// #241: `run_to_end` judges over its limit. A command that keeps running (a kernel,
+/// what a refused `webui` became when it got past the lock check) fails at the limit
+/// and is killed, not waited on forever; one that ends is returned whole.
+#[test]
+fn run_to_end_fails_a_command_that_keeps_running_and_kills_it() {
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let failed = std::panic::catch_unwind(|| {
+        run_to_end_within(dir.path(), &["--headless"], Duration::from_secs(3))
+    });
+    let msg = failed.expect_err("a kernel that runs on must fail at the limit");
+    let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(msg.contains("still running"), "{msg}");
+    // killed: its lock on the directory is gone with it
+    let end = Instant::now() + Duration::from_secs(10);
+    while fantastic_kernel::lock::held(dir.path()).unwrap().is_some() {
+        assert!(Instant::now() < end, "the kernel was left running");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let o = run_to_end_within(
+        dir.path(),
+        &["webui", "--port", "0"],
+        Duration::from_secs(30),
+    );
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+    // a command that ends while a process it started holds its output is named too
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "sleep 30 & echo started"]);
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_within(cmd, Duration::from_secs(3))
+    }));
+    let msg = failed.expect_err("an output held open must fail at the limit");
+    let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(
+        msg.contains("ended (exit status: 0) but its stdout stayed open"),
+        "{msg}"
     );
 }
