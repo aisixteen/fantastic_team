@@ -568,6 +568,11 @@ mod tests {
     /// The home and the team of [`team_with_log`]. With `Some(endpoint)` the lead stays the
     /// real backend the app makes, pointed at `endpoint` (a scripted model on 127.0.0.1) with a
     /// key from a file credential store; nothing else about it changes.
+    /// ai_core keeps process-wide state keyed by agent id (the in-flight turns, the
+    /// backends, the prompt files), and every real lead is `lead`: the tests that run one
+    /// take turns, as two apps in one process never would share an id.
+    static REAL_LEAD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     async fn build(real_lead: Option<&str>) -> (tempfile::TempDir, Arc<Kernel>, SentLog) {
         let log: SentLog = Arc::default();
         let dir = tempfile::TempDir::new().unwrap();
@@ -668,10 +673,13 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let srv = MockServer::start().await;
+        // the answer ends the chain with `done`, so ai_core sends no no-call nudge: the
+        // model is asked exactly once
         let body: String = [
             json!({"type": "message_start", "message": {"usage": {"input_tokens": 10}}}),
             json!({"type": "content_block_delta", "index": 0,
-                   "delta": {"type": "text_delta", "text": "ready"}}),
+                   "delta": {"type": "text_delta",
+                              "text": "ready <call name=\"done\"></call>"}}),
             json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
                    "usage": {"output_tokens": 1}}),
             json!({"type": "message_stop"}),
@@ -684,6 +692,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
             .mount(&srv)
             .await;
+        let _turn = REAL_LEAD.lock().await;
         let (dir, kernel, _) = build(Some(&format!("{}/v1/messages", srv.uri()))).await;
         let r = ask(&kernel, LEAD, json!({"type": "send", "text": "go"})).await;
         let err = meta(&kernel, LEAD)["system_prompt_file_error"].clone();
@@ -716,10 +725,13 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let srv = MockServer::start().await;
+        // the answer ends the chain with `done`, so ai_core sends no no-call nudge: the
+        // model is asked exactly once
         let body: String = [
             json!({"type": "message_start", "message": {"usage": {"input_tokens": 10}}}),
             json!({"type": "content_block_delta", "index": 0,
-                   "delta": {"type": "text_delta", "text": "noted"}}),
+                   "delta": {"type": "text_delta",
+                              "text": "noted <call name=\"done\"></call>"}}),
             json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
                    "usage": {"output_tokens": 1}}),
             json!({"type": "message_stop"}),
@@ -732,6 +744,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
             .mount(&srv)
             .await;
+        let _turn = REAL_LEAD.lock().await;
         let (dir, kernel, _) = build(Some(&format!("{}/v1/messages", srv.uri()))).await;
         let lead = AgentId::from(LEAD);
         let before = meta(&kernel, LEAD)["callable_by"].clone();
