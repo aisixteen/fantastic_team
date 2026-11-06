@@ -668,10 +668,14 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let srv = MockServer::start().await;
+        // The answer ends the chain with `done`. A call-less answer is nudged (fantastic's
+        // ai_core `route.rs`, `nudging` and `deliver_soon`): the chain goes on after `send`
+        // has replied, and a second request reaches the model whenever it lands before the
+        // count is read (#250).
         let body: String = [
             json!({"type": "message_start", "message": {"usage": {"input_tokens": 10}}}),
             json!({"type": "content_block_delta", "index": 0,
-                   "delta": {"type": "text_delta", "text": "ready"}}),
+                   "delta": {"type": "text_delta", "text": "ready<call name=\"done\"></call>"}}),
             json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
                    "usage": {"output_tokens": 1}}),
             json!({"type": "message_stop"}),
