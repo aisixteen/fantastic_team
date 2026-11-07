@@ -124,7 +124,7 @@ def wait_done(ctx, watch: Lead, wait_s: float) -> str:
     stopped the team) or `exited` (the team went away)."""
     end = time.time() + wait_s
     while time.time() < end:
-        if ctx.model.errored:
+        if ctx.model.capped:  # an upstream error alone is the model's to retry, not the end of the run
             return "capped"
         if ctx.team.proc and ctx.team.proc.poll() is not None:
             return "exited"
@@ -144,7 +144,7 @@ def play(ctx, v, lead: str, name: str, label: str = "") -> Lead:
     how = wait_done(ctx, watch, max(60.0, ctx.test["timeout"] - CHECK_MARGIN_S))
     ctx.elapsed = time.time() - started
     why = {"timeout": "the lead did not answer done before the wait ran out",
-           "capped": f"the request cap ended the run ({getattr(ctx.model, 'errored_reason', '')})",
+           "capped": f"the request cap ended the run ({ctx.model.errored_reason})",
            "exited": "the team exited before the lead answered done"}.get(how, "")
     v.check(f"{label}the lead answered done", how == "done", why + f"; {getattr(ctx, 'kicked', {})}")
     return watch
@@ -169,6 +169,11 @@ def report(ctx, watch: Lead | None = None) -> None:
     totals = ctx.model.totals()
     print(f"  report: {getattr(ctx, 'elapsed', 0):.0f}s, {totals['requests']} requests, "
           f"{totals['input_tokens']} tokens in, {totals['output_tokens']} out (cost.json on stop)")
+    if totals.get("agents"):  # the agents' own counts: cache reads and writes, the cost when priced
+        a = totals["agents"]
+        print(f"  report: agents: {a['requests']} requests, {a['input_tokens']} in, "
+              f"{a['cache_write_tokens']} cache write, {a['cache_read_tokens']} cache read, "
+              f"{a['output_tokens']} out, cost_usd {'unpriced' if a['cost_usd'] is None else a['cost_usd']}")
     calls = Counter(f"{a} {verb}" for a, verb in team_mod.log_calls(ctx.team.log()))
     print(f"  report: calls {dict(calls.most_common(12))}")
     if watch and watch.rows:
