@@ -191,7 +191,13 @@ def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool 
 def make_lead(ctx, grants: dict | None = None, subtree: bool = False) -> str:
     """The lead: `make_agent` under `user` with the model's key. `subtree` lets it call
     everything below it."""
-    lead = make_agent(ctx, LEAD, "user", {**({"$subtree": "*"} if subtree else {}), **(grants or {})},
+    grants = dict(grants or {})
+    # fantastic's own hints send every agent to `send kernel {type: docs, of: ...}` for a verb's
+    # signature: a lead that may not read them stops and asks the operator, who is not there
+    ks = grants.get("kernel_state")
+    if ks != "*":
+        grants["kernel_state"] = list(dict.fromkeys([*(ks or []), "docs"]))
+    lead = make_agent(ctx, LEAD, "user", {**({"$subtree": "*"} if subtree else {}), **grants},
                       key=True)
     return lead
 
