@@ -262,6 +262,9 @@ class AnthropicRelay:
                 with self.lock:
                     old = self.agent_usage.get(aid, {})
                     new = {k: max(int(u.get(k) or 0), int(old.get(k) or 0)) for k in COUNT_KEYS}
+                    # saved = round(0.9 read - 0.25 write) goes down on a cache write and may be
+                    # negative: the latest reading, never the largest
+                    new["saved_tokens"] = int(u.get("saved_tokens") or 0)
                     cost = u.get("cost_usd")  # absent when the record has no prices
                     new["cost_usd"] = None if cost is None else max(float(cost), old.get("cost_usd") or 0.0)
                     self.agent_usage[aid] = new

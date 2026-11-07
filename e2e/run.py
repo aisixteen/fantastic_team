@@ -558,7 +558,7 @@ def relay_usage(v: Verdict, tmp: str, key: str) -> None:
 
     def usage(req, tin, cw, cr, tout, cost=None):
         u = {"requests": req, "input_tokens": tin, "cache_write_tokens": cw, "cache_read_tokens": cr,
-             "output_tokens": tout, "prompt_tokens": tin + cw + cr, "saved_tokens": cr, "hit_rate": 0.5}
+             "output_tokens": tout, "prompt_tokens": tin + cw + cr, "saved_tokens": (18 * cr - 5 * cw) // 20, "hit_rate": 0.5}
         if cost is not None:
             u["cost_usd"] = cost
         return u
@@ -582,7 +582,7 @@ def relay_usage(v: Verdict, tmp: str, key: str) -> None:
         v.check("the agents' block sums requests, input, cache write and read, output, prompt, saved and "
                 "cost_usd, a deleted agent included",
                 a == {"requests": 5, "input_tokens": 200, "cache_write_tokens": 400, "cache_read_tokens": 1200,
-                      "output_tokens": 60, "prompt_tokens": 1800, "saved_tokens": 1200, "cost_usd": 0.0045}, str(a))
+                      "output_tokens": 60, "prompt_tokens": 1800, "saved_tokens": 980, "cost_usd": 0.0045}, str(a))
         v.check("only the anthropic agents are asked for their usage",
                 {tgt for tgt, p in team.sent if p.get("type") == "usage"} == {"lead", "w1"}, str(team.sent[:6]))
         out = io.StringIO()
@@ -591,13 +591,15 @@ def relay_usage(v: Verdict, tmp: str, key: str) -> None:
         v.check("the gpu report prints the agents' block: cache write and read, cost_usd",
                 "report: agents: 5 requests, 200 in, 400 cache write, 1200 cache read, 60 out, cost_usd 0.0045"
                 in out.getvalue(), out.getvalue())
-        team.counts["w2"] = usage(1, 10, 0, 0, 5)  # a record with no prices: its usage has no cost_usd
+        team.counts["w2"] = usage(1, 10, 100, 0, 5)  # a record with no prices: its usage has no cost_usd
         r.finish(team)
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             gpu_mod.report(types.SimpleNamespace(model=r, team=team, elapsed=0))
         v.check("an agent with no prices makes the sum unpriced: cost_usd null, the report says so",
                 r.agents_total()["cost_usd"] is None and "cost_usd unpriced" in out.getvalue(), out.getvalue())
+        v.check("saved_tokens is each agent's latest reading, negative included (a cache write alone)",
+                r.agents_total()["saved_tokens"] == 980 - 25, str(r.agents_total()))
         team.stop()
         r.finish(team)
         v.check("a stopped team is not asked again", r.agents_total()["requests"] == 6, str(r.agents_total()))
