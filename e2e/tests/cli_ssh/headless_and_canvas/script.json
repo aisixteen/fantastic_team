@@ -59,7 +59,7 @@
       "-o",
       "ConnectTimeout=10",
       "team@127.0.0.1",
-      "for i in $(seq 150); do [ -S w/.fantastic/cli/mcp.sock ] && break; sleep 0.2; done && cd w && [ -S .fantastic/cli/mcp.sock ] && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"create_agent\",\"id\":\"web\",\"parent_id\":\"user\",\"handler_module\":\"web.tools\",\"port\":{{tunnel_port}}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"create_agent\",\"id\":\"remote_ws\",\"parent_id\":\"web\",\"handler_module\":\"web_ws.tools\",\"ingress_rule\":\"allow_all_ingress\",\"callable_by\":{\"$self\":\"*\",\"web\":[\"get_routes\"]},\"can_call\":{\"$self\":\"*\",\"user\":[\"forward\"]}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"update_agent\",\"id\":\"web\",\"can_call\":{\"$self\":\"*\",\"remote_ws\":[\"get_routes\"]}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"list_agents\"}}' | python3 -c 'import json,sys; a={x[\"id\"]:x for x in json.load(sys.stdin)[\"result\"][\"agents\"]}; cb=a[\"user\"].get(\"callable_by\") or {}; cb[\"remote_ws\"]=[\"forward\",\"send\"]; sys.stdout.write(json.dumps({\"target\":\"kernel\",\"payload\":{\"type\":\"update_agent\",\"id\":\"user\",\"callable_by\":cb}}))' | xargs -0 fantastic_team send > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"id\":\"worker_exec\",\"parent_id\":\"user\",\"handler_module\":\"exec_bridge.tools\",\"ingress_rule\":\"allow_all_ingress\",\"cwd\":\"/home/team/w/repo\",\"allowed\":[\".*\"],\"inherit_env\":[\"PATH\",\"LANG\",\"HOME\"],\"env\":{\"GIT_CONFIG_NOSYSTEM\":\"1\",\"GIT_TERMINAL_PROMPT\":\"0\",\"PYTHONDONTWRITEBYTECODE\":\"1\"},\"type\":\"create_agent\"}}' > /dev/null && fantastic_team send '{\"target\":\"web\",\"payload\":{\"type\":\"boot\"}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"list_agents\"}}' | python3 -c 'import json,sys; print(\" \".join(sorted(a[\"id\"] for a in json.load(sys.stdin)[\"result\"][\"agents\"])))'"
+      "for i in $(seq 150); do [ -S w/.fantastic/cli/mcp.sock ] && break; sleep 0.2; done && cd w && [ -S .fantastic/cli/mcp.sock ] && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"create_agent\",\"id\":\"web\",\"parent_id\":\"user\",\"handler_module\":\"web.tools\",\"port\":{{tunnel_port}}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"create_agent\",\"id\":\"remote_ws\",\"parent_id\":\"web\",\"handler_module\":\"web_ws.tools\",\"ingress_rule\":\"allow_all_ingress\",\"callable_by\":{\"$self\":\"*\",\"web\":[\"get_routes\"]},\"can_call\":{\"$self\":\"*\",\"user\":[\"forward\"]}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"update_agent\",\"id\":\"web\",\"can_call\":{\"$self\":\"*\",\"remote_ws\":[\"get_routes\"]}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"list_agents\"}}' | python3 -c 'import json,sys; a={x[\"id\"]:x for x in json.load(sys.stdin)[\"result\"][\"agents\"]}; cb=a[\"user\"].get(\"callable_by\") or {}; cb[\"remote_ws\"]=[\"forward\",\"send\"]; sys.stdout.write(json.dumps({\"target\":\"kernel\",\"payload\":{\"type\":\"update_agent\",\"id\":\"user\",\"callable_by\":cb}}))' | xargs -0 fantastic_team send > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"id\":\"worker_exec\",\"parent_id\":\"user\",\"handler_module\":\"exec_bridge.tools\",\"ingress_rule\":\"allow_all_ingress\",\"cwd\":\"/home/team/w/repo\",\"allowed\":[\".*\"],\"inherit_env\":[\"PATH\",\"LANG\",\"HOME\"],\"env\":{\"GIT_CONFIG_NOSYSTEM\":\"1\",\"GIT_TERMINAL_PROMPT\":\"0\",\"PYTHONDONTWRITEBYTECODE\":\"1\"},\"can_call\":{\"$self\":\"*\",\"{{master_guid}}|*\":[\"send\",\"watch\",\"status\",\"stop\"]},\"type\":\"create_agent\"}}' > /dev/null && fantastic_team send '{\"target\":\"worker_exec\",\"payload\":{\"type\":\"connector\"}}' | python3 -c 'import base64,json,sys; src=json.load(sys.stdin)[\"result\"][\"source\"]; open(\"work.py\",\"w\").write(src+base64.b64decode(\"CmltcG9ydCBqc29uLCBzeXMsIHRocmVhZGluZwoKZmxhZ3MgPSB7ImNsaWVudCI6IE5vbmUsICJ1bnRpbCI6IDEsICJ0aW1lb3V0IjogNjAuMCwgIndhdGNoIjogVHJ1ZSwgInNlbmQiOiBUcnVlfQphcmdzID0gc3lzLmFyZ3ZbMTpdCndoaWxlIGFyZ3MgYW5kIGFyZ3NbMF0uc3RhcnRzd2l0aCgiLS0iKToKICAgIGYgPSBhcmdzLnBvcCgwKQogICAgaWYgZiBpbiAoIi0tY2xpZW50IiwgIi0tdW50aWwiLCAiLS10aW1lb3V0Iik6CiAgICAgICAgdiA9IGFyZ3MucG9wKDApCiAgICAgICAgZmxhZ3NbZlsyOl1dID0geyJjbGllbnQiOiBzdHIsICJ1bnRpbCI6IGludCwgInRpbWVvdXQiOiBmbG9hdH1bZlsyOl1dKHYpCiAgICBlbGlmIGYgPT0gIi0tbm8td2F0Y2giOgogICAgICAgIGZsYWdzWyJ3YXRjaCJdID0gRmFsc2UKICAgIGVsaWYgZiA9PSAiLS1uby1zZW5kIjoKICAgICAgICBmbGFnc1sic2VuZCJdID0gRmFsc2UKICAgIGVsc2U6CiAgICAgICAgc3lzLmV4aXQoIndvcms6IHVua25vd24gZmxhZyAiICsgZikKZ3VpZCwgYmFja2VuZCwgbGFiZWwgPSBhcmdzWzozXQp0ZXh0ID0gIiAiLmpvaW4oYXJnc1szOl0pCmNsaWVudCA9IGZsYWdzWyJjbGllbnQiXSBvciBsYWJlbAp0YXJnZXQgPSBndWlkICsgInwiICsgYmFja2VuZApldmVudHMgPSAiLi4vIiArIGxhYmVsICsgIi5ldmVudHMuanNvbmwiCmRvbmUgPSB7Im4iOiAwfQpyZWZ1c2VkID0gW10KZW5vdWdoID0gdGhyZWFkaW5nLkV2ZW50KCkKCgpkZWYgbm90ZShwKToKICAgIHJvdyA9IHtrOiBwW2tdIGZvciBrIGluICgidHlwZSIsICJwaGFzZSIsICJjbGllbnRfaWQiLCAia2luZCIsICJzdHJlYW1faWQiKSBpZiBwLmdldChrKSBpcyBub3QgTm9uZX0KICAgIGlmIHAuZ2V0KCJlcnJvciIpOgogICAgICAgIHJvd1siZXJyb3IiXSA9IHN0cihwWyJlcnJvciJdKVs6MjAwXQogICAgICAgIHJvd1sicmVhc29uIl0gPSBwLmdldCgicmVhc29uIikKICAgICAgICByZWZ1c2VkLmFwcGVuZChyb3cpCiAgICB3aXRoIG9wZW4oZXZlbnRzLCAiYSIpIGFzIGY6CiAgICAgICAgZi53cml0ZShqc29uLmR1bXBzKHJvdykgKyAiXG4iKQogICAgaWYgcm93LmdldCgiZXJyb3IiKToKICAgICAgICBlbm91Z2guc2V0KCkKICAgIGVsaWYgcC5nZXQoInR5cGUiKSA9PSAic3RhdHVzIiBhbmQgcC5nZXQoInBoYXNlIikgPT0gImRvbmUiIGFuZCBwLmdldCgiY2xpZW50X2lkIikgPT0gY2xpZW50OgogICAgICAgIGRvbmVbIm4iXSArPSAxCiAgICAgICAgaWYgZG9uZVsibiJdID49IGZsYWdzWyJ1bnRpbCJdOgogICAgICAgICAgICBlbm91Z2guc2V0KCkKCgpyZXBseV9lcnJvciA9IE5vbmUKaWYgZmxhZ3NbIndhdGNoIl06CiAgICBrZXJuZWwud2F0Y2godGFyZ2V0LCBub3RlKQp0cnk6CiAgICBpZiBmbGFnc1sic2VuZCJdOgogICAgICAgIHJlcGx5ID0ga2VybmVsLnNlbmQodGFyZ2V0LCB7InR5cGUiOiAic2VuZCIsICJ0ZXh0IjogdGV4dCwgImNsaWVudF9pZCI6IGNsaWVudH0pCiAgICBlbHNlOgogICAgICAgICMgd2F0Y2ggb25seTogYSBgc3RhdHVzYCBjYWxsIGlzIHRoZSBiYXJyaWVyIChvbmUgbGluayBrZWVwcyBpdHMgZnJhbWVzIGluIG9yZGVyLCBzbyB0aGUKICAgICAgICAjIHdhdGNoIGlzIHNlcnZlZCBiZWZvcmUgdGhlIGFuc3dlciBjb21lcyk7IGA8bGFiZWw+LnJlYWR5YCBzYXlzIHRoZSB3YXRjaCBpcyBpbiBwbGFjZQogICAgICAgIHJlcGx5ID0ga2VybmVsLnNlbmQodGFyZ2V0LCB7InR5cGUiOiAic3RhdHVzIn0pCiAgICAgICAgb3BlbigiLi4vIiArIGxhYmVsICsgIi5yZWFkeSIsICJ3Iikud3JpdGUoInJlYWR5IikKICAgIGlmIGlzaW5zdGFuY2UocmVwbHksIGRpY3QpIGFuZCByZXBseS5nZXQoImVycm9yIik6CiAgICAgICAgcmVwbHlfZXJyb3IgPSBzdHIocmVwbHlbImVycm9yIl0pWzozMDBdCmV4Y2VwdCBSdW50aW1lRXJyb3IgYXMgZToKICAgIHJlcGx5X2Vycm9yID0gc3RyKGUpWzozMDBdCmlmIGZsYWdzWyJ3YXRjaCJdIGFuZCBub3QgcmVwbHlfZXJyb3I6CiAgICBlbm91Z2gud2FpdChmbGFnc1sidGltZW91dCJdKQpvayA9IG5vdCByZXBseV9lcnJvciBhbmQgbm90IHJlZnVzZWQgYW5kIChlbm91Z2guaXNfc2V0KCkgb3Igbm90IGZsYWdzWyJ3YXRjaCJdKQpyZXN1bHQgPSB7ImxhYmVsIjogbGFiZWwsICJiYWNrZW5kIjogYmFja2VuZCwgIm9rIjogb2ssICJkb25lIjogZG9uZVsibiJdLCAicmVwbHlfZXJyb3IiOiByZXBseV9lcnJvciwKICAgICAgICAgICJyZWZ1c2VkIjogcmVmdXNlZH0Kd2l0aCBvcGVuKCIuLi8iICsgbGFiZWwgKyAiLnJlc3VsdC5qc29uIiwgInciKSBhcyBmOgogICAgZi53cml0ZShqc29uLmR1bXBzKHJlc3VsdCkpCnByaW50KGpzb24uZHVtcHMocmVzdWx0KSkKc3lzLmV4aXQoMCBpZiBvayBlbHNlIDEpCg==\").decode())' && fantastic_team send '{\"target\":\"web\",\"payload\":{\"type\":\"boot\"}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"list_agents\"}}' | python3 -c 'import json,sys; print(\" \".join(sorted(a[\"id\"] for a in json.load(sys.stdin)[\"result\"][\"agents\"])))'"
      ],
      "wait_s": 60
     }
@@ -111,32 +111,16 @@
      "transport": "ws",
      "host": "127.0.0.1",
      "port": "{{tunnel_port}}",
-     "peer_id": "remote_ws"
-    }
-   }
-  ]
- },
- {
-  "calls": [
-   {
-    "target": "remote",
-    "type": "forward",
-    "args": {
-     "target": "user",
-     "payload": {
-      "type": "forward",
-      "target": "kernel",
-      "payload": {
-       "type": "create_agent",
-       "id": "rlead",
-       "parent_id": "user",
-       "handler_module": "anthropic_backend.tools",
-       "model": "scripted-model",
-       "endpoint": "{{remote_endpoint}}",
-       "memory_store_id": "memory"
-      }
-     },
-     "forward_timeout": 120
+     "peer_id": "remote_ws",
+     "can_call": {
+      "$self": "*",
+      "rlead": [
+       "send",
+       "watch",
+       "status",
+       "stop"
+      ]
+     }
     }
    }
   ]
@@ -222,10 +206,18 @@
      "target": "user",
      "payload": {
       "type": "forward",
-      "target": "rlead",
+      "target": "worker_exec",
       "payload": {
-       "type": "send",
-       "text": "[lane:r] Make a canvas for your notes and add your note."
+       "type": "run",
+       "command": "python3",
+       "args": [
+        "../work.py",
+        "{{master_guid}}",
+        "rlead",
+        "r",
+        "[lane:r] Make a canvas for your notes and add your note."
+       ],
+       "wait_s": 60
       }
      },
      "forward_timeout": 120
@@ -413,7 +405,16 @@
      "transport": "ws",
      "host": "127.0.0.1",
      "port": "{{tunnel_port}}",
-     "peer_id": "remote_ws"
+     "peer_id": "remote_ws",
+     "can_call": {
+      "$self": "*",
+      "rlead": [
+       "send",
+       "watch",
+       "status",
+       "stop"
+      ]
+     }
     }
    }
   ]
@@ -438,26 +439,6 @@
       "payload": {
        "type": "delete_agent",
        "id": "sketch"
-      }
-     },
-     "forward_timeout": 120
-    }
-   }
-  ]
- },
- {
-  "calls": [
-   {
-    "target": "remote",
-    "type": "forward",
-    "args": {
-     "target": "user",
-     "payload": {
-      "type": "forward",
-      "target": "kernel",
-      "payload": {
-       "type": "delete_agent",
-       "id": "rlead"
       }
      },
      "forward_timeout": 120
@@ -542,12 +523,49 @@
  {
   "calls": [
    {
-    "target": "kernel",
-    "type": "create_agent",
+    "target": "remote",
+    "type": "forward",
     "args": {
-     "id": "sketch",
-     "parent_id": "rlead",
-     "handler_module": "canvas_page.tools"
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "kernel",
+      "payload": {
+       "type": "create_agent",
+       "id": "sketch",
+       "parent_id": "user",
+       "handler_module": "canvas_page.tools"
+      }
+     },
+     "forward_timeout": 120
+    }
+   }
+  ],
+  "lane": "r",
+  "say": "Working on it."
+ },
+ {
+  "calls": [
+   {
+    "target": "remote",
+    "type": "forward",
+    "args": {
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "worker_exec",
+      "payload": {
+       "type": "run",
+       "command": "git",
+       "args": [
+        "pull",
+        "-q",
+        "--ff-only"
+       ],
+       "wait_s": 30
+      }
+     },
+     "forward_timeout": 120
     }
    }
   ],
@@ -556,16 +574,24 @@
  {
   "calls": [
    {
-    "target": "worker_exec",
-    "type": "run",
+    "target": "remote",
+    "type": "forward",
     "args": {
-     "command": "git",
-     "args": [
-      "pull",
-      "-q",
-      "--ff-only"
-     ],
-     "wait_s": 30
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "worker_exec",
+      "payload": {
+       "type": "run",
+       "command": "python3",
+       "args": [
+        "-c",
+        "open('NOTES.md', 'a').write('remote: the notes of rlead\\n')"
+       ],
+       "wait_s": 30
+      }
+     },
+     "forward_timeout": 120
     }
    }
   ],
@@ -574,15 +600,24 @@
  {
   "calls": [
    {
-    "target": "worker_exec",
-    "type": "run",
+    "target": "remote",
+    "type": "forward",
     "args": {
-     "command": "python3",
-     "args": [
-      "-c",
-      "open('NOTES.md', 'a').write('remote: the notes of rlead\\n')"
-     ],
-     "wait_s": 30
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "worker_exec",
+      "payload": {
+       "type": "run",
+       "command": "git",
+       "args": [
+        "add",
+        "NOTES.md"
+       ],
+       "wait_s": 30
+      }
+     },
+     "forward_timeout": 120
     }
    }
   ],
@@ -591,15 +626,30 @@
  {
   "calls": [
    {
-    "target": "worker_exec",
-    "type": "run",
+    "target": "remote",
+    "type": "forward",
     "args": {
-     "command": "git",
-     "args": [
-      "add",
-      "NOTES.md"
-     ],
-     "wait_s": 30
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "worker_exec",
+      "payload": {
+       "type": "run",
+       "command": "git",
+       "args": [
+        "-c",
+        "user.name=Worker",
+        "-c",
+        "user.email=worker@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "Notes: rlead"
+       ],
+       "wait_s": 30
+      }
+     },
+     "forward_timeout": 120
     }
    }
   ],
@@ -608,40 +658,26 @@
  {
   "calls": [
    {
-    "target": "worker_exec",
-    "type": "run",
+    "target": "remote",
+    "type": "forward",
     "args": {
-     "command": "git",
-     "args": [
-      "-c",
-      "user.name=Worker",
-      "-c",
-      "user.email=worker@example.invalid",
-      "commit",
-      "-q",
-      "-m",
-      "Notes: rlead"
-     ],
-     "wait_s": 30
-    }
-   }
-  ],
-  "lane": "r"
- },
- {
-  "calls": [
-   {
-    "target": "worker_exec",
-    "type": "run",
-    "args": {
-     "command": "git",
-     "args": [
-      "push",
-      "-q",
-      "origin",
-      "HEAD:main"
-     ],
-     "wait_s": 30
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "worker_exec",
+      "payload": {
+       "type": "run",
+       "command": "git",
+       "args": [
+        "push",
+        "-q",
+        "origin",
+        "HEAD:main"
+       ],
+       "wait_s": 30
+      }
+     },
+     "forward_timeout": 120
     }
    }
   ],

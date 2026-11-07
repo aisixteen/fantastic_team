@@ -1,5 +1,5 @@
-"""The ssh twins of the cli scenarios (#242): one task split across the local kernel and one in a
-Podman box reached over ssh, wired the WEAK way (existing pieces only, no new code in the product).
+"""The ssh twins of the cli scenarios (#242, #252): one task split across the local kernel (the master)
+and one in a Podman box reached over ssh, wired the WEAK way (existing pieces only, no new code in the product).
 
 THE WIRING (fantastic's canvas is the model: `src/tui/src/kern/web.rs`, `user` -> `web` -> the socket
 leg, the leg reaching `user`, whose `forward` makes the call):
@@ -10,28 +10,44 @@ leg, the leg reaching `user`, whose `forward` makes the call):
    `ssh ... 'fantastic_team send ...'` makes the remote `web` host on 127.0.0.1:N under `user`, its
    `web_ws` leg `remote_ws` under it (the canvas's edges: `web` mounts the leg, the leg reaches
    `user` alone, `user` admits the leg's `forward`), the remote exec agent `worker_exec` in the
-   clone, and boots `web`. Then `git clone` of the test's git server inside the box (through
-   Podman's host gateway), by the same raw path.
+   clone (it may call the master's agents: `<master guid>|*`, send/watch/status/stop), the remote work
+   program `w/work.py`, and boots `web`. Then `git clone` of the test's git server inside the box
+   (through Podman's host gateway), by the same raw path.
 2. BRIDGE: the lead's `create_agent` of a `ws_bridge` agent `remote` on the local kernel, dialling
    the tunnel's local end (`ws://127.0.0.1:N/remote_ws/ws`), as the canvas page dials `canvas_ws`.
-3. REMOTE AGENTS: `create_agent` sent through the bridge's `forward` (to `user`, whose `forward`
-   makes the call on the remote kernel); messages the same way. Results come back as the forward's
-   reply (the remote agent's `history`).
-4. STOP: the remote agents deleted through the bridge, the bridge deleted, SIGTERM to the remote
-   kernel over ssh with a bounded wait (the binary has no stop word), the tunnel job stopped.
+   The bridge says `hello` with the master's guid, so the remote reaches the master's agents as
+   `<master guid>|<agent>` (fantastic#476). Its leg is open (`allow_all_ingress`) and grants exactly
+   send/watch/status/stop on the master's backends that the remote is to call: the bridge's `can_call`
+   and each backend's `callable_by` (`grant_leg`, `open_backends`).
+3. REMOTE TOOLS: calls on the remote kernel go through the bridge's `forward` (to `user`, whose
+   `forward` makes the call on the remote kernel): the remote exec agent's `run`, in the clone.
+4. REMOTE WORK: THE BACKENDS ARE ON THE MASTER ONLY, and so is the model's key. The box holds tools
+   (the exec agent, git, the clone) and no AI agent: what a remote agent does with a model it asks
+   the master's backend for, with `send` and `watch` of `<master guid>|<backend>` over the same
+   connection (the remote work program `work.py`, a job of the remote exec agent, the way a program
+   and an LLM call are substitutes in fantastic's exec_bridge). The backend's turn runs on the master;
+   its `status`, `part_*` and `done` events come back to the program as the bridge's `event` frames.
+   The backend's tool calls reach the box's exec agent through the bridge's `forward`.
+5. STOP: the bridge deleted, SIGTERM to the remote kernel over ssh with a bounded wait (the binary
+   has no stop word), the tunnel job stopped.
 
 The scripted twins (`tests/cli_ssh/`) script those raw commands: `script.json` is written by
 `write_scripts()` from the builders below (`python3 -m helpers.ssh_twins --write` in `e2e/`; the
 selftest checks the files match), with `{{ssh_port}}`, `{{ssh_key}}`, `{{tunnel_port}}`,
-`{{remote_endpoint}}`, `{{remote_git_url}}` bound once the box runs (`ScriptedModel.bind`). The gpu
+`{{master_guid}}`, `{{remote_git_url}}` bound once the box runs (`ScriptedModel.bind`). The gpu
 twins (`tests/gpu_cli_ssh/`) tell the lead in plain words where the box is and what the wiring is
 (`task_text`), and leave the commands to the model.
 
 THE CHECKS, after the run (`Box.end`): the test's git server holds a linear history with a commit
 made in the local clone and one made in the box's clone (each found in that clone's reflog), and
 the fixture is solved there; the bridge is gone, the tunnel's port refuses, no exec job runs; the
-remote kernel is stopped; started once more over ssh, its records hold the remote base and no
-spawned agent, no orphan; then it is stopped and the container removed (`with Box(...)`).
+remote kernel is stopped; started once more, its records hold the remote base and no AI agent
+(no `*_backend`), no spawned agent, no orphan; the box's folder, environment and container hold no
+model key; the remote work program's arrival log shows `status` and `part_*` before `done`
+(`streamed`: the backend's stream crossed the bridge); then the container is removed (`with Box(...)`).
+`streamed` is itself checked against mutations (an unwatched stream, a refused grant, parts only after
+`done`), and `cli_ssh/precreated_1_2` also seals the watch grant on the live bridge and breaks the tunnel
+(in flight, then redial, then the watch goes on).
 """
 
 from __future__ import annotations
@@ -44,7 +60,7 @@ import sys
 import tempfile
 import time
 
-from . import cli, podman_remote as pr, team as team_mod, web
+from . import cli, podman_remote as pr, records, team as team_mod, web
 from .podman_remote import shq
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -53,6 +69,7 @@ TESTS = os.path.join(os.path.dirname(HERE), "tests")
 BRIDGE = "remote"  # the local ws_bridge
 LEG = "remote_ws"  # the remote web_ws leg
 WEB = "web"  # the remote HTTP host
+WORK_FILE = "work.py"  # the remote work program, in DIR (the exec agent runs in DIR/repo: `../work.py`)
 HOME = f"/home/{pr.USER}"  # the box's home: the login's
 DIR = "w"  # the remote kernel's folder, in the box's home
 REPO = "repo"  # the clone, in DIR
@@ -86,11 +103,17 @@ def ssh_call(command: str, wait_s: int = 60) -> dict:
     return run_call(ssh_args(command), wait_s)
 
 
-def kernel_start_command(roles: bool = False) -> str:
+def kernel_start_command() -> str:
     """The remote kernel, in the foreground of the tunnel's ssh session (its pid kept)."""
-    env = "FANTASTIC_AGENTIC_RESOURCES=1 " if roles else ""
     return (f"mkdir -p {DIR} && cd {DIR} && echo $$ > team.pid && "
-            f"{env}exec fantastic_team --headless >> team.log 2>&1")
+            "exec fantastic_team --headless >> team.log 2>&1")
+
+
+def detached_kernel_command() -> str:
+    """The remote kernel on its own (nohup, its pid kept), for the twin that breaks the tunnel
+    without ending the kernel: the tunnel is a job of its own (`tunnel_turn`)."""
+    return (f"mkdir -p {DIR} && cd {DIR} && {{ nohup fantastic_team --headless >> team.log 2>&1 & "
+            "echo $! > team.pid; }")
 
 
 def remote_send(item: dict) -> str:
@@ -121,16 +144,109 @@ MERGE_USER = ("import json,sys; a={x[\"id\"]:x for x in json.load(sys.stdin)[\"r
               "sys.stdout.write(json.dumps({\"target\":\"kernel\",\"payload\":{\"type\":\"update_agent\","
               "\"id\":\"user\",\"callable_by\":cb}}))")
 
+# What the remote may do on the master's backends, and what the master lets its leg do on them:
+# exactly these four (the backend's `send`, its `watch` of the stream, `status`, `stop`).
+BACKEND_VERBS = ["send", "watch", "status", "stop"]
+
+# The box's exec agent: the tools of the remote kernel (it runs in the clone), and the one agent
+# there that calls out: the master's agents, as `<master guid>|<agent>`, those four verbs (the
+# master's own grants on its backends say which of them answer).
 REMOTE_EXEC = {"id": cli.EXEC, "parent_id": "user", "handler_module": "exec_bridge.tools",
                "ingress_rule": "allow_all_ingress", "cwd": REMOTE_REPO, "allowed": [".*"],
                "inherit_env": ["PATH", "LANG", "HOME"],
-               "env": {"GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "PYTHONDONTWRITEBYTECODE": "1"}}
+               "env": {"GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "PYTHONDONTWRITEBYTECODE": "1"},
+               "can_call": {"$self": "*", "{{master_guid}}|*": BACKEND_VERBS}}
+
+# THE REMOTE WORK PROGRAM, a job of the exec agent (fantastic's connector is put on top of it at the
+# box). It is what a remote agent that wants a model does: `watch` the master's backend, `send` it the
+# work, and note every event that comes back, in arrival order, one JSON line each, in
+# `<label>.events.jsonl`; `<label>.result.json` says how it ended. The backend's turn runs on the
+# master: nothing here holds a model, a provider or a key.
+#   work.py [--client C] [--until N] [--timeout S] [--no-watch] [--no-send] GUID BACKEND LABEL [TEXT...]
+# It waits for N `status` `done` events of the client C (default LABEL), then exits 0; 1 when the
+# backend refused (`error` in the reply or in an event), no `done` came in time, or a transport broke.
+WORK_PROGRAM = '''
+import json, sys, threading
+
+flags = {"client": None, "until": 1, "timeout": 60.0, "watch": True, "send": True}
+args = sys.argv[1:]
+while args and args[0].startswith("--"):
+    f = args.pop(0)
+    if f in ("--client", "--until", "--timeout"):
+        v = args.pop(0)
+        flags[f[2:]] = {"client": str, "until": int, "timeout": float}[f[2:]](v)
+    elif f == "--no-watch":
+        flags["watch"] = False
+    elif f == "--no-send":
+        flags["send"] = False
+    else:
+        sys.exit("work: unknown flag " + f)
+guid, backend, label = args[:3]
+text = " ".join(args[3:])
+client = flags["client"] or label
+target = guid + "|" + backend
+events = "../" + label + ".events.jsonl"
+done = {"n": 0}
+refused = []
+enough = threading.Event()
 
 
-def setup_command(cards: dict[str, str] | None = None) -> str:
+def note(p):
+    row = {k: p[k] for k in ("type", "phase", "client_id", "kind", "stream_id") if p.get(k) is not None}
+    if p.get("error"):
+        row["error"] = str(p["error"])[:200]
+        row["reason"] = p.get("reason")
+        refused.append(row)
+    with open(events, "a") as f:
+        f.write(json.dumps(row) + "\\n")
+    if row.get("error"):
+        enough.set()
+    elif p.get("type") == "status" and p.get("phase") == "done" and p.get("client_id") == client:
+        done["n"] += 1
+        if done["n"] >= flags["until"]:
+            enough.set()
+
+
+reply_error = None
+if flags["watch"]:
+    kernel.watch(target, note)
+try:
+    if flags["send"]:
+        reply = kernel.send(target, {"type": "send", "text": text, "client_id": client})
+    else:
+        # watch only: a `status` call is the barrier (one link keeps its frames in order, so the
+        # watch is served before the answer comes); `<label>.ready` says the watch is in place
+        reply = kernel.send(target, {"type": "status"})
+        open("../" + label + ".ready", "w").write("ready")
+    if isinstance(reply, dict) and reply.get("error"):
+        reply_error = str(reply["error"])[:300]
+except RuntimeError as e:
+    reply_error = str(e)[:300]
+if flags["watch"] and not reply_error:
+    enough.wait(flags["timeout"])
+ok = not reply_error and not refused and (enough.is_set() or not flags["watch"])
+result = {"label": label, "backend": backend, "ok": ok, "done": done["n"], "reply_error": reply_error,
+          "refused": refused}
+with open("../" + label + ".result.json", "w") as f:
+    f.write(json.dumps(result))
+print(json.dumps(result))
+sys.exit(0 if ok else 1)
+'''
+
+
+def work_install_command() -> str:
+    """The program into the box's folder: the exec agent's `connector` (fantastic's wire client,
+    its `source`) put on top of `WORK_PROGRAM`."""
+    body = base64.b64encode(WORK_PROGRAM.encode()).decode()
+    code = ('import base64,json,sys; src=json.load(sys.stdin)["result"]["source"]; '
+            f'open("{WORK_FILE}","w").write(src+base64.b64decode("{body}").decode())')
+    return remote_send({"target": cli.EXEC, "payload": {"type": "connector"}}) + " | python3 -c " + shq(code)
+
+
+def setup_command() -> str:
     """One raw ssh: wait for the remote kernel's socket, then the web host, its leg and the
-    canvas's edges, `user`'s grant for the leg, the remote exec agent, the role cards (if any),
-    and boot `web` (it mounts the leg and listens on the tunnel's port)."""
+    canvas's edges, `user`'s grant for the leg, the remote exec agent (it may call the master's
+    agents), the work program, and boot `web` (it mounts the leg and listens on the tunnel's port)."""
     wait = (f"for i in $(seq 150); do [ -S {DIR}/.fantastic/cli/mcp.sock ] && break; sleep 0.2; done && "
             f"cd {DIR} && [ -S .fantastic/cli/mcp.sock ]")
     steps = [wait,
@@ -144,13 +260,10 @@ def setup_command(cards: dict[str, str] | None = None) -> str:
                                             "can_call": {"$self": "*", LEG: ["get_routes"]}}))),
              quiet(remote_send(kernel_item({"type": "list_agents"})) + " | python3 -c " + shq(MERGE_USER)
                    + " | xargs -0 fantastic_team send"),
-             quiet(remote_send(kernel_item(dict(REMOTE_EXEC, type="create_agent"))))]
-    for name, text in sorted((cards or {}).items()):
-        if "'" in text:
-            raise ValueError(f"role card {name} holds a single quote: it rides in a quoted shell word")
-        steps.append(f"mkdir -p roles && printf '%s' {shq(text)} > roles/{name}")
-    steps.append(quiet(remote_send({"target": WEB, "payload": {"type": "boot"}})))
-    steps.append(remote_send(kernel_item({"type": "list_agents"})) + " | python3 -c " + shq(LIST_IDS))
+             quiet(remote_send(kernel_item(dict(REMOTE_EXEC, type="create_agent")))),
+             work_install_command(),
+             quiet(remote_send({"target": WEB, "payload": {"type": "boot"}})),
+             remote_send(kernel_item({"type": "list_agents"})) + " | python3 -c " + shq(LIST_IDS)]
     return " && ".join(steps)
 
 
@@ -166,10 +279,16 @@ def stop_command() -> str:
 
 # ---- the bridge's calls ----------------------------------------------------------------
 
-def bridge_record() -> dict:
-    return {"id": BRIDGE, "parent_id": "user", "handler_module": "ws_bridge.tools",
-            "ingress_rule": "allow_all_ingress", "transport": "ws", "host": "127.0.0.1",
-            "port": "{{tunnel_port}}", "peer_id": LEG}
+def bridge_record(backends=()) -> dict:
+    """The master's bridge to the leg. The leg is open and may call exactly `BACKEND_VERBS` on
+    `backends` (the master's backends the remote is to call; a backend minted later is opened by
+    `grant_leg`). The other end of each grant is the backend's `callable_by` (`open_backends`)."""
+    rec = {"id": BRIDGE, "parent_id": "user", "handler_module": "ws_bridge.tools",
+           "ingress_rule": "allow_all_ingress", "transport": "ws", "host": "127.0.0.1",
+           "port": "{{tunnel_port}}", "peer_id": LEG}
+    if backends:
+        rec["can_call"] = {"$self": "*", **{b: list(BACKEND_VERBS) for b in backends}}
+    return rec
 
 
 def forward(target: str, payload: dict, timeout: int = 120) -> dict:
@@ -179,107 +298,127 @@ def forward(target: str, payload: dict, timeout: int = 120) -> dict:
                      "forward_timeout": timeout}}
 
 
-def remote_ai(id: str, parent: str = "user") -> dict:
-    """An AI agent on the remote kernel: the plug's model through the gateway, the shared memory
-    store. No grants are written: the remote kernel's reach grants every AI agent (fantastic
-    `src/tui/src/kern/reach.rs`)."""
-    return {"type": "create_agent", "id": id, "parent_id": parent, "handler_module": "anthropic_backend.tools",
-            "model": cli.MODEL, "endpoint": "{{remote_endpoint}}", "memory_store_id": "memory"}
+def remote_run(call: dict) -> dict:
+    """The exec agent's `run` of a local call, in the box's clone, through the bridge."""
+    a = call["args"]
+    return forward(cli.EXEC, {"type": "run", "command": a["command"], "args": a["args"], "wait_s": 30})
 
 
-def remote_registry(total: int) -> dict:
-    """The remote roles registry (fantastic's `agentic_resources`), cards under `w/roles`."""
-    return {"type": "create_agent", "id": "roles", "parent_id": "user", "handler_module": "agentic_resources.tools",
-            "role_dirs": ["roles"], "limits": {"total": total},
-            "tiers": {"small": {"handler_module": "anthropic_backend.tools", "model": cli.MODEL,
-                                "endpoint": "{{remote_endpoint}}", "memory_store_id": "memory"}}}
+def work(backend: str, label: str, text: str, flags=()) -> dict:
+    """A remote agent's model work: the work program, a job of the box's exec agent, `send`s `text` to
+    the master's `backend` and `watch`es it (`<master guid>|<backend>`, over the bridge). The lead starts
+    it with the exec agent's `run`, through the bridge; its reply is the program's output."""
+    argv = [f"../{WORK_FILE}", *flags, "{{master_guid}}", backend, label, text]
+    return forward(cli.EXEC, {"type": "run", "command": "python3", "args": argv, "wait_s": 60})
 
 
-def t(call: dict, lane: str | None = None, after=()) -> dict:
+def t(call: dict, lane: str | None = None, after=(), grant=()) -> dict:
+    """One turn of a script. `grant`: backends the operator opens to the bridge leg before the turn is
+    answered (`grant_leg`: for a backend minted by a spawn, whose id the script cannot name earlier)."""
     turn = {"calls": [call]}
     if lane:
         turn["lane"] = lane
     if after:
         turn["after"] = list(after)
+    if grant:
+        turn["grant_leg"] = list(grant)
     return turn
 
 
-def open_turns(roles: dict[str, str] | None = None, after=()) -> list[dict]:
+def open_turns(backends=(), after=(), detached: bool = False) -> list[dict]:
     """The lead's start: the tunnel and the remote kernel, the remote's surface and exec agent,
-    the clone in the box, the bridge."""
-    return [t(run_call(ssh_args(kernel_start_command(roles is not None), tunnel=True), verb="start"), after=after),
-            t(ssh_call(setup_command(roles))),
-            t(ssh_call(clone_command())),
-            t({"target": "kernel", "type": "create_agent", "args": bridge_record()})]
+    the clone in the box, the bridge. `detached`: the kernel on its own and the tunnel a job of its
+    own (the twin that breaks the tunnel and redials)."""
+    if detached:
+        first = [t(ssh_call(detached_kernel_command()), after=after), t(tunnel_call())]
+    else:
+        first = [t(run_call(ssh_args(kernel_start_command(), tunnel=True), verb="start"), after=after)]
+    return first + [t(ssh_call(setup_command())),
+                    t(ssh_call(clone_command())),
+                    t({"target": "kernel", "type": "create_agent", "args": bridge_record(backends)})]
+
+
+def tunnel_call() -> dict:
+    """The tunnel alone, a job of the exec agent (`ssh -N -L`)."""
+    return run_call(ssh_args(None, tunnel=True), verb="start")
 
 
 AWAIT = {"name": "await"}
 
 
-def stop_turns() -> list[dict]:
-    """SIGTERM to the remote kernel over ssh. The tunnel's ssh session ends with the kernel, so two
-    messages come back, in either order: the stop's reply and the tunnel job's `job_done`. The
-    first is answered with `await` (the other is in flight), the second goes on."""
+def stop_turns(detached: bool = False) -> list[dict]:
+    """SIGTERM to the remote kernel over ssh. Started in the tunnel's ssh session, the session ends
+    with the kernel, so two messages come back, in either order: the stop's reply and the tunnel job's
+    `job_done`. The first is answered with `await` (the other is in flight), the second goes on.
+    `detached`: the tunnel is a job of its own, stopped after the kernel."""
+    if detached:
+        return [t(ssh_call(stop_command())), t({"target": cli.EXEC, "type": "stop", "args": {}})]
     return [t(ssh_call(stop_command())), t(AWAIT)]
 
 
-def close_turns(remote_ids=(), verify: bool = True) -> list[dict]:
-    """The lead's end: the remote agents deleted through the bridge, the bridge deleted, the remote
-    kernel stopped over ssh (its tunnel closes with it); then the test run on the pulled tree."""
+def close_turns(remote_ids=(), verify: bool = True, detached: bool = False) -> list[dict]:
+    """The lead's end: the remote agents it made deleted through the bridge, the bridge deleted, the
+    remote kernel stopped over ssh (its tunnel closes with it); then the test run on the pulled tree."""
     turns = [t(forward("kernel", {"type": "delete_agent", "id": i})) for i in remote_ids]
-    turns += [t({"target": "kernel", "type": "delete_agent", "args": {"id": BRIDGE}}), *stop_turns()]
+    turns += [t({"target": "kernel", "type": "delete_agent", "args": {"id": BRIDGE}}), *stop_turns(detached)]
     if verify:
         turns += [t(cli.run_call("git", "pull", "-q", "--ff-only")), t(cli.run_call("python3", "test_calc.py"))]
     return turns + [t({"name": "done"})]
 
 
-def fix_turns(fix, msg: str, lane: str | None, pull: bool = False, after=()) -> list[dict]:
-    """A worker's turns on its own side's exec agent: (pull,) test, fix, test, commit, push, done."""
+# A backend the remote watches opens its first turn with words, so a TEXT part streams to its inbox (a turn
+# of calls alone streams call parts, which go to the agents they call, not to a watcher of the backend).
+SAY = "Working on it."
+
+
+def say_first(turns: list[dict], say: str = SAY) -> list[dict]:
+    turns[0]["say"] = say
+    return turns
+
+
+def fix_turns(fix, msg: str, lane: str | None, pull: bool = False, after=(), remote: bool = False,
+              say: str | None = None) -> list[dict]:
+    """A worker's turns: (pull,) test, fix, test, commit, push, done. On its own kernel's exec agent;
+    `remote`: on the box's, through the bridge (a master backend working in the remote workspace).
+    `say`: words before its first call (a backend the remote watches: see `SAY`)."""
     calls = [cli.run_call("git", "pull", "-q", "--ff-only")] if pull else []
     calls += [cli.run_call("python3", "test_calc.py"), cli.replace_call(*fix), cli.run_call("python3", "test_calc.py"),
               cli.run_call("git", "-c", "user.name=Worker", "-c", "user.email=worker@example.invalid",
                            "commit", "-q", "-a", "-m", msg),
               cli.run_call("git", "push", "-q", "origin", "HEAD:main")]
+    if remote:
+        calls = [remote_run(c) for c in calls]
     turns = [t(c, lane) for c in calls] + [t({"name": "done"}, lane)]
     if after:
         turns[0]["after"] = list(after)
+    if say:
+        turns[0]["say"] = say
     return turns
 
 
 def history(id: str) -> dict:
-    """Results back: the remote agent's conversation, as the forward's reply."""
-    return forward(id, {"type": "history"})
+    """Results back: a master agent's conversation (a backend's turns are on the master)."""
+    return {"target": id, "type": "history", "args": {}}
 
 
 def remote_log_call() -> dict:
-    """Results back from a spawned remote agent, whose conversation only its spawner reads (the
-    registry gives the spawner pause/resume/stop on it): the box clone's last commit, through the
-    bridge (the remote exec agent's `run`)."""
+    """Results back from the remote work: the box clone's last commit, through the bridge (the
+    remote exec agent's `run`)."""
     return forward(cli.EXEC, {"type": "run", "command": "git", "args": ["log", "-1", "--format=%s"], "wait_s": 30})
 
 
 # ---- the six scripts -------------------------------------------------------------------
 
-def cards_of(name: str) -> dict[str, str]:
-    folder = cli.roles_dir(name)
-    out = {}
-    for f in sorted(os.listdir(folder)):
-        with open(os.path.join(folder, f)) as fh:
-            out[f] = fh.read()
-    return out
-
-
 def script_single_lead() -> list[dict]:
     """The lead alone, twice (A: made with create_agent; B: fantastic's recipe). Locally it fixes
     adder.py and pushes; in its remote workspace (the box's exec agent, through the bridge) it
-    pulls, fixes muler.py, commits and pushes."""
+    pulls, fixes muler.py, commits and pushes. The lead is the only backend, on the master."""
     def one() -> list[dict]:
         local = [t(c) for c in (cli.run_call("python3", "test_calc.py"), cli.replace_call(*ADD),
                                 cli.run_call("git", "-c", "user.name=Worker", "-c", "user.email=worker@example.invalid",
                                              "commit", "-q", "-a", "-m", "Fix add"),
                                 cli.run_call("git", "push", "-q", "origin", "HEAD:main"))]
-        remote = [t(forward(cli.EXEC, {"type": "run", "command": c["args"]["command"], "args": c["args"]["args"],
-                                       "wait_s": 30}))
+        remote = [t(remote_run(c))
                   for c in (cli.run_call("git", "pull", "-q", "--ff-only"), cli.replace_call(*MUL),
                             cli.run_call("python3", "test_calc.py"),
                             cli.run_call("git", "-c", "user.name=Worker", "-c", "user.email=worker@example.invalid",
@@ -289,71 +428,98 @@ def script_single_lead() -> list[dict]:
     return one() + one()
 
 
+# `precreated_1_2` is also the reconnect twin: the remote kernel on its own and the tunnel a job of its own
+# (so the tunnel can be broken and made again with the kernel up), and two messages to the lead with the
+# operator's phase between them (`reconnect_phase` in the probe): the lead's turns of each, the turns of
+# w1, and of w2 before the phase (the fix) and in it (a slow turn of w3's, a backend kept for it, and a turn of
+# the master's on w2).
+SLOW_S = 20  # a slow turn of w3's, long enough to break the tunnel while it is in flight
+
+
 def script_precreated_1_2() -> list[dict]:
-    """The lead and w1 local (w1 made before the task); w2 made on the remote kernel by the lead
-    through the bridge. w1 fixes adder.py and pushes, then w2 pulls, fixes muler.py and pushes;
-    the lead reads w2's conversation back through the bridge and deletes it there."""
-    lead = open_turns() + [
-        t(forward("kernel", remote_ai("w2"))),
+    """The lead, w1 and w2 on the master (made before the task). w1 fixes adder.py and pushes. The
+    remote agent (the work program in the box) sends w2 its work and watches it; w2's turn runs on
+    the master and its tools are the box's exec agent: it pulls, fixes muler.py and pushes (message 1).
+    Then the operator seals the watch grant (the work program's watch gets nothing), breaks the tunnel
+    while a call to w2 is in flight, redials with the bridge's `reconnect`, and a watcher of w2 started
+    before keeps streaming (the phase, in the probe). The lead reads w2's conversation back and
+    closes (message 2)."""
+    one = open_turns(backends=("w2",), detached=True) + [
         t({"target": "w1", "type": "send", "args": {"text": "[lane:w1] Fix adder.py, commit and push."}}),
-        t(forward("w2", {"type": "send", "text": "[lane:w2] Pull, fix muler.py, commit and push."}), after=["w1"]),
-        t(history("w2"), after=["w2"]),
-    ] + close_turns(["w2"])
-    return lead + fix_turns(ADD, "Fix add", "w1") + fix_turns(MUL, "Fix mul", "w2", pull=True)
+        t(work("w2", "w2", "[lane:w2] Pull, fix muler.py, commit and push."), after=["w1"]),
+        t({"name": "done"}),
+    ]
+    two = [t(history("w2"), after=["w2"])] + close_turns(detached=True)
+    # the turns of the phase: each ends its run with `done`, words first (a text part streams). The call that is
+    # in flight when the tunnel breaks goes to w1 (slow); the turn of the master's after the redial is w2's
+    during = [dict(t({"name": "done"}, "w3"), say="Working on it, slowly.", delay=SLOW_S),
+              dict(t({"name": "done"}, "w2"), say="Done, after the redial.")]
+    return (one + two + fix_turns(ADD, "Fix add", "w1")
+            + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True, say=SAY) + during)
+
+
+def phases_1_2() -> dict:
+    """How many turns each part of `script_precreated_1_2` has, for the probe to wait for."""
+    return {"one": len(open_turns(backends=("w2",), detached=True)) + 3, "two": 1 + len(close_turns(detached=True)),
+            "w1": len(fix_turns(ADD, "", "w1")), "w2": len(fix_turns(MUL, "", "w2", True, remote=True)), "during": 2}
 
 
 def script_precreated_tree() -> list[dict]:
-    """Local: the lead, s1, w1 (made before the task). Remote: s2 and w2 under it, made by the lead
-    through the bridge. s1 has w1 fix adder.py; then s2 (remote) has w2 (remote) fix muler.py."""
-    lead = open_turns() + [
-        t(forward("kernel", remote_ai("s2"))),
-        t(forward("kernel", remote_ai("w2", parent="s2"))),
+    """The lead, s1 and w1 under it, s2 and w2 under it: all on the master (made before the task). s1
+    has w1 fix adder.py; then the remote agent sends s2 its work and watches it, and s2 has w2 (on the
+    master, its tools the box's exec agent) fix muler.py."""
+    lead = open_turns(backends=("s2",)) + [
         t({"target": "s1", "type": "send", "args": {"text": "[lane:s1] Have your worker fix adder.py."}}),
-        t(forward("s2", {"type": "send", "text": "[lane:s2] Have your worker w2 fix muler.py."}), after=["s1", "w1"]),
+        t(work("s2", "s2", "[lane:s2] Have your worker w2 fix muler.py."), after=["s1", "w1"]),
         t(history("w2"), after=["s2", "w2"]),
-    ] + close_turns(["w2", "s2"])
+    ] + close_turns()
     s1 = [t({"target": "w1", "type": "send", "args": {"text": "[lane:w1] Fix adder.py, commit and push."}}, "s1"),
           t({"name": "done"}, "s1", after=["w1"])]
-    s2 = [t({"target": "w2", "type": "send", "args": {"text": "[lane:w2] Pull, fix muler.py, commit and push."}}, "s2"),
-          t({"name": "done"}, "s2", after=["w2"])]
-    return lead + s1 + s2 + fix_turns(ADD, "Fix add", "w1") + fix_turns(MUL, "Fix mul", "w2", pull=True)
+    s2 = say_first([t({"target": "w2", "type": "send", "args": {"text": "[lane:w2] Pull, fix muler.py, commit and push."}}, "s2"),
+                    t({"name": "done"}, "s2", after=["w2"])])
+    return (lead + s1 + s2 + fix_turns(ADD, "Fix add", "w1")
+            + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True))
 
 
 def script_lead_spawns_two() -> list[dict]:
-    """The lead spawns w1 on the local registry and w2 on the remote one (through the bridge);
-    w1 fixes adder.py and pushes, then w2 pulls, fixes muler.py and pushes; the lead deletes each
-    where it lives."""
-    lead = open_turns(cards_of("lead_spawns_two")) + [
-        t(forward("kernel", remote_registry(1))),
+    """The lead spawns w1 and w2 on the master's registry. w1 fixes adder.py and pushes. Then the remote
+    agent sends w2 its work and watches it (w2 is minted when spawned: the operator opens it to the leg
+    when the script reaches that turn); w2's tools are the box's exec agent: it pulls, fixes muler.py
+    and pushes. The lead deletes both."""
+    lead = open_turns() + [
         t({"target": "roles", "type": "spawn", "args": {"role": "worker", "task": "[lane:w1] Fix adder.py, commit and push."}}),
-        t(forward("roles", {"type": "spawn", "role": "worker", "task": "[lane:w2] Pull, fix muler.py, commit and push."}),
-          after=["w1"]),
+        t({"target": "roles", "type": "spawn", "args": {"role": "worker"}}),
+        t(work("{{minted:2}}", "w2", "[lane:w2] Pull, fix muler.py, commit and push."), after=["w1"],
+          grant=["{{minted:2}}"]),
         t(remote_log_call(), after=["w2"]),
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}),
-    ] + close_turns(["{{minted:2}}", "roles"])
-    return lead + fix_turns(ADD, "Fix add", "w1") + fix_turns(MUL, "Fix mul", "w2", pull=True)
+        t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:2}}"}}),
+    ] + close_turns()
+    return lead + fix_turns(ADD, "Fix add", "w1") + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True, say=SAY)
 
 
 def script_leads_spawn_leads() -> list[dict]:
-    """The lead spawns s1 on the local registry and s2 on the remote one (through the bridge); each
-    sub-lead spawns its worker on its own kernel's registry and deletes it; the lead deletes s1 and,
-    through the bridge, s2."""
-    lead = open_turns(cards_of("leads_spawn_leads")) + [
-        t(forward("kernel", remote_registry(2))),
+    """The lead spawns s1 and s2 on the master's registry. s1 spawns its worker, which fixes adder.py and
+    pushes. Then the remote agent sends s2 its work and watches it (s2 is minted: opened to the leg at
+    that turn); s2 spawns its worker (on the master; its tools are the box's exec agent), which pulls,
+    fixes muler.py and pushes; each sub-lead deletes its worker, the lead deletes both sub-leads."""
+    lead = open_turns() + [
         t({"target": "roles", "type": "spawn", "args": {"role": "sublead", "task": "[lane:s1] Have a worker fix adder.py, then delete it."}}),
-        t(forward("roles", {"type": "spawn", "role": "sublead",
-                            "task": "[lane:s2] Have a worker pull, fix muler.py and push, then delete it."}),
-          after=["s1", "w1"]),
+        t({"target": "roles", "type": "spawn", "args": {"role": "sublead"}}),
+        t(work("{{minted:2}}", "s2", "[lane:s2] Have a worker pull, fix muler.py and push, then delete it."),
+          after=["s1", "w1"], grant=["{{minted:2}}"]),
         t(remote_log_call(), after=["s2", "w2"]),
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}),
-    ] + close_turns(["{{minted:2}}", "roles"])
+        t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:2}}"}}),
+    ] + close_turns()
     s1 = [t({"target": "roles", "type": "spawn", "args": {"role": "worker", "task": "[lane:w1] Fix adder.py, commit and push."}}, "s1"),
           t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}, "s1", after=["w1"]),
           t({"name": "done"}, "s1")]
-    s2 = [t({"target": "roles", "type": "spawn", "args": {"role": "worker", "task": "[lane:w2] Pull, fix muler.py, commit and push."}}, "s2"),
-          t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}, "s2", after=["w2"]),
-          t({"name": "done"}, "s2")]
-    return lead + s1 + s2 + fix_turns(ADD, "Fix add", "w1") + fix_turns(MUL, "Fix mul", "w2", pull=True)
+    s2 = say_first([t({"target": "roles", "type": "spawn", "args": {"role": "worker", "task": "[lane:w2] Pull, fix muler.py, commit and push."}}, "s2"),
+                    t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}, "s2", after=["w2"]),
+                    t({"name": "done"}, "s2")])
+    return (lead + s1 + s2 + fix_turns(ADD, "Fix add", "w1")
+            + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True))
 
 
 def notes_call(line: str) -> dict:
@@ -370,7 +536,7 @@ def commit_push(msg: str) -> list[dict]:
             cli.run_call("git", "push", "-q", "origin", "HEAD:main")]
 
 
-CANVAS = {"type": "create_agent", "id": "sketch", "parent_id": "rlead", "handler_module": "canvas_page.tools"}
+CANVAS = {"type": "create_agent", "id": "sketch", "parent_id": "user", "handler_module": "canvas_page.tools"}
 
 
 def wait_up_command() -> str:
@@ -382,17 +548,17 @@ def wait_up_command() -> str:
 
 
 def script_headless_and_canvas() -> list[dict]:
-    """Three messages to the lead. 1 (the local kernel runs `canvas --port P`): the remote,
-    `rlead` made there, the lead's note committed and pushed, `rlead` told to make its canvas
-    (`create_agent` of a `canvas_page` under itself) and add its note. 1b: the bridge deleted
-    and the remote kernel stopped. 2 (the local kernel restarted as `webui --port P2`): the
-    tunnel and the remote kernel again, the bridge reconnected. 3: `sketch` and `rlead` deleted
-    through the bridge, the bridge deleted, the remote stopped (its tunnel closes with it)."""
-    one = open_turns() + [
-        t(forward("kernel", remote_ai("rlead"))),
+    """Three messages to the lead. 1 (the local kernel runs `canvas --port P`): the remote; the lead's
+    note committed and pushed; the remote agent sends `rlead` (a backend on the master, made before the
+    task) its work and watches it: `rlead` makes a canvas on the remote kernel (`create_agent` of a
+    `canvas_page`, through the bridge) and adds its note in the box's clone. 1b: the bridge deleted and
+    the remote kernel stopped. 2 (the local kernel restarted as `webui --port P2`): the tunnel and the
+    remote kernel again, the bridge reconnected. 3: `sketch` deleted through the bridge, the bridge
+    deleted, the remote stopped (its tunnel closes with it)."""
+    one = open_turns(backends=("rlead",)) + [
         t(notes_call("local: the notes of the lead")),
         *[t(c) for c in commit_push("Notes: the lead")],
-        t(forward("rlead", {"type": "send", "text": "[lane:r] Make a canvas for your notes and add your note."})),
+        t(work("rlead", "r", "[lane:r] Make a canvas for your notes and add your note.")),
         t(remote_log_call(), after=["r"]),
         t({"name": "done"}),
     ]
@@ -405,23 +571,22 @@ def script_headless_and_canvas() -> list[dict]:
     two = [t({"text": "The context as it is."}),
            t(run_call(ssh_args(kernel_start_command(), tunnel=True), verb="start")),
            t(ssh_call(wait_up_command())),
-           t({"target": "kernel", "type": "create_agent", "args": bridge_record()}),
+           t({"target": "kernel", "type": "create_agent", "args": bridge_record(("rlead",))}),
            t({"name": "done"})]
     three = [t(forward("kernel", {"type": "delete_agent", "id": CANVAS["id"]})),
-             t(forward("kernel", {"type": "delete_agent", "id": "rlead"})),
              t({"target": "kernel", "type": "delete_agent", "args": {"id": BRIDGE}}),
              *stop_turns(),
              t(cli.run_call("git", "pull", "-q", "--ff-only")),
              t({"name": "done"})]
-    r = [t({"target": "kernel", "type": "create_agent", "args": {k: v for k, v in CANVAS.items() if k != "type"}}, "r"),
-         t(cli.run_call("git", "pull", "-q", "--ff-only"), "r"),
-         t(notes_call("remote: the notes of rlead"), "r"),
-         *[t(c, "r") for c in commit_push("Notes: rlead")],
+    r = [dict(t(forward("kernel", {k: v for k, v in CANVAS.items()}), "r"), say=SAY),
+         t(remote_run(cli.run_call("git", "pull", "-q", "--ff-only")), "r"),
+         t(remote_run(notes_call("remote: the notes of rlead")), "r"),
+         *[t(remote_run(c), "r") for c in commit_push("Notes: rlead")],
          t({"name": "done"}, "r")]
     return one + pause + two + three + r
 
 
-CANVAS_PHASES = (12, 4, 5, 7)  # the lead's turns per message of script_headless_and_canvas (lane r: 7 more)
+CANVAS_PHASES = (11, 4, 5, 6)  # the lead's turns per message of script_headless_and_canvas (lane r: 7 more)
 
 
 SCRIPTS = {"single_lead": script_single_lead, "precreated_1_2": script_precreated_1_2,
@@ -456,6 +621,72 @@ def stale_scripts() -> list[str]:
     return out
 
 
+# ---- the leg's grants on the master's backends --------------------------------------------
+
+def master_guid(team) -> str:
+    """The master kernel's guid, the address of its agents on the remote (`<guid>|<agent>`): the root's reflect."""
+    r = team.send("kernel", {"type": "reflect"}).get("result") or {}
+    guid = r.get("guid")
+    if not guid:
+        raise RuntimeError(f"the master kernel reports no guid: {str(r)[:300]}")
+    return guid
+
+
+def open_backend(team, backend: str) -> None:
+    """The backend's end of the leg's grant: `callable_by` the bridge, exactly `BACKEND_VERBS`."""
+    records.merge(team, backend, "callable_by", {BRIDGE: list(BACKEND_VERBS)})
+
+
+def grant_leg(team, backends) -> None:
+    """Open master backends to the leg, both ends of each grant (the way an operator would): the
+    bridge's `can_call` and the backend's `callable_by`, exactly `BACKEND_VERBS`, the entries each
+    already holds kept."""
+    for b in backends:
+        records.merge(team, BRIDGE, "can_call", {b: list(BACKEND_VERBS)})
+        open_backend(team, b)
+
+
+def seal_watch(team, backend: str) -> None:
+    """The mutation: the backend stops letting the leg `watch` it (send, status and stop stay)."""
+    records.merge(team, backend, "callable_by", {BRIDGE: [v for v in BACKEND_VERBS if v != "watch"]})
+
+
+# ---- what the box saw: the stream, and the key it must not hold ---------------------------
+
+def streamed(rows: list[dict], client: str) -> tuple[bool, str]:
+    """Did a backend's stream reach the remote program? `rows` are its arrival log (one dict per event,
+    in the order they came). Good when, for the events of `client`, a `status` came first and at least
+    one `part_*` before the first `status` `done`, and nothing was refused. (False, why) otherwise."""
+    refused = [r for r in rows if r.get("error")]
+    if refused:
+        return False, f"refused: {refused[0]}"
+    mine = [r for r in rows if r.get("client_id") == client]
+    done = next((i for i, r in enumerate(mine) if r.get("type") == "status" and r.get("phase") == "done"), None)
+    if done is None:
+        return False, f"no `status` `done` for {client!r} in {len(rows)} event(s): {[r.get('type') for r in rows]}"
+    before = [r.get("type") for r in mine[:done]]
+    if "status" not in before:
+        return False, f"no `status` before `done`: {before}"
+    if not any(str(x).startswith("part_") for x in before):
+        return False, f"no `part_*` before `done`: {before}"
+    return True, ""
+
+
+def holds_key(blobs: list[bytes], keys: list[str]) -> list[int]:
+    """The indexes of `blobs` (a tar of the box's home, its environment, its container's) that hold one of the keys."""
+    return [i for i, b in enumerate(blobs) if any(k and k.encode() in b for k in keys)]
+
+
+def model_keys(ctx) -> list[str]:
+    """The model's secrets of this run: the fake key of a scripted plug, or the real key the plug reads
+    from its environment variable (never printed)."""
+    keys = [(getattr(ctx, "secrets", None) or {}).get("model_key")]
+    env = getattr(ctx.model, "key_env", None)
+    if env:
+        keys.append(os.environ.get(env))
+    return [k for k in keys if k]
+
+
 # ---- the harness: the box, the fixture on the git server, the checks -------------------
 
 def git_url(ctx) -> str:
@@ -479,9 +710,8 @@ class Box:
     fixture is the test's git server's (`publish`); the clones carry the forge's token in a git
     config (the local sandbox's, the box's `~/.gitconfig`), never in a command."""
 
-    def __init__(self, ctx, name: str = "box", roles: bool = False) -> None:
+    def __init__(self, ctx, name: str = "box") -> None:
         self.ctx = ctx
-        self.roles = roles
         self.remote = pr.Remote(os.path.join(ctx.run_dir, name))
         self.tunnel_port = team_mod.free_port()
         self.stock: set[str] = set()
@@ -519,24 +749,30 @@ class Box:
         cli.git(ctx.repo, "branch", "-q", "-u", "origin/main", "main")
 
     def values(self) -> dict:
-        """The script's run-time values: the box's ssh port and key, the tunnel's port, the model
-        and the git server as the box dials them (Podman's host gateway)."""
+        """The script's run-time values: the box's ssh port and key, the tunnel's port, the master's
+        guid (the address of its agents on the remote: `<guid>|<agent>`) and the git server as the box
+        dials it (Podman's host gateway). The box is given no model endpoint: it holds no model."""
         return {"ssh_port": str(self.remote.port), "ssh_key": self.remote.key, "tunnel_port": str(self.tunnel_port),
-                "remote_endpoint": pr.gateway_url(self.ctx.model.endpoint),
+                "master_guid": master_guid(self.ctx.team),
                 "remote_git_url": pr.gateway_url(git_url(self.ctx))}
 
     def bind(self) -> None:
+        """Fill the script's values, and let the plug's `grant_leg` turns open a minted backend to the leg."""
+        self.ctx.model.leg_grant = lambda ids: grant_leg(self.ctx.team, ids)
         self.ctx.model.bind(**self.values())
 
-    # -- the remote kernel, by the harness (the checks only) --
+    def open_backends(self, ids) -> None:
+        """The master's end of the leg's grants on backends that exist before the task (the bridge's
+        `can_call` end is in its record: `bridge_record`)."""
+        for b in ids:
+            open_backend(self.ctx.team, b)
 
-    def env(self) -> str:
-        return "FANTASTIC_AGENTIC_RESOURCES=1 " if self.roles else ""
+    # -- the remote kernel, by the harness (the checks only) --
 
     def records(self, folder: str = DIR) -> dict:
         """Start the remote kernel in `folder` over ssh, list its records, stop it (SIGTERM, a
         bounded wait). id -> record."""
-        start = (f"mkdir -p {folder} && cd {folder} && {{ {self.env()}nohup fantastic_team --headless >> check.log 2>&1 & "
+        start = (f"mkdir -p {folder} && cd {folder} && {{ nohup fantastic_team --headless >> check.log 2>&1 & "
                  "echo $! > check.pid; } && for i in $(seq 150); do [ -S .fantastic/cli/mcp.sock ] && break; sleep 0.2; done && "
                  + remote_send(kernel_item({"type": "list_agents"})))
         try:
@@ -560,11 +796,12 @@ class Box:
 
     # -- the checks --
 
-    def end(self, v, remote_base=(), label: str = "", solved: bool = True) -> dict:
+    def end(self, v, remote_base=(), label: str = "", solved: bool = True, streams=()) -> dict:
         """The checks every twin shares. `remote_base`: the agents the lead keeps on the remote kernel
         beyond its stock (the surface and the exec agent are always there). `solved`: the fixture
-        is the task (the canvas twin's task is its notes, checked by its probe). Returns the remote
-        records; the git server's files at HEAD are in `self.server_files`."""
+        is the task (the canvas twin's task is its notes, checked by its probe). `streams`: the
+        `(label, client)` of each remote work run whose arrival log must show the stream. Returns the
+        remote records; the git server's files at HEAD are in `self.server_files`."""
         ctx = self.ctx
         with tempfile.TemporaryDirectory() as tmp:
             server = os.path.join(tmp, "server")
@@ -607,8 +844,62 @@ class Box:
         v.check(f"{label}remote: no spawned agent is left", not left, str(left))
         orphans = [i for i, a in recs.items() if a.get("parent_id") and a["parent_id"] not in recs]
         v.check(f"{label}remote: no orphans (every agent's parent exists)", not orphans, str(orphans))
+        backends = {i: a.get("handler_module") for i, a in recs.items() if "backend" in (a.get("handler_module") or "")}
+        v.check(f"{label}remote: no backend on the box (its records hold none; the selftest checks that no script or setup "
+                "command makes one)", not backends, str(backends))
+        self.holds_no_key(v, label)
+        for work_label, client in streams:
+            self.check_stream(v, work_label, client, label)
         self.remote_log_text = log_text
         return recs
+
+    # -- the operator's calls (the reconnect phase): no lead, no model --
+
+    def remote_call(self, target: str, payload: dict, timeout: int = 60) -> dict:
+        """A call on the remote kernel the operator makes through the bridge (the lead's `forward`, without the lead)."""
+        r = self.ctx.team.send(BRIDGE, {"type": "forward", "target": "user", "forward_timeout": timeout,
+                                        "payload": {"type": "forward", "target": target, "payload": payload}},
+                               timeout=timeout + 30)
+        return r.get("result") or {}
+
+    def wait_remote_file(self, name: str, wait_s: int = 60) -> bool:
+        """True once a file of the remote kernel's folder exists (a bounded wait in the box, as the others)."""
+        r = self.remote.ssh(f"for i in $(seq {wait_s * 5}); do [ -e {DIR}/{shq(name)} ] && exit 0; sleep 0.2; done; exit 1",
+                            check=False, timeout=wait_s + 30)
+        return r.returncode == 0
+
+    def tunnel_argv(self) -> list[str]:
+        return pr.ssh_argv(self.remote.port, self.remote.key, None, (self.tunnel_port, self.tunnel_port))
+
+    # -- what the box holds and saw --
+
+    def remote_text(self, name: str) -> str:
+        """A file of the remote kernel's folder (empty when it is not there)."""
+        return self.remote.ssh(f"cat {DIR}/{shq(name)} 2>/dev/null", check=False).stdout
+
+    def events(self, work_label: str) -> list[dict]:
+        """The arrival log of a remote work run: one dict per event, in the order they came."""
+        return [json.loads(line) for line in self.remote_text(f"{work_label}.events.jsonl").splitlines() if line.strip()]
+
+    def check_stream(self, v, work_label: str, client: str, label: str = "") -> None:
+        rows = self.events(work_label)
+        ok, why = streamed(rows, client)
+        v.check(f"{label}remote: the master backend's stream reached the box, `status` and `part_*` before "
+                f"`done` ({work_label}: {len(rows)} events)", ok, why)
+
+    def holds_no_key(self, v, label: str = "") -> None:
+        """The box holds no model key: not in its home (the remote kernel's folder, its logs and
+        records, the clone), not in the environment a login gets (the remote kernel's), not in the
+        container's. The key stays on the master."""
+        keys = model_keys(self.ctx)
+        tar = subprocess.run(self.remote.argv(f"tar -C {HOME} -cf - ."), capture_output=True, timeout=120,
+                             stdin=subprocess.DEVNULL).stdout
+        env = subprocess.run(self.remote.argv("env"), capture_output=True, timeout=60, stdin=subprocess.DEVNULL).stdout
+        inspected = pr.pm("inspect", self.remote.name, check=False, timeout=60).stdout.encode()
+        hit = holds_key([tar, env, inspected], keys)
+        v.check(f"{label}remote: no model key in the box's home, its login environment or its container",
+                bool(tar) and not hit,
+                f"{len(keys)} key(s) searched in {len(tar)} bytes of home; found in {[('home', 'env', 'container')[i] for i in hit]}")
 
     def listening(self) -> set[int]:
         """The TCP ports the box listens on (its /proc/net/tcp and tcp6, LISTEN rows)."""
@@ -618,10 +909,6 @@ class Box:
 
     def removed(self, v, label: str = "") -> None:
         v.check(f"{label}the container is removed", not self.remote.exists())
-
-
-def remote_spawns(log_text: str) -> list[tuple[str, str]]:
-    return [c for c in team_mod.log_calls(log_text) if c[1] == "spawn"]
 
 
 def hand(ctx, lead: str, text: str, upto: int | None = None, wait_s: float = 240) -> bool:
@@ -636,10 +923,11 @@ def hand(ctx, lead: str, text: str, upto: int | None = None, wait_s: float = 240
     return r.get("status") == "completed" and ctx.model.served >= want
 
 
-def came_back(ctx, lane: str | None, evidence: str) -> bool:
-    """True when a request of the lead (the main lane) ends with a reply of the bridge's `forward`
-    holding the remote agent's conversation (its task, `[lane:L]`) or, `lane` None, the box's own
-    output, and `evidence` of the work."""
+def came_back(ctx, lane: str | None, evidence: str, via: str | None = None) -> bool:
+    """True when a request of the lead (the main lane) ends with the reply of a call (`via`: the
+    bridge's `forward` by default, else e.g. `w2 history`) that holds `evidence` and, when `lane` is
+    given, the work of that lane (`[lane:L]`: a conversation)."""
+    head = f"· {via or BRIDGE + ' forward'} ·"
     for at, raw in zip(ctx.model.request_lanes, ctx.model.raw_bodies):
         if at != "main":
             continue
@@ -648,7 +936,7 @@ def came_back(ctx, lane: str | None, evidence: str) -> bool:
         except (ValueError, KeyError, IndexError, TypeError):
             continue
         text = last if isinstance(last, str) else json.dumps(last)
-        if f"· {BRIDGE} forward ·" in text and (lane is None or f"[lane:{lane}]" in text) and evidence in text:
+        if head in text and (lane is None or f"[lane:{lane}]" in text) and evidence in text:
             return True
     return False
 
@@ -671,6 +959,88 @@ def forward_replies(ctx) -> list[str]:
         if at == "main" and f"· {BRIDGE} forward ·" in text:
             out.append(text)
     return out
+
+
+# ---- the reconnect twin: the operator's phase between the lead's two messages ---------------
+
+def wait_lanes(ctx, want: dict[str, int], wait_s: float = 240) -> bool:
+    """Wait until the plug has served each lane `want` turns (the cursors; no turn is served twice)."""
+    end = time.time() + wait_s
+    while time.time() < end:
+        if all(ctx.model.cursor.get(lane, 0) >= n for lane, n in want.items()):
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def reconnect_phase(ctx, box: Box, v, backend: str = "w2", slow: str = "w3") -> None:
+    """After message 1 (the remote work done and its stream seen), with the lead idle:
+    - MUTATION: the watch grant sealed on `backend` on the master: the work program's watch gets nothing (the
+      master refuses the watch, and the refusal is not sent on to the watcher), it exits 1;
+    - a watcher of `backend` is started on the box (the work program, watch only);
+    - the tunnel broken (its job stopped) while a call to `slow` is IN FLIGHT: that call fails `bridge_down`,
+      on the box and at once. (The call goes to another backend than the watched one: an in-flight `send`
+      aborted by the drop leaves its backend `thinking`, fantastic's `fantastic-bridge/src/lib.rs` read loop
+      `h.abort()`, so that backend takes no more turns.);
+    - the master REDIALS the known port (the bridge's `reconnect`: a ws bridge does not redial by itself), the
+      next call on the remote kernel through the bridge answers, and the WATCH made before the break goes
+      on: a turn of the master's on `backend` reaches the watcher, which made no new `watch`."""
+    team = ctx.team
+    guid = master_guid(team)
+    work_py = f"../{WORK_FILE}"
+    start = lambda *argv: box.remote_call(cli.EXEC, {"type": "start", "command": "python3", "args": [work_py, *argv]})
+
+    seal_watch(team, backend)
+    run = box.remote_call(cli.EXEC, {"type": "run", "command": "python3", "wait_s": 40, "args": [
+        work_py, "--no-send", "--client", "sealed", "--timeout", "5", guid, backend, "sealed"]}, timeout=60)
+    open_backend(team, backend)
+    sealed = json.loads(box.remote_text("sealed.result.json") or "{}")
+    ok, why = streamed(box.events("sealed"), "sealed")
+    v.check("mutation: with the watch grant sealed on the master the box's watch gets nothing (the master refuses it and "
+            "fantastic does not tell the watcher): the work program exits 1, no event arrived, the arrival check fails",
+            run.get("exit_code") == 1 and not sealed.get("ok") and sealed.get("done") == 0 and not ok,
+            f"{str(run)[:200]} {sealed} {why}")
+
+    start("--no-send", "--client", "master", "--timeout", "120", guid, backend, "b")
+    v.check("a watcher of the backend on the box is in place (the program's `status` barrier answered over the bridge)",
+            box.wait_remote_file("b.ready"), box.remote_text("b.result.json")[:300])
+    grant_leg(team, [slow])
+    before = ctx.model.served
+    start("--timeout", "120", guid, slow, "a", f"[lane:{slow}] Report slowly.")
+    waited = time.time() + 60
+    while time.time() < waited and ctx.model.served < before + 1:
+        time.sleep(0.2)
+    v.check("a call to a backend is in flight (its slow turn is on the master)", ctx.model.served == before + 1,
+            f"served {ctx.model.served}, was {before}")
+
+    jobs = (team.send(cli.EXEC, {"type": "status"}).get("result") or {}).get("jobs") or []
+    tunnel = [j for j in jobs if j.get("status") == "running" and "-N" in (j.get("args") or [])]
+    stopped = team.send(cli.EXEC, {"type": "stop", "job_id": tunnel[0]["job_id"]}) if tunnel else {}
+    v.check("the tunnel's job is stopped", len(tunnel) == 1 and stopped.get("status") == "completed", str(jobs)[:300])
+    got = box.wait_remote_file("a.result.json")
+    failed = json.loads(box.remote_text("a.result.json") or "{}")
+    v.check("the call in flight fails `bridge_down` on the box at once, not after the slow turn",
+            got and not failed.get("ok") and "bridge_down" in (failed.get("reply_error") or ""), str(failed))
+
+    job = team.send(cli.EXEC, {"type": "start", "command": box.tunnel_argv()[0], "args": box.tunnel_argv()[1:]})
+    up = team.wait_for(lambda: not web.refuses(box.tunnel_port), 30)
+    redial = team.send(BRIDGE, {"type": "reconnect"})
+    v.check("the tunnel is made again and the master redials the known port (the bridge's `reconnect`)",
+            job.get("status") == "completed" and bool(up) and (redial.get("result") or {}).get("error") is None
+            and redial.get("status") == "completed", f"{str(job)[:150]} {str(redial)[:250]}")
+    after = box.remote_call("kernel", {"type": "list_agents"})
+    ids = {a.get("id") for a in (after.get("agents") or (after.get("result") or {}).get("agents") or [])}
+    v.check("the next call on the remote kernel through the bridge answers", {WEB, LEG, cli.EXEC} <= ids, str(after)[:300])
+
+    sent = team.send(backend, {"type": "send", "text": f"[lane:{backend}] Say you are back.", "client_id": "master"},
+                     timeout=60)
+    v.check("a turn of the master's on the watched backend ran after the redial", sent.get("status") == "completed",
+            str(sent)[:300])
+    ended = box.wait_remote_file("b.result.json", 90)
+    watcher = json.loads(box.remote_text("b.result.json") or "{}")
+    ok, why = streamed(box.events("b"), "master")
+    v.check("the watch made before the break went on with no new `watch`: the master's turn streamed to the box "
+            "(status and part_* before done)", ended and watcher.get("ok") and ok, f"{watcher} {why}")
 
 
 # ---- the canvas twins: the remote agents, listed through a local socket ------------------
@@ -705,8 +1075,8 @@ def ask_through(port, path: str = "/team_ws/ws") -> dict:
 def shows_canvas(v, label: str, reply) -> None:
     agents = remote_agents(reply)
     sk = agents.get("sketch") or {}
-    v.check(f"{label} lists the remote agents through the bridge: rlead and the canvas it made",
-            "rlead" in agents and sk.get("handler_module") == "canvas_page.tools" and sk.get("parent_id") == "rlead",
+    v.check(f"{label} lists the remote agents through the bridge: the canvas `rlead` (a backend on the master) made there",
+            sk.get("handler_module") == "canvas_page.tools" and "rlead" not in agents,
             str(sorted(agents))[:300] if agents else str(reply)[:400])
 
 
