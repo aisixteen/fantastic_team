@@ -92,9 +92,9 @@ pub(crate) fn members(kernel: &Kernel, lead: &str) -> Vec<Member> {
 }
 
 /// The notice text: who leads the team, and each member with its parent and role.
-pub(crate) fn message(lead: &str, members: &[Member]) -> String {
+pub(crate) fn message(lead: &str, members: &[Member], why: &str) -> String {
     let mut s = format!(
-        "[team] The team of `{lead}` changed. `{lead}` leads it. Report to your parent (below) \
+        "[team] The team of `{lead}` {why}. `{lead}` leads it. Report to your parent (below) \
          with `send` when you are done.\nMembers:"
     );
     if members.is_empty() {
@@ -109,7 +109,7 @@ pub(crate) fn message(lead: &str, members: &[Member]) -> String {
 
 /// Who gets `lead`'s notice and what it says: the lead (when it is an AI) and every AI
 /// member of its subtree, one text for all. Empty when there is nobody to tell.
-pub(crate) fn plan(kernel: &Kernel, lead: &str) -> (Vec<String>, String) {
+pub(crate) fn plan(kernel: &Kernel, lead: &str, why: &str) -> (Vec<String>, String) {
     if !kernel.agents.contains_key(&AgentId::from(lead)) {
         return (Vec::new(), String::new());
     }
@@ -118,11 +118,11 @@ pub(crate) fn plan(kernel: &Kernel, lead: &str) -> (Vec<String>, String) {
     if is_ai(kernel, lead) {
         to.insert(0, lead.to_string());
     }
-    (to, message(lead, &ms))
+    (to, message(lead, &ms, why))
 }
 
-async fn notify(kernel: &Arc<Kernel>, lead: &str) {
-    let (to, text) = plan(kernel, lead);
+async fn notify(kernel: &Arc<Kernel>, lead: &str, why: &str) {
+    let (to, text) = plan(kernel, lead, why);
     if to.is_empty() {
         return;
     }
@@ -165,6 +165,14 @@ pub fn start(kernel: &Arc<Kernel>) -> JoinHandle<()> {
                 .collect(),
             None => return,
         };
+        // BOOTED UP: every team that exists now is told its structure once, so a team made
+        // before the cadencer (or a restart) knows whom it reports to
+        if let Some(k) = weak.upgrade() {
+            let leads: BTreeSet<String> = parents.values().cloned().collect();
+            for lead in leads.into_iter().filter(|l| is_ai(&k, l)) {
+                notify(&k, &lead, "booted up").await;
+            }
+        }
         while let Some(first) = rx.recv().await {
             tokio::time::sleep(DEBOUNCE).await;
             let mut batch = vec![first];
@@ -172,8 +180,9 @@ pub fn start(kernel: &Arc<Kernel>) -> JoinHandle<()> {
                 batch.push(c);
             }
             let Some(k) = weak.upgrade() else { return };
-            for lead in leads_of(batch, &mut parents, |id| is_ai(&k, id)) {
-                notify(&k, &lead).await;
+            // a team is an AI lead and its subtree: a change under a non-AI agent (the user) tells nobody
+            for lead in leads_of(batch, &mut parents, |id| is_ai(&k, id)).into_iter().filter(|l| is_ai(&k, l)) {
+                notify(&k, &lead, "changed").await;
             }
         }
     })
@@ -212,11 +221,13 @@ mod tests {
         let m = message(
             "lead",
             &[("w1".into(), "lead".into(), "worker".into()), ("w2".into(), "w1".into(), String::new())],
+            "changed",
         );
         assert!(m.starts_with("[team] The team of `lead` changed. `lead` leads it."), "{m}");
         assert!(m.contains("\n- `w1` (worker), parent `lead`"), "{m}");
         assert!(m.contains("\n- `w2`, parent `w1`"), "{m}");
-        assert!(message("x", &[]).ends_with("Members: none"));
+        assert!(message("x", &[], "booted up").starts_with("[team] The team of `x` booted up."));
+        assert!(message("x", &[], "changed").ends_with("Members: none"));
     }
 
     /// Records: `L` (AI) → `a` (AI, worker), `t` (a tool) ; `a` → `c` (AI) ; and apart, `M` (AI) → `x` (AI).
@@ -248,11 +259,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn plan_tells_the_lead_and_its_ai_subtree_only() {
         let (_dir, k) = tree().await;
-        let (to, text) = plan(&k, "L");
+        let (to, text) = plan(&k, "L", "changed");
         assert_eq!(to, ["L", "a", "c"], "the lead, then its AI members; not the tool, not M's team");
         assert!(text.contains("`a` (worker), parent `L`") && text.contains("`c`, parent `a`"), "{text}");
         assert!(!text.contains("`x`") && !text.contains("`t`"), "{text}");
-        let (to, _) = plan(&k, "gone");
+        let (to, _) = plan(&k, "gone", "changed");
         assert!(to.is_empty());
     }
 
@@ -278,7 +289,29 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(told("L") && told("a") && told("b") && told("c"), "L's team is told");
-        assert!(!told("x") && !told("M"), "M's team is not");
+        // (M's team is told at boot; that a change tells only the changed team is `plan`'s test)
+        assert!(told("L") && told("a") && told("b") && told("c"), "L's team, the new member included, is told");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn at_boot_every_ai_led_team_is_told_once() {
+        let (_dir, k) = tree().await;
+        let mk = json!({"type": "create_agent", "id": crate::tree::CADENCER_ID, "parent_id": DEFAULT_ROOT_ID,
+            "handler_module": "ram_store.tools", "callable_by": {"$self": "*", "$parent": "*"}});
+        k.send(vec![Item::new(DEFAULT_ROOT_ID, mk)]).await;
+        let _tap = start(&k);
+        let told = |id: &str| {
+            k.agents.get(&AgentId::from(id)).is_some_and(|a| {
+                a.value().record().meta.get("callable_by").and_then(|c| c.get(crate::tree::CADENCER_ID)).is_some()
+            })
+        };
+        for _ in 0..60 {
+            if told("L") && told("M") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(["L", "a", "c", "M", "x"].iter().all(|i| told(i)), "both AI-led teams are told at boot");
+        assert!(!told("t"), "a tool is told nothing");
     }
 }

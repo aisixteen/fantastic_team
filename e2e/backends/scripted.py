@@ -310,10 +310,15 @@ class ScriptedModel:
             return "main"
         try:
             msgs = [m for m in json.loads(raw).get("messages", []) if m.get("role") != "system"]
-            first = msgs[0]
-        except (ValueError, IndexError, AttributeError, TypeError):
+        except (ValueError, AttributeError, TypeError):
             return "main"
-        m = re.search(r"\[lane:(\w+)\]", json.dumps(first))
+        # a team notice (the cadencer's, at its boot) and its `done` may come before the agent's
+        # task: the lane is in the first user message that is not a notice
+        m = None
+        for msg in (x for x in msgs if x.get("role") == "user"):
+            m = re.search(r"\[lane:(\w+)\]", json.dumps(msg))
+            if m or not self.notice_only(json.dumps({"messages": [msg]})):
+                break
         return m.group(1) if m else "main"
 
     @staticmethod
