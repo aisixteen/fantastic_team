@@ -78,6 +78,9 @@ STOP_WAIT_S = 30  # the bounded wait after SIGTERM
 
 SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tree", "leads_spawn_leads",
              "headless_and_canvas")
+# The twin of #253 (git credentials through the bridge) has a script of its own and no gpu twin.
+GIT_TWIN = "git_credentials"
+SCRIPTED = SCENARIOS + (GIT_TWIN,)
 
 # The fixes, one per side: the local side fixes adder.py, the remote side muler.py.
 ADD = ("adder.py", "a - b", "a + b")
@@ -147,6 +150,9 @@ MERGE_USER = ("import json,sys; a={x[\"id\"]:x for x in json.load(sys.stdin)[\"r
 # What the remote may do on the master's backends, and what the master lets its leg do on them:
 # exactly these four (the backend's `send`, its `watch` of the stream, `status`, `stop`).
 BACKEND_VERBS = ["send", "watch", "status", "stop"]
+
+# What the remote may do on the master's credential store: read a ref (`get`), nothing else.
+STORE_VERBS = ["get"]
 
 # The box's exec agent: the tools of the remote kernel (it runs in the clone), and the one agent
 # there that calls out: the master's agents, as `<master guid>|<agent>`, those four verbs (the
@@ -279,15 +285,17 @@ def stop_command() -> str:
 
 # ---- the bridge's calls ----------------------------------------------------------------
 
-def bridge_record(backends=()) -> dict:
+def bridge_record(backends=(), stores=()) -> dict:
     """The master's bridge to the leg. The leg is open and may call exactly `BACKEND_VERBS` on
     `backends` (the master's backends the remote is to call; a backend minted later is opened by
-    `grant_leg`). The other end of each grant is the backend's `callable_by` (`open_backends`)."""
+    `grant_leg`) and `get` on `stores` (the master's credential stores the remote reads: #253). The
+    other end of each grant is the callee's `callable_by` (`open_backends`; `git_store_record` for the store)."""
     rec = {"id": BRIDGE, "parent_id": "user", "handler_module": "ws_bridge.tools",
            "ingress_rule": "allow_all_ingress", "transport": "ws", "host": "127.0.0.1",
            "port": "{{tunnel_port}}", "peer_id": LEG}
-    if backends:
-        rec["can_call"] = {"$self": "*", **{b: list(BACKEND_VERBS) for b in backends}}
+    if backends or stores:
+        rec["can_call"] = {"$self": "*", **{b: list(BACKEND_VERBS) for b in backends},
+                           **{st: list(STORE_VERBS) for st in stores}}
     return rec
 
 
@@ -325,17 +333,18 @@ def t(call: dict, lane: str | None = None, after=(), grant=()) -> dict:
     return turn
 
 
-def open_turns(backends=(), after=(), detached: bool = False) -> list[dict]:
+def open_turns(backends=(), after=(), detached: bool = False, stores=(), git: bool = False) -> list[dict]:
     """The lead's start: the tunnel and the remote kernel, the remote's surface and exec agent,
     the clone in the box, the bridge. `detached`: the kernel on its own and the tunnel a job of its
-    own (the twin that breaks the tunnel and redials)."""
+    own (the twin that breaks the tunnel and redials). `git`: the box's repository is made without a
+    credential (`git_box_command`: no clone, the git connector fetches), and the bridge's leg may read `stores`."""
     if detached:
         first = [t(ssh_call(detached_kernel_command()), after=after), t(tunnel_call())]
     else:
         first = [t(run_call(ssh_args(kernel_start_command(), tunnel=True), verb="start"), after=after)]
     return first + [t(ssh_call(setup_command())),
-                    t(ssh_call(clone_command())),
-                    t({"target": "kernel", "type": "create_agent", "args": bridge_record(backends)})]
+                    t(ssh_call(git_box_command() if git else clone_command())),
+                    t({"target": "kernel", "type": "create_agent", "args": bridge_record(backends, stores)})]
 
 
 def tunnel_call() -> dict:
@@ -522,6 +531,131 @@ def script_leads_spawn_leads() -> list[dict]:
             + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True))
 
 
+# ---- the git twin (#253): the remote's git credentials come through the bridge --------------
+
+GIT = "git"  # the git connector (`team_git.tools`) on the remote kernel
+GIT_STORE = "git_credentials"  # the master's credential store: the forge's token, and nothing else
+GIT_REF = "git/forge"  # its ref, bound to the forge's host
+GIT_ENV = "E2E_GIT_TOKEN"  # where the master's store reads the token from (its `env` backend: no value at rest)
+WT_ROOT = f"{HOME}/{DIR}/wt"  # every worktree of the connector is inside
+WORKTREE = f"{WT_ROOT}/muler"
+BRANCH = "work/muler"
+REVOKED = "work/revoked"  # pushed with the grant revoked (refused), then again after it is given back
+CLOSED = "work/closed"  # pushed after the bridge is deleted: refused
+AUTHOR = ("Remote Worker", "remote@example.invalid")
+
+# The box reaches the test's git server on its OWN 127.0.0.1: the connector sends a credential only over https, or
+# over http to loopback, and the box dials the server through Podman's gateway (not loopback). This relay
+# (a job of the box, `nohup`) listens on 127.0.0.1:PORT in the box and carries the bytes to the gateway; it is the
+# stand-in for the TLS a real forge has, and it sees the wire as any hop would.
+RELAY = """
+import socket, sys, threading
+
+def pipe(a, b):
+    try:
+        while True:
+            d = a.recv(65536)
+            if not d:
+                break
+            b.sendall(d)
+    except OSError:
+        pass
+    finally:
+        for s in (a, b):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+lport, host, port = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", lport))
+srv.listen(16)
+while True:
+    c, _ = srv.accept()
+    u = socket.create_connection((host, port))
+    threading.Thread(target=pipe, args=(c, u), daemon=True).start()
+    threading.Thread(target=pipe, args=(u, c), daemon=True).start()
+"""
+
+
+def git_box_command() -> str:
+    """The box's repository, with no credential on it: the relay, then `git init` and the forge as `origin`
+    (no clone: the connector has no clone verb; its `fetch` brings the objects, with the token it reads from
+    the master's store at that moment)."""
+    body = base64.b64encode(RELAY.encode()).decode()
+    boot = f'import base64; exec(base64.b64decode("{body}"))'
+    return (f"cd {DIR} && mkdir -p wt && {{ nohup python3 -c {shq(boot)} {{{{forge_port}}}} {pr.GATEWAY} "
+            "{{forge_port}} > relay.log 2>&1 < /dev/null & echo $! > relay.pid; } && "
+            f"git init -q -b main {REPO} && git -C {REPO} remote add origin {{{{remote_git_url}}}}")
+
+
+def remote_git_record() -> dict:
+    """The git connector on the REMOTE kernel. Its `credentials` name the store on the MASTER, `<master guid>|git_credentials`
+    (reached over the bridge, per operation); the remote may call that store's `get` and nothing else of it."""
+    store = "{{master_guid}}|" + GIT_STORE
+    return {"type": "create_agent", "id": GIT, "parent_id": "user", "handler_module": "team_git.tools",
+            "ingress_rule": "allow_all_ingress", "repo_dir": REMOTE_REPO, "workspace_root": WT_ROOT,
+            "remote": "origin", "default_branch": "main", "credentials": {"store": store, "ref": GIT_REF},
+            "author_name": AUTHOR[0], "author_email": AUTHOR[1],
+            "can_call": {"$self": "*", store: list(STORE_VERBS)}}
+
+
+def git_call(verb: str, **args) -> dict:
+    """A verb of the remote git connector, through the bridge."""
+    return forward(GIT, {"type": verb, **args})
+
+
+def raw_git(verb: str, **args) -> dict:
+    """The same verb by the box's own `send` over ssh (no bridge: the lead's way in when the leg is gone)."""
+    return ssh_call(f"cd {DIR} && " + remote_send({"target": GIT, "payload": {"type": verb, **args}}))
+
+
+def branch_call(name: str) -> dict:
+    return remote_run(cli.run_call("git", "branch", name, "origin/main"))
+
+
+def set_store_grant(grant: dict) -> dict:
+    """The master's end of the leg's read of the store: its `callable_by` (a whole map, never empty: `$self` alone is
+    the revoked state, the leg's entry is the grant)."""
+    return {"target": "kernel", "type": "update_agent", "args": {"id": GIT_STORE, "callable_by": grant}}
+
+
+def script_git_credentials() -> list[dict]:
+    """One lead, three messages. 1 (setup): the box and the bridge (the leg may `get` from the master's store), the git
+    connector on the remote kernel naming that store. Then the operator taps both kernels' state streams. 2 (the work,
+    ON THE REMOTE): fetch, a worktree of origin/main, the fix to muler.py, commit, fetch, push a work branch. Then the
+    operator's phase (the probe looks for the token on both sides). 3: the store's grant revoked, a push over the open
+    bridge (refused), the grant given back, the push again (lands); the bridge deleted, a push by the box's own `send`
+    (refused); the remote stopped."""
+    setup = open_turns(stores=(GIT_STORE,), git=True) + [
+        t(ssh_call(f"cd {DIR} && " + remote_send(kernel_item(remote_git_record())))),
+        t({"name": "done"})]
+    work = [t(git_call("fetch")),
+            t(git_call("worktree_add", path=WORKTREE, branch=BRANCH, base="origin/main")),
+            t(remote_run(cli.replace_call(f"{WORKTREE}/muler.py", "a + b", "a * b"))),
+            t(git_call("commit", path=WORKTREE, message="Fix mul")),
+            t(git_call("fetch")),
+            t(git_call("push", path=WORKTREE, branch=BRANCH)),
+            t({"name": "done"})]
+    close = [t(branch_call(REVOKED)), t(branch_call(CLOSED)),
+             t(set_store_grant({"$self": "*"})),
+             t(git_call("push", path=WORKTREE, branch=REVOKED)),
+             t(set_store_grant({BRIDGE: list(STORE_VERBS)})),
+             t(git_call("push", path=WORKTREE, branch=REVOKED)),
+             t({"target": "kernel", "type": "delete_agent", "args": {"id": BRIDGE}}),
+             t(raw_git("push", path=WORKTREE, branch=CLOSED)),
+             *stop_turns(), t({"name": "done"})]
+    return setup + work + close
+
+
+def phases_git() -> dict:
+    """How many turns each message of `script_git_credentials` has (the probe waits for them)."""
+    setup = len(open_turns(stores=(GIT_STORE,), git=True)) + 2
+    return {"setup": setup, "work": 7, "close": len(script_git_credentials()) - setup - 7}
+
+
 def notes_call(line: str) -> dict:
     if "'" in line:
         raise ValueError("a note rides in a single-quoted Python string")
@@ -589,7 +723,7 @@ def script_headless_and_canvas() -> list[dict]:
 CANVAS_PHASES = (11, 4, 5, 6)  # the lead's turns per message of script_headless_and_canvas (lane r: 7 more)
 
 
-SCRIPTS = {"single_lead": script_single_lead, "precreated_1_2": script_precreated_1_2,
+SCRIPTS = {GIT_TWIN: script_git_credentials, "single_lead": script_single_lead, "precreated_1_2": script_precreated_1_2,
            "precreated_tree": script_precreated_tree, "lead_spawns_two": script_lead_spawns_two,
            "leads_spawn_leads": script_leads_spawn_leads, "headless_and_canvas": script_headless_and_canvas}
 
@@ -603,7 +737,7 @@ def render_script(name: str) -> str:
 
 
 def write_scripts() -> None:
-    for name in SCENARIOS:
+    for name in SCRIPTED:
         with open(script_path(name), "w") as f:
             f.write(render_script(name))
 
@@ -611,7 +745,7 @@ def write_scripts() -> None:
 def stale_scripts() -> list[str]:
     """The cli_ssh scripts that differ from what the builders write (empty when in sync)."""
     out = []
-    for name in SCENARIOS:
+    for name in SCRIPTED:
         try:
             with open(script_path(name)) as f:
                 if f.read() != render_script(name):
@@ -687,6 +821,84 @@ def model_keys(ctx) -> list[str]:
     return [k for k in keys if k]
 
 
+# ---- the guard: a planted secret, in any form, anywhere a kernel or a box keeps something (#253) ----
+
+def secret_forms(secret: str) -> dict[str, bytes]:
+    """The secret as it can be written: plain, base64 and base64url (padded or not), percent-encoded (both
+    cases of the hex digits) and form-encoded, and as the `Basic` credential git sends for it
+    (`x-access-token:<secret>`, base64): the forms of the Rust `secrets_guard`, as bytes."""
+    import urllib.parse
+    raw = secret.encode()
+    b64 = lambda b: base64.b64encode(b).decode()
+    urlsafe = lambda b: base64.urlsafe_b64encode(b).decode()
+    basic = b"x-access-token:" + raw
+    pct = urllib.parse.quote(secret, safe="-._~")
+    forms = {"plain": secret, "base64": b64(raw), "base64 (no padding)": b64(raw).rstrip("="),
+             "base64url": urlsafe(raw), "base64url (no padding)": urlsafe(raw).rstrip("="),
+             "url-encoded": pct, "url-encoded (lower hex)": re_lower_hex(pct),
+             "form-encoded": urllib.parse.quote_plus(secret, safe="-._~"),
+             "basic credential": b64(basic), "basic credential (no padding)": b64(basic).rstrip("=")}
+    return {k: v.encode() for k, v in forms.items() if v}
+
+
+def re_lower_hex(pct: str) -> str:
+    import re
+    return re.sub(r"%[0-9A-F]{2}", lambda m: m.group(0).lower(), pct)
+
+
+def leaks(blobs: dict[str, bytes], secret: str) -> list[str]:
+    """Where the secret is: `"<blob> as <form>"` for each blob (a name -> its bytes) that holds it in any form.
+    The secret itself is never in the answer."""
+    if len(secret) < 8:  # a shorter one matches by chance (secrets_guard's floor)
+        raise ValueError("a secret shorter than 8 characters cannot be searched for")
+    forms = secret_forms(secret)
+    return [f"{name} as {form}" for name, data in blobs.items() for form, needle in forms.items() if needle in data]
+
+
+def folder_blobs(root: str, skip=()) -> dict[str, bytes]:
+    """Every file under `root` (relative name -> bytes), but the folders in `skip`."""
+    out = {}
+    for base, dirs, names in os.walk(root):
+        dirs[:] = [d for d in dirs if os.path.join(base, d) not in skip]
+        for n in names:
+            p = os.path.join(base, n)
+            try:
+                with open(p, "rb") as f:
+                    out[os.path.relpath(p, root)] = f.read()
+            except OSError:
+                continue
+    return out
+
+
+def tap_master(team, port: int) -> None:
+    """A web host and a leg on the master (`tap_web`, `tap_ws`, open to a `state_subscribe`): the operator's page, which the
+    probe subscribes through to see the state stream (every call and reply as the kernel shows it)."""
+    records.create(team, {"id": "tap_web", "parent_id": "user", "handler_module": "web.tools", "port": port})
+    records.create(team, {"id": "tap_ws", "parent_id": "tap_web", "handler_module": "web_ws.tools",
+                          "ingress_rule": "allow_all_ingress", "callable_by": {"$self": "*", "tap_web": ["get_routes"]},
+                          "can_call": {"$self": "*"}})
+    records.update(team, "tap_web", can_call={"$self": "*", "tap_ws": ["get_routes"]})
+    tap_grant(lambda target, payload: team.send(target, payload), "tap_ws")
+    team.send("tap_web", {"type": "boot"})
+
+
+def tap_grant(send, leg: str) -> None:
+    """The operator lets `leg` tap a kernel's state stream (`state_subscribe` is gated on the ROOT: the leg's `can_call`
+    and the root's `callable_by`, each merged into what it holds). `send(target, payload)` is a call on that kernel."""
+    for agent, field, key in ((leg, "can_call", records.ROOT), (records.ROOT, "callable_by", leg)):
+        rec = remote_agents(send("kernel", {"type": "list_agents"})).get(agent) or {}
+        send("kernel", {"type": "update_agent", "id": agent, field: {**(rec.get(field) or {}), key: ["state_subscribe"]}})
+
+
+def git_store_record(ctx) -> dict:
+    """The master's credential store for the git server: one ref, bound to the server's host, its value read at
+    each `get` from the kernel's environment (`GIT_ENV`; the `env` backend keeps nothing at rest). Only the
+    bridge's leg may `get` from it (its `callable_by`)."""
+    return {"id": GIT_STORE, "parent_id": "user", "handler_module": "credential_store.tools", "backend": "env",
+            "refs": {GIT_REF: {"host": ctx.forge.host, "env": {"api_key": GIT_ENV}}},
+            "callable_by": {BRIDGE: list(STORE_VERBS)}}
+
+
 # ---- the harness: the box, the fixture on the git server, the checks -------------------
 
 def git_url(ctx) -> str:
@@ -708,10 +920,13 @@ def gitconfig(url: str, header: str) -> str:
 class Box:
     """One container for one twin: `with Box(ctx) as box:` starts it and always removes it. The
     fixture is the test's git server's (`publish`); the clones carry the forge's token in a git
-    config (the local sandbox's, the box's `~/.gitconfig`), never in a command."""
+    config (the local sandbox's, the box's `~/.gitconfig`), never in a command. `git_token=False` (the
+    twin of #253): the box is given no token at all, and the master's sandbox none either: the git
+    server's token is read from the master's credential store, through the bridge, per operation."""
 
-    def __init__(self, ctx, name: str = "box") -> None:
+    def __init__(self, ctx, name: str = "box", git_token: bool = True) -> None:
         self.ctx = ctx
+        self.git_token = git_token
         self.remote = pr.Remote(os.path.join(ctx.run_dir, name))
         self.tunnel_port = team_mod.free_port()
         self.stock: set[str] = set()
@@ -719,8 +934,10 @@ class Box:
     def __enter__(self) -> "Box":
         self.remote.__enter__()
         try:
-            self.write_box_gitconfig()
-            self.stock = set(self.records(f"{DIR}0"))  # a fresh remote kernel's own agents
+            if self.git_token:
+                self.write_box_gitconfig()
+            self.stock_records = self.records(f"{DIR}0")  # a fresh remote kernel's own agents
+            self.stock = set(self.stock_records)
         except BaseException:
             self.remote.stop()
             raise
@@ -743,8 +960,9 @@ class Box:
         bare = os.path.join(ctx.run_dir, "forge", *git_url(ctx).rsplit("/", 2)[-2:])
         cli.git(ctx.repo, "push", "-q", "--force", bare, "main")
         cli.git(ctx.repo, "remote", "add", "origin", git_url(ctx))
-        with open(os.path.join(ctx.work, "sandbox", ".gitconfig"), "w") as f:
-            f.write(gitconfig(git_url(ctx), auth_header(ctx)))
+        if self.git_token:
+            with open(os.path.join(ctx.work, "sandbox", ".gitconfig"), "w") as f:
+                f.write(gitconfig(git_url(ctx), auth_header(ctx)))
         cli.git(ctx.repo, "-c", "http.extraHeader=" + auth_header(ctx), "fetch", "-q", "origin")
         cli.git(ctx.repo, "branch", "-q", "-u", "origin/main", "main")
 
@@ -752,9 +970,13 @@ class Box:
         """The script's run-time values: the box's ssh port and key, the tunnel's port, the master's
         guid (the address of its agents on the remote: `<guid>|<agent>`) and the git server as the box
         dials it (Podman's host gateway). The box is given no model endpoint: it holds no model."""
-        return {"ssh_port": str(self.remote.port), "ssh_key": self.remote.key, "tunnel_port": str(self.tunnel_port),
+        vals = {"ssh_port": str(self.remote.port), "ssh_key": self.remote.key, "tunnel_port": str(self.tunnel_port),
                 "master_guid": master_guid(self.ctx.team),
                 "remote_git_url": pr.gateway_url(git_url(self.ctx))}
+        if not self.git_token:  # the box's own 127.0.0.1 (its relay, `RELAY`): the connector sends a credential to loopback
+            vals["remote_git_url"] = git_url(self.ctx)
+            vals["forge_port"] = str(self.ctx.forge.port)
+        return vals
 
     def bind(self) -> None:
         """Fill the script's values, and let the plug's `grant_leg` turns open a minted backend to the leg."""
@@ -796,10 +1018,11 @@ class Box:
 
     # -- the checks --
 
-    def end(self, v, remote_base=(), label: str = "", solved: bool = True, streams=()) -> dict:
+    def end(self, v, remote_base=(), label: str = "", solved: bool = True, streams=(), landed: bool = True) -> dict:
         """The checks every twin shares. `remote_base`: the agents the lead keeps on the remote kernel
         beyond its stock (the surface and the exec agent are always there). `solved`: the fixture
-        is the task (the canvas twin's task is its notes, checked by its probe). `streams`: the
+        is the task (the canvas twin's task is its notes, checked by its probe). `landed`: one commit from each
+        side is on the git server (the git twin pushes work branches and checks them itself). `streams`: the
         `(label, client)` of each remote work run whose arrival log must show the stream. Returns the
         remote records; the git server's files at HEAD are in `self.server_files`."""
         ctx = self.ctx
@@ -821,9 +1044,10 @@ class Box:
         on_server = [line.split()[0] for line in log if line.strip()]
         local = [c for c in self.reflog_commits(False) if c in on_server]
         remote = [c for c in self.reflog_commits(True) if c in on_server]
-        v.check(f"{label}both sides' commits landed on the git server, one after the other (linear history)",
-                bool(local) and bool(remote) and not set(local) & set(remote) and not merges,
-                f"local {local} remote {remote} merges {merges!r} server {log[:5]}")
+        if landed:
+            v.check(f"{label}both sides' commits landed on the git server, one after the other (linear history)",
+                    bool(local) and bool(remote) and not set(local) & set(remote) and not merges,
+                    f"local {local} remote {remote} merges {merges!r} server {log[:5]}")
         agents = ctx.team.agents()
         v.check(f"{label}the bridge is deleted", BRIDGE not in agents, str(sorted(agents)))
         v.check(f"{label}the tunnel is closed (its local port refuses)", web.refuses(self.tunnel_port))
@@ -906,6 +1130,28 @@ class Box:
         rows = self.remote.ssh("cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4==\"0A\"{print $2}'",
                                check=False).stdout.split()
         return {int(a.rsplit(":", 1)[1], 16) for a in rows}
+
+    def box_blobs(self) -> dict[str, bytes]:
+        """What the box keeps, to search: its home (the remote kernel's folder: rows, logs, records; the clone and
+        its `.git`; the dotfiles), the environment of a login and of the live remote kernel, the git configuration
+        git reads there, and the container's own description."""
+        run = lambda c: subprocess.run(self.remote.argv(c), capture_output=True, timeout=120, stdin=subprocess.DEVNULL).stdout
+        blobs = {"home": run(f"tar -C {HOME} -cf - ."), "login environment": run("env"),
+                 "git configuration": run(f"git config --list --show-origin; git -C {DIR}/{REPO} config --list --show-origin"),
+                 "container": pr.pm("inspect", self.remote.name, check=False, timeout=60).stdout.encode()}
+        live = run(f"cat /proc/$(cat {DIR}/team.pid)/environ 2>/dev/null | tr '\\0' '\\n'")
+        if live:
+            blobs["remote kernel environment"] = live
+        return blobs
+
+    def guard_box(self, v, token: str, label: str, repo: bool = True, tar_floor: int = 1000) -> None:
+        """The token is nowhere in the box, in any form (and the search saw something: a home, and once the box's
+        repository exists its git configuration, which names the forge as `origin`)."""
+        blobs = self.box_blobs()
+        found = leaks(blobs, token)
+        v.check(f"{label}the box holds no git token, in any encoding: its files, environments, git configuration, container",
+                len(blobs["home"]) > tar_floor and (not repo or b"remote.origin.url" in blobs["git configuration"]) and not found,
+                f"{[(k, len(b)) for k, b in blobs.items()]} found {found}")
 
     def removed(self, v, label: str = "") -> None:
         v.check(f"{label}the container is removed", not self.remote.exists())
@@ -1083,6 +1329,6 @@ def shows_canvas(v, label: str, reply) -> None:
 if __name__ == "__main__":
     if sys.argv[1:] == ["--write"]:
         write_scripts()
-        print("wrote " + ", ".join(script_path(n) for n in SCENARIOS))
+        print("wrote " + ", ".join(script_path(n) for n in SCRIPTED))
         sys.exit(0)
     sys.exit("usage (from e2e/): python3 -m helpers.ssh_twins --write")
