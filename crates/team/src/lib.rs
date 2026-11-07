@@ -106,13 +106,13 @@ pub fn register_team(reg: &mut BundleRegistry) {
 /// durable `sqlite_store`, the exec bridge) plus [`register_team`]. fantastic's shell builds its own, fuller
 /// set when the binary runs; that one is private to it.
 pub fn registry() -> BundleRegistry {
-    registry_with(true)
+    registry_with(true, Path::new("."))
 }
 
 /// [`registry`], with the `web` host serving when booted or not. Not serving, the
 /// host's record is made, validated, granted and written as fantastic's own bundle
 /// does it, and its `boot` opens no port ([`UnservedWeb`], [`start_offline`]).
-fn registry_with(web_serves: bool) -> BundleRegistry {
+fn registry_with(web_serves: bool, here: &Path) -> BundleRegistry {
     let mut reg = BundleRegistry::new();
     reg.register(
         fantastic_core::HANDLER_MODULE,
@@ -147,6 +147,26 @@ fn registry_with(web_serves: bool) -> BundleRegistry {
     reg.register(
         fantastic_web_ws::HANDLER_MODULE,
         fantastic_web_ws::WebWsBundle,
+    );
+    // The bundles fantastic's shell registers for the records it writes at the first
+    // run (the `mcp` leg, the user's home store and user store): a record naming one
+    // must hydrate in this registry too, or a kernel that reads the directory skips it.
+    reg.register(
+        fantastic_web_mcp::HANDLER_MODULE,
+        fantastic_web_mcp::WebMcpBundle,
+    );
+    reg.register(
+        fantastic_user_home_store::HANDLER_MODULE,
+        fantastic_user_home_store::UserHomeStore::new(
+            fantastic_user_home_store::home_dir_from_env(),
+        ),
+    );
+    reg.register(
+        fantastic_user_home_store::user_store::HANDLER_MODULE,
+        fantastic_user_home_store::user_store::UserStore::new(
+            fantastic_user_home_store::home_dir_from_env(),
+            std::path::absolute(here).unwrap_or_else(|_| here.to_path_buf()),
+        ),
     );
     register_team(&mut reg);
     reg
@@ -380,7 +400,7 @@ pub async fn seed_base_tree(kernel: &Arc<Kernel>) -> Result<bool, String> {
 /// fantastic-cli mode 5, with a base tree seeded into a fresh directory. The
 /// caller stops it with `kernel.shutdown()` and then `bootstrap::shutdown(dir)`.
 pub async fn start(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>> {
-    start_with(dir, registry(), true).await
+    start_with(dir, registry_with(true, dir), true).await
 }
 
 /// [`start`] for a kernel that only writes records and serves nothing, stopped the
@@ -389,7 +409,7 @@ pub async fn start(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>
 /// page's records with it before fantastic's shell boots them under its own lock; a
 /// page served from this kernel answered for a team that was about to stop (#241).
 pub(crate) async fn start_offline(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>> {
-    start_with(dir, registry_with(false), false).await
+    start_with(dir, registry_with(false, dir), false).await
 }
 
 /// [`start`] with `reg`; `boot_all` boots every recorded agent, else the root and its
@@ -504,6 +524,23 @@ mod tests {
         let names: Vec<&str> = reg.catalog().map(|(n, _)| n).collect();
         assert!(names.contains(&"file_bridge.tools"));
         assert!(names.contains(&"kernel_state.tools"));
+    }
+
+    #[test]
+    fn the_registry_resolves_every_module_the_shell_writes_at_first_run() {
+        // The `mcp` leg, the user's home store and the user store: records fantastic's
+        // shell makes at the first run, read by the kernel that writes the page's
+        // records at every later start (#212).
+        for offline in [true, false] {
+            let reg = registry_with(!offline, Path::new("."));
+            for module in [
+                fantastic_web_mcp::HANDLER_MODULE,
+                fantastic_user_home_store::HANDLER_MODULE,
+                fantastic_user_home_store::user_store::HANDLER_MODULE,
+            ] {
+                assert!(reg.get(module).is_some(), "not registered: {module}");
+            }
+        }
     }
 
     #[test]

@@ -72,6 +72,21 @@ fn run_text(job: &Value) -> String {
         .join("\n")
 }
 
+/// The unit legs run as parallel jobs; together they are what a single `units` job used to be.
+const UNIT_LEGS: [&str; 3] = ["lint", "test", "github"];
+
+fn unit_legs_run_text(doc: &Value) -> String {
+    UNIT_LEGS
+        .iter()
+        .map(|name| run_text(job(doc, name)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn unit_legs() -> Vec<String> {
+    UNIT_LEGS.iter().map(|s| s.to_string()).collect()
+}
+
 #[test]
 fn ci_workflow_parses_and_is_dispatch_only() {
     let doc = doc();
@@ -120,7 +135,23 @@ fn ci_workflow_has_e2e_boolean_input_default_false() {
 #[test]
 fn ci_units_cover_three_oses_and_four_checks() {
     let doc = doc();
-    let units = job(&doc, "units");
+    for leg in ["lint", "test"] {
+        unit_leg_covers_three_oses(&doc, leg);
+    }
+    let run = unit_legs_run_text(&doc);
+    for want in [
+        "cargo fmt --check",
+        "cargo clippy --workspace --all-targets",
+        "-D warnings",
+        "cargo test --workspace",
+        "scripts/check-secrets.sh",
+    ] {
+        assert!(run.contains(want), "unit legs lack `{want}`");
+    }
+}
+
+fn unit_leg_covers_three_oses(doc: &Value, leg: &str) {
+    let units = job(doc, leg);
     let expr = key(
         key(key(units, "strategy").unwrap(), "matrix").unwrap(),
         "os",
@@ -153,7 +184,7 @@ fn ci_units_cover_three_oses_and_four_checks() {
     assert_eq!(linux, &vec!["ubuntu-latest".to_string()]);
     let units_os = key(
         key(
-            key(triggers(&doc), "workflow_dispatch").expect("workflow_dispatch"),
+            key(triggers(doc), "workflow_dispatch").expect("workflow_dispatch"),
             "inputs",
         )
         .expect("workflow_dispatch has inputs"),
@@ -167,18 +198,8 @@ fn ci_units_cover_three_oses_and_four_checks() {
     for want in ["ubuntu-latest", "macos-latest", "windows-latest"] {
         assert!(
             os.iter().any(|o| o == want),
-            "units matrix lacks {want}: {os:?}"
+            "{leg} matrix lacks {want}: {os:?}"
         );
-    }
-    let run = run_text(units);
-    for want in [
-        "cargo fmt --check",
-        "cargo clippy --workspace --all-targets",
-        "-D warnings",
-        "cargo test --workspace",
-        "scripts/check-secrets.sh",
-    ] {
-        assert!(run.contains(want), "units steps lack `{want}`");
     }
 }
 
@@ -190,7 +211,7 @@ fn ci_full_jobs_gated_on_e2e_and_units() {
         if_text(build).contains("inputs.e2e"),
         "build job must be gated on inputs.e2e"
     );
-    assert_eq!(needs(build), vec!["units".to_string()], "build needs units");
+    assert_eq!(needs(build), unit_legs(), "build needs every unit leg");
 
     let e2e = job(&doc, "e2e");
     assert!(
@@ -199,11 +220,12 @@ fn ci_full_jobs_gated_on_e2e_and_units() {
     );
     assert_eq!(needs(e2e), vec!["build".to_string()], "e2e needs build");
 
-    let units = job(&doc, "units");
-    assert!(
-        key(units, "if").is_none(),
-        "units job must run without an `if`"
-    );
+    for leg in UNIT_LEGS {
+        assert!(
+            key(job(&doc, leg), "if").is_none(),
+            "unit leg `{leg}` must run without an `if`"
+        );
+    }
 }
 
 #[test]
@@ -252,7 +274,7 @@ fn ci_builds_and_tests_both_builds() {
         assert!(root.join("scripts").join(script).is_file(), "{script}");
     }
     assert!(root.join("tests").join("build_github.sh").is_file());
-    let units = run_text(job(&doc, "units"));
+    let units = unit_legs_run_text(&doc);
     assert!(
         units.contains("scripts/build-github.sh --check"),
         "units lack the patch check"
@@ -288,7 +310,7 @@ fn repro_job_builds_twice_in_different_dirs_and_has_no_signing() {
         if_text(repro).contains("inputs.e2e"),
         "repro job must be gated on inputs.e2e"
     );
-    assert_eq!(needs(repro), vec!["units".to_string()], "repro needs units");
+    assert_eq!(needs(repro), unit_legs(), "repro needs every unit leg");
     let text = run_text(repro);
     for want in ["scripts/build.sh", "scripts/build-github.sh", "SHA256SUMS"] {
         assert!(text.contains(want), "repro steps lack `{want}`");
@@ -310,7 +332,7 @@ fn repro_job_builds_twice_in_different_dirs_and_has_no_signing() {
         "ci.yml must take the toolchain from rust-toolchain.toml, not @stable"
     );
     assert!(
-        run_text(job(&doc, "units")).contains("tests/repro_scripts.sh"),
+        unit_legs_run_text(&doc).contains("tests/repro_scripts.sh"),
         "units shell tests must run tests/repro_scripts.sh"
     );
     let inputs = key(
@@ -326,7 +348,7 @@ fn repro_job_builds_twice_in_different_dirs_and_has_no_signing() {
         .expect("rust-toolchain.toml exists");
     assert!(pin.contains("channel = \"1."), "toolchain pin: {pin}");
     // Every job that builds or tests guards that rustc is the pin, not whatever the runner has.
-    for name in ["units", "build", "repro", "tauri"] {
+    for name in ["lint", "test", "github", "build", "repro", "tauri"] {
         assert!(
             run_text(job(&doc, name)).contains("rustc -V"),
             "job `{name}` lacks the rustc -V guard against the pin"
@@ -338,7 +360,10 @@ fn repro_job_builds_twice_in_different_dirs_and_has_no_signing() {
 fn ci_has_a_tauri_feature_build_job() {
     let doc = doc();
     let tauri = job(&doc, "tauri");
-    assert_eq!(needs(tauri), vec!["units".to_string()], "tauri needs units");
+    assert!(
+        needs(tauri).is_empty(),
+        "tauri runs in parallel with the unit legs"
+    );
     let text = run_text(tauri);
     assert!(text.contains("--features tauri"), "tauri job: {text}");
     assert!(text.contains("fantastic-team-app"), "tauri job: {text}");
@@ -352,7 +377,7 @@ fn ci_has_a_tauri_feature_build_job() {
         .map(str::to_string)
         .expect("matrix os expression")
     };
-    assert_eq!(os("tauri"), os("units"), "same os matrix as units");
+    assert_eq!(os("tauri"), os("test"), "same os matrix as the test leg");
     let whole = serde_yaml::to_string(tauri).expect("serializes");
     assert!(!whole.contains("secrets."), "tauri job must use no secrets");
 }

@@ -31,6 +31,8 @@ fantastic-credential-store.workspace = true
 fantastic-exec-bridge.workspace = true
 fantastic-web.workspace = true
 fantastic-web-ws.workspace = true
+fantastic-web-mcp.workspace = true
+fantastic-user-home-store.workspace = true
 team-git-connector = { path = "../git_connector" }
 team-github-connector = { path = "../github_connector" }
 tokio.workspace = true

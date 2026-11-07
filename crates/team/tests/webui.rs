@@ -410,6 +410,74 @@ fn headless_over_webui_records_opens_no_port() {
     }
 }
 
+/// [`start`] under `home` (the user's home the shell's stores write to): a
+/// scratch one keeps the test off the developer's own.
+fn start_in_home(dir: &Path, home: &Path, args: &[&str]) -> Running {
+    Running(
+        Command::new(env!("CARGO_BIN_EXE_fantastic_team"))
+            .args(args)
+            .current_dir(dir)
+            .env("HOME", home)
+            .env_remove("FANTASTIC_HOME")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    )
+}
+
+/// Stop a running binary (SIGTERM), reap it and return what it wrote to stderr.
+fn stop_and_stderr(mut team: Running) -> String {
+    let _ = Command::new("kill")
+        .args(["-TERM", &team.0.id().to_string()])
+        .status();
+    let mut err = team.0.stderr.take().unwrap();
+    let mut buf = String::new();
+    let _ = err.read_to_string(&mut buf);
+    drop(team);
+    buf
+}
+
+/// #212: the boot log of a team started in a directory it has been started in before
+/// has no `skipping agent` and no `errored` line: the kernel that writes the page's
+/// records reads the records the first run made (`mcp`, `user_home`, `user_store`),
+/// so every one of them names a bundle it has.
+#[test]
+fn webui_started_twice_in_one_dir_logs_no_skipped_or_errored_agent() {
+    use std::os::unix::fs::PermissionsExt;
+    let _s = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    for round in ["first", "second"] {
+        let port = free_port();
+        let mut team = start_in_home(
+            dir.path(),
+            home.path(),
+            &["webui", "--port", &port.to_string()],
+        );
+        wait_page(&mut team, port);
+        // the shell makes these records once its kernel is up, after the page answers
+        let user = dir.path().join(".fantastic/agents/user/agents");
+        let end = Instant::now() + Duration::from_secs(60);
+        while !["mcp", "user_home", "user_store"]
+            .iter()
+            .all(|id| user.join(id).join("agent.yaml").is_file())
+        {
+            assert!(Instant::now() < end, "the shell never made its records");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let log = stop_and_stderr(team);
+        for bad in ["skipping agent", "errored"] {
+            assert!(
+                !log.contains(bad),
+                "the {round} start logged {bad:?}:\n{log}"
+            );
+        }
+    }
+}
+
 /// #241: a listener that is up but accepts late is answered by `wait_page_within`, which
 /// judges over its limit; one that never answers fails at the limit, and a process that
 /// exited fails at once. (A single `get` against the late listener has already given up.)
