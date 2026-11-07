@@ -138,6 +138,9 @@ def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | Non
         env["FANTASTIC_AGENTIC_RESOURCES"] = "1"
     ctx.work = os.path.join(ctx.run_dir, sub) if sub else ctx.run_dir
     os.makedirs(ctx.work, exist_ok=True)
+    # the run folders sit inside the team's own checkout: a `git` an agent runs outside the
+    # fixture repo must stop at the run folder, never reach the checkout above it
+    env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(os.path.abspath(ctx.work))
     ctx.repo = make_fixture(ctx.work)
     os.makedirs(os.path.join(ctx.work, "sandbox"), exist_ok=True)
     ctx.team = team_mod.Team(ctx.binary, ctx.work, env)
@@ -207,6 +210,15 @@ def model_credentials(ctx) -> dict | None:
     return {"store": "credentials", "ref": f"model/{ctx.model.host}"} if ctx.model.keyed else None
 
 
+def tier_record(model) -> dict:
+    """The workers' AI record: the plug's, with `E2E_WORKER_MODEL` as its model when set (the lead
+    keeps `E2E_MODEL`), so a run can put the lead and its workers on different models."""
+    rec = dict(model.ai_record())
+    if os.environ.get("E2E_WORKER_MODEL"):
+        rec["model"] = os.environ["E2E_WORKER_MODEL"]
+    return rec
+
+
 def make_registry(ctx, total: int, parent: str = LEAD, roles: str | None = None,
                   credentials: dict | None = None) -> str:
     """The roles registry `roles` (`agentic_resources`) under `parent`: one tier
@@ -216,7 +228,7 @@ def make_registry(ctx, total: int, parent: str = LEAD, roles: str | None = None,
     (a spawned agent is not on the credential store's `callable_by`: the scripted tiers carry none)."""
     team = ctx.team
     shutil.copytree(roles or os.path.join(ctx.dir, "roles"), os.path.join(ctx.work, "roles"))
-    tier = {**ctx.model.ai_record(), "memory_store_id": "memory"}
+    tier = {**tier_record(ctx.model), "memory_store_id": "memory"}
     if credentials:
         tier["credentials"] = credentials
     records.create(team, {"id": "roles", "parent_id": parent, "handler_module": "agentic_resources.tools",

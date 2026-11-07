@@ -23,7 +23,8 @@ every POLL_S seconds and once before the team stops, and `cost.json` gets their 
 
 Environment: E2E_ANTHROPIC_KEY or ANTHROPIC_API_KEY (one must be set, else the test is
 skipped), E2E_MODEL (the model's name; default DEFAULT_MODEL), E2E_UPSTREAM,
-E2E_MAX_REQUESTS, E2E_PRICE_IN_PER_MTOK, E2E_PRICE_OUT_PER_MTOK, ANTHROPIC_CACHING.
+E2E_MAX_REQUESTS, E2E_PRICE_IN_PER_MTOK, E2E_PRICE_OUT_PER_MTOK, ANTHROPIC_CACHING, E2E_WORKER_MODEL
+(the workers' model; the lead keeps E2E_MODEL).
 """
 
 from __future__ import annotations

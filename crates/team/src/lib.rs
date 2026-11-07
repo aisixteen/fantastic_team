@@ -33,6 +33,7 @@ pub mod peers;
 pub mod puller;
 pub mod repo_config;
 pub mod setup_github;
+pub mod team_notice;
 pub mod tree;
 pub mod watchdog;
 pub mod webhook;

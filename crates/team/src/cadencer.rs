@@ -508,6 +508,8 @@ struct Inner {
     last_beat_s: Option<u64>,
     next_beat_s: Option<u64>,
     timer: Option<JoinHandle<()>>,
+    /// The team-notice tap ([`crate::team_notice`]), started once at boot.
+    notice: Option<JoinHandle<()>>,
 }
 
 impl Inner {
@@ -894,6 +896,12 @@ impl Bundle for CadencerBundle {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if t == "boot" {
             crate::declared_views::sync_all(kernel);
+            {
+                let mut g = self.inner.lock().expect("cadencer state");
+                if g.notice.as_ref().is_none_or(|h| h.is_finished()) {
+                    g.notice = Some(crate::team_notice::start(kernel));
+                }
+            }
             return Ok(Some(self.restore(agent_id, kernel)));
         }
         let reply = dispatch(&self.inner, payload);
