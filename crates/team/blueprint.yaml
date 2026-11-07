@@ -30,15 +30,21 @@
 #       +-- team_page          the team page
 #       +-- team_ws            the page's socket leg
 #
-# The other end of the lead's edges on the stock agents the team reaches (`memory`,
-# `files`, `credentials`, the root) is written by fantastic's own boot: `reach::grant_all`
-# (fantastic `src/tui/src/kern/reach.rs`) names every AI agent (a record that names a
-# `memory_store_id`: the lead and every spawned worker) in each agent's `callable_by`, and
-# again for each agent added later. A parent entry here may not carry fields
-# (`seed.rs`, `write_blueprint`), so the team writes none of them.
-
+# The other end of the lead's edges on the stock agents the team reaches (`memory`, `files`,
+# `credentials`, the root) is written by fantastic's own boot: `reach::grant_all` (fantastic
+# `src/tui/src/kern/reach.rs`) names every AI agent (a record that names a `memory_store_id`:
+# the lead and every spawned worker) in each agent's `callable_by`. The other end of the edges
+# of the team's non-AI agents on a stock agent is declared by a PARENT entry at the end of
+# this file (fantastic#500: `callable_by` / `can_call` on an entry that names a stock agent,
+# unioned into its record; `@root` for the root; the credential store, which fantastic makes
+# only when a key mode is chosen, takes the grant when it is made).
+#
 agents:
 - id: user
+  callable_by:
+    team_ws:
+    - inquiries
+    - answer_inquiry
   agents:
   - id: lead
     handler_module: anthropic_backend.tools
@@ -271,3 +277,18 @@ agents:
       $self: '*'
       web:
       - get_routes
+# THE CALLEE END of the edges the team's agents hold on fantastic's stock agents (the caller's
+# end is each agent's `can_call` above; the page leg's end on `user` is on the `user` entry at the
+# top, which also carries `agents:`). Parent entries (`id` and grants only): the stock
+# grants stay, these are unioned in.
+- id: memory
+  callable_by:
+    roles: '*'
+    tasks: '*'
+- id: credentials
+  callable_by:
+    github: '*'
+- id: '@root'
+  callable_by:
+    board:
+    - reflect

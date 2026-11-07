@@ -12,16 +12,21 @@ TASK = "Run a sub-lead and a project lead, each with a worker; delete what you s
 REPO_ROLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "roles")
 
 
-def seed(ctx, folder, env, v):
+def seed(ctx, folder, env, v, team):
     """Run the binary's `webui` once in `folder`, so the team's first run seeds the team's agents
-    from the blueprint (#261), and stop it. The key store is the app's to make (it chooses `plain`,
-    #222)."""
+    from the blueprint (#261). The key mode is the person's choice (the team and the app choose
+    none): the probe makes it as the set-up page does, `set_key_mode` plain on fantastic's
+    `setup.tools` agent, so fantastic makes its credential store; then stop the run."""
     port = app.free_port()
     proc = app.Proc([ctx.binary, "webui", "--port", str(port)], env, folder,
                     os.path.join(ctx.run_dir, "seed.log"))
     try:
         v.check("a first run seeds the directory",
                 app.wait_http(f"http://127.0.0.1:{port}/team_page/file/index.html", 30), proc.log())
+        records.create(team, {"id": "person_setup", "parent_id": "user", "handler_module": "setup.tools"})
+        r = team.send("person_setup", {"type": "set_key_mode", "mode": "plain"})
+        v.check("the person chose the plain key mode", (r.get("result") or {}).get("mode") == "plain", str(r))
+        team.send("kernel", {"type": "delete_agent", "id": "person_setup"})
         proc.signal(signal.SIGINT)
         v.check("the seeding run stops", proc.wait(30) is not None, proc.log())
     finally:
@@ -29,8 +34,8 @@ def seed(ctx, folder, env, v):
 
 
 def store_model_key(ctx, team, key):
-    """Keep the model's key the way the set-up page does: declare the ref on the store the app
-    made (its backend stays the app's `plain` file), then `set` the value."""
+    """Keep the model's key the way the set-up page does: declare the ref on the store fantastic
+    made for the person's choice (its backend is the `plain` file), then `set` the value."""
     ref = f"model/{ctx.model.host}"
     refs = dict(team.agents()["credentials"].get("refs") or {})
     refs[ref] = {"host": ctx.model.host, "fields": ["api_key"]}
@@ -71,7 +76,7 @@ def run(ctx):
     os.makedirs(folder)
     ctx.work = folder
     probe = team_mod.Team(ctx.binary, folder, env)
-    seed(ctx, folder, probe.env, v)
+    seed(ctx, folder, probe.env, v, probe)
     port = app.free_port()
     ctx.team = probe  # the app gets the probe's environment (`app.env_of`)
     proc = app.run_app(ctx, ["--binary", ctx.binary, "--port", port, "--dir", folder], name="app")

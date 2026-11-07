@@ -363,47 +363,6 @@ pub fn prepare_team_dir(target: &Target, dir: Option<&Path>) -> Result<usize, St
     }
 }
 
-/// One `<binary> send` item in `dir`: the item's `result`. The binary is fantastic's
-/// command line: `send` is its word. An error is a failed run, an answer that is no JSON
-/// or an item that did not complete.
-async fn send_item(
-    binary: &str,
-    dir: &Path,
-    target: &str,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let item = serde_json::json!({"target": target, "payload": payload}).to_string();
-    let out = Command::new(binary)
-        .arg("send")
-        .arg(item)
-        .current_dir(dir)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await
-        .map_err(|e| format!("failed to run {binary} send: {e}"))?;
-    let row: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .map_err(|e| format!("{binary} send answered no JSON: {e}"))?;
-    if row["status"] != "completed" {
-        return Err(format!("{binary} send did not complete: {row}"));
-    }
-    Ok(row["result"].clone())
-}
-
-/// A new team's one first-run choice that no blueprint can hold: the key mode, a choice the
-/// person makes and fantastic keeps in the home. The agents are not made here: the first
-/// `webui` run seeded them from `crates/team/blueprint.yaml` (`hydrate::seed`) and every
-/// later run rehydrates them from disk, as fantastic does for its own. When no mode is
-/// chosen yet, `plain` is chosen through fantastic's `set_key_mode`
-/// ([`fantastic_team::new_team::choose_key_mode`]); a chosen mode stays. Returns whether it
-/// chose `plain`.
-pub async fn choose_key_mode(binary: &str, dir: &Path) -> Result<bool, String> {
-    fantastic_team::new_team::choose_key_mode(|target, payload| {
-        send_item(binary, dir, target, payload)
-    })
-    .await
-    .map_err(|e| format!("the new team's key mode was not chosen: {e}"))
-}
-
 /// Start the binary (or attach to a URL) and wait until its web UI
 /// answers 200. If the child exits first, the error carries its exit status.
 pub async fn launch(
@@ -453,20 +412,10 @@ pub async fn launch(
             Ok(s) => format!("{binary} exited before serving {ready}: {s}"),
             Err(e) => format!("{binary} exited before serving {ready}: {e}"),
         }),
-        Outcome::Ready(Ok(())) => {
-            // The agents are on disk already (the first `webui` run seeded them); the one
-            // choice left is the key mode, made only while none is chosen.
-            if let (Target::Start { .. }, Some(d)) = (target, dir) {
-                if let Err(e) = choose_key_mode(binary, d).await {
-                    let _ = child.kill().await;
-                    return Err(e);
-                }
-            }
-            Ok(Launched {
-                child: Some(child),
-                url,
-            })
-        }
+        Outcome::Ready(Ok(())) => Ok(Launched {
+            child: Some(child),
+            url,
+        }),
         Outcome::Ready(Err(e)) => {
             let _ = child.kill().await;
             Err(e)
@@ -673,102 +622,6 @@ mod tests {
             assert_eq!(prepare_team_dir(t, Some(other.path())), Ok(0));
         }
         assert_eq!(std::fs::read_dir(other.path()).unwrap().count(), 0);
-    }
-
-    /// A fake `<binary> send` for a kernel whose key mode is `mode` (a JSON value: `null` is
-    /// not chosen): logs each item, answers `key_mode` with `mode`, any other item with `{id}`.
-    #[cfg(unix)]
-    fn fake_send_mode(dir: &std::path::Path, mode: &str) -> String {
-        let body = format!(
-            r#"echo "$2" >> "{log}"
-case "$2" in
-  *'"type":"key_mode"'*) echo '{{"status":"completed","result":{{"mode":{mode}}}}}' ;;
-  *) echo '{{"status":"completed","result":{{"id":"made"}}}}' ;;
-esac"#,
-            log = dir.join("items.log").display()
-        );
-        fake_binary(dir, "fake_send", &body)
-    }
-
-    #[cfg(unix)]
-    fn logged(dir: &std::path::Path) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(dir.join("items.log"))
-            .unwrap_or_default()
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect()
-    }
-
-    /// The `type`s of the logged items, with the id of a create/delete/update.
-    #[cfg(unix)]
-    fn steps_of(items: &[serde_json::Value]) -> Vec<String> {
-        items
-            .iter()
-            .map(|i| match i["payload"]["id"].as_str() {
-                Some(id) => format!("{} {id}", i["payload"]["type"].as_str().unwrap()),
-                None => i["payload"]["type"].as_str().unwrap().to_string(),
-            })
-            .collect()
-    }
-
-    /// The app makes NO agent and writes NO grant: the only agent it ever creates is the
-    /// helper the key mode is asked through, and it deletes it again.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn choose_key_mode_chooses_plain_and_makes_no_team_agent() {
-        let _exec = EXEC_LOCK.lock().await;
-        let dir = tempfile::tempdir().unwrap();
-        let bin = fake_send_mode(dir.path(), "null");
-        assert_eq!(choose_key_mode(&bin, dir.path()).await, Ok(true));
-        let items = logged(dir.path());
-        let set = items
-            .iter()
-            .find(|i| i["payload"]["type"] == "set_key_mode")
-            .expect("the mode is set");
-        assert_eq!(set["target"], "key_mode_setup");
-        assert_eq!(set["payload"]["mode"], "plain");
-        assert_eq!(
-            steps_of(&items),
-            [
-                "create_agent key_mode_setup",
-                "key_mode",
-                "set_key_mode",
-                "delete_agent key_mode_setup"
-            ]
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn choose_key_mode_leaves_a_chosen_mode_as_it_is() {
-        let _exec = EXEC_LOCK.lock().await;
-        let dir = tempfile::tempdir().unwrap();
-        let bin = fake_send_mode(dir.path(), r#""secure""#);
-        assert_eq!(choose_key_mode(&bin, dir.path()).await, Ok(false));
-        let items = logged(dir.path());
-        assert!(
-            !items.iter().any(|i| i["payload"]["type"] == "set_key_mode"),
-            "{:?}",
-            steps_of(&items)
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn choose_key_mode_reports_a_mode_that_could_not_be_set() {
-        let _exec = EXEC_LOCK.lock().await;
-        let dir = tempfile::tempdir().unwrap();
-        let bin = fake_binary(
-            dir.path(),
-            "nomode",
-            r#"case "$2" in
-  *'"type":"key_mode"'*) echo '{"status":"completed","result":{"mode":null}}' ;;
-  *set_key_mode*) echo '{"status":"completed","result":{"error":"no home"}}' ;;
-  *) echo '{"status":"completed","result":{"id":"made"}}' ;;
-esac"#,
-        );
-        let e = choose_key_mode(&bin, dir.path()).await.unwrap_err();
-        assert!(e.contains("plain") && e.contains("no home"), "{e}");
     }
 
     #[test]

@@ -105,8 +105,9 @@ mod tests {
         for e in list.as_array().into_iter().flatten() {
             let o = e.as_object().unwrap();
             let id = o["id"].as_str().unwrap();
-            // a parent entry (only `id` and `agents`) names an agent the stock tree wrote
-            if o.keys().any(|k| k != "id" && k != "agents") {
+            // a parent entry (`id`, `agents` and grants, no `handler_module`) names an agent
+            // the stock tree wrote, the root or the credential store
+            if o.contains_key("handler_module") {
                 out.push((id, parent, o));
             }
             walk(&e["agents"], id, out);
@@ -133,10 +134,8 @@ mod tests {
         assert_eq!(got, TREE);
         // disk position is the parent, and the stock tree wrote `user`
         assert!(out.iter().all(|(_, _, r)| !r.contains_key("parent_id")));
-        assert_eq!(
-            doc["agents"][0],
-            json!({"id": "user", "agents": doc["agents"][0]["agents"]})
-        );
+        assert!(doc["agents"][0].get("handler_module").is_none());
+        assert_eq!(doc["agents"][0]["id"], "user");
     }
 
     #[test]
@@ -472,6 +471,154 @@ mod tests {
             live["files"]["allow"],
             json!(["docs"]),
             "a stock agent's field too"
+        );
+    }
+
+    /// `caller` sends `payload` to `target` AS ITSELF: the call gate judges it as that agent.
+    async fn as_caller(
+        k: &std::sync::Arc<fantastic_kernel::Kernel>,
+        caller: &str,
+        target: &str,
+        payload: Value,
+    ) -> Value {
+        fantastic_kernel::send::as_agent(&fantastic_kernel::AgentId::from(caller), async {
+            k.send(vec![fantastic_kernel::Item::new(target, payload)])
+                .await
+                .remove(0)
+                .result
+        })
+        .await
+    }
+
+    /// The edge is admitted when the gate lets the call through (the verb may still refuse
+    /// for its own reasons, such as a missing argument).
+    fn admitted(r: &Value, what: &str) {
+        assert_ne!(r["reason"], "unauthorized", "{what}: {r}");
+    }
+
+    /// THE CALLEE END of the five edges, from the yaml alone (fantastic#500 parent entries):
+    /// after the first-run seed and a boot, each callee's `callable_by` holds the team's
+    /// caller next to the stock grants, the caller's own `can_call` holds the callee, and a
+    /// real call over the edge is admitted; the same call on an edge nobody granted is
+    /// refused. A second boot keeps all of it, and a boot creates nothing (no store, no key
+    /// mode, no helper).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_yaml_grants_the_callee_end_of_the_edges_on_stock_agents() {
+        let _web = crate::WEB_LOCK.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(seed(dir.path()).unwrap());
+
+        // the credential store and the root have no record at seed time: fantastic keeps
+        // their declared grants in its shell corner until it makes the store / the root runs
+        let pending: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(dir.path().join(".fantastic/cli/grants.yaml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(pending["credentials"]["callable_by"]["github"], "*");
+        assert_eq!(
+            pending[DEFAULT_ROOT_ID]["callable_by"]["board"],
+            json!(["reflect"])
+        );
+        assert!(pending.get("@root").is_none(), "@root is resolved");
+        // the three that have a record are on disk, unioned into the stock grants
+        let on = |rel: &str| -> Value {
+            serde_yaml::from_str(
+                &std::fs::read_to_string(dir.path().join(".fantastic/agents").join(rel)).unwrap(),
+            )
+            .unwrap()
+        };
+        let memory = on("user/agents/memory/agent.yaml");
+        assert_eq!(memory["callable_by"]["roles"], "*");
+        assert_eq!(memory["callable_by"]["tasks"], "*");
+        assert!(
+            memory["callable_by"].get("user").is_some(),
+            "the stock grant stays: {memory}"
+        );
+        let user = on("user/agent.yaml");
+        assert_eq!(
+            user["callable_by"]["team_ws"],
+            json!(["inquiries", "answer_inquiry"])
+        );
+
+        // boot: both ends of each edge, and a real call over it
+        let k = crate::start_offline(dir.path()).await.unwrap();
+        let live = |id: &str| {
+            Value::Object(
+                k.agents
+                    .get(&fantastic_kernel::AgentId::from(id))
+                    .unwrap()
+                    .meta
+                    .read()
+                    .unwrap()
+                    .clone(),
+            )
+        };
+        let doc = declared(dir.path());
+        for (caller, callee) in [
+            (ROLES, "memory"),
+            (TASKS, "memory"),
+            (GITHUB, "credentials"),
+            (BOARD, "@root"),
+            (WS_ID, "user"),
+        ] {
+            let can = &rec_in(&doc, caller)["can_call"][callee];
+            assert!(!can.is_null(), "{caller} declares can_call {callee}");
+        }
+        for (who, verb) in [(ROLES, "read"), (TASKS, "read")] {
+            admitted(
+                &as_caller(&k, who, "memory", json!({"type": verb})).await,
+                &format!("{who} -> memory {verb}"),
+            );
+        }
+        for verb in ["inquiries", "answer_inquiry"] {
+            admitted(
+                &as_caller(&k, WS_ID, "user", json!({"type": verb})).await,
+                &format!("{WS_ID} -> user {verb}"),
+            );
+        }
+        // the gate is real: an edge nobody granted, and a verb nobody granted
+        for (who, target, verb) in [
+            (QUEUE, "memory", "read"),
+            (WS_ID, "memory", "read"),
+            (WS_ID, "user", "send"),
+        ] {
+            let r = as_caller(&k, who, target, json!({"type": verb})).await;
+            assert_eq!(r["reason"], "unauthorized", "{who} -> {target} {verb}: {r}");
+        }
+        assert_eq!(live("memory")["callable_by"]["roles"], "*");
+        assert_eq!(
+            live("user")["callable_by"]["team_ws"],
+            user["callable_by"]["team_ws"]
+        );
+        // a boot made nothing of its own
+        assert!(!k
+            .agents
+            .contains_key(&fantastic_kernel::AgentId::from("credentials")));
+        assert!(!k
+            .agents
+            .contains_key(&fantastic_kernel::AgentId::from("key_mode_setup")));
+        k.flush_records().await;
+        k.shutdown().await;
+        fantastic_sqlite_store::close_all(&k);
+        bootstrap::shutdown(dir.path()).unwrap();
+
+        // a second boot keeps the grants and the declarations nobody consumed
+        let before = tree_of(dir.path());
+        let again = boot_and_stop(dir.path()).await;
+        assert_eq!(tree_of(dir.path()), before);
+        assert_eq!(again["memory"]["callable_by"]["tasks"], "*");
+        assert_eq!(again["memory"]["callable_by"]["roles"], "*");
+        assert_eq!(
+            again["user"]["callable_by"]["team_ws"],
+            user["callable_by"]["team_ws"]
+        );
+        let pending2: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(dir.path().join(".fantastic/cli/grants.yaml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            pending2, pending,
+            "no boot of the team applies or drops them"
         );
     }
 }

@@ -99,9 +99,8 @@ def run(ctx):
         v.check("the port refuses connections after stop", app.wait_refused(p, 10))
         v.check("stop did not touch the attached server", web.up(q, "/team_page/file/index.html"))
 
-        # --- start in an empty folder on a fresh home: the app chooses fantastic's plain key mode
-        # (so the credential store exists), then makes the team with create_agent under fixed ids
-        # (no blueprint, no import)
+        # --- start in an empty folder on a fresh home: the team is seeded from its yaml by the
+        # first run; the app creates nothing and chooses no key mode (the person's choice)
         new_dir = os.path.join(ctx.run_dir, "new_team_dir")
         os.makedirs(new_dir)
         before = {}
@@ -122,9 +121,11 @@ def run(ctx):
         v.check("start in a folder with no team prints the web UI URL", bool(line), s2.log())
         t2 = team_mod.Team(ctx.binary, new_dir, app.env_of(ctx.team))
         agents = t2.agents() if line else {}
-        v.check("the app chose fantastic's plain key mode on the fresh home",
-                bool(line) and key_mode(t2) == "plain")
-        want_ids = {"credentials", "lead", "queue", "github", "board", "roles", "tasks", "worker_exec", "worker_files"}
+        v.check("the app chose no key mode on the fresh home (the person's choice)",
+                bool(line) and key_mode(t2) is None)
+        v.check("no credential store and no helper agent exist until the person chooses a mode",
+                not {"credentials", "key_mode_setup"} & set(agents), str(sorted(agents)))
+        want_ids = {"lead", "queue", "github", "board", "roles", "tasks", "worker_exec", "worker_files"}
         v.check("the first run seeded the team under the fixed ids the role cards name",
                 want_ids <= set(agents), str(sorted(set(agents))))
         v.check("no id carries an import's suffix", not [i for i in agents if i.endswith("_1")],
@@ -135,6 +136,14 @@ def run(ctx):
         mem = agents.get("memory", {}).get("callable_by", {})
         v.check("fantastic's boot wrote the other end of the lead's edge on the home's memory, and what it had stays",
                 mem.get("lead") in ("*", ["*"]) and mem.get("user") in ("*", ["*"]), str(mem))
+        v.check("the yaml's parent entry wrote the other end of roles' and tasks' edge on memory",
+                mem.get("roles") in ("*", ["*"]) and mem.get("tasks") in ("*", ["*"]), str(mem))
+        ucb = agents.get("user", {}).get("callable_by", {}).get("team_ws", [])
+        v.check("the yaml's parent entry wrote the page leg's end on user (inquiries, answer_inquiry)",
+                {"inquiries", "answer_inquiry"} <= set(ucb), str(ucb))
+        rcb = agents.get("kernel_state", {}).get("callable_by", {}).get("board", [])
+        v.check("the yaml's @root entry wrote the board's end on the root (reflect)",
+                "reflect" in rcb, str(rcb))
         v.check("the role cards were written next to the kernel",
                 os.path.isfile(os.path.join(new_dir, "roles", "project_lead.md")))
         s2.signal(signal.SIGINT)
