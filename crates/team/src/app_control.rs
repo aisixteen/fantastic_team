@@ -456,11 +456,26 @@ pub fn persist_web(
     port: Option<u16>,
     bind: Option<&str>,
 ) -> Result<(u16, String), String> {
+    persist_web_then(dir, port, bind, |_, _| ()).map(|(served, ())| served)
+}
+
+/// [`persist_web`], with `look` run on the kernel that writes the records once they
+/// are made, while it is still up (its answer is returned beside the port and the
+/// address): a test sees there what that kernel serves.
+fn persist_web_then<T>(
+    dir: &Path,
+    port: Option<u16>,
+    bind: Option<&str>,
+    look: impl FnOnce(&Arc<Kernel>, &(u16, String)) -> T,
+) -> Result<((u16, String), T), String> {
     fantastic_tui::seed_dir(dir)?;
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async {
         let kernel = start_offline(dir).await.map_err(|e| e.to_string())?;
-        let res = prepare_web(&kernel, port, bind).await;
+        let res = prepare_web(&kernel, port, bind).await.map(|served| {
+            let seen = look(&kernel, &served);
+            (served, seen)
+        });
         if res.is_err() {
             drop_web(&kernel).await;
         }
@@ -1314,6 +1329,40 @@ mod tests {
         k.shutdown().await;
         fantastic_sqlite_store::close_all(&k);
         bootstrap::shutdown(dir.path()).unwrap();
+    }
+
+    /// #241, `persist_web` itself: while the kernel that writes the records is up, with
+    /// the host just made (a fresh directory) and loaded from its record (the next run,
+    /// the recorded port kept or a new one named), the host is made and its port is free.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_web_writes_the_records_with_no_port_open() {
+        let _web = WEB.lock().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        for (run, port) in [
+            ("fresh", Some(free_port())),
+            ("recorded", None),
+            ("renamed", Some(free_port())),
+        ] {
+            let path = dir.path().to_path_buf();
+            let ((port, host), (made, bound)) = std::thread::spawn(move || {
+                persist_web_then(&path, port, None, |k, (port, host)| {
+                    let made = k
+                        .agents
+                        .contains_key(&fantastic_kernel::AgentId::from(page::WEB_ID));
+                    let bound = std::net::TcpListener::bind((host.as_str(), *port)).err();
+                    (made, bound.map(|e| e.to_string()))
+                })
+            })
+            .join()
+            .unwrap()
+            .unwrap();
+            assert!(made, "{run}: the host is made");
+            assert_eq!(bound, None, "{run}: the kernel listens on {host}:{port}");
+            assert!(
+                web_yaml(dir.path()).contains(&format!("port: {port}")),
+                "{run}: the record names the port"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
