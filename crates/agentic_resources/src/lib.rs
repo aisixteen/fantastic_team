@@ -580,7 +580,9 @@ async fn spawn_reply(
     }
     create.insert("type".to_string(), json!("create_agent"));
     create.insert("parent_id".to_string(), json!(parent.as_str()));
-    create.insert("system_prompt".to_string(), json!(card.directive));
+    // the card's directive goes AFTER fantastic's default system block (the primer with the
+    // call grammar, the agent's identity and grants): `system_prompt` would replace that block
+    create.insert("post_system_prompt".to_string(), json!(card.directive));
     create.insert("spawned_by".to_string(), json!(reg.as_str()));
     create.insert("role".to_string(), json!(role));
     create.insert("tier".to_string(), json!(card.tier));
@@ -1007,7 +1009,10 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
             patch.insert(k.clone(), v.clone());
         }
     }
-    patch.insert("system_prompt".to_string(), json!(card.directive));
+    // a fork drops the source's own prompt (null clears it) so the default block is in force,
+    // and takes the card's directive after it, as a spawn does
+    patch.insert("system_prompt".to_string(), Value::Null);
+    patch.insert("post_system_prompt".to_string(), json!(card.directive));
     patch.insert("spawned_by".to_string(), json!(reg.as_str()));
     patch.insert("role".to_string(), json!(card.name));
     patch.insert("tier".to_string(), json!(card.tier));

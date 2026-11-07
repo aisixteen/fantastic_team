@@ -462,7 +462,8 @@ async fn spawn_creates_child_with_directive_tier_grants() {
         "a child of the caller"
     );
     let m = meta_of(&a);
-    assert_eq!(m["system_prompt"], "You write clearly and briefly.");
+    assert_eq!(m["post_system_prompt"], "You write clearly and briefly.");
+    assert!(m.get("system_prompt").is_none_or(Value::is_null), "the default system block stays in force: {m:?}");
     assert_eq!(m["model"], "m1", "the tier's model, never the card's");
     assert_eq!(m["endpoint"], "http://x");
     assert_eq!(a.handler_module.as_deref(), Some("caller.tools"));
@@ -1233,7 +1234,8 @@ async fn spawn_from_forks_and_applies_the_role_card() {
     let id = out["id"].as_str().unwrap();
     assert_eq!(forks_of(&r, &src), [id], "made by fork");
     let m = r.meta(id);
-    assert_eq!(m["system_prompt"], "You write clearly and briefly.");
+    assert_eq!(m["post_system_prompt"], "You write clearly and briefly.");
+    assert!(m.get("system_prompt").is_none_or(Value::is_null), "the default system block stays in force: {m:?}");
     assert_eq!(m["role"], "writer");
     assert_eq!(m["tier"], "fast");
     assert_eq!(m["spawned_by"], json!(r.reg));
