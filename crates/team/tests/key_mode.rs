@@ -1,7 +1,8 @@
-//! #222: on a fresh home the app chooses fantastic's `plain` key mode before it makes the
-//! team's agents, so fantastic's credential store (`credentials`, made at boot only once a
-//! mode is chosen) exists for the grants the team writes on it; a mode the user chose stays.
-//! Real kernels: the team binary runs `canvas --port N` in a folder, with its own home.
+//! #222: on a fresh home the app chooses fantastic's `plain` key mode, so fantastic's
+//! credential store (`credentials`, made at boot only once a mode is chosen) exists for the
+//! team's agents that name it; a mode the user chose stays. The team's agents are not made
+//! by the app: the first `webui` run seeds them from `crates/team/blueprint.yaml` (#261).
+//! Real kernels: the team binary runs `webui --port N` in a folder, with its own home.
 #![cfg(unix)]
 
 use std::net::TcpListener;
@@ -78,11 +79,12 @@ impl Site {
         Ok(row["result"].clone())
     }
 
-    /// Start the kernel (`canvas --port N`) and wait until it answers `send`.
+    /// Start the kernel (`webui --port N`, which seeds the team at the first run) and wait
+    /// until it answers `send`.
     async fn start(&self) -> Kernel {
         let child = self
             .command()
-            .args(["canvas", "--port", &free_port().to_string()])
+            .args(["webui", "--port", &free_port().to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true)
@@ -127,11 +129,9 @@ impl Site {
         m["mode"].as_str().map(str::to_string)
     }
 
-    /// The app's steps for a new team: the key mode, then the agents.
-    async fn create_team(&self) -> Result<bool, String> {
-        let chose = new_team::choose_key_mode(|t, p| self.send(t, p)).await?;
-        new_team::apply(&new_team::steps(&self.dir), |t, p| self.send(t, p)).await?;
-        Ok(chose)
+    /// The app's one step for a new team: the key mode.
+    async fn choose_key_mode(&self) -> Result<bool, String> {
+        new_team::choose_key_mode(|t, p| self.send(t, p)).await
     }
 }
 
@@ -165,14 +165,18 @@ fn has(list: &Value, id: &str) -> bool {
 }
 
 #[tokio::test]
-async fn a_fresh_home_gets_plain_and_the_team_is_made_and_starts() {
+async fn a_fresh_home_gets_plain_and_the_seeded_team_starts() {
     let site = Site::new();
     let kernel = site.start().await;
-    // the bug: no mode, so no credential store for the team's grants to name
+    // the first run seeded the team; the key mode is the one choice left
+    for id in ["lead", "roles", "board", "github"] {
+        assert!(has(&site.agents().await, id), "seeded: {id}");
+    }
+    // the bug: no mode, so no credential store for the team's agents to name
     assert!(!has(&site.agents().await, "credentials"));
     assert_eq!(site.mode().await, None);
 
-    assert_eq!(site.create_team().await, Ok(true));
+    assert_eq!(site.choose_key_mode().await, Ok(true));
     assert_eq!(site.mode().await.as_deref(), Some("plain"));
     let agents = site.agents().await;
     for id in ["credentials", "lead", "roles", "board", "github"] {
@@ -218,7 +222,7 @@ async fn a_home_with_secure_chosen_stays_secure() {
 
     let kernel = site.start().await;
     assert!(has(&site.agents().await, "credentials"));
-    assert_eq!(site.create_team().await, Ok(false));
+    assert_eq!(site.choose_key_mode().await, Ok(false));
     assert_eq!(site.mode().await.as_deref(), Some("secure"));
     assert!(has(&site.agents().await, "lead"));
     kernel.stop().await;

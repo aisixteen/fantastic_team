@@ -20,7 +20,10 @@ def run(ctx):
     example = app.handle_example(ctx)  # a Skip when the example is not built
     h = None
     try:
-        run_flow.boot(ctx, forge=False, groups={"team": {"members": ["$lead"]}})
+        # `webui` seeds the team's host, page and leg from the blueprint (#261); the handle
+        # serves the folder those records are in.
+        run_flow.boot(ctx, forge=False, groups={"team": {"members": ["$lead"]}},
+                      extra_args=["webui", "--port", app.free_port()], seeded=True)
         ctx.team.stop()  # the tree is on disk, the lock is free
         port = app.free_port()
         h = app.Proc([example, "--dir", ctx.run_dir, "--port", str(port)], app.env_of(ctx.team),

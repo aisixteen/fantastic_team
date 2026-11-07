@@ -389,32 +389,19 @@ async fn send_item(
     Ok(row["result"].clone())
 }
 
-/// Make the team in `dir` when the running kernel has none: if no agent `lead` exists,
-/// choose the key mode when none is chosen ([`fantastic_team::new_team::choose_key_mode`]), then
-/// run the steps of [`fantastic_team::new_team::steps`] with `<binary> send`
-/// (`create_agent` under fixed ids, then the grants on the home agents). A directory that
-/// has its `lead` already is left as it is. Returns whether it made the team.
-pub async fn create_team(binary: &str, dir: &Path) -> Result<bool, String> {
-    use fantastic_team::new_team;
-    let list = send_item(
-        binary,
-        dir,
-        fantastic_team::tree::ROOT_ID,
-        serde_json::json!({"type": "list_agents"}),
-    )
-    .await?;
-    if new_team::has_agent(&list, new_team::LEAD) {
-        return Ok(false);
-    }
-    new_team::choose_key_mode(|target, payload| send_item(binary, dir, target, payload))
-        .await
-        .map_err(|e| format!("the new team was not made: {e}"))?;
-    new_team::apply(&new_team::steps(dir), |target, payload| {
+/// A new team's one first-run choice that no blueprint can hold: the key mode, a choice the
+/// person makes and fantastic keeps in the home. The agents are not made here: the first
+/// `webui` run seeded them from `crates/team/blueprint.yaml` (`hydrate::seed`) and every
+/// later run rehydrates them from disk, as fantastic does for its own. When no mode is
+/// chosen yet, `plain` is chosen through fantastic's `set_key_mode`
+/// ([`fantastic_team::new_team::choose_key_mode`]); a chosen mode stays. Returns whether it
+/// chose `plain`.
+pub async fn choose_key_mode(binary: &str, dir: &Path) -> Result<bool, String> {
+    fantastic_team::new_team::choose_key_mode(|target, payload| {
         send_item(binary, dir, target, payload)
     })
     .await
-    .map_err(|e| format!("the new team was not made: {e}"))?;
-    Ok(true)
+    .map_err(|e| format!("the new team's key mode was not chosen: {e}"))
 }
 
 /// Start the binary (or attach to a URL) and wait until its web UI
@@ -467,9 +454,10 @@ pub async fn launch(
             Err(e) => format!("{binary} exited before serving {ready}: {e}"),
         }),
         Outcome::Ready(Ok(())) => {
-            // A directory with no team gets one: `create_agent` under fixed ids.
+            // The agents are on disk already (the first `webui` run seeded them); the one
+            // choice left is the key mode, made only while none is chosen.
             if let (Target::Start { .. }, Some(d)) = (target, dir) {
-                if let Err(e) = create_team(binary, d).await {
+                if let Err(e) = choose_key_mode(binary, d).await {
                     let _ = child.kill().await;
                     return Err(e);
                 }
@@ -687,21 +675,13 @@ mod tests {
         assert_eq!(std::fs::read_dir(other.path()).unwrap().count(), 0);
     }
 
-    /// A fake `<binary> send`: logs each item and answers `list_agents` with the home's
-    /// agents (and `lead` when `LEAD=1`), any other item with `{id}`.
+    /// A fake `<binary> send` for a kernel whose key mode is `mode` (a JSON value: `null` is
+    /// not chosen): logs each item, answers `key_mode` with `mode`, any other item with `{id}`.
     #[cfg(unix)]
-    fn fake_send(dir: &std::path::Path, with_lead: bool) -> String {
-        fake_send_mode(dir, with_lead, "null")
-    }
-
-    /// As [`fake_send`], and the kernel's key mode is `mode` (a JSON value: `null` is not chosen).
-    #[cfg(unix)]
-    fn fake_send_mode(dir: &std::path::Path, with_lead: bool, mode: &str) -> String {
-        let lead = if with_lead { r#"{"id":"lead"},"# } else { "" };
+    fn fake_send_mode(dir: &std::path::Path, mode: &str) -> String {
         let body = format!(
             r#"echo "$2" >> "{log}"
 case "$2" in
-  *list_agents*) echo '{{"status":"completed","result":{{"agents":[{lead}{{"id":"kernel_state","callable_by":{{"$self":"*"}}}},{{"id":"memory","callable_by":{{"$self":"*","user":"*"}}}},{{"id":"files","callable_by":{{"$self":"*"}}}},{{"id":"credentials","callable_by":{{"$self":"*"}}}}]}}}}' ;;
   *'"type":"key_mode"'*) echo '{{"status":"completed","result":{{"mode":{mode}}}}}' ;;
   *) echo '{{"status":"completed","result":{{"id":"made"}}}}' ;;
 esac"#,
@@ -719,44 +699,6 @@ esac"#,
             .collect()
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn create_team_makes_the_agents_with_create_agent_under_fixed_ids() {
-        let _exec = EXEC_LOCK.lock().await;
-        let dir = tempfile::tempdir().unwrap();
-        let bin = fake_send(dir.path(), false);
-        assert_eq!(create_team(&bin, dir.path()).await, Ok(true));
-        let items = logged(dir.path());
-        let made: Vec<&str> = items
-            .iter()
-            .filter(|i| i["payload"]["type"] == "create_agent")
-            .filter(|i| i["payload"]["id"] != fantastic_team::new_team::KEY_MODE_AGENT)
-            .map(|i| i["payload"]["id"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            made,
-            [
-                "lead",
-                "queue",
-                "github",
-                "board",
-                "roles",
-                "tasks",
-                "worker_exec",
-                "worker_files"
-            ]
-        );
-        // no import, whatever the item
-        assert!(!items.iter().any(|i| i.to_string().contains("import")));
-        // a home agent keeps what it had: `memory` still admits `user`
-        let up = items
-            .iter()
-            .find(|i| i["payload"]["type"] == "update_agent" && i["payload"]["id"] == "memory")
-            .expect("the grant on memory");
-        assert_eq!(up["payload"]["callable_by"]["user"], "*");
-        assert_eq!(up["payload"]["callable_by"]["lead"], "*");
-    }
-
     /// The `type`s of the logged items, with the id of a create/delete/update.
     #[cfg(unix)]
     fn steps_of(items: &[serde_json::Value]) -> Vec<String> {
@@ -769,100 +711,64 @@ esac"#,
             .collect()
     }
 
+    /// The app makes NO agent and writes NO grant: the only agent it ever creates is the
+    /// helper the key mode is asked through, and it deletes it again.
     #[cfg(unix)]
     #[tokio::test]
-    async fn create_team_chooses_plain_before_it_creates_an_agent_when_no_mode_is_chosen() {
+    async fn choose_key_mode_chooses_plain_and_makes_no_team_agent() {
         let _exec = EXEC_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
-        let bin = fake_send_mode(dir.path(), false, "null");
-        assert_eq!(create_team(&bin, dir.path()).await, Ok(true));
+        let bin = fake_send_mode(dir.path(), "null");
+        assert_eq!(choose_key_mode(&bin, dir.path()).await, Ok(true));
         let items = logged(dir.path());
         let set = items
             .iter()
-            .position(|i| i["payload"]["type"] == "set_key_mode")
+            .find(|i| i["payload"]["type"] == "set_key_mode")
             .expect("the mode is set");
-        assert_eq!(items[set]["target"], "key_mode_setup");
-        assert_eq!(items[set]["payload"]["mode"], "plain");
-        let first_team = items
-            .iter()
-            .position(|i| i["payload"]["id"] == "lead")
-            .expect("the lead");
-        assert!(set < first_team, "{:?}", steps_of(&items));
-        // the helper agent is gone again
-        let last = items
-            .iter()
-            .rposition(|i| i["payload"]["id"] == "key_mode_setup")
-            .unwrap();
-        assert_eq!(items[last]["payload"]["type"], "delete_agent");
-        assert!(last < first_team, "{:?}", steps_of(&items));
+        assert_eq!(set["target"], "key_mode_setup");
+        assert_eq!(set["payload"]["mode"], "plain");
+        assert_eq!(
+            steps_of(&items),
+            [
+                "create_agent key_mode_setup",
+                "key_mode",
+                "set_key_mode",
+                "delete_agent key_mode_setup"
+            ]
+        );
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn create_team_leaves_a_chosen_mode_as_it_is() {
+    async fn choose_key_mode_leaves_a_chosen_mode_as_it_is() {
         let _exec = EXEC_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
-        let bin = fake_send_mode(dir.path(), false, r#""secure""#);
-        assert_eq!(create_team(&bin, dir.path()).await, Ok(true));
+        let bin = fake_send_mode(dir.path(), r#""secure""#);
+        assert_eq!(choose_key_mode(&bin, dir.path()).await, Ok(false));
         let items = logged(dir.path());
         assert!(
             !items.iter().any(|i| i["payload"]["type"] == "set_key_mode"),
             "{:?}",
             steps_of(&items)
         );
-        assert!(items.iter().any(|i| i["payload"]["id"] == "lead"));
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn create_team_reports_a_mode_that_could_not_be_set() {
+    async fn choose_key_mode_reports_a_mode_that_could_not_be_set() {
         let _exec = EXEC_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_binary(
             dir.path(),
             "nomode",
             r#"case "$2" in
-  *list_agents*) echo '{"status":"completed","result":{"agents":[]}}' ;;
   *'"type":"key_mode"'*) echo '{"status":"completed","result":{"mode":null}}' ;;
   *set_key_mode*) echo '{"status":"completed","result":{"error":"no home"}}' ;;
   *) echo '{"status":"completed","result":{"id":"made"}}' ;;
 esac"#,
         );
-        let e = create_team(&bin, dir.path()).await.unwrap_err();
+        let e = choose_key_mode(&bin, dir.path()).await.unwrap_err();
         assert!(e.contains("plain") && e.contains("no home"), "{e}");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn create_team_leaves_a_directory_that_has_its_lead() {
-        let _exec = EXEC_LOCK.lock().await;
-        let dir = tempfile::tempdir().unwrap();
-        let bin = fake_send(dir.path(), true);
-        assert_eq!(create_team(&bin, dir.path()).await, Ok(false));
-        let items = logged(dir.path());
-        assert_eq!(items.len(), 1, "only the look at the agents: {items:?}");
-        assert_eq!(items[0]["payload"]["type"], "list_agents");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn create_team_reports_a_refused_step() {
-        let _exec = EXEC_LOCK.lock().await;
-        let dir = tempfile::tempdir().unwrap();
-        let bin = fake_binary(
-            dir.path(),
-            "refuse",
-            r#"case "$2" in
-  *list_agents*) echo '{"status":"completed","result":{"agents":[]}}' ;;
-  *key_mode*) echo '{"status":"completed","result":{"mode":"plain"}}' ;;
-  *) echo '{"status":"completed","result":{"error":"no such parent"}}' ;;
-esac"#,
-        );
-        let e = create_team(&bin, dir.path()).await.unwrap_err();
-        assert!(
-            e.contains("create_agent") && e.contains("no such parent"),
-            "{e}"
-        );
     }
 
     #[test]

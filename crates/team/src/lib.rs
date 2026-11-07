@@ -15,6 +15,7 @@ pub mod dispatcher;
 pub mod driver;
 pub mod driver_config;
 pub mod driver_rules;
+pub mod hydrate;
 pub mod new_team;
 pub mod pack_browser;
 pub mod pack_cli;
@@ -400,7 +401,17 @@ pub async fn seed_base_tree(kernel: &Arc<Kernel>) -> Result<bool, String> {
 /// fantastic-cli mode 5, with a base tree seeded into a fresh directory. The
 /// caller stops it with `kernel.shutdown()` and then `bootstrap::shutdown(dir)`.
 pub async fn start(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>> {
-    start_with(dir, registry_with(true, dir), true).await
+    start_with(dir, registry_with(true, dir), true, None).await
+}
+
+/// [`start`] for a folder the team seeded, with the run's `--port` put on its `web` host
+/// BEFORE the kernel starts, so the listener boots on it (fantastic's `Host::boot` sets it
+/// the same way: `kern/host.rs`, `set_web_field`).
+pub(crate) async fn start_on_port(
+    dir: &Path,
+    port: u16,
+) -> Result<Arc<Kernel>, Box<dyn std::error::Error>> {
+    start_with(dir, registry_with(true, dir), true, Some(port)).await
 }
 
 /// [`start`] for a kernel that only writes records and serves nothing, stopped the
@@ -409,21 +420,28 @@ pub async fn start(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>
 /// page's records with it before fantastic's shell boots them under its own lock; a
 /// page served from this kernel answered for a team that was about to stop (#241).
 pub(crate) async fn start_offline(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>> {
-    start_with(dir, registry_with(false, dir), false).await
+    start_with(dir, registry_with(false, dir), false, None).await
 }
 
 /// [`start`] with `reg`; `boot_all` boots every recorded agent, else the root and its
-/// store only.
+/// store only. `port` is the run's web port, put on the `web` host before anything boots.
 async fn start_with(
     dir: &Path,
     reg: BundleRegistry,
     boot_all: bool,
+    port: Option<u16>,
 ) -> Result<Arc<Kernel>, Box<dyn std::error::Error>> {
     let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir))?;
     lock::acquire(dir)?;
     let kernel = booted.kernel.clone();
     let outcome = match booted.write_seed() {
-        Ok(()) => boot_kernel(&kernel, boot_all).await,
+        Ok(()) => match port {
+            Some(p) => match app_control::set_run_flags(&kernel, Some(p), None).await {
+                Ok(_) => boot_kernel(&kernel, boot_all).await,
+                Err(e) => Err(e),
+            },
+            None => boot_kernel(&kernel, boot_all).await,
+        },
         Err(e) => Err(e.to_string()),
     };
     match outcome {
@@ -482,6 +500,12 @@ async fn persist_seeded_records(kernel: &Arc<Kernel>) -> Result<(), String> {
 pub mod pack_bundle;
 pub mod pack_registry;
 pub mod roles;
+
+/// A `web` host's state is process-wide, keyed by its agent id, so two tests that boot or
+/// shut down a kernel holding a `web` agent undo each other. Every such test holds this
+/// for its whole run.
+#[cfg(test)]
+pub(crate) static WEB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
 mod tests {

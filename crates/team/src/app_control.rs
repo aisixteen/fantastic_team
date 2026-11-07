@@ -6,23 +6,10 @@ use std::sync::Arc;
 
 use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
 use fantastic_kernel::{Item, Kernel, Status};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::cadencer::HANDLER_MODULE;
-use crate::{page, start, start_offline, tree};
-
-/// The dispatcher verbs the web page's socket leg may call.
-const PAGE_VERBS: [&str; 4] = ["sidebar", "tree", "open", "control"];
-
-/// The other tool agents `team.html` sends to, with exactly the verbs it sends
-/// (cadencer toggle, the user's inquiry panel, the Packs section). Granted to the page
-/// leg only when the target is live.
-const PAGE_GRANTS: [(&str, &[&str]); 4] = [
-    (tree::CADENCER_ID, &["status", "set"]),
-    (tree::USER_ID, &["inquiries", "answer_inquiry"]),
-    (tree::PACK_ID, &["install", "eval"]),
-    (tree::PACK_LISTING_ID, &["browser", "show", "fetch"]),
-];
+use crate::{hydrate, page, start, start_offline, start_on_port};
 
 /// Where the team is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +56,15 @@ impl TeamHandle {
     /// the team page on that port; when that fails the kernel is shut down
     /// and the directory lock released before the error is returned.
     pub async fn start(workdir: &Path, opts: TeamOptions) -> Result<TeamHandle, String> {
-        let kernel = start(workdir).await.map_err(|e| e.to_string())?;
+        if opts.port.is_some() {
+            // FIRST RUN of a web UI: the team's agents, from the blueprint (`hydrate::seed`).
+            hydrate::seed(workdir)?;
+        }
+        let kernel = match opts.port {
+            Some(port) => start_on_port(workdir, port).await,
+            None => start(workdir).await,
+        }
+        .map_err(|e| e.to_string())?;
         if let Some(port) = opts.port {
             if let Err(e) = serve_web(&kernel, port).await {
                 drop_web(&kernel).await;
@@ -275,141 +270,80 @@ impl Drop for TeamHandle {
     }
 }
 
-/// Serve the team page on `127.0.0.1:port`: a `web` host under the root, the
-/// page agent and the socket leg under it ([`prepare_web`]), then boot the host (it
-/// mounts the children, then listens). A taken port makes the boot fail. Safe to
-/// repeat: what exists is kept, and the host's port is set.
+/// Serve the team page on `127.0.0.1:port`: the `web` host the blueprint seeded already
+/// has the run's `--port` ([`start_on_port`]); it boots (it mounts the children, then
+/// listens; idempotent once the kernel's start booted it). A taken port makes the boot fail.
 async fn serve_web(kernel: &Arc<Kernel>, port: u16) -> Result<(), String> {
-    prepare_web(kernel, Some(port), None).await?;
     send_one(kernel, page::WEB_ID, json!({"type": "boot"}))
         .await
         .map(|_| ())
         .map_err(|e| format!("serving the web UI on port {port} failed: {e}"))
 }
 
-/// Everything [`serve_web`] does before the boot: the port pre-check, the `web`
-/// host, the page and the socket leg, their edges, the leg's grants on the
-/// dispatcher and the workers, and the records flushed to disk.
-async fn prepare_web(
+/// Put the run's own flags on the `web` host the blueprint seeded: its `port` (`--port`,
+/// else the one recorded, else a free one) and its address (`--host`). They are the run's,
+/// not the blueprint's, so they cannot be declared; fantastic does the same for the `web`
+/// of its own `canvas` word (`kern/host.rs`, `set_web_field` and `set_web_bind`, called by
+/// `Host::boot` for `--port` and `--host`): a value the record already holds is left
+/// alone. Nothing else is created, updated or granted: the host, the page and the leg, and
+/// the edges between them, are the blueprint's. A host that records an address binds it:
+/// another is refused, as fantastic's canvas refuses it (`kern/web.rs`, `ensure`).
+/// Returns the port and the address the host binds.
+pub(crate) async fn set_run_flags(
     kernel: &Arc<Kernel>,
     port: Option<u16>,
     bind: Option<&str>,
 ) -> Result<(u16, String), String> {
-    let live = |id: &str| {
-        kernel
-            .agents
-            .contains_key(&fantastic_kernel::AgentId::from(id))
+    if !kernel
+        .agents
+        .contains_key(&fantastic_kernel::AgentId::from(page::WEB_ID))
+    {
+        return Err(format!(
+            "no `{}` host in this folder: the team's first run seeds it (`webui` in a folder fantastic has not run in)",
+            page::WEB_ID
+        ));
+    }
+    let rec = web_record_of(kernel);
+    let recorded = rec.get("port").and_then(Value::as_u64).map(|p| p as u16);
+    let mut set = Map::new();
+    let host = match recorded {
+        // A host that records a port was made with its address: another is refused.
+        Some(_) => {
+            let bound = fantastic_web::listen_host(&rec);
+            if let Some(b) = bind.filter(|b| *b != bound) {
+                return Err(format!("--host {b}: the `web` leg still binds {bound}"));
+            }
+            bound
+        }
+        // The seeded host has no port yet: the address is the run's. The fields
+        // fantastic's canvas writes for `--host`: the listener's address, and the guard's
+        // identity too unless it is a wildcard.
+        None => {
+            if let Some(b) = bind {
+                set.insert("bind".into(), json!(b));
+                if !is_wildcard(b) {
+                    set.insert("host".into(), json!(b));
+                }
+            }
+            bind.unwrap_or(fantastic_web::DEFAULT_HOST).to_string()
+        }
     };
-    let (port, host) = if live(page::WEB_ID) {
-        // A recorded host binds the address it was made with: another is refused, as
-        // fantastic's canvas refuses it (`kern/web.rs`, `ensure`).
-        let rec = web_record_of(kernel);
-        let bound = fantastic_web::listen_host(&rec);
-        if let Some(b) = bind.filter(|b| *b != bound) {
-            return Err(format!("--host {b}: the `web` leg still binds {bound}"));
-        }
-        let recorded = rec.get("port").and_then(Value::as_u64).map(|p| p as u16);
-        match (port, recorded) {
-            (Some(p), _) => {
-                let upd = json!({"type": "update_agent", "id": page::WEB_ID, "port": p});
-                send_one(kernel, DEFAULT_ROOT_ID, upd).await?;
-                (p, bound)
-            }
-            (None, Some(r)) => (r, bound),
-            (None, None) => {
-                return Err("the `web` host records no port; name one with --port".into())
-            }
-        }
-    } else {
-        let host = bind.unwrap_or(fantastic_web::DEFAULT_HOST);
-        let port = match port {
-            Some(p) => p,
-            None => free_port(host)?,
-        };
+    let port = match (port, recorded) {
+        (Some(p), _) | (None, Some(p)) => p,
+        (None, None) => free_port(&host)?,
+    };
+    if recorded != Some(port) {
         // The host binds in a task of its own, so a taken port would only be logged.
-        std::net::TcpListener::bind((host, port))
+        std::net::TcpListener::bind((host.as_str(), port))
             .map_err(|e| format!("serving the web UI on port {port} failed: {e}"))?;
-        let mut rec = json!({"type": "create_agent", "id": page::WEB_ID, "parent_id": DEFAULT_ROOT_ID,
-            "handler_module": fantastic_web::HANDLER_MODULE, "port": port});
-        // The record fantastic's canvas writes for `--host`: the listener's address,
-        // and the guard's identity too unless it is a wildcard.
-        if let Some(b) = bind {
-            rec["bind"] = json!(b);
-            if !is_wildcard(b) {
-                rec["host"] = json!(b);
-            }
+        set.insert("port".into(), json!(port));
+    }
+    if !set.is_empty() {
+        let mut upd = json!({"type": "update_agent", "id": page::WEB_ID});
+        for (k, v) in set {
+            upd[k] = v;
         }
-        send_one(kernel, DEFAULT_ROOT_ID, rec).await?;
-        (port, host.to_string())
-    };
-    if !live(page::PAGE_ID) {
-        let rec = json!({"type": "create_agent", "id": page::PAGE_ID, "parent_id": page::WEB_ID,
-            "handler_module": page::HANDLER_MODULE,
-            "verbs": {"read_stream": page::READ_STREAM_DOC}});
-        send_one(kernel, DEFAULT_ROOT_ID, rec).await?;
-    }
-    if !live(page::WS_ID) {
-        // The leg is the page's one principal: it may call the dispatcher's page verbs
-        // and the chat verbs of the workers, nothing else.
-        let rec = json!({"type": "create_agent", "id": page::WS_ID, "parent_id": page::WEB_ID,
-            "handler_module": fantastic_web_ws::HANDLER_MODULE,
-            "ingress_rule": "allow_all_ingress"});
-        send_one(kernel, DEFAULT_ROOT_ID, rec).await?;
-    }
-    // `web` mounts the leg by asking it for its routes, and serves the page by
-    // reading `read_stream` as itself: both ends of both edges.
-    let web = fantastic_kernel::AgentId::from(page::WEB_ID);
-    for (served, verb) in [(page::WS_ID, "get_routes"), (page::PAGE_ID, "read_stream")] {
-        let verbs = json!([verb]);
-        kernel.edit_callable_by(&fantastic_kernel::AgentId::from(served), |cb| {
-            cb.insert(page::WEB_ID.into(), verbs.clone());
-            true
-        })?;
-        kernel.edit_can_call(&web, |cc| {
-            cc.insert(served.into(), verbs.clone());
-            true
-        })?;
-    }
-    let leg = fantastic_kernel::AgentId::from(page::WS_ID);
-    let dispatcher = fantastic_kernel::AgentId::from(tree::DISPATCHER_ID);
-    if live(tree::DISPATCHER_ID) {
-        let verbs = json!(PAGE_VERBS);
-        kernel.edit_can_call(&leg, |cc| {
-            cc.insert(tree::DISPATCHER_ID.into(), verbs.clone());
-            true
-        })?;
-        kernel.edit_callable_by(&dispatcher, |cb| {
-            cb.insert(page::WS_ID.into(), verbs.clone());
-            true
-        })?;
-        let workers: Vec<String> = kernel
-            .agents
-            .get(&dispatcher)
-            .and_then(|a| a.meta.read().ok().map(|m| m.get("groups").cloned()))
-            .flatten()
-            .and_then(|g| g.as_object().cloned())
-            .map(|g| {
-                g.values()
-                    .flat_map(|m| m.as_array().cloned().unwrap_or_default())
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        tree::grant_chat_to(kernel, &workers, page::WS_ID);
-    }
-    for (target, verbs) in PAGE_GRANTS {
-        if !live(target) {
-            continue;
-        }
-        let verbs = json!(verbs);
-        kernel.edit_can_call(&leg, |cc| {
-            cc.insert(target.into(), verbs.clone());
-            true
-        })?;
-        kernel.edit_callable_by(&fantastic_kernel::AgentId::from(target), |cb| {
-            cb.insert(page::WS_ID.into(), verbs.clone());
-            true
-        })?;
+        send_one(kernel, DEFAULT_ROOT_ID, upd).await?;
     }
     kernel.flush_records().await;
     Ok((port, host))
@@ -437,16 +371,17 @@ fn free_port(host: &str) -> Result<u16, String> {
         .map_err(|e| format!("no free port to pick: {e}"))
 }
 
-/// Write the web UI's records (the same ones [`serve_web`] makes, with the same
-/// grants) into `dir` without serving them, for a host that boots the directory
-/// itself: the binary's `--port` hands the records to fantastic's shell, which
-/// hydrates and boots them. Runs an offline kernel ([`start_offline`]: nothing in it
-/// listens, so the port answers only once the shell holds the lock and serves it) on
-/// its own runtime and releases the directory lock before it returns, on failure too.
-/// Safe to repeat.
-/// A fresh directory is seeded first (`fantastic_tui::seed_dir`: the shell's `user`
-/// and page loader), so the page is served on the first start; one that already holds
-/// a kernel is left as it is.
+/// Seed the team's records into `dir` and put the run's `--port` and `--host` on the web
+/// host, for a host that boots the directory itself: the binary's `webui` hands the
+/// records to fantastic's shell, which hydrates and boots them. The records are the
+/// blueprint's (`hydrate::seed` at the first run, after fantastic's stock tree: the web
+/// host, the page and the socket leg, the fixed agents, their grants and config, all from
+/// `crates/team/blueprint.yaml`); a directory that already holds a kernel is not seeded
+/// again and nothing of it is re-made, re-set or re-granted, as fantastic treats its own.
+/// What is written here is the run's flags ([`set_run_flags`]), by an offline kernel
+/// ([`start_offline`]: nothing in it listens, so the port answers only once the shell holds
+/// the lock and serves it) on a runtime of its own; the directory lock is released before it
+/// returns, on failure too.
 ///
 /// `port` None keeps the recorded port, else picks a free one. `bind` is `--host`: a
 /// fresh host binds it, a recorded one must already bind it. Returns the port and the
@@ -468,17 +403,14 @@ fn persist_web_then<T>(
     bind: Option<&str>,
     look: impl FnOnce(&Arc<Kernel>, &(u16, String)) -> T,
 ) -> Result<((u16, String), T), String> {
-    fantastic_tui::seed_dir(dir)?;
+    hydrate::seed(dir)?;
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(async {
         let kernel = start_offline(dir).await.map_err(|e| e.to_string())?;
-        let res = prepare_web(&kernel, port, bind).await.map(|served| {
+        let res = set_run_flags(&kernel, port, bind).await.map(|served| {
             let seen = look(&kernel, &served);
             (served, seen)
         });
-        if res.is_err() {
-            drop_web(&kernel).await;
-        }
         kernel.shutdown().await;
         fantastic_sqlite_store::close_all(&kernel);
         let released = bootstrap::shutdown(dir).map_err(|e| e.to_string());
@@ -732,7 +664,7 @@ mod tests {
     /// fantastic's web host keeps its live servers in a process-wide map keyed by the
     /// agent id (`web`), so two tests that serve a web host at once undo each other.
     /// Every test that serves one holds this for its whole run.
-    static WEB: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    use crate::WEB_LOCK as WEB;
 
     /// A port that is free right now (bound, read, released).
     fn free_port() -> u16 {
@@ -914,9 +846,13 @@ mod tests {
             .unwrap()
     }
 
+    /// The dispatcher, made with its own end of the page leg's edge (`callable_by`): the
+    /// blueprint holds the leg's end (`team_ws.can_call`), the agent the person makes holds
+    /// the other.
     async fn make_dispatcher(k: &Arc<Kernel>, groups: Value) {
         let mk = json!({"type": "create_agent", "id": "dispatcher", "parent_id": DEFAULT_ROOT_ID,
-            "handler_module": crate::dispatcher::HANDLER_MODULE, "groups": groups});
+            "handler_module": crate::dispatcher::HANDLER_MODULE, "groups": groups,
+            "callable_by": {page::WS_ID: ["sidebar", "tree", "open", "control"]}});
         send_one(k, DEFAULT_ROOT_ID, mk).await.unwrap();
     }
 
@@ -927,8 +863,10 @@ mod tests {
         let _web = WEB.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         let port = free_port();
-        // The dispatcher exists before the host is served, as after a first start.
-        let k = start(dir.path()).await.unwrap();
+        // The first run seeded the host, the page and the leg; the dispatcher exists before
+        // the host is served, as after a first start.
+        hydrate::seed(dir.path()).unwrap();
+        let k = start_on_port(dir.path(), port).await.unwrap();
         make_dispatcher(&k, json!({})).await;
         serve_web(&k, port).await.unwrap();
         let reply = ws_call(port, "dispatcher", json!({"type": "sidebar"})).await;
@@ -1005,30 +943,51 @@ mod tests {
         bootstrap::shutdown(dir.path()).unwrap();
     }
 
+    /// A folder fantastic seeded with its stock tree only has no team and no `web` host.
+    /// `webui` does not make them (that would be an ensure at a boot: fantastic never
+    /// reads its blueprint again, `src/tui/src/boot/seed.rs`), it says so and writes nothing.
     #[tokio::test(flavor = "multi_thread")]
-    async fn persist_web_keeps_an_existing_seeded_kernel() {
+    async fn persist_web_changes_nothing_in_a_folder_the_team_did_not_seed() {
         let _web = WEB.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         assert!(fantastic_tui::seed_dir(dir.path()).unwrap());
-        let user = dir.path().join(SEEDED_USER);
-        let mut text = std::fs::read_to_string(&user).unwrap();
-        text.push_str("# marker\n");
-        std::fs::write(&user, &text).unwrap();
-        persist(dir.path(), free_port()).await.unwrap();
-        persist(dir.path(), free_port()).await.unwrap();
-        // The seeded `user` is kept (not re-seeded); the one change is the page leg's
-        // grant for the inquiry panel, which rewrites the record without its comment.
-        let after = std::fs::read_to_string(&user).unwrap();
-        assert!(after.contains("handler_module: user.tools"), "{after}");
-        assert!(
-            after.contains("exec: '*'") && after.contains("files: '*'"),
-            "{after}"
-        );
-        assert!(
-            after.contains("team_ws:\n  - inquiries\n  - answer_inquiry"),
-            "{after}"
-        );
-        assert_eq!(after.matches("team_ws").count(), 1, "{after}");
+        // one plain boot first: the kernel normalises the records it loads
+        settle(dir.path()).await;
+        let before = tree_of(dir.path());
+        let err = persist(dir.path(), free_port()).await.unwrap_err();
+        assert!(err.contains("no `web` host"), "{err}");
+        assert_eq!(tree_of(dir.path()), before, "nothing was made or re-set");
+    }
+
+    /// One boot of the folder by a kernel that serves nothing, then its stop: the kernel
+    /// writes the records it loads back in its own normal form.
+    async fn settle(dir: &Path) {
+        let k = start_offline(dir).await.unwrap();
+        k.flush_records().await;
+        k.shutdown().await;
+        fantastic_sqlite_store::close_all(&k);
+        bootstrap::shutdown(dir).unwrap();
+    }
+
+    /// Every agent record under `dir/.fantastic/agents`, by relative path.
+    fn tree_of(dir: &Path) -> std::collections::BTreeMap<String, String> {
+        fn walk(at: &Path, root: &Path, out: &mut std::collections::BTreeMap<String, String>) {
+            for e in std::fs::read_dir(at).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, root, out);
+                } else if p.file_name().is_some_and(|n| n == "agent.yaml") {
+                    out.insert(
+                        p.strip_prefix(root).unwrap().to_string_lossy().into_owned(),
+                        std::fs::read_to_string(&p).unwrap(),
+                    );
+                }
+            }
+        }
+        let root = dir.join(".fantastic/agents");
+        let mut out = Default::default();
+        walk(&root, &root, &mut out);
+        out
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1036,13 +995,9 @@ mod tests {
         let _web = WEB.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         let port = free_port();
-        let k = start(dir.path()).await.unwrap();
-        make_dispatcher(&k, json!({})).await;
-        k.flush_records().await;
-        k.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
         persist(dir.path(), port).await.unwrap();
         let k = start(dir.path()).await.unwrap();
+        make_dispatcher(&k, json!({})).await;
         let (head, _c) = ws_open(port).await;
         assert!(head.starts_with("HTTP/1.1 101"), "{head}");
         let reply = ws_call(port, "dispatcher", json!({"type": "sidebar"})).await;
@@ -1053,50 +1008,35 @@ mod tests {
         bootstrap::shutdown(dir.path()).unwrap();
     }
 
+    /// The page leg's end of every edge is the blueprint's: the seeded `team_ws` may call
+    /// the dispatcher's page verbs and each verb the page sends to the other tool agents
+    /// (`web/team.html`), nothing else and never `*`. The other end is on the agent the
+    /// person makes (its own `callable_by`).
     #[tokio::test(flavor = "multi_thread")]
-    async fn persist_web_grants_chat_to_the_workers() {
-        let _web = WEB.lock().await;
+    async fn the_seeded_page_leg_may_call_exactly_the_verbs_the_team_page_sends() {
         let dir = tempfile::TempDir::new().unwrap();
-        let k = start(dir.path()).await.unwrap();
-        let mk = json!({"type": "create_agent", "id": "w1", "parent_id": DEFAULT_ROOT_ID,
-            "handler_module": "ram_store.tools"});
-        send_one(&k, DEFAULT_ROOT_ID, mk).await.unwrap();
-        make_dispatcher(&k, json!({"workers": ["w1"]})).await;
-        k.flush_records().await;
-        k.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-        persist(dir.path(), free_port()).await.unwrap();
-        let k = start(dir.path()).await.unwrap();
-        let id = |s: &str| fantastic_kernel::AgentId::from(s);
-        let meta =
-            |a: &str, key: &str| k.agents.get(&id(a)).unwrap().meta.read().unwrap()[key].clone();
-        let cb = meta("w1", "callable_by");
-        let grant = cb.get(page::WS_ID).expect("team_ws may call w1");
-        for verb in ["history", "send", "stop", "status", "watch"] {
-            assert!(grant.as_array().unwrap().contains(&json!(verb)), "{verb}");
+        hydrate::seed(dir.path()).unwrap();
+        let cc = read_can_call(dir.path());
+        let sends = page_sends();
+        for t in ["cadencer", "user", "pack", "pack_listing"] {
+            assert!(sends.iter().any(|(a, _)| a == t), "page sends to {t}");
         }
-        let cc = meta(page::WS_ID, "can_call");
-        assert_eq!(cc.get("dispatcher"), Some(&json!(PAGE_VERBS)), "{cc:?}");
+        for (target, verb) in sends.iter().filter(|(t, _)| t != "dispatcher") {
+            let may = |v: &Value| v.as_array().is_some_and(|a| a.contains(&json!(verb)));
+            assert!(may(&cc[target]), "can_call {target} {verb}: {cc}");
+            assert_ne!(cc[target], json!("*"));
+        }
         assert_eq!(
-            cc.get("w1"),
-            Some(&json!(crate::tree::CHAT_VERBS)),
-            "{cc:?}"
+            cc["dispatcher"],
+            json!(["sidebar", "tree", "open", "control"])
         );
-        k.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-    }
-
-    /// Create a bare agent so the page leg has something to be granted on.
-    async fn stub(k: &Arc<Kernel>, id: &str) {
-        let mk = json!({"type": "create_agent", "id": id, "parent_id": DEFAULT_ROOT_ID,
-            "handler_module": "ram_store.tools"});
-        send_one(k, DEFAULT_ROOT_ID, mk).await.unwrap();
-    }
-
-    fn meta_of(k: &Kernel, a: &str, key: &str) -> Value {
-        let id = fantastic_kernel::AgentId::from(a);
-        let v = k.agents.get(&id).unwrap().meta.read().unwrap()[key].clone();
-        v
+        let pack = cc["pack"].as_array().unwrap();
+        for verb in ["revoke", "enable", "uninstall"] {
+            assert!(!pack.contains(&json!(verb)), "{verb}");
+        }
+        for id in ["kernel", "kernel_state", "queue", "tasks"] {
+            assert!(cc.get(id).is_none(), "{id}: {cc}");
+        }
     }
 
     /// Every `(target, verb)` the page sends through `askNode` or `packAction`
@@ -1110,79 +1050,41 @@ mod tests {
             .collect()
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn page_leg_may_call_every_verb_the_team_page_sends() {
-        let _web = WEB.lock().await;
-        let dir = tempfile::TempDir::new().unwrap();
-        let k = start(dir.path()).await.unwrap();
-        for id in ["cadencer", "user", "pack", "pack_listing"] {
-            stub(&k, id).await;
-        }
-        make_dispatcher(&k, json!({})).await;
-        k.flush_records().await;
-        k.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-        persist(dir.path(), free_port()).await.unwrap();
-        let k = start(dir.path()).await.unwrap();
-        let sends = page_sends();
-        for t in ["cadencer", "user", "pack", "pack_listing"] {
-            assert!(sends.iter().any(|(a, _)| a == t), "page sends to {t}");
-        }
-        let cc = meta_of(&k, page::WS_ID, "can_call");
-        for (target, verb) in sends.iter().filter(|(t, _)| t != "dispatcher") {
-            let may = |v: &Value| v.as_array().is_some_and(|a| a.contains(&json!(verb)));
-            assert!(may(&cc[target]), "can_call {target} {verb}: {cc}");
-            let cb = meta_of(&k, target, "callable_by");
-            assert!(may(&cb[page::WS_ID]), "callable_by {target} {verb}: {cb}");
-            assert_ne!(cb[page::WS_ID], json!("*"));
-            assert_ne!(cc[target], json!("*"));
-        }
-        k.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+    /// The seeded `team_ws` record's `can_call`, read from disk.
+    fn read_can_call(dir: &Path) -> Value {
+        let text =
+            std::fs::read_to_string(dir.join(".fantastic/agents/web/agents/team_ws/agent.yaml"))
+                .unwrap();
+        let rec: Value = serde_yaml::from_str(&text).unwrap();
+        rec["can_call"].clone()
     }
 
+    /// The run's flags are the one thing `webui` writes, and they are written once: the same
+    /// flags again change no record of the folder.
     #[tokio::test(flavor = "multi_thread")]
-    async fn page_leg_grants_are_idempotent_and_skip_missing_targets() {
+    async fn the_run_flags_are_set_once_and_nothing_else_is_written() {
         let _web = WEB.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
-        let k = start(dir.path()).await.unwrap();
-        stub(&k, "cadencer").await;
-        prepare_web(&k, Some(free_port()), None).await.unwrap();
-        let first = meta_of(&k, page::WS_ID, "can_call");
-        let first_cb = meta_of(&k, "cadencer", "callable_by");
-        prepare_web(&k, Some(free_port()), None).await.unwrap();
-        assert_eq!(meta_of(&k, page::WS_ID, "can_call"), first);
-        assert_eq!(meta_of(&k, "cadencer", "callable_by"), first_cb);
-        assert_eq!(first["cadencer"], json!(["status", "set"]));
-        for missing in ["pack", "pack_listing", "user"] {
-            assert!(first.get(missing).is_none(), "{missing}: {first}");
-        }
-        drop_web(&k).await;
-        k.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn page_leg_cannot_call_verbs_the_page_does_not_send() {
-        let _web = WEB.lock().await;
-        let dir = tempfile::TempDir::new().unwrap();
-        let k = start(dir.path()).await.unwrap();
-        for id in ["cadencer", "user", "pack", "pack_listing", "queue", "tasks"] {
-            stub(&k, id).await;
-        }
-        prepare_web(&k, Some(free_port()), None).await.unwrap();
-        let cc = meta_of(&k, page::WS_ID, "can_call");
-        let pack = cc["pack"].as_array().unwrap();
-        assert!(pack.contains(&json!("install")));
-        for verb in ["revoke", "enable", "uninstall"] {
-            assert!(!pack.contains(&json!(verb)), "{verb}");
-        }
-        for id in ["kernel", "kernel_state", "queue", "tasks"] {
-            assert!(cc.get(id).is_none(), "{id}: {cc}");
-        }
-        drop_web(&k).await;
-        k.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        let port = free_port();
+        let seeded = {
+            hydrate::seed(dir.path()).unwrap();
+            settle(dir.path()).await;
+            tree_of(dir.path())
+        };
+        persist(dir.path(), port).await.unwrap();
+        let first = tree_of(dir.path());
+        let changed: Vec<&String> = first
+            .iter()
+            .filter(|(k, v)| seeded.get(*k) != Some(*v))
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(
+            changed,
+            ["web/agent.yaml"],
+            "only the host's record takes the port"
+        );
+        persist(dir.path(), port).await.unwrap();
+        assert_eq!(tree_of(dir.path()), first, "the same flags change nothing");
     }
 
     /// `persist_web` with a bind, off the test's runtime (see [`persist`]); the port and
@@ -1308,9 +1210,10 @@ mod tests {
         let _web = WEB.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         let port = free_port();
+        hydrate::seed(dir.path()).unwrap();
         for run in ["fresh", "recorded"] {
             let k = start_offline(dir.path()).await.unwrap();
-            prepare_web(&k, Some(port), None).await.unwrap();
+            set_run_flags(&k, Some(port), None).await.unwrap();
             assert!(
                 k.agents
                     .contains_key(&fantastic_kernel::AgentId::from(page::WEB_ID)),
@@ -1378,13 +1281,11 @@ mod tests {
         let mut h = TeamHandle::start(dir.path(), TeamOptions::default())
             .await
             .expect("the lock was released");
-        assert!(!h
-            .kernel
-            .as_ref()
-            .unwrap()
-            .agents
-            .contains_key(&fantastic_kernel::AgentId::from(page::WEB_ID)));
         h.stop().await.unwrap();
+        // the refusal wrote no port: the seeded host is there without one
+        let rec =
+            std::fs::read_to_string(dir.path().join(".fantastic/agents/web/agent.yaml")).unwrap();
+        assert!(!rec.contains("port:"), "{rec}");
         drop(busy);
     }
 

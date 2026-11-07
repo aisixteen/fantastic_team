@@ -1,0 +1,273 @@
+# THE TEAM'S FIXED AGENTS, with the ids the role cards and the page name, their config and
+# their grants. Compiled into the binary (like fantastic's own `src/tui/blueprint.yaml`) and
+# written ONCE, at the first run: `fantastic_tui::seed_dir_with` writes it after fantastic's
+# stock tree, ids as written. Disk position is the parent (nesting under `agents:`); no
+# entry carries `parent_id`. `user` is a PARENT entry (only `id` and `agents`): the stock
+# blueprint wrote it, so the team goes beneath it. `@root` in a grant names the kernel's
+# root. Every later run rehydrates from disk (the fs loader is the root loader) and never
+# reads this file again, exactly as for fantastic's own: editing it does not touch a folder
+# that already has its `.fantastic`. Nothing in the team's code creates, updates or grants
+# these agents at a boot.
+#
+# ONE PLACEHOLDER is filled by the first run: `@work` is the team folder's work dir (an
+# absolute path, not the same on every machine). The worker's exec record (`cwd`,
+# `allowed`, `inherit_env`, `env`) is added from `worker_exec_record` for the same reason
+# (its HOME is an absolute path, and the GitHub build narrows `allowed` by patch). `web`
+# carries no `port`: the port is the run's (`--port`, the recorded one) and is set on the
+# host by `webui`, as fantastic's `canvas` sets its own (`app_control::set_run_flags`).
+#
+#   <root>
+#   +-- user                 (stock; parent entry)
+#   |   +-- lead             the main lead, the agent the person chats with
+#   |       +-- queue          ram_store: tasks wait, the board caches
+#   |       +-- github         the GitHub connector
+#   |       +-- board          the open issues and pull requests
+#   |       +-- roles          the roles registry
+#   |       +-- tasks          the task registry
+#   |       +-- worker_exec    the worker's restricted exec
+#   |       +-- worker_files   the worker's file bridge on the work folder
+#   +-- web                  the web host
+#       +-- team_page          the team page
+#       +-- team_ws            the page's socket leg
+#
+# The other end of the lead's edges on the stock agents the team reaches (`memory`,
+# `files`, `credentials`, the root) is written by fantastic's own boot: `reach::grant_all`
+# (fantastic `src/tui/src/kern/reach.rs`) names every AI agent (a record that names a
+# `memory_store_id`: the lead and every spawned worker) in each agent's `callable_by`, and
+# again for each agent added later. A parent entry here may not carry fields
+# (`seed.rs`, `write_blueprint`), so the team writes none of them.
+
+agents:
+- id: user
+  agents:
+  - id: lead
+    handler_module: anthropic_backend.tools
+    model: claude-opus-5-5
+    endpoint: https://api.anthropic.com/v1/messages
+    credentials:
+      store: credentials
+      ref: anthropic/api.anthropic.com
+    price_input_per_mtok: 4.0
+    price_output_per_mtok: 20.0
+    caching: provider_cache
+    context_window: 1000000
+    max_tokens: 32000
+    memory_store_id: memory
+    file_bridge_id: files
+    system_prompt_file: roles/lead.md
+    can_call:
+      $self: '*'
+      $subtree: '*'
+      memory: '*'
+      credentials: '*'
+      files:
+      - read
+      - read_stream
+      - watch_path
+      - unwatch_path
+      - watch
+      '@root':
+      - await_set
+      - await_cancel
+      - create_agent
+      - delete_agent
+      roles:
+      - roles
+      - role
+      - spawn
+      - get_count
+      - fleet
+      board:
+      - board
+      - rows
+      canvas_page:
+      - new_canvas
+    callable_by:
+      $self: '*'
+      $parent: '*'
+    agents:
+    - id: queue
+      handler_module: ram_store.tools
+      callable_by:
+        $self: '*'
+        $parent: '*'
+        board: '*'
+    - id: github
+      handler_module: team_github.tools
+      app:
+        credentials:
+          store: credentials
+          ref: github/app
+      repos:
+      - owner/name
+      directive: Push a work branch and open a draft pull request. Never the default branch, never a force,
+        never a merge.
+      can_call:
+        $self: '*'
+        credentials: '*'
+      callable_by:
+        $self: '*'
+        $parent: '*'
+        board: '*'
+    - id: board
+      handler_module: team_board.tools
+      repos:
+      - owner/name
+      github: github
+      store: queue
+      roles: roles
+      can_call:
+        $self: '*'
+        github: '*'
+        queue: '*'
+        roles:
+        - fleet
+        - get_count
+        tasks:
+        - list
+        '@root':
+        - reflect
+      callable_by:
+        $self: '*'
+        $parent: '*'
+    - id: roles
+      handler_module: agentic_resources.tools
+      role_dirs:
+      - roles
+      limits:
+        total: 3
+        per_role:
+          worker: 2
+      tiers:
+        strong:
+          handler_module: anthropic_backend.tools
+          model: claude-opus-5-5
+          endpoint: https://api.anthropic.com/v1/messages
+          credentials:
+            store: credentials
+            ref: anthropic/api.anthropic.com
+          price_input_per_mtok: 4.0
+          price_output_per_mtok: 20.0
+          caching: provider_cache
+          context_window: 1000000
+          max_tokens: 32000
+          memory_store_id: memory
+        small:
+          handler_module: anthropic_backend.tools
+          model: claude-haiku-5-5
+          endpoint: https://api.anthropic.com/v1/messages
+          credentials:
+            store: credentials
+            ref: anthropic/api.anthropic.com
+          price_input_per_mtok: 0.1
+          price_output_per_mtok: 0.5
+          caching: provider_cache
+          context_window: 1000000
+          max_tokens: 32000
+          memory_store_id: memory
+          context_strategy: compact
+        issue_keeper:
+          handler_module: anthropic_backend.tools
+          model: claude-haiku-5-5
+          endpoint: https://api.anthropic.com/v1/messages
+          credentials:
+            store: credentials
+            ref: anthropic/api.anthropic.com
+          price_input_per_mtok: 0.1
+          price_output_per_mtok: 0.5
+          caching: provider_cache
+          context_window: 1000000
+          max_tokens: 8000
+          memory_store_id: memory
+          context_strategy: compact
+      can_call:
+        $self: '*'
+        memory: '*'
+      callable_by:
+        $self: '*'
+        $parent: '*'
+        lead:
+        - roles
+        - role
+        - spawn
+        - get_count
+        - fleet
+        board:
+        - fleet
+        - get_count
+    - id: tasks
+      handler_module: task_registry.tools
+      task_store_id: memory
+      can_call:
+        $self: '*'
+        memory: '*'
+      callable_by:
+        $self: '*'
+        $parent: '*'
+        board:
+        - list
+    - id: worker_exec
+      handler_module: exec_bridge.tools
+      ingress_rule: allow_all_ingress
+      callable_by:
+        $self: '*'
+        $parent: '*'
+    - id: worker_files
+      handler_module: file_bridge.tools
+      root: '@work'
+      allow:
+      - .
+      ingress_rule: allow_all_ingress
+      callable_by:
+        $self: '*'
+        $parent: '*'
+# THE WEB HOST. `web` mounts the leg by asking it for its routes, and serves the page by
+# reading `read_stream` as itself: both ends of both edges. The leg is the page's one
+# principal: it may call the dispatcher's page verbs, and the verbs the page sends to the
+# other tool agents (the cadencer toggle, the user's inquiry panel, the Packs section) of
+# the agents that the person or the cards make; the other end of each of those is on the
+# agent it names (its own `callable_by`, written where it is made).
+- id: web
+  handler_module: web.tools
+  can_call:
+    $self: '*'
+    team_page:
+    - read_stream
+    team_ws:
+    - get_routes
+  agents:
+  - id: team_page
+    handler_module: team_page.tools
+    verbs:
+      read_stream: 'args: path:str (req), offset:int?, length:int?. The team page (index.html, page.css, shim.js, page.js, card.js) as a BINARY reply: the bytes as the body, {path, offset, next_offset, eof, size} as the head.'
+    callable_by:
+      $self: '*'
+      web:
+      - read_stream
+  - id: team_ws
+    handler_module: web_ws.tools
+    ingress_rule: allow_all_ingress
+    can_call:
+      $self: '*'
+      dispatcher:
+      - sidebar
+      - tree
+      - open
+      - control
+      cadencer:
+      - status
+      - set
+      user:
+      - inquiries
+      - answer_inquiry
+      pack:
+      - install
+      - eval
+      pack_listing:
+      - browser
+      - show
+      - fetch
+    callable_by:
+      $self: '*'
+      web:
+      - get_routes

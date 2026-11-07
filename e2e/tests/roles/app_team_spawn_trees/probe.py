@@ -13,14 +13,15 @@ REPO_ROLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."
 
 
 def seed(ctx, folder, env, v):
-    """Run the binary once in `folder` so it is seeded, and stop it: what the app needs in a
-    folder with no team. The key store is the app's to make (it chooses `plain`, #222)."""
+    """Run the binary's `webui` once in `folder`, so the team's first run seeds the team's agents
+    from the blueprint (#261), and stop it. The key store is the app's to make (it chooses `plain`,
+    #222)."""
     port = app.free_port()
-    proc = app.Proc([ctx.binary, "canvas", "--port", str(port)], env, folder,
+    proc = app.Proc([ctx.binary, "webui", "--port", str(port)], env, folder,
                     os.path.join(ctx.run_dir, "seed.log"))
     try:
         v.check("a first run seeds the directory",
-                app.wait_http(f"http://127.0.0.1:{port}/canvas_page/file/index.html", 30), proc.log())
+                app.wait_http(f"http://127.0.0.1:{port}/team_page/file/index.html", 30), proc.log())
         proc.signal(signal.SIGINT)
         v.check("the seeding run stops", proc.wait(30) is not None, proc.log())
     finally:

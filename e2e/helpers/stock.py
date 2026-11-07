@@ -274,6 +274,11 @@ def make_dispatcher(ctx, team, groups: dict, board: bool = True, roles: bool = F
         link(team, "dispatcher", "github", ["reflect"])
     if board:
         merge(team, "board", "callable_by", {"dispatcher": "*"})
+    # a folder `webui` seeded has the page's leg: the blueprint holds its end of each edge, the
+    # agents made here hold the other
+    if "team_ws" in team.agents():
+        link(team, "team_ws", "dispatcher", PAGE_VERBS)
+        link(team, "team_ws", "cadencer", ["status", "set"])
 
 
 def make_packs(ctx, team) -> None:
@@ -291,34 +296,47 @@ def make_packs(ctx, team) -> None:
     link(team, "pack", "user", ["import_subtree", "send"])
     link(team, "pack", ROOT, ["list_agents"])
     link(team, "pack", lead)
+    if "team_ws" in team.agents():  # the seeded page leg's edges to the pack agents
+        link(team, "team_ws", "pack", ["install", "eval"])
+        link(team, "team_ws", "pack_listing", ["browser", "show", "fetch"])
     # the operator's leg writes and reads pack folders through `files`
     merge(team, "files", "callable_by", {"mcp": "*"})
 
 
-def serve_team_page(team, port: int, workers=()) -> None:
-    """Serve the team page, the way the app does (`app_control::prepare_web`): a `web` host
-    on `port`, the page agent and the socket leg under it, their edges, the leg's grants on the
-    dispatcher and the other tools the page sends to, and the chat verbs of `workers`; then `boot`
-    on the host, which mounts its children and listens. Needs a dispatcher. A team started with
-    fantastic's `canvas` word has a second socket leg on the same route, so start it `--headless`."""
-    doc = ("args: path:str (req), offset:int?, length:int?. The team page (index.html, page.css, "
-           "shim.js, page.js, card.js) as a BINARY reply: the bytes as the body, "
-           "{path, offset, next_offset, eof, size} as the head.")
-    create(team, id="web", parent_id=ROOT, handler_module="web.tools", port=port)
+READ_STREAM_DOC = ("args: path:str (req), offset:int?, length:int?. The team page (index.html, page.css, "
+                   "shim.js, page.js, card.js) as a BINARY reply: the bytes as the body, "
+                   "{path, offset, next_offset, eof, size} as the head.")
+
+
+def make_web(team, workers=()) -> None:
+    """The team page's records for a folder the script built (a folder the team's first run seeded
+    already has them, from `crates/team/blueprint.yaml`): a `web` host with no port, the page agent
+    and the socket leg under it, their edges, the leg's grants on the dispatcher and the other tools
+    the page sends to, and the chat verbs of `workers`. Needs a dispatcher. The port is the run's:
+    `webui --port N` puts it on the host."""
+    have = team.agents()
+    if "web" not in have:
+        create(team, id="web", parent_id=ROOT, handler_module="web.tools")
     create(team, id="team_page", parent_id="web", handler_module="team_page.tools",
-           verbs={"read_stream": doc})
+           verbs={"read_stream": READ_STREAM_DOC})
     create(team, id="team_ws", parent_id="web", handler_module="web_ws.tools",
            ingress_rule="allow_all_ingress")
     link(team, "web", "team_ws", ["get_routes"])
     link(team, "web", "team_page", ["read_stream"])
-    link(team, "team_ws", "dispatcher", PAGE_VERBS)
-    have = team.agents()
-    for target, verbs in (("cadencer", ["status", "set"]), ("user", ["inquiries", "answer_inquiry"]),
-                          ("pack", ["install", "eval"]),
+    for target, verbs in (("dispatcher", PAGE_VERBS), ("cadencer", ["status", "set"]),
+                          ("user", ["inquiries", "answer_inquiry"]), ("pack", ["install", "eval"]),
                           ("pack_listing", ["browser", "show", "fetch"])):
         if target in have:
             link(team, "team_ws", target, verbs)
     grant_chat(team, "team_ws", list(workers))
+
+
+def serve_team_page(team, port: int, workers=()) -> None:
+    """Serve the team page from a team started `--headless`: [`make_web`] with the port, then `boot`
+    on the host, which mounts its children and listens. A team started with fantastic's `canvas` word
+    has a second socket leg on the same route, so start it `--headless`."""
+    make_web(team, workers)
+    update(team, "web", port=port)
     r = team.send("web", {"type": "boot"})  # it mounts its children, then listens
     if r.get("status") != "completed" or (r.get("result") or {}).get("error"):
         raise RuntimeError(f"cannot boot the web host: {r}")
@@ -326,11 +344,12 @@ def serve_team_page(team, port: int, workers=()) -> None:
 
 
 def serve_webui(team, port: int, wait_s: float = 30.0) -> None:
-    """Serve the team page from the binary: stop the headless team and start it again with the
-    `webui --port N` word (#224). The binary makes the `web` host, the page and the socket leg and
-    grants the leg what the page sends to, for the agents that exist when it starts (the dispatcher,
-    the cadencer, the user, the pack agents, the chat verbs of a group's workers). Make those agents
-    first; the folder keeps them across the restart."""
+    """Serve the team page from the binary: make the page's records ([`make_web`]; a folder that
+    `webui` seeded has them), stop the headless team and start it again with the `webui --port N`
+    word (#224), which puts the port on the host. Make the agents the page reaches first (the
+    dispatcher, the cadencer, the user, the pack agents); the folder keeps them across the restart."""
+    if "web" not in team.agents():
+        make_web(team)
     team.stop()
     sock = os.path.join(team.dir, T.SOCK)
     if os.path.exists(sock):
@@ -363,7 +382,7 @@ def boot(ctx, env: dict | None = None, *, port: int | None = None, forge: bool =
          board: bool = False, board_store: str = "queue_files", roles_tiers: dict | None = None,
          registry_tiers: dict | None = None, limits: dict | None = None, extra_args=None, lead_tools=None,
          credentials: bool = True, queue: bool = True, github_cred: bool | None = None,
-         sub: str | None = None, dispatcher: bool | None = None):
+         sub: str | None = None, dispatcher: bool | None = None, seeded: bool = False):
     """Start the team binary as fantastic's CLI in the run folder and make the stock records with
     `send` + `create_agent`, the lead among them (`make_lead`; `lead_tools` names the tools it
     may call, default `LEAD_TOOLS`). Sets `ctx.team`, `ctx.lead`, `ctx.work`; returns the Team."""
@@ -379,10 +398,15 @@ def boot(ctx, env: dict | None = None, *, port: int | None = None, forge: bool =
     team.start(extra_args=start_args(port, extra_args))
     if credentials:
         make_credentials(ctx, team, github=forge if github_cred is None else github_cred)
-    make_tools(ctx, team, queue=queue)
-    if forge:
-        make_forge(ctx, team, puller=puller, github_only=not git)
-    make_lead(ctx, team, lead_tools)
+    if seeded:
+        # `webui --port` on a never-used folder seeded the team's fixed agents from
+        # `crates/team/blueprint.yaml` (#261): the lead and what is under it are there.
+        ctx.lead = LEAD
+    else:
+        make_tools(ctx, team, queue=queue)
+        if forge:
+            make_forge(ctx, team, puller=puller, github_only=not git)
+        make_lead(ctx, team, lead_tools)
     if groups is not None:  # `$lead` is the lead's id
         groups = {n: {**g, **({"driver": ctx.lead} if g.get("driver") == "$lead" else {})}
                   for n, g in groups.items()}

@@ -61,6 +61,11 @@ def run(ctx):
 
         wport = team_mod.free_port()
         fresh(ctx)
+        # a folder `canvas` seeded has no team page records: `webui` does not make them (#261)
+        team.start()
+        S.stock.make_web(team)
+        team.stop()
+        fresh(ctx)
         team.start(extra_args=["webui", "--port", wport])
         v.check("webui --port P2 serves the team page", S.wait_page(wport, "/team_page/file/index.html") == 200)
         v.check("2: the lead started the remote again and made the bridge again",
