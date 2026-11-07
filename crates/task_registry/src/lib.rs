@@ -17,8 +17,8 @@
 //! bundle's.
 //!
 //! WRITERS are branch leads. The authority is the kernel call gate: only a lead holds
-//! the write verbs in its `can_call` on the registry. A worker only `report`s to its
-//! lead (agentic_resources) and the lead writes here. The one rule inside the bundle
+//! the write verbs in its `can_call` on the registry. A worker only `send`s its
+//! lead a message (agentic_resources' spawn opens that edge) and the lead writes here. The one rule inside the bundle
 //! is that a `report`'s `from` is the caller or one of its descendants.
 //!
 //! RECORDED FACTS. An entry may also carry `versions` (`[{repo, branch, commit}]`),

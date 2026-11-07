@@ -565,6 +565,11 @@ mod tests {
         build(None).await
     }
 
+    /// ai_core keeps process-wide state keyed by agent id (the in-flight turns, the
+    /// backends, the prompt files), and every real lead is `lead`: the tests that run one
+    /// take turns, as two apps in one process never would share an id.
+    static REAL_LEAD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// The home and the team of [`team_with_log`]. With `Some(endpoint)` the lead stays the
     /// real backend the app makes, pointed at `endpoint` (a scripted model on 127.0.0.1) with a
     /// key from a file credential store; nothing else about it changes.
@@ -688,6 +693,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
             .mount(&srv)
             .await;
+        let _turn = REAL_LEAD.lock().await;
         let (dir, kernel, _) = build(Some(&format!("{}/v1/messages", srv.uri()))).await;
         let r = ask(&kernel, LEAD, json!({"type": "send", "text": "go"})).await;
         let err = meta(&kernel, LEAD)["system_prompt_file_error"].clone();
@@ -706,6 +712,89 @@ mod tests {
                 .contains(card.lines().nth(2).unwrap()),
             "the system block is not the card: {}",
             sent["system"]
+        );
+        finish(dir.path(), kernel).await;
+    }
+
+    /// A spawned child tells its parent with a plain `send` (team#247): `spawn` opens the
+    /// edge child -> parent on both ends, the gate admits the child's `send`, and the
+    /// message starts the AI parent's turn (the app's real lead, its model scripted on
+    /// 127.0.0.1). The spawn is the lead's own call (made as the lead, as its model's
+    /// tool call would be); the child is a sub-lead on the strong tier.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_spawned_childs_send_starts_its_ai_parents_turn() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let srv = MockServer::start().await;
+        // the answer ends the chain with `done`, so ai_core sends no no-call nudge: the
+        // model is asked exactly once
+        let body: String = [
+            json!({"type": "message_start", "message": {"usage": {"input_tokens": 10}}}),
+            json!({"type": "content_block_delta", "index": 0,
+                   "delta": {"type": "text_delta",
+                              "text": "noted <call name=\"done\"></call>"}}),
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                   "usage": {"output_tokens": 1}}),
+            json!({"type": "message_stop"}),
+        ]
+        .iter()
+        .map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap()))
+        .collect();
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&srv)
+            .await;
+        let _turn = REAL_LEAD.lock().await;
+        let (dir, kernel, _) = build(Some(&format!("{}/v1/messages", srv.uri()))).await;
+        let lead = AgentId::from(LEAD);
+        let before = meta(&kernel, LEAD)["callable_by"].clone();
+        let made = fantastic_kernel::send::as_agent(
+            &lead,
+            ask(&kernel, ROLES, json!({"type": "spawn", "role": "lead"})),
+        )
+        .await;
+        let sub = made["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("spawn: {made}"))
+            .to_string();
+        assert_eq!(
+            kernel
+                .agents
+                .get(&AgentId::from(sub.as_str()))
+                .unwrap()
+                .parent_id,
+            Some(lead.clone()),
+            "the sub-lead is the lead's child"
+        );
+        // both ends of the edge, merged with what each already held
+        let held = |v: &Value| v.as_array().is_some_and(|a| a.contains(&json!("send")));
+        assert!(
+            held(&meta(&kernel, &sub)["can_call"][LEAD]),
+            "{sub} may send the lead"
+        );
+        assert!(
+            held(&meta(&kernel, LEAD)["callable_by"][sub.as_str()]),
+            "the lead admits {sub}"
+        );
+        let after = meta(&kernel, LEAD)["callable_by"].clone();
+        for (k, v) in before.as_object().unwrap() {
+            assert_eq!(&after[k], v, "what the lead admitted before stays: {k}");
+        }
+        assert!(
+            srv.received_requests().await.unwrap_or_default().is_empty(),
+            "nothing has asked the lead's model yet"
+        );
+        let text = format!("{sub}: my branch is done, the test passes");
+        let out = call_as(&kernel, &sub, LEAD, json!({"type": "send", "text": text})).await;
+        assert!(out.get("error").is_none(), "the send is admitted: {out}");
+        let seen = srv.received_requests().await.unwrap_or_default();
+        assert_eq!(seen.len(), 1, "the message started one lead turn: {out}");
+        let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
+        assert!(
+            sent["messages"].to_string().contains(&text),
+            "the lead's turn carries the child's message: {}",
+            sent["messages"]
         );
         finish(dir.path(), kernel).await;
     }

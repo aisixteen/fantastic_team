@@ -196,7 +196,7 @@ mod tests {
         let g = card("lead.md").grants;
         assert_eq!(
             g["$registry"],
-            serde_json::json!(["roles", "role", "spawn", "get_count", "fleet", "report"])
+            serde_json::json!(["roles", "role", "spawn", "get_count", "fleet"])
         );
         assert!(g.contains_key("queue"));
         // the main lead holds nothing on `kernel`, so a card granting it cannot be spawned (#227)
@@ -340,6 +340,27 @@ mod tests {
             !d.contains("START NOTHING yet"),
             "the unconditional gate is gone"
         );
+    }
+
+    #[test]
+    fn cards_tell_the_parent_with_send_not_report() {
+        // `report` on the roles registry is gone (team#247): a spawned agent tells its
+        // parent with a plain `send`, which starts the parent's next turn
+        for (file, _) in ALL {
+            let c = card(file);
+            if let Some(v) = c.grants.get("$registry") {
+                assert!(
+                    !v.as_array().unwrap().contains(&serde_json::json!("report")),
+                    "{file} grants report on the registry"
+                );
+            }
+            assert!(
+                c.directive
+                    .contains("send your parent a message when you are done"),
+                "{file}"
+            );
+            assert!(!c.directive.contains("report {state"), "{file}");
+        }
     }
 
     #[test]

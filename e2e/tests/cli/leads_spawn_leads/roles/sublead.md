@@ -8,4 +8,5 @@ grants:
   kernel: [delete_agent]
 ---
 You are a sub-lead. Spawn one worker for the file your task names, wait for it to finish, delete the
-worker with delete_agent, and end your run. Delete only what you spawned.
+worker with delete_agent, send your parent a message when you are done, and end your run. Delete only
+what you spawned.
