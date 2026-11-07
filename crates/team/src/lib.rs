@@ -106,6 +106,13 @@ pub fn register_team(reg: &mut BundleRegistry) {
 /// durable `sqlite_store`, the exec bridge) plus [`register_team`]. fantastic's shell builds its own, fuller
 /// set when the binary runs; that one is private to it.
 pub fn registry() -> BundleRegistry {
+    registry_with(true)
+}
+
+/// [`registry`], with the `web` host serving when booted or not. Not serving, the
+/// host's record is made, validated, granted and written as fantastic's own bundle
+/// does it, and its `boot` opens no port ([`UnservedWeb`], [`start_offline`]).
+fn registry_with(web_serves: bool) -> BundleRegistry {
     let mut reg = BundleRegistry::new();
     reg.register(
         fantastic_core::HANDLER_MODULE,
@@ -132,13 +139,157 @@ pub fn registry() -> BundleRegistry {
         fantastic_user::UserBundle::default(),
     );
     // The web host, its socket leg and the team page, for a handle that serves a port.
-    reg.register(fantastic_web::HANDLER_MODULE, fantastic_web::WebBundle);
+    if web_serves {
+        reg.register(fantastic_web::HANDLER_MODULE, fantastic_web::WebBundle);
+    } else {
+        reg.register(fantastic_web::HANDLER_MODULE, UnservedWeb);
+    }
     reg.register(
         fantastic_web_ws::HANDLER_MODULE,
         fantastic_web_ws::WebWsBundle,
     );
     register_team(&mut reg);
     reg
+}
+
+/// fantastic's `web` host with its `boot` answered as a host that is not running
+/// (`{running: false}`, what the host itself answers then) instead of listening;
+/// every other part of the bundle is fantastic's own. A kernel that only writes
+/// records ([`start_offline`]) makes and keeps the host with it: the kernel boots
+/// every agent it creates, and fantastic's host listens the moment it boots (#241).
+struct UnservedWeb;
+
+impl UnservedWeb {
+    fn is_boot(payload: &serde_json::Value) -> bool {
+        payload.get("type").and_then(serde_json::Value::as_str) == Some("boot")
+    }
+}
+
+#[async_trait::async_trait]
+impl fantastic_kernel::bundle::Bundle for UnservedWeb {
+    fn name(&self) -> &str {
+        fantastic_web::WebBundle.name()
+    }
+    async fn handle(
+        &self,
+        agent_id: &fantastic_kernel::AgentId,
+        payload: &serde_json::Value,
+        kernel: &Arc<Kernel>,
+    ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
+        if Self::is_boot(payload) {
+            return Ok(Some(json!({"running": false})));
+        }
+        fantastic_web::WebBundle
+            .handle(agent_id, payload, kernel)
+            .await
+    }
+    fn validate_meta(
+        &self,
+        meta: &serde_json::Map<String, serde_json::Value>,
+        record: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<String> {
+        fantastic_web::WebBundle.validate_meta(meta, record)
+    }
+    fn record_schema(&self) -> Option<serde_json::Value> {
+        fantastic_web::WebBundle.record_schema()
+    }
+    fn verb_docs(&self) -> serde_json::Value {
+        fantastic_web::WebBundle.verb_docs()
+    }
+    fn instance_verb_docs(
+        &self,
+        agent: &fantastic_kernel::agent::Agent,
+    ) -> Option<serde_json::Value> {
+        fantastic_web::WebBundle.instance_verb_docs(agent)
+    }
+    fn emits_doc(&self) -> Option<serde_json::Value> {
+        fantastic_web::WebBundle.emits_doc()
+    }
+    fn cancel_doc(&self) -> Option<serde_json::Value> {
+        fantastic_web::WebBundle.cancel_doc()
+    }
+    fn notes_doc(&self) -> Option<serde_json::Value> {
+        fantastic_web::WebBundle.notes_doc()
+    }
+    fn payload_secret(&self, payload: &serde_json::Value) -> Vec<String> {
+        fantastic_web::WebBundle.payload_secret(payload)
+    }
+    fn reply_secret(&self, payload: &serde_json::Value, reply: &serde_json::Value) -> Vec<String> {
+        fantastic_web::WebBundle.reply_secret(payload, reply)
+    }
+    async fn handle_binary(
+        &self,
+        agent_id: &fantastic_kernel::AgentId,
+        header: serde_json::Value,
+        body: Option<fantastic_kernel::Blob>,
+        kernel: &Arc<Kernel>,
+    ) -> Result<
+        (
+            fantastic_kernel::bundle::Reply,
+            Option<fantastic_kernel::Blob>,
+        ),
+        fantastic_kernel::bundle::BundleError,
+    > {
+        if Self::is_boot(&header) {
+            return Ok((self.handle(agent_id, &header, kernel).await?, None));
+        }
+        fantastic_web::WebBundle
+            .handle_binary(agent_id, header, body, kernel)
+            .await
+    }
+    async fn on_delete(
+        &self,
+        agent_id: &fantastic_kernel::AgentId,
+        kernel: &Arc<Kernel>,
+    ) -> Result<(), fantastic_kernel::bundle::BundleError> {
+        fantastic_web::WebBundle.on_delete(agent_id, kernel).await
+    }
+    async fn on_cancel(
+        &self,
+        agent_id: &fantastic_kernel::AgentId,
+        task_id: &fantastic_kernel::TaskId,
+        kernel: &Arc<Kernel>,
+    ) -> Result<(), fantastic_kernel::bundle::BundleError> {
+        fantastic_web::WebBundle
+            .on_cancel(agent_id, task_id, kernel)
+            .await
+    }
+    async fn flush_pending(
+        &self,
+        agent_id: &fantastic_kernel::AgentId,
+        kernel: &Arc<Kernel>,
+    ) -> Result<(), fantastic_kernel::bundle::BundleError> {
+        fantastic_web::WebBundle
+            .flush_pending(agent_id, kernel)
+            .await
+    }
+    async fn on_shutdown(
+        &self,
+        agent_id: &fantastic_kernel::AgentId,
+        kernel: &Arc<Kernel>,
+    ) -> Result<(), fantastic_kernel::bundle::BundleError> {
+        fantastic_web::WebBundle.on_shutdown(agent_id, kernel).await
+    }
+    fn cold_boot(&self, kernel: &Kernel, fantastic_dir: &Path) {
+        fantastic_web::WebBundle.cold_boot(kernel, fantastic_dir)
+    }
+    fn folder_base(&self) -> bool {
+        fantastic_web::WebBundle.folder_base()
+    }
+    fn folder_bundle(
+        &self,
+        name: &str,
+        folder: &Path,
+        spec: &serde_json::Value,
+    ) -> Result<Arc<dyn fantastic_kernel::bundle::Bundle>, String> {
+        fantastic_web::WebBundle.folder_bundle(name, folder, spec)
+    }
+    fn readme(&self) -> Option<&'static str> {
+        fantastic_web::WebBundle.readme()
+    }
+    fn docs(&self) -> &'static [(&'static str, &'static str)] {
+        fantastic_web::WebBundle.docs()
+    }
 }
 
 /// The README for AIs (`docs/ai-readme.md`), built into the binary. It is printed
@@ -229,11 +380,30 @@ pub async fn seed_base_tree(kernel: &Arc<Kernel>) -> Result<bool, String> {
 /// fantastic-cli mode 5, with a base tree seeded into a fresh directory. The
 /// caller stops it with `kernel.shutdown()` and then `bootstrap::shutdown(dir)`.
 pub async fn start(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>> {
-    let mut booted = bootstrap::bootstrap(registry(), BootstrapOptions::one_shot(dir))?;
+    start_with(dir, registry(), true).await
+}
+
+/// [`start`] for a kernel that only writes records and serves nothing, stopped the
+/// same way: no `web` host bundle (a `web` made or recorded here never listens), and
+/// of the recorded agents only the root and its store are booted. `webui` writes the
+/// page's records with it before fantastic's shell boots them under its own lock; a
+/// page served from this kernel answered for a team that was about to stop (#241).
+pub(crate) async fn start_offline(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>> {
+    start_with(dir, registry_with(false), false).await
+}
+
+/// [`start`] with `reg`; `boot_all` boots every recorded agent, else the root and its
+/// store only.
+async fn start_with(
+    dir: &Path,
+    reg: BundleRegistry,
+    boot_all: bool,
+) -> Result<Arc<Kernel>, Box<dyn std::error::Error>> {
+    let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir))?;
     lock::acquire(dir)?;
     let kernel = booted.kernel.clone();
     let outcome = match booted.write_seed() {
-        Ok(()) => boot_kernel(&kernel).await,
+        Ok(()) => boot_kernel(&kernel, boot_all).await,
         Err(e) => Err(e.to_string()),
     };
     match outcome {
@@ -249,9 +419,10 @@ pub async fn start(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>
 
 /// Everything after the lock: seed the base tree, then start the kernel.
 /// Any error here makes `start` shut down and release the lock.
-async fn boot_kernel(kernel: &Arc<Kernel>) -> Result<(), String> {
+/// `boot_all` false boots, of the recorded agents, the root and its store only.
+async fn boot_kernel(kernel: &Arc<Kernel>, boot_all: bool) -> Result<(), String> {
     let seeded = seed_base_tree(kernel).await?;
-    let started = kernel.start(true).await;
+    let started = kernel.start(boot_all).await;
     if started
         .get("error")
         .filter(|e| fantastic_bundle::py_truthy(e))

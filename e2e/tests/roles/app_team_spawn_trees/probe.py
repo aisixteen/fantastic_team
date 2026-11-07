@@ -52,6 +52,15 @@ def point_at_plug(ctx, team):
     records.update(team, "roles", tiers=tiers, limits={"total": 6})
 
 
+def ids_once_up(team):
+    """The agent ids, or none while the app's kernel does not answer yet (it is still starting:
+    its socket is not there, or `list_agents` fails); the wait goes on until its deadline."""
+    r = team.send("kernel", {"type": "list_agents"})
+    if r.get("status") != "completed":
+        return set()
+    return {a["id"] for a in r["result"]["agents"]}
+
+
 def run(ctx):
     v = Verdict("roles/app_team_spawn_trees")
     app.app_binary(ctx)  # a Skip when the app is not built next to --bin
@@ -67,8 +76,10 @@ def run(ctx):
     proc = app.run_app(ctx, ["--binary", ctx.binary, "--port", port, "--dir", folder], name="app")
     try:
         v.check("the app starts and prints the web UI URL", bool(proc.wait_line("web UI at", 90)), proc.log())
-        made = probe.wait_for(lambda: {"lead", "roles", "worker_exec"} <= set(probe.agents()), 30)
-        v.check("the app made the team", bool(made), str(sorted(probe.agents())))
+        made = probe.wait_for(lambda: {"lead", "roles", "worker_exec"} <= ids_once_up(probe), 30)
+        v.check("the app made the team", bool(made), str(sorted(ids_once_up(probe))))
+        if not made:
+            return v.finish()  # no team to drive: the checks below would only read a missing kernel
         for name in sorted(os.listdir(REPO_ROLES)):
             with open(os.path.join(REPO_ROLES, name)) as f, open(os.path.join(folder, "roles", name)) as g:
                 v.check(f"roles/{name} on disk is the repo's card", f.read() == g.read())

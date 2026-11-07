@@ -14,7 +14,11 @@ team or fantastic verb: it is the box a person would ssh into.
   run folder is gitignored), the container's sshd on a mapped 127.0.0.1 port, a login `team` that
   takes only that key.
 - GATEWAY (`gateway_url`): a service of the test on the host's 127.0.0.1 (the fake forge) is
-  reached from the container through Podman's host gateway, `host.containers.internal`.
+  reached from the container through Podman's host gateway, `host.containers.internal`. Under a
+  podman machine (macOS) that name already reaches the host's loopback. Under local rootless
+  Podman with pasta (Linux) it reaches the host's outside address, where a 127.0.0.1 service does
+  not listen, so the container gets pasta's `--map-host-loopback` on a link-local address and the
+  name is pinned to it (`network_args`).
 - TEARDOWN (`Remote.stop`): the tunnels the helper opened are closed and the container removed,
   pass or fail (`with Remote(...)`).
 - No Podman, or no running machine: `require()` raises `Skip` with the reason.
@@ -47,6 +51,7 @@ USER = "team"
 GATEWAY = "host.containers.internal"
 SSH_PORT = "22/tcp"
 LOGIN = "127.0.0.1"
+HOST_LOOPBACK = "169.254.1.3"  # in the container, the host's 127.0.0.1 under local rootless pasta
 
 # The builder: the repo's toolchain and what the Linux build needs: D-Bus for fantastic's system
 # agents (pkg-config finds it), and Go and zip for fantastic's canvas pack (its build script builds
@@ -146,6 +151,19 @@ def pm(*args: str, check: bool = True, timeout: float = 600, input: str | None =
     if check and r.returncode != 0:
         raise RemoteError(f"podman {' '.join(args[:3])} failed ({r.returncode}): {(r.stderr or r.stdout)[-1500:]}")
     return r
+
+
+def network_args() -> list[str]:
+    """The `podman run` network options that let `GATEWAY` reach the host's 127.0.0.1. Local
+    rootless Podman on pasta: pasta maps the host's loopback to `HOST_LOOPBACK` and the name is
+    pinned to it. A podman machine (the service is remote) or another network: none, the machine's
+    gateway already reaches the host's loopback."""
+    r = pm("info", "--format", "{{.Host.ServiceIsRemote}} {{.Host.Security.Rootless}} {{.Host.RootlessNetworkCmd}}",
+           check=False, timeout=60)
+    if r.returncode == 0 and r.stdout.split() == ["false", "true", "pasta"]:
+        return ["--network", f"pasta:--map-host-loopback,{HOST_LOOPBACK}",
+                "--add-host", f"{GATEWAY}:{HOST_LOOPBACK}"]
+    return []
 
 
 def have_image(ref: str) -> bool:
@@ -336,7 +354,7 @@ class Remote:
     def _run(self, ref: str, pub: str) -> None:
         exe = podman()
         env = dict(os.environ, AUTHORIZED_KEY=pub)  # the key's public half, never in an argv
-        r = subprocess.run([exe, "run", "-d", "--name", self.name, "-p", f"{LOGIN}::22",
+        r = subprocess.run([exe, "run", "-d", "--name", self.name, *network_args(), "-p", f"{LOGIN}::22",
                             "-e", "AUTHORIZED_KEY", ref], capture_output=True, text=True, env=env, timeout=120)
         if r.returncode != 0:
             raise RemoteError(f"podman run failed: {r.stderr[-800:]}")

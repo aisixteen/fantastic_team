@@ -1807,7 +1807,7 @@ mod tests {
         fantastic_kernel::lock::acquire(dir).unwrap();
         booted.write_seed().unwrap();
         let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel).await.unwrap();
+        crate::boot_kernel(&kernel, true).await.unwrap();
         for item in [
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
                 "handler_module": HANDLER_MODULE, "can_call": {"probe": "*"}}),
@@ -2539,7 +2539,7 @@ mod tests {
         fantastic_kernel::lock::acquire(dir.path()).unwrap();
         booted.write_seed().unwrap();
         let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel).await.unwrap();
+        crate::boot_kernel(&kernel, true).await.unwrap();
         for item in [
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
                 "handler_module": HANDLER_MODULE, "can_call": {"board": "*", "cadencer": "*"}}),
@@ -2602,7 +2602,7 @@ mod tests {
         fantastic_kernel::lock::acquire(dir).unwrap();
         booted.write_seed().unwrap();
         let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel).await.unwrap();
+        crate::boot_kernel(&kernel, true).await.unwrap();
         let mut d = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
             "handler_module": HANDLER_MODULE, "can_call": {"reg": "*"}});
         if let Some(r) = roles {
@@ -3075,7 +3075,7 @@ mod tests {
         fantastic_kernel::lock::acquire(dir).unwrap();
         booted.write_seed().unwrap();
         let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel).await.unwrap();
+        crate::boot_kernel(&kernel, true).await.unwrap();
         let mut d = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
             "handler_module": HANDLER_MODULE, "can_call": {"reg": "*", "board": "*"}});
         let mut b = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
@@ -3378,7 +3378,7 @@ mod tests {
         fantastic_kernel::lock::acquire(dir).unwrap();
         booted.write_seed().unwrap();
         let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel).await.unwrap();
+        crate::boot_kernel(&kernel, true).await.unwrap();
         let mut items = vec![
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
                 "handler_module": HANDLER_MODULE,
@@ -4242,7 +4242,7 @@ mod tests {
         fantastic_kernel::lock::acquire(dir).unwrap();
         booted.write_seed().unwrap();
         let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel).await.unwrap();
+        crate::boot_kernel(&kernel, true).await.unwrap();
         let can_call: serde_json::Map<String, Value> = agents
             .iter()
             .map(|(id, _, _)| (id.to_string(), json!("*")))

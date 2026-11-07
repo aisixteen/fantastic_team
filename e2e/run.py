@@ -6,6 +6,7 @@
     python3 e2e/run.py --only-turns --dry-run discover the turns tests and collect their probes; start nothing
     python3 e2e/run.py --only-gpu             the gpu tier: a vLLM server, by hand (skips without VLLM_ENDPOINT and its kin)
     python3 e2e/run.py --only-gpu --dry-run   discover the gpu tests and collect their probes; start nothing
+    BACKEND=anthropic python3 e2e/run.py --only-gpu   the gpu tests on the anthropic relay instead (by hand; costs money)
     python3 e2e/run.py --only task/one_issue_to_draft_pr
     python3 e2e/run.py --build github         the tests for the GitHub build (default: general)
     python3 e2e/run.py --selftest             prove the harness itself, no binary
@@ -14,7 +15,8 @@
 A test is a folder `e2e/tests/<group>/<id>/` with `test.yaml` (`costs`, `timeout`,
 `plug`, `build`), a plug's input (`script.json` for the scripted plug) and
 `probe.py`, whose `run(ctx)` returns the exit code of its `Verdict`.
-A test whose plug has no key (or, for vllm, no server variables) in the environment is skipped
+A `costs: gpu` test takes its plug from `BACKEND` (`vllm` or `anthropic`) when set; no other test
+does. A test whose plug has no key (or, for vllm, no server variables) in the environment is skipped
 (`SKIP`), not failed. `--only-free` never selects a turns or gpu test, and CI never runs them.
 Runs live under `e2e/runs/<stamp>/<group>/<id>/` (gitignored: they hold model output).
 """
@@ -97,9 +99,22 @@ def discover() -> list[dict]:
             out.append({"name": name, "dir": dirpath,
                         "costs": meta.get("costs", "free"),
                         "timeout": int(meta.get("timeout", "180")),
-                        "plug": meta.get("plug", "scripted"),
+                        "plug": plug_of(meta),
+                        "declared_plug": meta.get("plug", "scripted"),
                         "build": meta.get("build", "any")})
     return sorted(out, key=lambda t: t["name"])
+
+
+def plug_of(meta: dict) -> str:
+    """A test's plug: its test.yaml's, except that a model test (costs gpu) takes `BACKEND`
+    when set (`vllm` or `anthropic`), as fantastic picks its backend. A free test never does."""
+    plug = meta.get("plug", "scripted")
+    backend = os.environ.get("BACKEND")
+    if backend and meta.get("costs") == "gpu":
+        if backend not in ("vllm", "anthropic"):
+            raise SystemExit(f"BACKEND must be vllm or anthropic, got {backend!r}")
+        return backend
+    return plug
 
 
 def pick(tests: list[dict], only=(), only_free=False, only_turns=False, only_gpu=False) -> list[dict]:
@@ -196,7 +211,7 @@ def run_test(test: dict, binary: str, stamp_dir: str) -> str:
         traceback.print_exc()
     finally:
         if ctx and ctx.team:
-            if hasattr(model, "finish"):  # the vllm plug reads the agents' usage before they go
+            if hasattr(model, "finish"):  # a plug that polls the agents' usage reads it before they go
                 model.finish(ctx.team)
             code = ctx.team.stop()
             print(f"  team stopped (exit {code})")
@@ -354,6 +369,7 @@ def selftest() -> int:
     selftest_selection(v)
     selftest_turns(v)
     selftest_gpu(v)
+    selftest_backend(v)
     selftest_source(v)
     selftest_skip(v)
     selftest_scripted_thinking(v)
@@ -407,7 +423,7 @@ def selftest_relay(v: Verdict) -> None:
     """The anthropic plug, against a fake upstream whose usage is known (10 in, 20 out)."""
     key = "relay-key-" + secrets.token_hex(8)  # a key of this run only, never a literal
     names = ("E2E_ANTHROPIC_KEY", "ANTHROPIC_API_KEY", "E2E_UPSTREAM", "E2E_MAX_REQUESTS",
-             "E2E_PRICE_IN_PER_MTOK", "E2E_PRICE_OUT_PER_MTOK")
+             "E2E_PRICE_IN_PER_MTOK", "E2E_PRICE_OUT_PER_MTOK", "E2E_MODEL", "ANTHROPIC_CACHING")
     saved = {k: os.environ.get(k) for k in names}
     tmp = tempfile.mkdtemp(prefix="e2e-relay-")
     up = scripted.ScriptedModel([{"text": "a" * 80}] * 4).start()
@@ -446,6 +462,9 @@ def selftest_relay(v: Verdict) -> None:
                 abs(cost["usd_estimate"] - 0.00005) < 1e-9, raw)
         v.check("the forwarded key is never stored: cost.json and the run hold none",
                 key not in raw and holding(run_a, key) == [], str(holding(run_a, key)))
+        v.check("with no team watched, cost.json's `agents` is null", cost["agents"] is None, raw)
+        relay_records(v, a, key)
+        relay_usage(v, tmp, key)
 
         run_c = os.path.join(tmp, "cap")
         os.makedirs(run_c)
@@ -456,7 +475,16 @@ def selftest_relay(v: Verdict) -> None:
         v.check("the (cap+1)th request gets 429, the first two are forwarded",
                 codes == [200, 200, 429], str(codes))
         v.check("a refused request is not forwarded upstream", up.served == 3, f"upstream served {up.served}")
-        v.check("a relay that refused a request is not consumed", not c.consumed)
+        v.check("a relay that refused a request is not consumed; it is capped, and says why",
+                not c.consumed and c.capped and "E2E_MAX_REQUESTS" in (c.errored_reason or ""))
+        run_d = os.path.join(tmp, "upstream_error")
+        os.makedirs(run_d)
+        os.environ.pop("E2E_MAX_REQUESTS")
+        d = relay_mod.make(run_d, {"run_dir": run_d}).start()
+        relays.append(d)
+        codes = [post_to(d.endpoint, key)[0] for _ in range(2)]  # the upstream's script has one turn left
+        v.check("an upstream error is passed on and counted, but is no cap: the gpu wait goes on",
+                codes == [200, 500] and d.errored and not d.capped and d.errored_reason is None, str(codes))
     finally:
         for r in relays:
             r.stop()
@@ -471,17 +499,129 @@ def selftest_relay(v: Verdict) -> None:
 
 VLLM_ENV = ("VLLM_ENDPOINT", "FANTASTIC_AI_MODEL", "VLLM_KV_SLOTS", "VLLM_KV_OVERFLOW", "VLLM_API_KEY",
             "MAX_TOKENS", "E2E_MAX_REQUESTS", "E2E_PRICE_IN_PER_MTOK", "E2E_PRICE_OUT_PER_MTOK")
+#: every model variable: the vllm plug's, the anthropic plug's (its key names, model and caching) and
+#: BACKEND, which points the gpu tests at a plug. A selftest child gets none of them (`child_env`).
+MODEL_ENV = (*VLLM_ENV, "BACKEND", "E2E_MODEL", "ANTHROPIC_CACHING", *relay_mod.KEY_ENVS)
+
+
+def child_env(environ) -> dict:
+    """The environment of a selftest's child run: the caller's, less every model variable. With one
+    left, the child would run the real tests (and their selftest another child, and so on)."""
+    return {k: val for k, val in environ.items() if k not in MODEL_ENV}
+
+
+def relay_records(v: Verdict, relay, key: str) -> None:
+    """The anthropic plug's AI records and recipe: what the gpu cli scenarios build with BACKEND=anthropic."""
+    m = relay.model_name
+    rec = relay.ai_record()
+    v.check("the relay's AI record is an anthropic_backend one on the relay, caching on (provider_cache) by default",
+            rec == {"handler_module": "anthropic_backend.tools", "model": m, "endpoint": relay.endpoint,
+                    "caching": "provider_cache"} and m == relay_mod.DEFAULT_MODEL and key not in json.dumps(rec),
+            str(rec))
+    v.check("the recipe is `ai anthropic --model M --endpoint E`; update_agent carries the caching mode",
+            relay.recipe_args() == ["--headless", "ai", "anthropic", "--model", m, "--endpoint", relay.endpoint]
+            and relay.recipe_fields() == {"caching": "provider_cache"}, f"{relay.recipe_args()} {relay.recipe_fields()}")
+    run_m = tempfile.mkdtemp(prefix="e2e-relay-rec-")
+    made = []
+    try:
+        os.environ["E2E_MODEL"] = "claude-selftest"
+        for mode in relay_mod.CACHING:
+            os.environ["ANTHROPIC_CACHING"] = mode
+            r = relay_mod.make(run_m, {"run_dir": run_m})
+            made.append(r)
+            v.check(f"ANTHROPIC_CACHING={mode} and E2E_MODEL are on the record and the recipe",
+                    r.ai_record()["caching"] == mode and r.recipe_fields() == {"caching": mode}
+                    and r.ai_record()["model"] == "claude-selftest" and "claude-selftest" in r.recipe_args(),
+                    str(r.ai_record()))
+        os.environ["ANTHROPIC_CACHING"] = "always"
+        try:
+            made.append(relay_mod.make(run_m, {"run_dir": run_m}))
+            refused = False
+        except RuntimeError:
+            refused = True
+        v.check("a caching mode that is not ai_core's is refused", refused)
+    finally:
+        os.environ.pop("E2E_MODEL", None)
+        os.environ.pop("ANTHROPIC_CACHING", None)
+        for r in made:
+            r.httpd.server_close()
+        shutil.rmtree(run_m, ignore_errors=True)
+
+
+def relay_usage(v: Verdict, tmp: str, key: str) -> None:
+    """The relay sums the anthropic agents' own `usage` (a fake team, no model) into cost.json."""
+    import contextlib
+    import io
+    import types
+
+    from helpers import gpu_cli as gpu_mod
+
+    def usage(req, tin, cw, cr, tout, cost=None):
+        u = {"requests": req, "input_tokens": tin, "cache_write_tokens": cw, "cache_read_tokens": cr,
+             "output_tokens": tout, "prompt_tokens": tin + cw + cr, "saved_tokens": (18 * cr - 5 * cw) // 20, "hit_rate": 0.5}
+        if cost is not None:
+            u["cost_usd"] = cost
+        return u
+    run_u = os.path.join(tmp, "usage")
+    os.makedirs(run_u)
+    team = FakeUsageTeam({"lead": usage(2, 100, 400, 0, 30, 0.002), "w1": usage(1, 40, 0, 400, 10, 0.0005)},
+                         handler="anthropic_backend.tools", others={"v1": "vllm_backend.tools"})
+    r = relay_mod.make(run_u, {"run_dir": run_u}).start()
+    try:
+        r.poll_s = 0.05
+        r.watch(team)
+        end = time.time() + 5
+        while time.time() < end and (r.agents_total() or {}).get("requests") != 3:
+            time.sleep(0.05)
+        v.check("the relay's poller reads every anthropic agent's usage while the run goes",
+                (r.agents_total() or {}).get("requests") == 3, str(r.agents_total()))
+        del team.counts["w1"]  # deleted by its parent: its last counts stay in the sum
+        team.counts["lead"] = usage(4, 160, 400, 800, 50, 0.004)
+        r.finish(team)
+        a = r.totals()["agents"]
+        v.check("the agents' block sums requests, input, cache write and read, output, prompt, saved and "
+                "cost_usd, a deleted agent included",
+                a == {"requests": 5, "input_tokens": 200, "cache_write_tokens": 400, "cache_read_tokens": 1200,
+                      "output_tokens": 60, "prompt_tokens": 1800, "saved_tokens": 980, "cost_usd": 0.0045}, str(a))
+        v.check("only the anthropic agents are asked for their usage",
+                {tgt for tgt, p in team.sent if p.get("type") == "usage"} == {"lead", "w1"}, str(team.sent[:6]))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            gpu_mod.report(types.SimpleNamespace(model=r, team=team, elapsed=0))
+        v.check("the gpu report prints the agents' block: cache write and read, cost_usd",
+                "report: agents: 5 requests, 200 in, 400 cache write, 1200 cache read, 60 out, cost_usd 0.0045"
+                in out.getvalue(), out.getvalue())
+        team.counts["w2"] = usage(1, 10, 100, 0, 5)  # a record with no prices: its usage has no cost_usd
+        r.finish(team)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            gpu_mod.report(types.SimpleNamespace(model=r, team=team, elapsed=0))
+        v.check("an agent with no prices makes the sum unpriced: cost_usd null, the report says so",
+                r.agents_total()["cost_usd"] is None and "cost_usd unpriced" in out.getvalue(), out.getvalue())
+        v.check("saved_tokens is each agent's latest reading, negative included (a cache write alone)",
+                r.agents_total()["saved_tokens"] == 980 - 25, str(r.agents_total()))
+        team.stop()
+        r.finish(team)
+        v.check("a stopped team is not asked again", r.agents_total()["requests"] == 6, str(r.agents_total()))
+    finally:
+        r.stop()
+    raw = open(os.path.join(run_u, "cost.json")).read()
+    cost = json.loads(raw)
+    v.check("cost.json carries the agents' block beside the relay's own stream counts",
+            cost["agents"] == r.agents_total() and cost["agents"]["cache_read_tokens"] == 1200
+            and cost["requests"] == 0 and key not in raw, raw)
 
 
 class vllm_env:
     """The vllm plug's variables for a block: set the given ones, clear the rest, restore after."""
+    names = VLLM_ENV
 
     def __init__(self, **given: str) -> None:
         self.given = given
 
     def __enter__(self):
-        self.saved = {k: os.environ.get(k) for k in VLLM_ENV}
-        for k in VLLM_ENV:
+        self.saved = {k: os.environ.get(k) for k in self.names}
+        for k in self.names:
             os.environ.pop(k, None)
         os.environ.update(self.given)
 
@@ -493,11 +633,20 @@ class vllm_env:
                 os.environ[k] = val
 
 
-class FakeUsageTeam:
-    """Stands in for a Team: vllm agents that keep usage counts (the `usage` verb), a stop()."""
+class model_env(vllm_env):
+    """Every model variable for a block (MODEL_ENV, and the relay's upstream): set the given ones,
+    clear the rest, restore after."""
+    names = (*MODEL_ENV, "E2E_UPSTREAM")
 
-    def __init__(self, agents: dict) -> None:
-        self.counts = agents  # id -> {requests, prompt_tokens, output_tokens}
+
+class FakeUsageTeam:
+    """Stands in for a Team: AI agents of one backend that keep usage counts (the `usage` verb),
+    agents of `others` (id -> handler) that have none, a log and a stop()."""
+
+    def __init__(self, agents: dict, handler: str = "vllm_backend.tools", others: dict | None = None) -> None:
+        self.counts = agents  # id -> the `usage` result
+        self.handler = handler
+        self.others = others or {}
         self.stopped = False
         self.proc = self
         self.sent: list[tuple[str, dict]] = []
@@ -506,9 +655,13 @@ class FakeUsageTeam:
         return 0 if self.stopped else None
 
     def agents(self) -> dict:
-        out = {i: {"handler_module": "vllm_backend.tools"} for i in self.counts}
+        out = {i: {"handler_module": self.handler} for i in self.counts}
+        out.update({i: {"handler_module": h} for i, h in self.others.items()})
         out["credentials"] = {"handler_module": "credential_store.tools"}
         return out
+
+    def log(self) -> str:
+        return ""
 
     def send(self, target: str, payload: dict, timeout: float = 0) -> dict:
         self.sent.append((target, payload))
@@ -675,30 +828,86 @@ def selftest_vllm_plug(v: Verdict) -> None:
 
 
 def selftest_gpu(v: Verdict) -> None:
-    """Run the launcher as a child with none of the vllm variables: the gpu tests skip, exit 0,
-    and `--only-gpu --dry-run` collects their probes and starts nothing."""
-    env = {k: val for k, val in os.environ.items() if k not in VLLM_ENV}
+    """Run the launcher as a child with no model variable (`child_env`), with every one of them set
+    here (fakes; BACKEND=anthropic): the gpu tests would run on the vllm plug and skip, exit 0, and
+    `--only-gpu --dry-run` collects their probes and starts nothing."""
+    planted = {"BACKEND": "anthropic", "E2E_MODEL": "claude-selftest", "ANTHROPIC_CACHING": "none",
+               "E2E_ANTHROPIC_KEY": "selftest-" + secrets.token_hex(8),
+               "ANTHROPIC_API_KEY": "selftest-" + secrets.token_hex(8),
+               "VLLM_ENDPOINT": "https://gpu.example.invalid/v1", "FANTASTIC_AI_MODEL": "m-1",
+               "VLLM_KV_SLOTS": "2", "VLLM_KV_OVERFLOW": "evict", "VLLM_API_KEY": "door-" + secrets.token_hex(8),
+               "MAX_TOKENS": "16", "E2E_MAX_REQUESTS": "1", "E2E_PRICE_IN_PER_MTOK": "1",
+               "E2E_PRICE_OUT_PER_MTOK": "2",
+               "E2E_UPSTREAM": "http://127.0.0.1:9"}  # discard: had a child kept a key, nothing would answer
+    with model_env(**planted):
+        v.check("every model variable is planted for this check", set(MODEL_ENV) <= set(planted))
+        env = child_env(os.environ)
     me = os.path.abspath(__file__)
-    r = subprocess.run([sys.executable, me, "--only-gpu"], env=env, capture_output=True, text=True, timeout=120)
-    skips = all(f"SKIP {n} " in r.stdout for n in GPU_TESTS)
-    v.check("the gpu tests skip without the variables and the run exits 0",
-            r.returncode == 0 and skips, (r.stdout + r.stderr)[-800:])
     r = subprocess.run([sys.executable, me, "--only-gpu", "--dry-run"], env=env, capture_output=True,
                        text=True, timeout=120)
-    collects = all(f"COLLECT {n} " in r.stdout for n in GPU_TESTS)
+    stripped = all(f"COLLECT {n}  (costs: gpu, plug: vllm)  (would SKIP: not set: VLLM_ENDPOINT" in r.stdout
+                   for n in GPU_TESTS)
+    v.check("the child carries no model variable: with them all set here, its gpu tests are on the vllm "
+            "plug and would SKIP", r.returncode == 0 and stripped, (r.stdout + r.stderr)[-800:])
     v.check("the gpu tests collect under --only-gpu --dry-run without the variables",
-            r.returncode == 0 and collects and f"{len(GPU_TESTS)}/{len(GPU_TESTS)} probes collect" in r.stdout, (r.stdout + r.stderr)[-800:])
+            r.returncode == 0 and f"{len(GPU_TESTS)}/{len(GPU_TESTS)} probes collect" in r.stdout,
+            (r.stdout + r.stderr)[-800:])
+    if stripped:  # else the child would run the real tests (and its selftest a child of its own)
+        r = subprocess.run([sys.executable, me, "--only-gpu"], env=env, capture_output=True, text=True,
+                           timeout=120)
+        skips = all(f"SKIP {n} " in r.stdout for n in GPU_TESTS)
+        out = (r.stdout + r.stderr)[-800:]
+    else:
+        skips, out = False, "not started: the child's environment holds a model variable"
+    v.check("the gpu tests skip without the variables and the run exits 0", skips and r.returncode == 0, out)
     by = {t["name"]: t for t in discover()}
     bad = []
     for n in GPU_TESTS:
         t = by.get(n)
         twin = by.get(n.replace("gpu_cli_ssh/", "cli_ssh/").replace("gpu_cli/", "cli/"))
         files = t and all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "probe.py"))
-        if not (t and twin and files and t["costs"] == "gpu" and t["plug"] == "vllm" and t["build"] == "any"
+        if not (t and twin and files and t["costs"] == "gpu" and t["declared_plug"] == "vllm" and t["build"] == "any"
                 and not os.path.exists(os.path.join(t["dir"], "script.json"))):
             bad.append(n)
     v.check("each gpu test has a cli twin, its README, test.yaml and probe, costs gpu on the vllm plug, no script.json",
             not bad, str(bad))
+
+
+def selftest_backend(v: Verdict) -> None:
+    """BACKEND picks the plug of the gpu tests only; `--only-gpu --dry-run` collects all twelve with either."""
+    gpu, free = {"costs": "gpu", "plug": "vllm"}, {"costs": "free"}
+    turns = {"costs": "turns", "plug": "anthropic"}
+    with model_env():
+        v.check("without BACKEND each test takes its test.yaml's plug",
+                (plug_of(gpu), plug_of(free), plug_of(turns)) == ("vllm", "scripted", "anthropic"))
+    with model_env(BACKEND="anthropic"):
+        v.check("BACKEND=anthropic: a gpu test takes the anthropic plug, a free or turns test keeps its own",
+                (plug_of(gpu), plug_of(free), plug_of(turns)) == ("anthropic", "scripted", "anthropic"))
+        by = {t["name"]: t for t in discover()}
+        moved = sorted(n for n, t in by.items() if t["plug"] != t["declared_plug"])
+        v.check("discover: the twelve gpu tests (and only they) are on the anthropic plug, declared on vllm",
+                moved == sorted(GPU_TESTS) and all(by[n]["plug"] == "anthropic" and by[n]["declared_plug"] == "vllm"
+                                                   for n in GPU_TESTS), str(moved))
+    with model_env(BACKEND="vllm"):
+        v.check("BACKEND=vllm: a gpu test declared on another plug takes vllm; a free test keeps scripted",
+                plug_of({"costs": "gpu", "plug": "anthropic"}) == "vllm" and plug_of(free) == "scripted")
+    with model_env(BACKEND="openai"):
+        try:
+            plug_of(gpu)
+            refused = ""
+        except SystemExit as e:
+            refused = str(e)
+        v.check("a BACKEND that is neither vllm nor anthropic is refused (a free test never reads it)",
+                "BACKEND must be vllm or anthropic" in refused and plug_of(free) == "scripted", refused)
+    me = os.path.abspath(__file__)
+    for backend, why in (("vllm", "not set: VLLM_ENDPOINT"), ("anthropic", "no key in the environment")):
+        env = dict(child_env(os.environ), BACKEND=backend)
+        r = subprocess.run([sys.executable, me, "--only-gpu", "--dry-run"], env=env, capture_output=True,
+                           text=True, timeout=120)
+        ok = all(f"COLLECT {n}  (costs: gpu, plug: {backend})  (would SKIP: {why}" in r.stdout for n in GPU_TESTS)
+        v.check(f"BACKEND={backend}: --only-gpu --dry-run collects the twelve on that plug, each would SKIP here",
+                r.returncode == 0 and ok and f"{len(GPU_TESTS)}/{len(GPU_TESTS)} probes collect" in r.stdout,
+                (r.stdout + r.stderr)[-800:])
 
 
 def selftest_selection(v: Verdict) -> None:
@@ -1136,6 +1345,7 @@ FAKE_PODMAN = """#!/bin/sh
 printf '%s|key=%s\\n' "$*" "${AUTHORIZED_KEY:+set}" >> "$FAKE_PODMAN_LOG"
 case "$FAKE_PODMAN_MODE:$1" in
   down:info) echo "Cannot connect to Podman. Is the machine running?" >&2; exit 125 ;;
+  pasta:info) echo "false true pasta" ;;
   *:info) echo arm64 ;;
   *:image) exit 0 ;;
   *:run) echo c0ffee ;;
@@ -1149,7 +1359,7 @@ exit 0
 
 def selftest_podman_remote(v: Verdict) -> None:
     """The ssh remote's helper (#242) without Podman: SKIP without it or its machine, the ssh command
-    lines, the gateway URL, the source tag, the image files, the cache by tag, and teardown on a
+    lines, the gateway URL and its network options, the source tag, the image files, the cache by tag, and teardown on a
     failed start."""
     from helpers.verdict import Skip
     pr = podman_remote
@@ -1262,6 +1472,16 @@ def selftest_podman_remote(v: Verdict) -> None:
             open(log, "w").close()
             r.stop()
             v.check("stop after teardown removes nothing twice", open(log).read() == "")
+            runs = [c for c in calls if c.startswith("run ")]
+            v.check("a podman machine (or no pasta): the container takes no network options",
+                    pr.network_args() == [] and "--network" not in runs[0] and "--add-host" not in runs[0], str(runs))
+        with podman_env(E2E_PODMAN=fake, FAKE_PODMAN_LOG=log, FAKE_PODMAN_MODE="pasta"):
+            open(log, "w").close()
+            pr.Remote(run_dir, "img:tag", log=lambda *_: None)._run("img:tag", "ssh-ed25519 AAAA e2e")
+            runs = [c for c in open(log).read().splitlines() if c.startswith("run ")]
+            v.check("local rootless pasta: the host's loopback is mapped and the gateway name pinned to it",
+                    len(runs) == 1 and f"--network pasta:--map-host-loopback,{pr.HOST_LOOPBACK}" in runs[0]
+                    and f"--add-host {pr.GATEWAY}:{pr.HOST_LOOPBACK}" in runs[0], str(runs))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

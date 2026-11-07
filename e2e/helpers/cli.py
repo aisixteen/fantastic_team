@@ -140,7 +140,7 @@ def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | Non
     os.makedirs(os.path.join(ctx.work, "sandbox"), exist_ok=True)
     ctx.team = team_mod.Team(ctx.binary, ctx.work, env)
     ctx.team.start(extra_args=extra_args)
-    if hasattr(ctx.model, "watch"):  # the vllm plug counts the agents' usage through the team
+    if hasattr(ctx.model, "watch"):  # the vllm and anthropic plugs count the agents' usage through the team
         ctx.model.watch(ctx.team)
     return ctx.team
 
