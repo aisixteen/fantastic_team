@@ -719,7 +719,41 @@ fn open_edges(
 
 /// A string task: let the registry `send` and send it, DETACHED, as the registry
 /// (a spawn answers at once, it never waits for the child's turn to end).
+/// The child's parent: the lead that spawned it `from` a fork point (it sits beside its
+/// source), else its place in the tree.
+fn parent_of(kernel: &Kernel, child: &AgentId) -> Option<String> {
+    let a = kernel.agents.get(child)?;
+    let m = meta_of(a.value());
+    m.get("lead")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| a.value().parent_id.as_ref().map(|p| p.as_str().to_string()))
+}
+
+/// The TEAM NOTE after a spawned child's task: the task comes FROM this registry, so
+/// without it a child cannot tell whom to report to. Its parent by id, and the agents
+/// this registry spawned for the same parent (its siblings) with their roles.
+fn team_note(kernel: &Kernel, reg: &AgentId, child: &AgentId) -> String {
+    let Some(parent) = parent_of(kernel, child) else { return String::new() };
+    let siblings: Vec<String> = spawned(kernel, reg)
+        .into_iter()
+        .filter(|s| s.id != *child && parent_of(kernel, &s.id).as_deref() == Some(parent.as_str()))
+        .map(|s| format!("`{}` ({})", s.id.as_str(), s.role))
+        .collect();
+    let mut note = format!(
+        "\n\n[team] Your parent is `{parent}`: report to it when you are done, with \
+         <call name=\"send\"><target_id>{parent}</target_id><type>send</type><text>…</text></call>. \
+         `{}` only delivered this task; it takes no reports.",
+        reg.as_str()
+    );
+    if !siblings.is_empty() {
+        note.push_str(&format!(" Your siblings: {}.", siblings.join(", ")));
+    }
+    note
+}
+
 fn send_first(kernel: &Arc<Kernel>, reg: &AgentId, child: &str, text: String) {
+    let text = format!("{text}{}", team_note(kernel, reg, &AgentId::from(child)));
     let cid = child.to_string();
     let _ = kernel.edit_can_call(reg, move |m| {
         grant_verbs(m, &cid, &json!(["send"]));

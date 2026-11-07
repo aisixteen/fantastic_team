@@ -824,7 +824,7 @@ async fn spawn_task_string_is_first_message_and_object_refused() {
             .lock()
             .unwrap()
             .iter()
-            .any(|(a, t)| *a == cid && t == "do it")
+            .any(|(a, t)| *a == cid && t.starts_with("do it\n\n[team] Your parent is `") && t.contains(&format!("Your parent is `{}`", lead.as_str())))
         {
             break;
         }
@@ -834,7 +834,7 @@ async fn spawn_task_string_is_first_message_and_object_refused() {
         .lock()
         .unwrap()
         .iter()
-        .any(|(a, t)| *a == cid && t == "do it"));
+        .any(|(a, t)| *a == cid && t.starts_with("do it\n\n[team] Your parent is `") && t.contains(&format!("Your parent is `{}`", lead.as_str()))));
 }
 
 /// Did `who` receive a `send` with `text`? A `send` is answered only once the
@@ -1347,7 +1347,7 @@ async fn spawn_from_task_string_is_sent_as_first_message() {
             .lock()
             .unwrap()
             .iter()
-            .any(|(a, t)| *a == id && *t == text)
+            .any(|(a, t)| *a == id && t.starts_with(&text) && t.contains(&format!("Your parent is `{}`", r.callers[0].as_str())))
         {
             return;
         }
