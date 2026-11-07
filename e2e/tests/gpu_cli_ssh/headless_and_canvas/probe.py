@@ -1,6 +1,6 @@
 """gpu_cli_ssh/headless_and_canvas: `cli_ssh/headless_and_canvas` on a real model. The local kernel
 serves `canvas --port P`, the remote runs `--headless`; told the box and the wiring in plain words, the
-lead makes `rlead` on the remote, which makes its canvas; both add a note. The local canvas's socket
+lead has the remote ask `rlead` (a backend on the master) to make a canvas on the remote; both add a note. The local canvas's socket
 lists the remote agents through the bridge; the box listens on sshd and the tunnel's port only. Then
 the lead deletes the bridge and stops the remote; the local kernel restarts as `webui --port P2`; the
 lead starts the remote and the bridge again, and the team page's socket lists them too. Then the lead
@@ -31,10 +31,12 @@ def run(ctx):
         team = cli.start(ctx, extra_args=["canvas", "--port", port])
         cli.add_base(ctx)
         cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "delete_agent"]})
+        cli.make_agent(ctx, "rlead", cli.LEAD, {cli.EXEC: "*"}, key=ctx.model.keyed)
+        box.open_backends(["rlead"])
         before = cli.tree(team)
         box.publish()
         v.check("canvas --port P serves the canvas page", S.wait_page(port, "/canvas_page/file/index.html") == 200)
-        watch = G.play(ctx, v, "lead", G.wiring(ctx, box) + G.TASKS["headless_and_canvas"], label="1: ")
+        watch = G.play(ctx, v, "lead", G.wiring(ctx, box, ["rlead"]) + G.TASKS["headless_and_canvas"], label="1: ")
         v.check("the box listens on sshd and the tunnel's port only (the remote is --headless)",
                 box.listening() <= {22, box.tunnel_port}, str(box.listening()))
         T.shows_canvas(v, "the local canvas's socket (canvas_ws -> user.forward -> the bridge)",

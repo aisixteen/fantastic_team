@@ -382,6 +382,7 @@ def selftest() -> int:
     selftest_no_blueprints(v)
     selftest_podman_remote(v)
     selftest_ssh_twins(v)
+    selftest_remote_work(v)
     return v.finish()
 
 
@@ -1504,8 +1505,7 @@ def selftest_ssh_twins(v: Verdict) -> None:
             bad.append(n)
     v.check("the six cli_ssh twins exist, collect, and are free on the scripted plug", not bad, str(bad))
     values = {"ssh_port": "2200", "ssh_key": "/k/id", "tunnel_port": "4100",
-              "remote_endpoint": "http://host.containers.internal:9/v1/messages",
-              "remote_git_url": "http://host.containers.internal:8/acme/widgets.git"}
+              "master_guid": "0123456789abcdef", "remote_git_url": "http://host.containers.internal:8/acme/widgets.git"}
     left = []
     for n in CLI_SCENARIOS:
         m = scripted.ScriptedModel(T.SCRIPTS[n]())
@@ -1527,15 +1527,9 @@ def selftest_ssh_twins(v: Verdict) -> None:
             m.resolve_ids("{{minted:1}} {{minted:2}}",
                           "<id>w2</id><id>anthropic_backend_0a1b2c</id><id>roles</id><id>anthropic_backend_0a1b2c</id>"
                           "<id>129</id><id>anthropic_backend_ffee00</id>") == "anthropic_backend_0a1b2c anthropic_backend_ffee00")
-    try:
-        T.setup_command({"x.md": "it's"})
-        refused = False
-    except ValueError:
-        refused = True
-    v.check("a role card with a single quote is refused (it rides in a quoted shell word)", refused)
-    v.check("the remote kernel starts in the tunnel's ssh session, its pid kept, the roles bundle when asked",
-            T.kernel_start_command(True) == "mkdir -p w && cd w && echo $$ > team.pid && "
-            "FANTASTIC_AGENTIC_RESOURCES=1 exec fantastic_team --headless >> team.log 2>&1")
+    v.check("the remote kernel starts in the tunnel's ssh session, its pid kept",
+            T.kernel_start_command() == "mkdir -p w && cd w && echo $$ > team.pid && "
+            "exec fantastic_team --headless >> team.log 2>&1")
     from helpers import gpu_cli as gpu_mod
 
     class History:
@@ -1569,11 +1563,15 @@ def selftest_ssh_twins(v: Verdict) -> None:
             def ai_record(self):
                 return {"handler_module": "vllm_backend.tools", "model": "m", "endpoint": self.endpoint}
 
+        class Guid:
+            def send(self, target, payload, timeout=60):
+                return {"result": {"guid": "0123456789abcdef"}} if payload["type"] == "reflect" else {}
+
         class Ctx:
             pass
         ctx = Ctx()
         ctx.run_dir = ctx.work = tmp
-        ctx.forge, ctx.model = forge, Plug()
+        ctx.forge, ctx.model, ctx.team = forge, Plug(), Guid()
         os.makedirs(os.path.join(tmp, "sandbox"))
         ctx.repo = cli_mod.make_fixture(tmp)
         box = T.Box(ctx)
@@ -1601,6 +1599,137 @@ def selftest_ssh_twins(v: Verdict) -> None:
         if forge:
             forge.stop()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def selftest_remote_work(v: Verdict) -> None:
+    """The remote half of the ssh twins (#252) without Podman: the box holds no backend, the work
+    program (run against a stub of fantastic's connector) and the checks on what it saw, each with the
+    mutations they must refuse, the plug's `grant_leg` turns, and the leg's grants."""
+    T = ssh_twins
+    # no script and no setup puts a backend on the box
+    made = []
+    bad_setup = "backend" in T.setup_command() or "endpoint" in T.setup_command()
+    for n in T.SCENARIOS:
+        for turn in T.SCRIPTS[n]():
+            for c in turn["calls"]:
+                p = ((c.get("args") or {}).get("payload") or {}).get("payload") or {}
+                if p.get("type") == "create_agent":
+                    made.append(p.get("handler_module"))
+    v.check("the box is given no backend: no script or setup command makes an AI agent or names a model endpoint there",
+            not bad_setup and set(made) == {"canvas_page.tools"}, f"{bad_setup} {sorted(set(made))}")
+    v.check("the remote exec agent may call the master's agents send/watch/status/stop only",
+            T.REMOTE_EXEC["can_call"] == {"$self": "*", "{{master_guid}}|*": ["send", "watch", "status", "stop"]})
+    v.check("the bridge record grants its leg exactly those verbs on the backends named, and nothing without",
+            T.bridge_record(["w2"])["can_call"] == {"$self": "*", "w2": T.BACKEND_VERBS}
+            and "can_call" not in T.bridge_record())
+    # the arrival check, and its mutations
+    row = lambda type, phase=None, client="w2", **k: {"type": type, **({"phase": phase} if phase else {}), "client_id": client, **k}
+    good = [row("status", "thinking"), row("status", "streaming"), row("part_start", kind="text"), row("part_delta"),
+            row("part_end"), row("status", "done")]
+    ok, why = T.streamed(good, "w2")
+    v.check("streamed: status and part_* before done is a stream that crossed", ok, why)
+    mutations = {
+        "unwatched (nothing arrived)": [],
+        "a refused watch (an error event)": [{"type": None, "error": "unauthorized", "reason": "unauthorized"}],
+        "parts only after done": [row("status", "thinking"), row("status", "done"), row("part_start", kind="text")],
+        "no part at all": [row("status", "thinking"), row("status", "done")],
+        "no status before the parts": [row("part_start", kind="text"), row("status", "done")],
+        "another client's stream": [dict(r, client_id="other") for r in good],
+        "never done": good[:-1],
+    }
+    leaked = [k for k, rows in mutations.items() if T.streamed(rows, "w2")[0]]
+    v.check("streamed refuses each mutation (unwatched, refused, parts after done, none, no status, other client, no done)",
+            not leaked, str(leaked))
+    v.check("holds_key finds a key in a blob and refuses to find it where it is not",
+            T.holds_key([b"aa KEY123 bb", b"clean"], ["KEY123"]) == [0] and T.holds_key([b"clean"], ["", "KEY123"]) == [])
+    # the work program, against a stub connector
+    tmp = tempfile.mkdtemp(prefix="e2e-work-")
+    try:
+        def play(stub: str, *flags, label: str = "w2") -> tuple[int, dict, list[dict]]:
+            sub = os.path.join(tmp, f"run{len(os.listdir(tmp))}", "repo")
+            os.makedirs(sub)
+            prog = os.path.join(sub, "..", "work.py")
+            with open(prog, "w") as f:
+                f.write(stub + T.WORK_PROGRAM)
+            r = subprocess.run([sys.executable, "-I", prog, *flags, "GUID", "w2", label, "do", "the", "work"],
+                               cwd=sub, capture_output=True, text=True, timeout=60)
+            try:
+                result = json.load(open(os.path.join(sub, "..", f"{label}.result.json")))
+            except (OSError, ValueError):
+                result = {"stderr": r.stderr[-300:]}
+            try:
+                rows = [json.loads(x) for x in open(os.path.join(sub, "..", f"{label}.events.jsonl")).read().splitlines()]
+            except OSError:
+                rows = []
+            return r.returncode, result, rows
+
+        events = json.dumps(good)
+        stub = ("import json\nclass K:\n    def watch(self, src, cb):\n        self.cb = cb; self.src = src\n"
+                "    def send(self, target, payload):\n        assert target == 'GUID|w2' and payload['client_id'] == 'w2'\n"
+                f"        assert payload['text'] == 'do the work'\n        for p in json.loads({events!r}): self.cb(p)\n"
+                "        return {'response': 'ok'}\nkernel = K()\n")
+        code, result, rows = play(stub)
+        v.check("the work program watches `<guid>|<backend>`, sends it the work as that client, notes the events in "
+                "arrival order and exits 0", code == 0 and result.get("ok") and [r["type"] for r in rows] == [g["type"] for g in good]
+                and T.streamed(rows, "w2")[0], f"{code} {result} {rows[:2]}")
+        code, result, rows = play(stub, "--no-watch")
+        v.check("mutation: unwatched, the program still sends but notes nothing, and the arrival check refuses it",
+                rows == [] and not T.streamed(rows, "w2")[0], f"{code} {rows}")
+        down = stub.replace("return {'response': 'ok'}", "return {'error': 'bridge_down: the link dropped', 'reason': 'transport_error'}")
+        code, result, rows = play(down)
+        v.check("a call in flight when the bridge drops: the reply is bridge_down, the program exits 1 and says so",
+                code == 1 and "bridge_down" in (result.get("reply_error") or ""), f"{code} {result}")
+        denied = stub.replace("self.cb = cb; self.src = src", "self.cb = cb; self.src = src; cb({'error': 'x may not call watch', 'reason': 'unauthorized'})")
+        code, result, rows = play(denied)
+        v.check("mutation: a sealed watch grant (the watch is refused as an event), the program exits 1",
+                code == 1 and result.get("refused") and not T.streamed(rows, "w2")[0], f"{code} {result}")
+        watch_only = ("import json\nclass K:\n    def watch(self, src, cb):\n"
+                      f"        for p in json.loads({events!r}): cb(dict(p, client_id='master'))\n"
+                      "    def send(self, target, payload):\n        assert payload == {'type': 'status'}\n"
+                      "        return {'generating': False}\nkernel = K()\n")
+        code, result, rows = play(watch_only, "--no-send", "--client", "master", label="b")
+        ready = [p for p, _, fs in os.walk(tmp) if "b.ready" in fs]
+        v.check("--no-send --client: the program only watches (a status call is its barrier, then `<label>.ready`), "
+                "and ends on the done of that client's turn", code == 0 and result.get("done") == 1 and ready,
+                f"{code} {result} {ready}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    # the plug's grant_leg turns
+    got = []
+    m = scripted.ScriptedModel([{"calls": [{"target": "a", "type": "x"}], "grant_leg": ["w2", "{{minted:1}}"]}], {})
+    m.leg_grant = got.append
+    m.play(json.dumps({"messages": [{"role": "user", "content": "<id>anthropic_backend_0a1b2c</id>"}]}))
+    v.check("a turn with grant_leg opens its agents to the leg before it is answered, a minted id resolved from the request",
+            got == [["w2", "anthropic_backend_0a1b2c"]], str(got))
+    m = scripted.ScriptedModel([{"calls": [{"target": "a", "type": "x"}], "grant_leg": ["w2"]}], {})
+    try:
+        m.play("{}")
+        loud = False
+    except RuntimeError:
+        loud = True
+    v.check("a grant_leg turn with no leg_grant set is an error, not a silent skip", loud)
+    # the leg's grants, on a stub kernel
+    class Kernel:
+        def __init__(self):
+            self.rec = {"remote": {"can_call": {"$self": "*", "lead": ["x"]}}, "w2": {"callable_by": {"$self": "*", "lead": "*"}}}
+
+        def agents(self):
+            return {k: dict(v) for k, v in self.rec.items()}
+
+        def send(self, target, payload, timeout=60):
+            if payload["type"] == "list_agents":
+                return {"status": "completed", "result": {"agents": [dict(v, id=k) for k, v in self.rec.items()]}}
+            self.rec[payload["id"]].update({k: val for k, val in payload.items() if k not in ("type", "id")})
+            return {"status": "completed", "result": {}}
+    kernel = Kernel()
+    kernel.agents = lambda: {k: dict(v, id=k) for k, v in kernel.rec.items()}
+    T.grant_leg(kernel, ["w2"])
+    v.check("grant_leg: both ends, exactly send/watch/status/stop, what each held kept",
+            kernel.rec["remote"]["can_call"] == {"$self": "*", "lead": ["x"], "w2": T.BACKEND_VERBS}
+            and kernel.rec["w2"]["callable_by"] == {"$self": "*", "lead": "*", "remote": T.BACKEND_VERBS}, str(kernel.rec))
+    T.seal_watch(kernel, "w2")
+    v.check("seal_watch: the backend no longer lets the leg watch (send, status, stop stay)",
+            kernel.rec["w2"]["callable_by"]["remote"] == ["send", "status", "stop"], str(kernel.rec["w2"]))
 
 
 def main() -> int:

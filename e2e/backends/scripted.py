@@ -26,6 +26,11 @@ holds that answer until those lanes have been served every turn, so one agent wo
 only once another has finished (a last turn is served after the calls of the turn
 before it have run). A script with no `lane` anywhere is the old single ordered script.
 
+GRANTS BEFORE A TURN. A turn may carry `"grant_leg": ["w2", "{{minted:2}}"]`: before the plug answers it, the
+test's operator opens those agents to the bridge leg (`leg_grant`, set by the test: the ssh twins' `Box.bind`),
+the ids resolved from the request like any `{{minted:N}}`. An agent that is minted when the lead spawns it has no
+name before, so the operator names it when the script reaches the turn that needs it.
+
 SPAWNED IDS. A spawned agent's id is minted (`anthropic_backend_7a308a`), so a script cannot
 name it. `{{id:N}}` in a turn is the id in the Nth `<id>...</id>` of the request's body (the
 reply of a `spawn`, in the order the agent saw them), filled when the turn is served;
@@ -172,6 +177,7 @@ class ScriptedModel:
         self.keys: list[str | None] = []  # x-api-key of each POST /v1/messages
         self.served = 0
         self.overrun = 0
+        self.leg_grant = self.no_leg_grant  # the test sets it when its script has `grant_leg` turns
         self.lock = threading.Lock()
         outer = self
 
@@ -218,10 +224,15 @@ class ScriptedModel:
         self.endpoint = self.url + "/v1/messages"
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 
+    @staticmethod
+    def no_leg_grant(ids: list[str]) -> None:
+        raise RuntimeError(f"scripted model: a turn grants the leg {ids} and the test set no leg_grant")
+
     def render(self) -> None:
         filled = [fill(t, self.variables) for t in self.script]
         self.turns = [render_turn(t) for t in filled]
         self.thinking = [t.get("thinking") for t in filled]
+        self.grants = [list(t.get("grant_leg") or []) for t in filled]
 
     def bind(self, **variables) -> "ScriptedModel":
         """Fill the placeholders left open at load with values known only once the test runs.
@@ -257,6 +268,8 @@ class ScriptedModel:
             return None
         self.hold(self.after[i])
         text = self.resolve_ids(self.turns[i], raw)
+        if self.grants[i]:
+            self.leg_grant([self.resolve_ids(g, raw) for g in self.grants[i]])
         if self.delays[i]:
             time.sleep(self.delays[i])
         return text, self.thinking[i]
