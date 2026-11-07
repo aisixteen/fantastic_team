@@ -42,6 +42,11 @@ port, key and tunnel, #242) binds them before the team asks the model.
 
 It records every request body and every `x-api-key`; a request past the end of
 the script gets a 500, and `exhausted` says so.
+
+TEAM NOTICES. The cadencer tells a lead's team its structure whenever an AI agent is added or
+removed (`[team] The team of …`), and each notice is a turn of its own. A request whose newest
+message is notices only is answered `<call name="done"></call>` OUTSIDE the script: it takes no
+turn of any lane and is counted in `notice_turns`, so a script stays the test's own steps.
 """
 
 from __future__ import annotations
@@ -176,6 +181,7 @@ class ScriptedModel:
         self.raw_bodies: list[str] = []
         self.keys: list[str | None] = []  # x-api-key of each POST /v1/messages
         self.served = 0
+        self.notice_turns = 0  # team notices answered outside the script
         self.overrun = 0
         self.leg_grant = self.no_leg_grant  # the test sets it when its script has `grant_leg` turns
         self.lock = threading.Lock()
@@ -244,10 +250,33 @@ class ScriptedModel:
             raise ValueError(f"scripted model: placeholders with no value: {left}")
         return self
 
+    @staticmethod
+    def notice_only(raw: str) -> bool:
+        """Is the newest message of this request team notices and nothing else? Each block of it
+        (blocks are joined by a blank line) is a `[from cadencer]` / `[team] The team of` one."""
+        try:
+            msgs = [m for m in json.loads(raw).get("messages", []) if m.get("role") != "system"]
+            last = msgs[-1]
+        except (ValueError, IndexError, AttributeError, TypeError):
+            return False
+        if last.get("role") != "user":
+            return False
+        c = last.get("content")
+        text = c if isinstance(c, str) else "\n\n".join(
+            b.get("text", "") for b in (c or []) if isinstance(b, dict))
+        blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+        return bool(blocks) and all(
+            b.startswith("[from cadencer]") or b.startswith("[team] The team of") or b.startswith("Members:")
+            or b.startswith("- `") for b in blocks)
+
     def play(self, raw: str, key: str | None = None) -> tuple[str, str | None] | None:
         """Serve one request body: record it, pick the turn of its lane, wait for the lanes the
         turn is `after`, and return (text, thinking) -- or None when the script is exhausted. The
         Messages handler and a fake of another wire (`helpers/fake_vllm.py`) both play through here."""
+        if self.notice_only(raw):
+            with self.lock:
+                self.notice_turns += 1
+            return '<call name="done"></call>', None
         with self.lock:
             self.raw_bodies.append(raw)
             try:

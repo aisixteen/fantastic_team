@@ -210,6 +210,15 @@ def model_credentials(ctx) -> dict | None:
     return {"store": "credentials", "ref": f"model/{ctx.model.host}"} if ctx.model.keyed else None
 
 
+def add_cadencer(ctx) -> None:
+    """The cadencer (`team_cadencer.tools`, id `cadencer`), made once the test's own agents are, so
+    their making tells nobody: from then on each AI agent added or removed tells its lead's team the
+    team's structure (a turn on each of them)."""
+    create(ctx.team, {"id": "cadencer", "parent_id": "user", "handler_module": "team_cadencer.tools",
+                      "callable_by": {"$self": "*", "$parent": "*"}})
+    ctx.team.send("cadencer", {"type": "boot"})
+
+
 def tier_record(model) -> dict:
     """The workers' AI record: the plug's, with `E2E_WORKER_MODEL` as its model when set (the lead
     keeps `E2E_MODEL`), so a run can put the lead and its workers on different models."""
