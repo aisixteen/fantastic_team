@@ -125,13 +125,15 @@ def create(team, payload: dict) -> dict:
     return records.create(team, payload)
 
 
-def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | None = None):
+def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | None = None,
+          env: dict | None = None):
     """Start the team binary as fantastic's CLI, in the run folder (or its `sub` folder, for a
     test that runs twice). `roles` turns on the `agentic_resources` bundle
-    (`FANTASTIC_AGENTIC_RESOURCES=1`). Returns the Team; `ctx.repo` is the fixture."""
+    (`FANTASTIC_AGENTIC_RESOURCES=1`). `env`: more variables for the kernel (a credential store's
+    `env` backend reads its values from them). Returns the Team; `ctx.repo` is the fixture."""
     keys = run_flow.fake_keys(ctx)
     ctx.secrets = keys
-    env = {"E2E_MODEL_KEY": keys["model_key"]}
+    env = {"E2E_MODEL_KEY": keys["model_key"], **(env or {})}
     if roles:
         env["FANTASTIC_AGENTIC_RESOURCES"] = "1"
     ctx.work = os.path.join(ctx.run_dir, sub) if sub else ctx.run_dir

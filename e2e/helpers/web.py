@@ -60,10 +60,12 @@ def encode_frame(payload: bytes, opcode: int = 0x1) -> bytes:
 
 class WsClient:
     def __init__(self, port: int, path: str = "/team_ws/ws", host: str = "127.0.0.1",
-                 timeout: float = 10.0) -> None:
+                 timeout: float = 10.0, host_port: int | None = None) -> None:
+        """`host_port`: the port the `Host` header names, when it is not the one dialled (a tunnel whose near end
+        is another number: the web host admits a `Host` naming its own port only)."""
         self.sock = socket.create_connection((host, port), timeout=timeout)
         key = base64.b64encode(os.urandom(16)).decode()
-        self.sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
+        self.sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}:{host_port or port}\r\nUpgrade: websocket\r\n"
                            f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
                            "Sec-WebSocket-Version: 13\r\n\r\n").encode())
         head = b""
@@ -184,3 +186,37 @@ class WsClient:
             self.sock.close()
         except OSError:
             pass
+
+
+class StateTap:
+    """A subscriber of a kernel's state stream through a web_ws leg (`state_subscribe`): every frame it gets, as text,
+    in a list, read by a thread until `stop`. What a page that watches the kernel would be shown."""
+
+    def __init__(self, port: int, path: str, host_port: int | None = None) -> None:
+        import threading
+        self.ws = WsClient(port, path=path, host_port=host_port)
+        self.frames: list[str] = []
+        self.error: str | None = None
+        self.ws.send_json({"type": "state_subscribe"})
+        self.thread = threading.Thread(target=self._read, daemon=True)
+        self.thread.start()
+
+    def _read(self) -> None:
+        while True:
+            try:
+                self.frames.append(self.ws.recv_text(timeout=3600))
+            except (OSError, TimeoutError) as e:
+                self.error = str(e)
+                return
+
+    def text(self) -> bytes:
+        return "\n".join(self.frames).encode()
+
+    def stop(self) -> None:
+        try:
+            self.ws.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.ws.close()
+        self.thread.join(5)
+

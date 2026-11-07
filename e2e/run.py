@@ -71,6 +71,7 @@ CLI_SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated
 # the gpu tier: the six cli scenarios (#237) and their ssh twins (#242)
 GPU_TESTS = [f"{g}/{n}" for g in ("gpu_cli", "gpu_cli_ssh") for n in CLI_SCENARIOS]
 SSH_TESTS = [f"cli_ssh/{n}" for n in CLI_SCENARIOS]
+GIT_TWIN = f"cli_ssh/{ssh_twins.GIT_TWIN}"  # #253: the box's git credentials come through the bridge
 
 
 # --- tests -------------------------------------------------------------------
@@ -383,6 +384,7 @@ def selftest() -> int:
     selftest_podman_remote(v)
     selftest_ssh_twins(v)
     selftest_remote_work(v)
+    selftest_git_credentials(v)
     return v.finish()
 
 
@@ -1595,6 +1597,24 @@ def selftest_ssh_twins(v: Verdict) -> None:
                 all(x in text for x in ("2200", "/k/id", "team@127.0.0.1", f"{box.tunnel_port}:127.0.0.1:{box.tunnel_port}",
                                          "host.containers.internal", T.BRIDGE, T.LEG, "worker.md")), text[:300])
         v.check("and never the git server's token", forge.token not in text)
+        # the git twin's box: no token on it and none in the master's sandbox, the git server dialled on the box's own loopback
+        sub = os.path.join(tmp, "git_twin")
+        os.makedirs(os.path.join(sub, "sandbox"))
+        ctx2 = Ctx()
+        ctx2.run_dir, ctx2.work = tmp, sub
+        ctx2.forge, ctx2.model, ctx2.team = forge, Plug(), Guid()
+        ctx2.repo = cli_mod.make_fixture(sub)
+        bare_box = T.Box(ctx2, git_token=False)
+        bare_box.publish()
+        top = subprocess.run(["git", "-C", bare, "log", "--format=%s", "-1", "main"], capture_output=True, text=True).stdout
+        v.check("publish without a token: the fixture is on the git server, the master's sandbox has no git config",
+                top.strip() == "calc with two bugs" and not os.path.exists(os.path.join(sub, "sandbox", ".gitconfig")), top)
+        bare_box.remote.port, bare_box.remote.key = 2200, "/k/id"
+        have, gate = bare_box.values(), box.values()
+        v.check("without a token the box dials the git server on its own 127.0.0.1 (the relay's port is the server's), with one "
+                "through Podman's gateway; the forge's port is bound only for the former",
+                have["remote_git_url"] == T.git_url(ctx2) and have["forge_port"] == str(forge.port)
+                and "host.containers.internal" in gate["remote_git_url"] and "forge_port" not in gate, f"{have} {gate}")
     finally:
         if forge:
             forge.stop()
@@ -1730,6 +1750,81 @@ def selftest_remote_work(v: Verdict) -> None:
     T.seal_watch(kernel, "w2")
     v.check("seal_watch: the backend no longer lets the leg watch (send, status, stop stay)",
             kernel.rec["w2"]["callable_by"]["remote"] == ["send", "status", "stop"], str(kernel.rec["w2"]))
+
+
+def selftest_git_credentials(v: Verdict) -> None:
+    """The git twin (#253) without Podman: the guard finds a planted secret in every form and only there, the
+    bridge's grant on the store is `get` and nothing else, the connector's record names the master's store and holds
+    no value, and neither the script nor the box's setup writes a token."""
+    T = ssh_twins
+    tok = "gh" "s_" + "0123456789abcdef0123456789abcdef0123"  # a fake, built from pieces
+    forms = T.secret_forms(tok)
+    names = set(forms)
+    v.check("secret_forms: plain, base64, base64url (padded or not), url-, form-encoded and git's Basic credential",
+            {"plain", "base64", "base64url", "url-encoded", "form-encoded", "basic credential"} <= names, str(sorted(names)))
+    odd = "t0k/en+va=lue&x y"
+    missed = [f for f, needle in T.secret_forms(odd).items() if T.leaks({"blob": b"..." + needle + b"..."}, odd) == []]
+    v.check("leaks finds the secret in each of its forms, a token with characters that encode differently included",
+            not missed, str(missed))
+    found = T.leaks({"a": b"clean", "b": b"x " + tok.encode() + b" y"}, tok)
+    v.check("leaks names the blob and the form (a token with nothing to encode is also its own url-encoded form), never the "
+            "secret", "b as plain" in found and all(f.startswith("b as ") and tok not in f for f in found), str(found))
+    v.check("leaks finds nothing in a blob that does not hold it, and refuses a secret too short to search for",
+            T.leaks({"a": b"clean", "b": b""}, tok) == [] and _raises(lambda: T.leaks({"a": b""}, "short")))
+    tmp = tempfile.mkdtemp(prefix="e2e-guard-")
+    try:
+        os.makedirs(os.path.join(tmp, "d", "skipped"))
+        for name, data in (("a.txt", b"clean"), ("d/b.txt", b"x " + forms["basic credential"]), ("d/skipped/c.txt", tok.encode())):
+            with open(os.path.join(tmp, name), "wb") as f:
+                f.write(data)
+        blobs = T.folder_blobs(tmp, skip={os.path.join(tmp, "d", "skipped")})
+        at = os.path.join("d", "b.txt")
+        found = T.leaks(blobs, tok)
+        v.check("folder_blobs reads every file but the skipped folders; the guard finds the Basic credential in one file and "
+                "nowhere else", set(blobs) == {"a.txt", at} and f"{at} as basic credential" in found
+                and all(f.startswith(at + " as ") for f in found), str(found))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    v.check("the store's grant is `get` and nothing else; the bridge record grants it on the stores named, beside the backends'",
+            T.STORE_VERBS == ["get"]
+            and T.bridge_record(stores=[T.GIT_STORE])["can_call"] == {"$self": "*", T.GIT_STORE: ["get"]}
+            and T.bridge_record(["w2"], [T.GIT_STORE])["can_call"] == {"$self": "*", "w2": T.BACKEND_VERBS, T.GIT_STORE: ["get"]}
+            and "can_call" not in T.bridge_record())
+    rec = T.remote_git_record()
+    store = "{{master_guid}}|" + T.GIT_STORE
+    v.check("the remote connector's record: `team_git`, its credentials the MASTER's store `<guid>|git_credentials` and a ref "
+            "(nothing else), it may call that store's `get` only, and the record holds no value",
+            rec["handler_module"] == "team_git.tools" and rec["credentials"] == {"store": store, "ref": T.GIT_REF}
+            and rec["can_call"] == {"$self": "*", store: ["get"]} and "token" not in json.dumps(rec).lower().replace("x-access-token", ""),
+            str(rec))
+    script = json.dumps(T.script_git_credentials()) + T.git_box_command() + T.setup_command()
+    v.check("neither the script nor the box's setup names a token, an Authorization header, a git config or a credential helper: the "
+            "box is given none", not [w for w in ("Authorization", "extraHeader", ".gitconfig", "credential.helper", "x-access-token",
+                                                   "E2E_GIT_TOKEN", "http.") if w in script], "")
+    m = scripted.ScriptedModel(T.script_git_credentials())
+    values = {"ssh_port": "2200", "ssh_key": "/k/id", "tunnel_port": "4100", "master_guid": "0123456789abcdef",
+              "remote_git_url": "http://127.0.0.1:8/acme/widgets.git", "forge_port": "8"}
+    try:
+        m.bind(**values)
+        left = ""
+    except ValueError as e:
+        left = str(e)
+    v.check("every placeholder of the git twin's script is one the box binds", not left, left)
+    v.check("the phases add up to the script: setup, work, close", sum(T.phases_git().values()) == len(T.script_git_credentials()),
+            str(T.phases_git()))
+    by = {t["name"]: t for t in discover()}
+    t = by.get(GIT_TWIN)
+    v.check("cli_ssh/git_credentials exists, collects, and is free on the scripted plug",
+            bool(t) and collect_probe(t["dir"])[0] and t["costs"] == "free" and t["plug"] == "scripted" and all(
+                os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py")))
+
+
+def _raises(f) -> bool:
+    try:
+        f()
+    except ValueError:
+        return True
+    return False
 
 
 def main() -> int:
