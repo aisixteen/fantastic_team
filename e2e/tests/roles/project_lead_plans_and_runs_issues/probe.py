@@ -70,6 +70,9 @@ def run(ctx):
     if not pl:
         team.stop()
         return v.finish()
+    # a worker tells its parent with a plain `send` (team#247): the script names the
+    # project_lead, whose id is minted only now
+    ctx.model.bind(pl=pl)
     # the operator names the project_lead on the key and on the tools it was given (a spawned
     # agent is not named in them, and only the tools' parent or the operator can write them)
     admit(team, pl, ["credentials", "github", "queue", "board"])
@@ -91,11 +94,13 @@ def run(ctx):
     # 2. "yes": worker 1, then (on "continue") worker 2. A spawned worker's first message is
     # refused (its record names no key), so it asks the model nothing; the probe plays the
     # lead's admit step (the key, and the connector and queue it was given), sends the task
-    # again, and the worker plays its two turns alone.
+    # again, and the worker plays its turns: it sends its parent a message (`send`, which
+    # spawn let it make), the message starts the project_lead's turn, then the worker closes.
     handled = []
     for n in (1, 2):
+        before = 0 if n == 1 else 7  # turns served before this round
         team.send(pl, {"type": "send", "text": "yes" if n == 1 else "continue"})
-        settle(ctx, 4 if n == 1 else 8)  # the project_lead's two turns
+        settle(ctx, before + 4 if n == 1 else before + 2)  # the project_lead's two turns
         fresh = [x["id"] for x in workers(team) if x["id"] not in handled]
         v.check(f"worker {n} was started", len(fresh) == 1, str(fleet(team)))
         if len(fresh) != 1:
@@ -104,17 +109,22 @@ def run(ctx):
         handled.append(wid)
         team.wait_for(lambda: f"{wid} call send" in team.log(), 20.0)
         time.sleep(1.0)
+        started = before + (4 if n == 1 else 2)
         v.check(f"worker {n} asked the model nothing before it was admitted",
-                ctx.model.served == (4 if n == 1 else 8), str(ctx.model.served))
+                ctx.model.served == started, str(ctx.model.served))
         team.send("kernel", {"type": "update_agent", "id": wid,
                              "credentials": {"store": "credentials", "ref": f"model/{ctx.vars['model_host']}"}})
         admit(team, wid, ["credentials", "github", "queue"])
         task = f"The queue is queue. Your id is the id in your own reflect. Work on issue {n}."
         team.send(wid, {"type": "send", "text": task})
-        settle(ctx, 6 if n == 1 else 10)  # the worker's two turns
+        settle(ctx, started + 3)  # the worker's send, the project_lead's turn it starts, the worker's close
+        woke = ctx.model.raw_bodies[started + 1] if len(ctx.model.raw_bodies) > started + 1 else ""
+        v.check(f"worker {n}'s send to its parent started the project_lead's turn",
+                f"Issue {n} is done: PR opened for issue {n}." in woke and all(t in woke for t in TITLES),
+                woke[-300:])
         # `title` is a routing field of a model call, so a worker's call cannot carry the
         # connector's `title` argument (see the README): the PR is opened through the
-        # connector as the operator once the worker has reported.
+        # connector as the operator once the worker has told its parent.
         opened = team.send("github", {"type": "pr_create", "repo": "acme/widgets",
                                       "branch": f"team/issue-{n}", "title": TITLES[n - 1],
                                       "body": f"Work for issue {n}."})["result"]
@@ -133,8 +143,7 @@ def run(ctx):
     v.check("the forge recorded two draft PRs, one per worker",
             heads == ["team/issue-1", "team/issue-2"] and all(p["json"].get("draft") for p in pulls), str(heads))
     ws = workers(team)
-    v.check("fleet lists both workers and the log shows their two reports",
-            len(ws) == 2 and all(x.get("id") for x in ws) and str(team.log()).count("report") >= 2, str(ws))
+    v.check("fleet lists both workers", len(ws) == 2 and all(x.get("id") for x in ws), str(ws))
     have = agents(team)
     v.check("the project_lead and both workers are still in the tree",
             pl in have and all(x["id"] in have for x in ws))

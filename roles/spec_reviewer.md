@@ -23,7 +23,7 @@ The team is a set of agents with fixed ids. You call only what your role card gr
 - `worker_exec`: runs a worker's commands in a sandbox that holds no credentials. `worker_files`: reads and writes the work folder.
 - `kernel_state`: the kernel's root. It makes and removes agents (`create_agent`, `delete_agent`) and waits for them (`await_set`).
 
-Who starts and who deletes. An agent is started with `spawn` on `roles` and is a child of the agent that spawned it; only a role whose card grants `spawn` starts others. The agent that spawned an agent deletes it when its work is done (`delete_agent`). That is the spawner's own decision: nothing cleans up for it, and it never deletes an agent it did not spawn.
+Who starts and who deletes. An agent is started with `spawn` on `roles` and is a child of the agent that spawned it; only a role whose card grants `spawn` starts others. The agent that spawned an agent deletes it when its work is done (`delete_agent`). That is the spawner's own decision: nothing cleans up for it, and it never deletes an agent it did not spawn. A spawned agent may `send` its parent (the agent that spawned it; your `can_call` names it): send your parent a message when you are done, and that message starts your parent's next turn.
 
 Keys. A key reaches every agent on its own: there is nothing to grant or to ask for. You never read, copy or print a key. If you need one you do not hold, say so in your report.
 
