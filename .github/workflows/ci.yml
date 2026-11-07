@@ -1,10 +1,17 @@
-# CI, run by hand only (#46): `gh workflow run ci.yml --ref <branch>`, or the Actions tab.
-# Units by default; `-f e2e=true` adds release builds and the model-free e2e after every
-# unit leg passed; `-f cleanup=true` also saves the build caches. No secrets: the tests use fake models and a fake forge.
+# CI, run by hand (#46): `gh workflow run ci.yml --ref <branch>`, or the Actions tab.
+# Units by default (lint, test, github and tauri run in parallel); `-f e2e=true` adds release
+# builds and the model-free e2e after every unit leg passed; `-f cleanup=true` also saves the
+# build caches. The one automatic run: a push to main that changes Cargo.lock,
+# rust-toolchain.toml or this file runs the units on all three OSes and saves their caches,
+# so branch runs restore warm caches from main. No secrets: the tests use fake models and a fake forge.
+# Cache keys: <OS>-<job>-<hash of Cargo.lock>, one per job (lint/test/github/tauri/release) so parallel jobs never race on one key; PR/branch runs only restore.
 name: ci
 run-name: ci · ${{ inputs.e2e && 'full' || 'units' }}
 
 on:
+  push:
+    branches: [main]
+    paths: [Cargo.lock, rust-toolchain.toml, .github/workflows/ci.yml]
   workflow_dispatch:
     inputs:
       e2e:
@@ -39,14 +46,15 @@ defaults:
     shell: bash
 
 jobs:
-  units:
-    name: units (${{ matrix.os }})
+  # Units, three parallel legs per OS (lint, test, github); every leg must pass before build/repro.
+  lint:
+    name: units · fmt+clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # units_os=all (default) and every full run: three OSes; units_os=linux: ubuntu only
-        os: ${{ fromJSON((inputs.units_os == 'all' || inputs.e2e == true) && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+        # units_os=all (default), every full run and a push to main: three OSes; units_os=linux: ubuntu only
+        os: ${{ fromJSON((inputs.units_os == 'all' || inputs.e2e == true || github.event_name == 'push') && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
     env:
       RUSTC_WRAPPER: sccache
     steps:
@@ -78,11 +86,61 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-units-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-lint-${{ hashFiles('**/Cargo.lock') }}
       - name: fmt
         run: cargo fmt --check
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # cleanup or a push to main: save the finished cache (a restore-only run leaves it alone)
+      - uses: actions/cache/save@v4
+        if: (inputs.cleanup == true || github.event_name == 'push') && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-lint-${{ hashFiles('**/Cargo.lock') }}
+
+  test:
+    name: units · test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # units_os=all (default), every full run and a push to main: three OSes; units_os=linux: ubuntu only
+        os: ${{ fromJSON((inputs.units_os == 'all' || inputs.e2e == true || github.event_name == 'push') && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+    env:
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v4
+      # the toolchain is the pin in rust-toolchain.toml; rustup installs it (#137)
+      - name: toolchain (rust-toolchain.toml)
+        run: |
+          pin=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "pinned: $pin"
+          rustup show
+          # guard: the runner's rustc must be the pin (rustup reads rust-toolchain.toml)
+          case "$(rustc -V)" in
+            "rustc $pin "*) ;;
+            *) echo "::error::rustc is $(rustc -V), not the pin $pin"; exit 1 ;;
+          esac
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      # fantastic's canvas page builds esbuild from pinned source with Go, and packs with zip
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.4"
+          cache: false
+      - name: zip (the canvas packer's; not on the Windows image)
+        if: runner.os == 'Windows'
+        run: choco install zip --no-progress -y
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
       - name: test
         run: cargo test --workspace
       - name: secrets guard
@@ -94,6 +152,56 @@ jobs:
           sh tests/remote_scripts.sh
           sh tests/build_github.sh
           sh tests/repro_scripts.sh
+      # cleanup or a push to main: save the finished cache (a restore-only run leaves it alone)
+      - uses: actions/cache/save@v4
+        if: (inputs.cleanup == true || github.event_name == 'push') && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
+
+  github:
+    name: units · github (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # the github build has no Windows leg (its steps never ran there): ubuntu and macOS, or ubuntu only
+        os: ${{ fromJSON((inputs.units_os == 'all' || inputs.e2e == true || github.event_name == 'push') && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
+    env:
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v4
+      # the toolchain is the pin in rust-toolchain.toml; rustup installs it (#137)
+      - name: toolchain (rust-toolchain.toml)
+        run: |
+          pin=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "pinned: $pin"
+          rustup show
+          # guard: the runner's rustc must be the pin (rustup reads rust-toolchain.toml)
+          case "$(rustc -V)" in
+            "rustc $pin "*) ;;
+            *) echo "::error::rustc is $(rustc -V), not the pin $pin"; exit 1 ;;
+          esac
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      # fantastic's canvas page builds esbuild from pinned source with Go, and packs with zip
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.23.4"
+          cache: false
+      - name: zip (the canvas packer's; not on the Windows image)
+        if: runner.os == 'Windows'
+        run: choco install zip --no-progress -y
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-github-${{ hashFiles('**/Cargo.lock') }}
       # the GitHub build is the general tree plus patches/github-exec.patch (#136)
       - name: github patch applies
         if: runner.os != 'Windows'
@@ -101,25 +209,24 @@ jobs:
       - name: github build tests
         if: runner.os != 'Windows'
         run: sh scripts/build-github.sh --test
-      # cleanup only: save the finished cache (a restore-only run leaves it alone)
+      # cleanup or a push to main: save the finished cache (a restore-only run leaves it alone)
       - uses: actions/cache/save@v4
-        if: inputs.cleanup == true && steps.cache.outputs.cache-hit != 'true'
+        if: (inputs.cleanup == true || github.event_name == 'push') && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-units-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-github-${{ hashFiles('**/Cargo.lock') }}
 
   # The Tauri window crate builds with its off-by-default feature (#37). No secrets, no signing.
   tauri:
     name: tauri (${{ matrix.os }})
-    needs: units
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((inputs.units_os == 'all' || inputs.e2e == true) && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((inputs.units_os == 'all' || inputs.e2e == true || github.event_name == 'push') && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
     env:
       RUSTC_WRAPPER: sccache
     steps:
@@ -157,9 +264,9 @@ jobs:
           key: ${{ runner.os }}-tauri-${{ hashFiles('**/Cargo.lock') }}
       - name: build the app with the Tauri window
         run: cargo build -p fantastic-team-app --features tauri
-      # cleanup only: save the finished cache (a restore-only run leaves it alone)
+      # cleanup or a push to main: save the finished cache (a restore-only run leaves it alone)
       - uses: actions/cache/save@v4
-        if: inputs.cleanup == true && steps.cache.outputs.cache-hit != 'true'
+        if: (inputs.cleanup == true || github.event_name == 'push') && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry
@@ -170,7 +277,7 @@ jobs:
   build:
     name: build (${{ matrix.os }})
     if: inputs.e2e == true
-    needs: units
+    needs: [lint, test, github]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -224,9 +331,9 @@ jobs:
           path: target/github/release/fantastic_team-github
           if-no-files-found: error
 
-      # cleanup only: save the finished cache (a restore-only run leaves it alone)
+      # cleanup or a push to main: save the finished cache (a restore-only run leaves it alone)
       - uses: actions/cache/save@v4
-        if: inputs.cleanup == true && steps.cache.outputs.cache-hit != 'true'
+        if: (inputs.cleanup == true || github.event_name == 'push') && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry
@@ -240,7 +347,7 @@ jobs:
   repro:
     name: repro (${{ matrix.os }})
     if: inputs.e2e == true
-    needs: units
+    needs: [lint, test, github]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
