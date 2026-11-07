@@ -584,7 +584,7 @@ mod tests {
         fantastic_kernel::lock::acquire(dir.path()).unwrap();
         booted.write_seed().unwrap();
         let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel).await.unwrap();
+        crate::boot_kernel(&kernel, true).await.unwrap();
         let mut mk = json!({"type": "create_agent", "parent_id": "user", "id": "credentials",
             "handler_module": "credential_store.tools", "backend": "env", "refs": {}});
         if let Some(endpoint) = real_lead {
