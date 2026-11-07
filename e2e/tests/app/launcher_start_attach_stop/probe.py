@@ -38,7 +38,7 @@ def run(ctx):
     procs = []
     try:
         q = app.free_port()
-        run_flow.boot(ctx, forge=False, extra_args=["webui", "--port", q])
+        run_flow.boot(ctx, forge=False, extra_args=["webui", "--port", q], seeded=True)
         page_url = f"http://127.0.0.1:{q}/team_page/file/index.html"
         v.check("the headless binary's web UI answers on its port", app.wait_http(page_url, 30), page_url)
 
@@ -65,12 +65,10 @@ def run(ctx):
         p = app.free_port()
         start_dir = os.path.join(ctx.run_dir, "start_dir")
         os.makedirs(start_dir)
-        # The launcher makes a team (`create_agent` under fixed ids) in a folder whose kernel has
-        # no `lead`; a folder that has its `lead` is started as it is, so this one brings its own.
-        # The first `webui --port` start seeds a never-used directory and serves the page at
-        # once; the directory is started once beforehand so it holds its `lead`.
-        seed_dir(ctx, start_dir, "seed", procs, v, lambda t: records.create(
-            t, {"id": "lead", "parent_id": "user", "handler_module": "ram_store.tools"}))
+        # The first `webui --port` start seeds a never-used directory with the team's fixed agents
+        # (`crates/team/blueprint.yaml`, #261) and serves the page at once; the directory is
+        # started once beforehand so the launcher finds a team that is already all there.
+        seed_dir(ctx, start_dir, "seed", procs, v, lambda t: None)
         s = app.run_app(ctx, ["--binary", ctx.binary, "--port", p, "--dir", start_dir], name="start")
         procs.append(s)
         want = f"http://127.0.0.1:{p}/"
@@ -101,20 +99,21 @@ def run(ctx):
         v.check("the port refuses connections after stop", app.wait_refused(p, 10))
         v.check("stop did not touch the attached server", web.up(q, "/team_page/file/index.html"))
 
-        # --- start in an empty folder on a fresh home: the app chooses fantastic's plain key mode
-        # (so the credential store exists), then makes the team with create_agent under fixed ids
-        # (no blueprint, no import)
+        # --- start in an empty folder on a fresh home: the team is seeded from its yaml by the
+        # first run; the app creates nothing and chooses no key mode (the person's choice)
         new_dir = os.path.join(ctx.run_dir, "new_team_dir")
         os.makedirs(new_dir)
         before = {}
 
         def look(t):
-            before["agents"], before["mode"] = t.agents(), key_mode(t)
+            before["agents"] = t.agents()
 
         seed_dir(ctx, new_dir, "seed_new", procs, v, look)
-        v.check("the fresh home has no credential store and no key mode before the app starts",
-                "credentials" not in before.get("agents", {"credentials": 1}) and before.get("mode", 1) is None,
-                str(before.get("mode")))
+        # The first run seeded the team's agents from the blueprint (#261), ids as written.
+        seeded = before.get("agents", {})
+        v.check("the first run seeded the team's fixed agents before the app starts",
+                {"lead", "board", "roles", "tasks", "queue", "github", "worker_exec", "worker_files"} <= set(seeded),
+                str(sorted(seeded)))
         n = app.free_port()
         s2 = app.run_app(ctx, ["--binary", ctx.binary, "--port", n, "--dir", new_dir], name="start_new")
         procs.append(s2)
@@ -122,10 +121,12 @@ def run(ctx):
         v.check("start in a folder with no team prints the web UI URL", bool(line), s2.log())
         t2 = team_mod.Team(ctx.binary, new_dir, app.env_of(ctx.team))
         agents = t2.agents() if line else {}
-        v.check("the app chose fantastic's plain key mode on the fresh home",
-                bool(line) and key_mode(t2) == "plain")
-        want_ids = {"credentials", "lead", "queue", "github", "board", "roles", "tasks", "worker_exec", "worker_files"}
-        v.check("the app made the team under the fixed ids the role cards name",
+        v.check("the app chose no key mode on the fresh home (the person's choice)",
+                bool(line) and key_mode(t2) is None)
+        v.check("no credential store and no helper agent exist until the person chooses a mode",
+                not {"credentials", "key_mode_setup"} & set(agents), str(sorted(agents)))
+        want_ids = {"lead", "queue", "github", "board", "roles", "tasks", "worker_exec", "worker_files"}
+        v.check("the first run seeded the team under the fixed ids the role cards name",
                 want_ids <= set(agents), str(sorted(set(agents))))
         v.check("no id carries an import's suffix", not [i for i in agents if i.endswith("_1")],
                 str(sorted(agents)))
@@ -133,8 +134,16 @@ def run(ctx):
                 all(agents.get(i, {}).get("parent_id") == "lead" for i in ("roles", "queue", "board", "tasks")),
                 str({i: agents.get(i, {}).get("parent_id") for i in want_ids}))
         mem = agents.get("memory", {}).get("callable_by", {})
-        v.check("the other end of the lead's edge is on the home's memory, and what it had stays",
-                mem.get("lead") == "*" and mem.get("user") in ("*", ["*"]), str(mem))
+        v.check("fantastic's boot wrote the other end of the lead's edge on the home's memory, and what it had stays",
+                mem.get("lead") in ("*", ["*"]) and mem.get("user") in ("*", ["*"]), str(mem))
+        v.check("the yaml's parent entry wrote the other end of roles' and tasks' edge on memory",
+                mem.get("roles") in ("*", ["*"]) and mem.get("tasks") in ("*", ["*"]), str(mem))
+        ucb = agents.get("user", {}).get("callable_by", {}).get("team_ws", [])
+        v.check("the yaml's parent entry wrote the page leg's end on user (inquiries, answer_inquiry)",
+                {"inquiries", "answer_inquiry"} <= set(ucb), str(ucb))
+        rcb = agents.get("kernel_state", {}).get("callable_by", {}).get("board", [])
+        v.check("the yaml's @root entry wrote the board's end on the root (reflect)",
+                "reflect" in rcb, str(rcb))
         v.check("the role cards were written next to the kernel",
                 os.path.isfile(os.path.join(new_dir, "roles", "project_lead.md")))
         s2.signal(signal.SIGINT)

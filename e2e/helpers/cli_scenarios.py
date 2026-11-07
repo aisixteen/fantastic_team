@@ -17,7 +17,7 @@ import os
 import subprocess
 import time
 
-from . import cli, team as team_mod, web
+from . import cli, stock, team as team_mod, web
 from .verdict import Skip
 
 # The trees the precreated scenarios make: id -> parent, parents first.
@@ -233,8 +233,15 @@ def canvas_end(ctx, v) -> None:
     v.check("the lead's canvas and the lead are still there", {"lead", "sketch"} <= set(team.agents()))
     team.stop()
 
-    # webui --port N, in the same folder: the team page and its socket, from the binary
+    # webui --port N, in the same folder: the team page and its socket, from the binary. A folder
+    # fantastic's own `canvas` seeded has none of the team's records (the team's first run seeds them,
+    # #261, and `webui` makes none): they are made here, as a person with a team of their own would.
     wport = team_mod.free_port()
+    if os.path.exists(sock):
+        os.remove(sock)
+    team.start()
+    stock.make_web(team)
+    team.stop()
     if os.path.exists(sock):
         os.remove(sock)
     team.start(extra_args=["webui", "--port", wport])

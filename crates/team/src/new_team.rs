@@ -1,9 +1,8 @@
-//! A new team in roles mode, made the way fantastic makes any agent: `create_agent` on the
-//! root, under FIXED ids we choose, and the other end of each edge written on the home
-//! agents the team reaches. There is no blueprint and no import: fantastic's import gives
-//! every agent a fresh id (`github` becomes `github_1`) and the role cards name the tool
-//! agents by id in their grants, so the cards stay true only when the ids are the ones
-//! written here.
+//! A new team in roles mode: the fixed agents of `crates/team/blueprint.yaml`, written by
+//! the first run with fantastic's `seed_dir_with` ([`crate::hydrate`]) and rehydrated from
+//! disk after, as fantastic rehydrates its own. The ids are fixed because the role cards
+//! name the tool agents by id in their grants (fantastic's import would give every agent a
+//! fresh id: `github` becomes `github_1`).
 //!
 //! The ids: the main lead [`LEAD`]; under it the roles registry [`ROLES`], the task
 //! registry [`TASKS`], the queue [`QUEUE`], the board [`BOARD`], the GitHub connector
@@ -11,17 +10,13 @@
 //! files in `roles/` of the repo, embedded in [`crate::roles`]) are written next to the
 //! kernel by [`write_cards`]; the registry reads them from its `role_dirs`.
 //!
-//! [`steps`] is pure: it lists what to create and which grants to merge. [`apply`] runs the
-//! steps through any `send` (the app's `fantastic_team send`, a test's kernel), so both
-//! make the same team. The CLI never calls this: there the caller brings the records.
+//! There is no code here that creates, updates or grants an agent: the blueprint is the
+//! one declaration.
 
-use std::future::Future;
 use std::path::Path;
 
-use serde_json::{json, Map, Value};
-
 use crate::roles;
-use crate::tree::{BOARD_ID, ROLES_ID, ROOT_ID, TASKS_ID};
+use crate::tree::{BOARD_ID, ROLES_ID, TASKS_ID};
 
 /// The main lead: the agent the person chats with.
 pub const LEAD: &str = "lead";
@@ -69,200 +64,6 @@ pub const LEAD_CANVAS_VERBS: [&str; 1] = ["new_canvas"];
 pub const LEAD_FILES_VERBS: [&str; 5] =
     ["read", "read_stream", "watch_path", "unwatch_path", "watch"];
 
-/// One step of making a team.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Step {
-    /// `create_agent` on the root with this payload (it carries `id` and `parent_id`).
-    Create(Value),
-    /// Add `entries` to `field` (`can_call` or `callable_by`) of `agent`, which exists
-    /// already (a home agent). `update_agent` replaces a whole map, so the entries the
-    /// agent has stay.
-    Grant {
-        /// The agent that exists already.
-        agent: String,
-        /// `can_call` or `callable_by`.
-        field: &'static str,
-        /// The keys to add.
-        entries: Map<String, Value>,
-    },
-}
-
-fn both(extra: Value) -> Value {
-    let mut m = json!({"$self": "*", "$parent": "*"});
-    for (k, v) in extra.as_object().into_iter().flatten() {
-        m[k] = v.clone();
-    }
-    m
-}
-
-fn create(id: &str, parent: &str, rest: Value) -> Step {
-    let mut p = rest;
-    p["type"] = json!("create_agent");
-    p["id"] = json!(id);
-    p["parent_id"] = json!(parent);
-    Step::Create(p)
-}
-
-fn grant(agent: &str, field: &'static str, entries: Value) -> Step {
-    Step::Grant {
-        agent: agent.into(),
-        field,
-        entries: entries.as_object().cloned().unwrap_or_default(),
-    }
-}
-
-/// The backend fields of one tier, as the registry's `tiers` hold them.
-fn tier(model: &str, input: f64, output: f64, max_tokens: u64, compact: bool) -> Value {
-    let mut t = json!({
-        "handler_module": "anthropic_backend.tools",
-        "model": model,
-        "endpoint": "https://api.anthropic.com/v1/messages",
-        "credentials": {"store": CREDENTIALS, "ref": "anthropic/api.anthropic.com"},
-        "price_input_per_mtok": input,
-        "price_output_per_mtok": output,
-        "caching": "provider_cache",
-        "context_window": 1_000_000,
-        "max_tokens": max_tokens,
-        "memory_store_id": MEMORY,
-    });
-    if compact {
-        t["context_strategy"] = json!("compact");
-    }
-    t
-}
-
-/// The steps that make a team in `dir`: the lead first, then what it holds, then the
-/// grants on the home agents. Pure: touches no disk. The worker's tools carry the absolute
-/// paths of `dir`. `owner/name` in `github` and `board` is yours to replace
-/// (`update_agent`).
-pub fn steps(dir: &Path) -> Vec<Step> {
-    let work = crate::worker_exec::work_dir(dir)
-        .to_string_lossy()
-        .into_owned();
-    let mut exec = crate::worker_exec::worker_exec_record(dir);
-    exec["callable_by"] = both(json!({}));
-    let mut lead = tier("claude-opus-5-5", 4.0, 20.0, 32_000, false);
-    lead["file_bridge_id"] = json!(FILES);
-    lead["system_prompt_file"] = json!("roles/lead.md");
-    lead["can_call"] = json!({
-        "$self": "*", "$subtree": "*",
-        (MEMORY): "*", (CREDENTIALS): "*", (FILES): LEAD_FILES_VERBS,
-        (ROOT_ID): LEAD_ROOT_VERBS,
-        (ROLES): LEAD_ROLES_VERBS,
-        (BOARD): LEAD_BOARD_VERBS,
-        (CANVAS): LEAD_CANVAS_VERBS,
-    });
-    lead["callable_by"] = both(json!({}));
-    let mut out = vec![
-        create(LEAD, PARENT, lead),
-        create(
-            QUEUE,
-            LEAD,
-            json!({"handler_module": "ram_store.tools",
-                   "callable_by": both(json!({(BOARD): "*"}))}),
-        ),
-        create(
-            GITHUB,
-            LEAD,
-            json!({
-                "handler_module": "team_github.tools",
-                "app": {"credentials": {"store": CREDENTIALS, "ref": "github/app"}},
-                "repos": ["owner/name"],
-                "directive": "Push a work branch and open a draft pull request. Never the default branch, never a force, never a merge.",
-                "can_call": {"$self": "*", (CREDENTIALS): "*"},
-                "callable_by": both(json!({(BOARD): "*"})),
-            }),
-        ),
-        create(
-            BOARD,
-            LEAD,
-            json!({
-                "handler_module": "team_board.tools",
-                "repos": ["owner/name"],
-                "github": GITHUB,
-                "store": QUEUE,
-                "roles": ROLES,
-                "can_call": {
-                    "$self": "*", (GITHUB): "*", (QUEUE): "*",
-                    (ROLES): ["fleet", "get_count"],
-                    (TASKS): ["list"],
-                    (ROOT_ID): ["reflect"],
-                },
-                "callable_by": both(json!({})),
-            }),
-        ),
-        create(
-            ROLES,
-            LEAD,
-            json!({
-                "handler_module": "agentic_resources.tools",
-                "role_dirs": ["roles"],
-                "limits": {"total": 3, "per_role": {"worker": 2}},
-                "tiers": {
-                    "strong": tier("claude-opus-5-5", 4.0, 20.0, 32_000, false),
-                    "small": tier("claude-haiku-5-5", 0.1, 0.5, 32_000, true),
-                    "issue_keeper": tier("claude-haiku-5-5", 0.1, 0.5, 8_000, true),
-                },
-                "can_call": {"$self": "*", (MEMORY): "*"},
-                "callable_by": both(json!({
-                    (LEAD): LEAD_ROLES_VERBS,
-                    (BOARD): ["fleet", "get_count"],
-                })),
-            }),
-        ),
-        create(
-            TASKS,
-            LEAD,
-            json!({
-                "handler_module": "task_registry.tools",
-                "task_store_id": MEMORY,
-                "can_call": {"$self": "*", (MEMORY): "*"},
-                "callable_by": both(json!({(BOARD): ["list"]})),
-            }),
-        ),
-        create(WORKER_EXEC, LEAD, exec),
-        create(
-            WORKER_FILES,
-            LEAD,
-            json!({"handler_module": "file_bridge.tools", "root": work, "allow": ["."],
-                   "ingress_rule": "allow_all_ingress",
-                   "callable_by": both(json!({}))}),
-        ),
-    ];
-    // the other end of every edge to an agent that was there before: the home's stores,
-    // the credential store and the root
-    out.push(grant(
-        MEMORY,
-        "callable_by",
-        json!({(LEAD): "*", (ROLES): "*", (TASKS): "*"}),
-    ));
-    out.push(grant(
-        FILES,
-        "callable_by",
-        json!({(LEAD): LEAD_FILES_VERBS}),
-    ));
-    out.push(grant(
-        CREDENTIALS,
-        "callable_by",
-        json!({(LEAD): "*", (GITHUB): "*"}),
-    ));
-    out.push(grant(
-        ROOT_ID,
-        "callable_by",
-        json!({(LEAD): LEAD_ROOT_VERBS, (BOARD): ["reflect"]}),
-    ));
-    out
-}
-
-/// `current` with `entries` added to the map it holds (its other keys stay).
-pub fn merged(current: &Value, entries: &Map<String, Value>) -> Value {
-    let mut m = current.as_object().cloned().unwrap_or_default();
-    for (k, v) in entries {
-        m.insert(k.clone(), v.clone());
-    }
-    Value::Object(m)
-}
-
 /// Write the role cards under `dir/roles` (the folder the registry's `role_dirs` names,
 /// relative to the directory the team runs in). A card the directory already has stays as
 /// it is. Returns how many cards were written.
@@ -281,195 +82,13 @@ pub fn write_cards(dir: &Path) -> Result<usize, String> {
     Ok(wrote)
 }
 
-/// The agent the key mode is asked and set through: fantastic's `setup.tools`, the agent its
-/// set-up page talks to. It exists only for these calls.
-pub const KEY_MODE_AGENT: &str = "key_mode_setup";
-
-/// Fantastic makes its credential store (the agent `credentials`) only once a key mode is
-/// chosen, and the team's grants name that store. When no mode is chosen yet, choose `plain`
-/// (fantastic's own mode: the keys in one private file in the home's keys folder) through
-/// fantastic's `set_key_mode`, the call its set-up page makes, on a `setup.tools` agent made
-/// for it and deleted after. A mode the user chose stays as it is. Run it before [`apply`].
-/// Returns whether it chose `plain`.
-pub async fn choose_key_mode<S, F>(mut send: S) -> Result<bool, String>
-where
-    S: FnMut(&'static str, Value) -> F,
-    F: Future<Output = Result<Value, String>>,
-{
-    fn failed(what: &str, r: &Value) -> Result<(), String> {
-        match r.get("error") {
-            Some(e) => Err(format!("{what}: {e}")),
-            None => Ok(()),
-        }
-    }
-    let made = send(
-        ROOT_ID,
-        json!({"type": "create_agent", "parent_id": PARENT, "id": KEY_MODE_AGENT,
-               "handler_module": "setup.tools"}),
-    )
-    .await?;
-    failed("the key mode could not be asked", &made)?;
-    let chosen: Result<bool, String> = async {
-        let now = send(KEY_MODE_AGENT, json!({"type": "key_mode"})).await?;
-        failed("the key mode could not be read", &now)?;
-        if !now["mode"].is_null() {
-            return Ok(false);
-        }
-        let set = send(
-            KEY_MODE_AGENT,
-            json!({"type": "set_key_mode", "mode": "plain"}),
-        )
-        .await?;
-        failed("the key mode could not be set to plain", &set)?;
-        Ok(true)
-    }
-    .await;
-    let gone = send(
-        ROOT_ID,
-        json!({"type": "delete_agent", "id": KEY_MODE_AGENT}),
-    )
-    .await;
-    let chosen = chosen?;
-    failed("the key mode agent could not be removed", &gone?)?;
-    Ok(chosen)
-}
-
-/// True when `list_agents`'s reply holds an agent with this id.
-pub fn has_agent(list: &Value, id: &str) -> bool {
-    list["agents"]
-        .as_array()
-        .is_some_and(|a| a.iter().any(|r| r["id"] == id))
-}
-
-/// Run `steps` through `send(target, payload) -> result` (the item's `result`). A refusal
-/// stops at once and names the step.
-pub async fn apply<S, F>(steps: &[Step], mut send: S) -> Result<(), String>
-where
-    S: FnMut(&'static str, Value) -> F,
-    F: Future<Output = Result<Value, String>>,
-{
-    fn refused(what: String, r: &Value) -> Result<(), String> {
-        match r.get("error") {
-            Some(e) => Err(format!("{what} was refused: {e}")),
-            None => Ok(()),
-        }
-    }
-    for step in steps {
-        match step {
-            Step::Create(p) => {
-                let r = send(ROOT_ID, p.clone()).await?;
-                refused(format!("create_agent {}", p["id"]), &r)?;
-            }
-            Step::Grant {
-                agent,
-                field,
-                entries,
-            } => {
-                let list = send(ROOT_ID, json!({"type": "list_agents"})).await?;
-                let rec = list["agents"]
-                    .as_array()
-                    .and_then(|a| a.iter().find(|r| r["id"] == agent.as_str()))
-                    .ok_or_else(|| {
-                        format!("the agent `{agent}` the team reaches does not exist")
-                    })?;
-                let mut up = json!({"type": "update_agent", "id": agent});
-                up[*field] = merged(&rec[*field], entries);
-                let r = send(ROOT_ID, up).await?;
-                refused(format!("the {field} grant on `{agent}`"), &r)?;
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tree::ROOT_ID;
     use fantastic_kernel::{bootstrap, AgentId, Item, Kernel};
+    use serde_json::{json, Value};
     use std::sync::Arc;
-
-    fn creates(s: &[Step]) -> Vec<&Value> {
-        s.iter()
-            .filter_map(|x| match x {
-                Step::Create(p) => Some(p),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn the_steps_use_the_fixed_ids_the_cards_name() {
-        let s = steps(Path::new("/team"));
-        let ids: Vec<&str> = creates(&s)
-            .iter()
-            .map(|p| p["id"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            ids,
-            [
-                "lead",
-                "queue",
-                "github",
-                "board",
-                "roles",
-                "tasks",
-                "worker_exec",
-                "worker_files"
-            ]
-        );
-        assert!(creates(&s).iter().all(|p| p["type"] == "create_agent"));
-        for p in creates(&s).iter().skip(1) {
-            assert_eq!(p["parent_id"], "lead", "{p}");
-        }
-        assert_eq!(creates(&s)[0]["parent_id"], "user");
-    }
-
-    #[test]
-    fn every_card_grant_on_a_tool_names_an_id_the_steps_create() {
-        let s = steps(Path::new("/team"));
-        let made: Vec<String> = creates(&s)
-            .iter()
-            .map(|p| p["id"].as_str().unwrap().to_string())
-            .collect();
-        for (file, text) in roles::ALL {
-            let c = team_agentic_resources::cards::parse_card(text, file).unwrap();
-            for tool in c.grants.keys() {
-                let known = made.contains(tool)
-                    || ["$registry", "kernel", "kernel_state", "canvas_page"]
-                        .contains(&tool.as_str());
-                assert!(
-                    known,
-                    "{file} grants `{tool}`, which the team does not create"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_tools_carry_the_absolute_paths_of_the_directory() {
-        let dir = Path::new("/team");
-        let s = steps(dir);
-        let c = creates(&s);
-        let work = crate::worker_exec::work_dir(dir)
-            .to_string_lossy()
-            .into_owned();
-        let files = c.iter().find(|p| p["id"] == WORKER_FILES).unwrap();
-        assert_eq!(files["root"], work.as_str());
-        let exec = c.iter().find(|p| p["id"] == WORKER_EXEC).unwrap();
-        assert_eq!(exec["handler_module"], "exec_bridge.tools");
-        assert_eq!(exec["cwd"], work.as_str());
-    }
-
-    #[test]
-    fn merged_keeps_the_entries_the_agent_has() {
-        let cur = json!({"$self": "*", "user": "*"});
-        let add = json!({"lead": ["read"]}).as_object().cloned().unwrap();
-        assert_eq!(
-            merged(&cur, &add),
-            json!({"$self": "*", "user": "*", "lead": ["read"]})
-        );
-        assert_eq!(merged(&Value::Null, &add), json!({"lead": ["read"]}));
-    }
 
     #[test]
     fn write_cards_never_overwrites() {
@@ -491,22 +110,6 @@ mod tests {
             let on_disk = std::fs::read_to_string(repo.join(file)).unwrap();
             assert_eq!(text, on_disk, "{file} drifted from roles/{file}");
         }
-    }
-
-    #[test]
-    fn the_modules_all_resolve_in_the_registry() {
-        let s = steps(Path::new("/team"));
-        let reg = crate::registry();
-        let mut found: Vec<String> = creates(&s)
-            .iter()
-            .filter_map(|p| p["handler_module"].as_str().map(String::from))
-            .collect();
-        let roles_rec = creates(&s).into_iter().find(|p| p["id"] == ROLES).unwrap();
-        for t in roles_rec["tiers"].as_object().unwrap().values() {
-            found.push(t["handler_module"].as_str().unwrap().to_string());
-        }
-        let missing: Vec<&String> = found.iter().filter(|m| reg.get(m).is_none()).collect();
-        assert!(missing.is_empty(), "not registered: {missing:?}");
     }
 
     /// An agent that makes the call it is told to AS ITSELF, so the gate and `spawn`
@@ -550,9 +153,10 @@ mod tests {
         }
     }
 
-    /// A home seeded the way the CLI seeds one, with this repo's bundles and a `caller.tools`
-    /// bundle, the home's `credentials` agent, and the team made by [`steps`]: the lead and
-    /// the strong tier run on `caller.tools` (no model is called), nothing else changes.
+    /// A home seeded the way the team's first run seeds one (fantastic's `seed_dir_with` over
+    /// `crates/team/blueprint.yaml`), with this repo's bundles and a `caller.tools` bundle: the
+    /// lead and the strong tier run on `caller.tools` (no model is called), nothing else
+    /// changes.
     async fn team() -> (tempfile::TempDir, Arc<Kernel>) {
         let (dir, kernel, _) = team_with_log().await;
         (dir, kernel)
@@ -570,13 +174,80 @@ mod tests {
     /// take turns, as two apps in one process never would share an id.
     static REAL_LEAD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+    /// The agent `id` of a blueprint document, wherever it sits.
+    fn entry_mut<'a>(list: &'a mut Value, id: &str) -> Option<&'a mut Value> {
+        for e in list.as_array_mut()? {
+            if e["id"] == id {
+                return Some(e);
+            }
+            if let Some(found) = e.get_mut("agents").and_then(|kids| entry_mut(kids, id)) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The blueprint these tests seed: the team's own, with the web host left out (these
+    /// kernels serve nothing), the home's `credentials` store added under `user` (the
+    /// store fantastic makes once a key mode is chosen), the lead on `caller.tools` or on
+    /// `real_lead`'s endpoint, the strong tier on `caller.tools` and the registry reading
+    /// the cards of this directory.
+    fn test_blueprint(dir: &Path, real_lead: Option<&str>) -> String {
+        let mut doc: Value =
+            serde_yaml::from_str(&crate::hydrate::blueprint_text(dir).unwrap()).unwrap();
+        let list = &mut doc["agents"];
+        list.as_array_mut().unwrap().retain(|a| a["id"] != "web");
+        let mut creds = json!({"id": CREDENTIALS, "handler_module": "credential_store.tools",
+                               "backend": "env", "refs": {}});
+        if let Some(endpoint) = real_lead {
+            creds["backend"] = json!("file");
+            creds["file"] = json!(dir.join("creds.yaml").to_string_lossy());
+            let host = endpoint.trim_start_matches("http://");
+            creds["refs"] = json!({"plug": {"host": host.split('/').next().unwrap()}});
+        }
+        entry_mut(list, PARENT).unwrap()["agents"]
+            .as_array_mut()
+            .unwrap()
+            .push(creds);
+        let lead = entry_mut(list, LEAD).unwrap();
+        match real_lead {
+            None => lead["handler_module"] = json!("caller.tools"),
+            Some(endpoint) => {
+                lead["endpoint"] = json!(endpoint);
+                lead["credentials"] = json!({"store": CREDENTIALS, "ref": "plug"});
+            }
+        }
+        let roles = entry_mut(list, ROLES).unwrap();
+        roles["tiers"]["strong"]["handler_module"] = json!("caller.tools");
+        // the cards are in this directory, not the one the test runs in
+        roles["role_dirs"] = json!([dir.join("roles").to_string_lossy()]);
+        serde_yaml::to_string(&doc).unwrap()
+    }
+
+    /// What fantastic's own boot does for an AI agent and a blueprint cannot: the other end
+    /// of the lead's edges on the stock agents (`reach::grant_all`, fantastic
+    /// `src/tui/src/kern/reach.rs`, run by `Host::boot` in the shell). These kernels are
+    /// in-process, with no shell, so the test writes that end itself.
+    fn reach_like_the_shell(kernel: &Arc<Kernel>) {
+        for id in [MEMORY, FILES, CREDENTIALS, ROOT_ID] {
+            kernel
+                .edit_callable_by(&AgentId::from(id), |cb| {
+                    cb.insert(LEAD.into(), json!("*"));
+                    true
+                })
+                .unwrap();
+        }
+    }
+
     /// The home and the team of [`team_with_log`]. With `Some(endpoint)` the lead stays the
     /// real backend the app makes, pointed at `endpoint` (a scripted model on 127.0.0.1) with a
     /// key from a file credential store; nothing else about it changes.
     async fn build(real_lead: Option<&str>) -> (tempfile::TempDir, Arc<Kernel>, SentLog) {
         let log: SentLog = Arc::default();
         let dir = tempfile::TempDir::new().unwrap();
-        fantastic_tui::seed_dir(dir.path()).unwrap();
+        write_cards(dir.path()).unwrap();
+        fantastic_tui::seed_dir_with(dir.path(), &[&test_blueprint(dir.path(), real_lead)])
+            .unwrap();
         let mut reg = crate::registry();
         reg.register("caller.tools", CallerBundle(log.clone()));
         let mut booted =
@@ -585,16 +256,7 @@ mod tests {
         booted.write_seed().unwrap();
         let kernel = booted.kernel.clone();
         crate::boot_kernel(&kernel, true).await.unwrap();
-        let mut mk = json!({"type": "create_agent", "parent_id": "user", "id": "credentials",
-            "handler_module": "credential_store.tools", "backend": "env", "refs": {}});
-        if let Some(endpoint) = real_lead {
-            mk["backend"] = json!("file");
-            mk["file"] = json!(dir.path().join("creds.yaml").to_string_lossy());
-            let host = endpoint.trim_start_matches("http://");
-            mk["refs"] = json!({"plug": {"host": host.split('/').next().unwrap()}});
-        }
-        let o = ask(&kernel, ROOT_ID, mk).await;
-        assert!(o.get("error").is_none(), "{o}");
+        reach_like_the_shell(&kernel);
         if real_lead.is_some() {
             let o = ask(
                 &kernel,
@@ -604,33 +266,6 @@ mod tests {
             .await;
             assert_eq!(o["stored"], json!(true), "{o}");
         }
-        write_cards(dir.path()).unwrap();
-        let mut made = steps(dir.path());
-        for s in &mut made {
-            if let Step::Create(p) = s {
-                if p["id"] == LEAD {
-                    match real_lead {
-                        None => p["handler_module"] = json!("caller.tools"),
-                        Some(endpoint) => {
-                            p["endpoint"] = json!(endpoint);
-                            p["credentials"] = json!({"store": CREDENTIALS, "ref": "plug"});
-                        }
-                    }
-                }
-                if p["id"] == ROLES {
-                    p["tiers"]["strong"]["handler_module"] = json!("caller.tools");
-                    // the cards are in this directory, not the one the test runs in
-                    p["role_dirs"] = json!([dir.path().join("roles").to_string_lossy()]);
-                }
-            }
-        }
-        let k = kernel.clone();
-        apply(&made, move |target, payload| {
-            let k = k.clone();
-            async move { Ok(ask(&k, target, payload).await) }
-        })
-        .await
-        .unwrap();
         (dir, kernel, log)
     }
 
@@ -829,19 +464,12 @@ mod tests {
         assert_eq!(reg["callable_by"]["lead"], json!(LEAD_ROLES_VERBS));
         // the other ends on the home agents, merged with what they had
         assert_eq!(meta(&kernel, "memory")["callable_by"]["lead"], "*");
-        assert_eq!(meta(&kernel, "memory")["callable_by"]["tasks"], "*");
         assert!(
             meta(&kernel, "memory")["callable_by"].get("user").is_some(),
             "what the home agent had stays"
         );
-        assert_eq!(
-            meta(&kernel, "files")["callable_by"]["lead"],
-            json!(LEAD_FILES_VERBS)
-        );
-        assert_eq!(
-            meta(&kernel, ROOT_ID)["callable_by"]["lead"],
-            json!(LEAD_ROOT_VERBS)
-        );
+        assert_eq!(meta(&kernel, "files")["callable_by"]["lead"], "*");
+        assert_eq!(meta(&kernel, ROOT_ID)["callable_by"]["lead"], "*");
         // the registry reads the cards, all six
         let all = call_as(&kernel, LEAD, ROLES, json!({"type": "roles"})).await;
         for name in roles::CODER_ROLES {
@@ -1027,19 +655,14 @@ mod tests {
         .await;
         assert!(o.get("error").is_none(), "{o}");
         // the other end of each edge, merged into what the callee has
-        let steps: Vec<Step> = edges
-            .as_object()
-            .unwrap()
-            .iter()
-            .map(|(callee, verbs)| grant(callee, "callable_by", json!({"cadencer": verbs})))
-            .collect();
-        let k = kernel.clone();
-        apply(&steps, move |t, p| {
-            let k = k.clone();
-            async move { Ok(ask(&k, t, p).await) }
-        })
-        .await
-        .unwrap();
+        for (callee, verbs) in edges.as_object().unwrap() {
+            kernel
+                .edit_callable_by(&AgentId::from(callee.as_str()), |cb| {
+                    cb.insert("cadencer".into(), verbs.clone());
+                    true
+                })
+                .unwrap();
+        }
         let cad = meta(&kernel, "cadencer");
         assert_eq!(
             cad["group_settings"], settings,
@@ -1071,7 +694,7 @@ mod tests {
             .unwrap_or_else(|| panic!("{pl}"))
             .to_string();
         let have = meta(&kernel, &pl)["can_call"].clone();
-        let mut more = merged(&have, &Map::new());
+        let mut more = have.clone();
         more[WORKER_EXEC] = json!("*");
         more[WORKER_FILES] = json!("*");
         let o = ask(
