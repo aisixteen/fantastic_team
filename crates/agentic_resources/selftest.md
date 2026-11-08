@@ -2,8 +2,8 @@
 
 > scopes: kernel, roles
 > requires: `cargo build --release --bin fantastic_kernel`
-> out-of-scope: a live model behind a tier — the cards and the limits are exercised
-> against any bundle a tier names
+> out-of-scope: a live model — the roles and the limits are exercised against any bundle
+> a spawn's `backend` names
 
 > Moved from fantastic (team#245) as it was there: the steps use fantastic's one-shot
 > CLI. In team the bundle runs inside `fantastic_team` (registered by `register_team`,
@@ -11,8 +11,9 @@
 > `fantastic_team send '{"target": "<id>", "payload": {"type": "<verb>", ...}}'`.
 
 A generic roles registry. **Off by default**: the host turns it on with
-`FANTASTIC_AGENTIC_RESOURCES=1`, and the registry agent's record carries its config
-(`role_dirs`, `tiers`). One-shot CLI: `fantastic <id> <verb> [k=v ...]`; JSON-valued
+`FANTASTIC_AGENTIC_RESOURCES=1`. A role is a meta bundle (`.fantastic/bundles/<name>/bundle.yaml`:
+a `base`, no program, `record.post_system_prompt` and `record.can_call`); the registry's
+record carries its `limits`. One-shot CLI: `fantastic <id> <verb> [k=v ...]`; JSON-valued
 args are coerced.
 
 ## Pre-flight
@@ -20,31 +21,28 @@ args are coerced.
 All test state lives under `/tmp/ar_test/`.
 
 ```bash
-rm -rf /tmp/ar_test && mkdir -p /tmp/ar_test/roles && cd /tmp/ar_test
+rm -rf /tmp/ar_test && mkdir -p /tmp/ar_test/.fantastic/bundles/writer && cd /tmp/ar_test
 export FANTASTIC_AGENTIC_RESOURCES=1
 FANTASTIC=/path/to/rust/target/release/fantastic_kernel
-cat > roles/writer.md <<'CARD'
----
-name: writer
-purpose: Writes the first draft of a text.
-tier: fast
----
-You write clearly and briefly.
-CARD
-AR=$($FANTASTIC kernel_state create_agent handler_module=agentic_resources.tools \
-  role_dirs='["/tmp/ar_test/roles"]' \
-  tiers='{"fast":{"handler_module":"scheduler.tools"}}' | jq -r .id)
+cat > .fantastic/bundles/writer/bundle.yaml <<'ROLE'
+base: scheduler.tools
+sentence: Writes the first draft of a text.
+record:
+  post_system_prompt: You write clearly and briefly.
+ROLE
+$FANTASTIC kernel_state reload_bundle name=writer | jq -e '.reloaded == "writer"'
+AR=$($FANTASTIC kernel_state create_agent handler_module=agentic_resources.tools | jq -r .id)
 ```
 
 ## Tests
 
-### Test 1: roles lists the cards (none is built in)
+### Test 1: roles lists the role bundles (none is built in)
 
 ```bash
 $FANTASTIC $AR roles | jq -e '[.roles[].name] == ["writer"]'
 ```
 
-### Test 2: role returns the full card; an unknown name is not_found
+### Test 2: role returns the full role; an unknown name is not_found
 
 ```bash
 $FANTASTIC $AR role name=writer | jq -e '.directive == "You write clearly and briefly."'
@@ -55,8 +53,8 @@ $FANTASTIC $AR role name=ghost | jq -e '.reason == "not_found"'
 
 ```bash
 $FANTASTIC $AR set_limit role=writer max=1 | jq -e '.ok'
-$FANTASTIC $AR spawn role=writer | jq -e '.id'
-$FANTASTIC $AR spawn role=writer | jq -e '.reason == "limit" and .scope == "role"'
+$FANTASTIC $AR spawn role=writer backend='{"handler_module":"scheduler.tools"}' | jq -e '.id'
+$FANTASTIC $AR spawn role=writer backend='{"handler_module":"scheduler.tools"}' | jq -e '.reason == "limit" and .scope == "role"'
 $FANTASTIC $AR get_count role=writer | jq -e '.running == 1 and .max == 1'
 ```
 

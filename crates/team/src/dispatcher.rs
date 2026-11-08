@@ -2223,7 +2223,7 @@ mod tests {
                 "handler_module": "ram_store.tools",
                 "team_groups": {"g": {"driver": "lead", "members": ["w1"]}}}),
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "roles",
-                "handler_module": "agentic_resources.tools", "role_dirs": ["roles"],
+                "handler_module": "agentic_resources.tools",
                 "tiers": {"t": {"handler_module": "ram_store.tools", "model": "m",
                     "endpoint": "http://e", "memory_store_id": "memory"}}}),
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "memory",

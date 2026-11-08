@@ -12,14 +12,13 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..",
 
 def run(ctx):
     v = Verdict("roles/total_limit_refuses_fourth_worker")
-    shutil.copytree(os.path.join(ROOT, "roles"), os.path.join(ctx.run_dir, "roles"))
     team = ctx.boot_team(puller=False, board=True, board_store="queue", groups={}, limits={"total": 3},
                          roles_tiers={"strong": S.lead_tier(ctx), "small": S.inert_tier(ctx),
                                       "issue_keeper": S.inert_tier(ctx)})
 
     roles = team.send("roles", {"type": "roles"})["result"]
     names = sorted(r["name"] for r in roles.get("roles", []))
-    v.check("the registry lists the six cards and no error",
+    v.check("the registry lists the six role bundles and no error",
             names == ["issue_keeper", "issue_writer", "lead", "project_lead", "spec_reviewer", "worker"]
             and roles.get("errors") == [], str(roles))
     before = team.send("roles", {"type": "get_count"})["result"]

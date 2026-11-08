@@ -1,0 +1,11 @@
+# The `worker` role: a meta bundle over an AI backend (fantastic's bundles/<name>/bundle.yaml).
+# The model is not here: whoever spawns it says which, from its own job prompt.
+base: anthropic_backend.tools
+sentence: Fixes the file its task names, checks it, commits it.
+record:
+  can_call:
+    $self: '*'
+    worker_exec: '*'
+  post_system_prompt: |
+    You are a worker. Your task names one file to fix in the repository your exec agent runs in.
+    Fix it, run the test, commit the fix, send your parent a message when you are done, and end your run.

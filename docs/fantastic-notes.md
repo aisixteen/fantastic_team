@@ -135,3 +135,12 @@ What the ssh twins measured at `a9b7a31` (#252: the backends and the key are on 
 - `user.callable_by`: `team_ws` `[inquiries, answer_inquiry]` (on the existing `user` entry, which also carries `agents:`).
 
 The agents the person makes later (`dispatcher`, `cadencer`, `pack`, `pack_listing`) still carry their own `callable_by: {team_ws: [...]}` on their records. Team chooses no key mode and makes no helper agent (`team_app::choose_key_mode` and `new_team::choose_key_mode` are gone): the key mode is the person's, through fantastic's set-up page. Without a mode there is no credential store, and the declared `github` grant waits in `.fantastic/cli/grants.yaml` until fantastic makes it.
+
+## Pin at `8eca583`
+
+`Cargo.lock` now pins fantastic `8eca583`. Since `a9b7a31` it brings:
+- **Meta bundles** (#513, #514). A `bundles/<name>/bundle.yaml` with a `base` and no program is the yaml over a compiled bundle, in RAM. An instance inherits its `record` (the nearest bundle wins) and overrides any field. The same inheritance runs at `create_agent`, at load and on `reload_bundle`, from one place (`fantastic-kernel/src/inherit.rs`). `bundle: X` beside another base keeps that handler. Team's roles are these bundles (`crates/team/bundles/`), and the registry reads them from the kernel.
+- **Redial:** `ws_bridge` redials a dropped link by itself, with a backoff, and keeps its watches (#493). `web_ws` emits `socket_open` / `socket_closed` on its leg.
+- **Connector error:** the exec bridge connector keeps its setup error, so a job that can't reach its kernel says why.
+- **Turns:** a drop mid-turn ends the called agent's turn through cancel (#491). A refused remote watch reaches the watcher as a named refusal (#492). The default `max_tokens` is bounded (#495, #496).
+- **Also:** `seed_dir_with` grants on stock agents, `reflect` carries every agent's view (#483), theming is removed (#482), and the kiosk and system agents are out of the base (#475, #486).

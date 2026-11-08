@@ -35,7 +35,13 @@
     "type": "spawn",
     "args": {
      "role": "worker",
-     "task": "The queue is queue. Your id is the id in your own reflect. Work on issue 1, then send your parent a message when you are done."
+     "task": "The queue is queue. Your id is the id in your own reflect. Work on issue 1, then send your parent a message when you are done.",
+     "backend": {
+      "credentials": {
+       "store": "credentials",
+       "ref": "model/unprovisioned"
+      }
+     }
     }
    }
   ]
@@ -83,7 +89,13 @@
     "type": "spawn",
     "args": {
      "role": "worker",
-     "task": "The queue is queue. Your id is the id in your own reflect. Work on issue 2, then send your parent a message when you are done."
+     "task": "The queue is queue. Your id is the id in your own reflect. Work on issue 2, then send your parent a message when you are done.",
+     "backend": {
+      "credentials": {
+       "store": "credentials",
+       "ref": "model/unprovisioned"
+      }
+     }
     }
    }
   ]

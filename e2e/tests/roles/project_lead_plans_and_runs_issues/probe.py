@@ -46,11 +46,6 @@ def run(ctx):
     v = Verdict("roles/project_lead_plans_and_runs_issues")
     forge = ctx.forge
     forge.extra_issues = 3  # four open issues in all
-    roles_dir = os.path.join(ctx.run_dir, "roles")
-    shutil.copytree(os.path.join(ROOT, "roles"), roles_dir)
-    w = os.path.join(roles_dir, "worker.md")
-    text = open(w).read()
-    open(w, "w").write(text.replace('  queue: "*"\n', '  queue: "*"\n  github: [issue_view, pr_create, pr_status]\n', 1))
     team = ctx.boot_team(puller=False, board=True, board_store="queue", groups={},
                          limits={"total": 5, "per_role": {"worker": 2}},
                          roles_tiers={"strong": S.lead_tier(ctx),
@@ -64,9 +59,15 @@ def run(ctx):
     # what it holds, so the operator holds what the card grants first.
     S.operator_holds(team, {"github": "*", "board": "*", "queue": "*", "tasks": "*", "roles": "*",
                             "kernel_state": "*", "canvas_page": ["new_canvas"]})
-    made = team.send("roles", {"type": "spawn", "role": "project_lead"})["result"]
+    # this team's workers may also use the GitHub connector: the worker bundle, edited in place
+    w = os.path.join(team.dir, ".fantastic", "bundles", "worker", "bundle.yaml")
+    text = open(w).read()
+    open(w, "w").write(text.replace("    queue: '*'\n", "    queue: '*'\n    github: [issue_view, pr_create, pr_status]\n", 1))
+    team.send("kernel", {"type": "reload_bundle", "name": "worker"})
+    # the operator is no AI agent: it names the project_lead's backend (its workers take that one)
+    made = team.send("roles", {"type": "spawn", "role": "project_lead", "backend": S.lead_tier(ctx)})["result"]
     pl = made.get("id")
-    v.check("the registry spawned the project_lead", bool(pl) and made.get("tier") == "strong", str(made))
+    v.check("the registry spawned the project_lead", bool(pl) and made.get("model") == "scripted-model", str(made))
     if not pl:
         team.stop()
         return v.finish()

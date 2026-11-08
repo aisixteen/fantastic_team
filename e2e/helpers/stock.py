@@ -154,13 +154,34 @@ def make_lead(ctx, team, tools=None, subtree: bool = True) -> str:
 
 # ---- the machinery: roles, board, dispatcher, cadencer, packs, the page -----------------
 
-def make_registry(ctx, team, tiers: dict, limits: dict | None = None, cards: bool = False,
-                  role_dirs=("roles",)) -> None:
-    """The roles registry (`agentic_resources`) with the given `tiers` and limits.
-    Without `cards` it has no `role_dirs`: the dispatcher makes workers from its tiers only."""
+REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def load_role_bundles(team, src: str | None = None) -> list[str]:
+    """The repo's role bundles (`crates/team/bundles/<role>/bundle.yaml`), or those of `src`,
+    written under the team's `.fantastic/bundles/` and loaded into the running kernel
+    (`reload_bundle`), as a first run writes them. Returns the names."""
+    import shutil
+    src = src or os.path.join(REPO_DIR, "crates", "team", "bundles")
+    names = sorted(os.listdir(src))
+    for name in names:
+        shutil.copytree(os.path.join(src, name), os.path.join(team.dir, ".fantastic", "bundles", name),
+                        dirs_exist_ok=True)
+        r = team.send("kernel", {"type": "reload_bundle", "name": name})
+        if (r.get("result") or {}).get("reloaded") != name:
+            raise RuntimeError(f"bundle {name}: {r}")
+    return names
+
+
+def make_registry(ctx, team, tiers: dict, limits: dict | None = None, cards: bool = False) -> None:
+    """The roles registry (`agentic_resources`) with its limits; `tiers` are the dispatcher's
+    worker templates (`add_worker`, a field only the dispatcher reads). With `cards` the repo's
+    role bundles are loaded: the roles a spawn makes, on its spawner's backend."""
     lead = ctx.lead
+    if cards:
+        load_role_bundles(team)
     create(team, id="roles", parent_id=ROOT, handler_module="agentic_resources.tools",
-           role_dirs=list(role_dirs) if cards else [], tiers=tiers,
+           tiers=tiers,
            can_call={"$self": "*"}, callable_by={"$self": "*", "$parent": "*", "mcp": "*"})
     link(team, "roles", "memory")
     for role, n in [(None, (limits or {}).get("total"))] + list(((limits or {}).get("per_role") or {}).items()):
@@ -176,7 +197,7 @@ def make_registry(ctx, team, tiers: dict, limits: dict | None = None, cards: boo
 
 
 def make_roles(ctx, team, tiers: dict, limits: dict | None = None) -> None:
-    """Roles mode: the registry with the repo's role cards, the task registry under the lead,
+    """Roles mode: the registry with the repo's role bundles, the task registry under the lead,
     and the lead's grants on them and on the root (a spawner grants only what it holds)."""
     lead = ctx.lead
     make_registry(ctx, team, tiers, limits, cards=True)

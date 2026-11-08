@@ -7,7 +7,11 @@
     "type": "spawn",
     "args": {
      "role": "worker",
-     "task": "The queue is queue. Your id is the id in your own reflect."
+     "task": "The queue is queue. Your id is the id in your own reflect.",
+     "backend": {
+      "handler_module": "ram_store.tools",
+      "model": "inert"
+     }
     }
    }
   ]

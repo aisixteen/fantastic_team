@@ -1,14 +1,15 @@
 //! `agentic_resources` — a generic registry of agent ROLES.
 //!
-//! A role card is one file (`cards`); the registry lists them (`roles`, `role`),
-//! creates an agent from one (`spawn`), reports who it spawned (`fleet`) and caps
-//! how many run (`set_limit`, `get_count`). Not code-oriented: a role is any kind
-//! of agent. OFF BY DEFAULT: a host registers the bundle only when
-//! `FANTASTIC_AGENTIC_RESOURCES` is truthy ([`register_if_enabled`]), and an
-//! instance whose record has no `role_dirs` refuses every verb `disabled`.
+//! A role is a META BUNDLE (`roles`): a fantastic `bundles/<name>/bundle.yaml` with a
+//! `base`, its directive (`record.post_system_prompt`) and its grants
+//! (`record.can_call`), and no model. The registry lists them (`roles`, `role`),
+//! creates an agent from one (`spawn`), reports who it spawned (`fleet`) and caps how
+//! many run (`set_limit`, `get_count`). OFF BY DEFAULT: a host registers the bundle
+//! only when `FANTASTIC_AGENTIC_RESOURCES` is truthy ([`register_if_enabled`]).
 //!
-//! Config is the registry agent's own record: `role_dirs` (folders of cards),
-//! `tiers` (`{tier: backend fields}` — the card names a tier KEY, never a model),
+//! The child runs on its SPAWNER's backend (its handler and provider fields), with the
+//! `model` the spawner names in `spawn` (its own when it names none): the spawner says
+//! which model, from its own job prompt. Config is the registry's own record:
 //! `limits` (`{total?, per_role?: {role: n}}`, kept by `set_limit`).
 //!
 //! NOTHING is counted in memory. Every spawned agent carries `spawned_by` (this
@@ -31,10 +32,10 @@
 
 #![deny(missing_docs)]
 
-pub mod cards;
+pub mod roles;
 
 use async_trait::async_trait;
-use cards::{Card, REGISTRY_TOKEN};
+use roles::{Card, REGISTRY_TOKEN};
 use fantastic_bundle::py_repr;
 use fantastic_kernel::bundle::{Bundle, BundleError, BundleRegistry, Reply};
 use fantastic_kernel::refusal::{self, bad, missing};
@@ -86,9 +87,9 @@ pub struct AgenticResourcesBundle;
 fn verb_docs_json() -> Value {
     json!({
         "reflect": "Identity, whether the registry is enabled, and the role names. No args.",
-        "roles": "No args. Returns {roles:[{name, purpose}], errors:[...]} — every role card the config's folders hold (none is built in). Cards are re-read on each call.",
-        "role": "args: name:str (req). Returns the full card {name, purpose, tier, grants, directive}; an unknown name is `not_found`.",
-        "spawn": "args: role:str (req), task:str? (sent to the child as its first message; anything but a string is `bad_arg`), name:str?, limits:{total?, per_role?}? (part of YOUR quota handed to the child as its own subtree cap). Creates the agent from the card (the card's directive after the default system block, the tier's backend fields from config, the card's grants) as a CHILD OF THE CALLER, gives the caller pause/resume/stop on it, and lets the child `send` the caller (both ends, merged with what either already holds), so it tells its parent with a message when it is done. The child's task comes FROM this registry, so a child cannot tell its parent from it: AFTER ALL YOUR SPAWNS, send each child the team's structure (`send` with `text`): you are its parent (your id, the one it reports to with `send` when done), and every sibling's id, role and task. Refused past a limit: {error:<sentence>, reason:'limit', scope, role, running, max, hint}. Returns {id, role, tier}. from:{agent:str, at:int}? branches the new agent off a fork point of `agent` instead (ai_core `fork {at}`, same memory store, so it starts with that conversation up to `at`), then applies the card and limits; it sits BESIDE its source, not under you, and you still get pause/resume/stop on it and it may `send` you; you must hold `fork` on `agent` or it is refused with reason `not_allowed`; a refusal from fork (cuts_turn, cuts_fold, no_such_row, parent_mid_turn, ...) passes through unchanged and nothing is left behind. Then the reply also has from:{agent, at} and copied. The card's grants on tools are opened on both ends (the child's own grant and the tool's callable_by, all or nothing): a card may only grant what the spawner itself holds, or the spawn is refused with reason `not_allowed`, and a grant that cannot be written undoes the whole spawn (reason `grant_failed`).",
+        "roles": "No args. Returns {roles:[{name, purpose}], errors:[...]} — every role: each meta bundle (bundles/<name>/bundle.yaml) whose record carries a directive; `reflect` with bundles:'all' lists the same bundles. Read on each call.",
+        "role": "args: name:str (req). Returns the role {name, purpose, grants, directive}; an unknown name is `not_found`.",
+        "spawn": "args: role:str (req — a role bundle), model:str? (the model the child runs; yours when omitted), backend:{handler_module, endpoint?, credentials?, …}? (another backend than yours for the child), task:str? (sent to the child as its first message; anything but a string is `bad_arg`), name:str?, limits:{total?, per_role?}? (part of YOUR quota handed to the child as its own subtree cap). Creates the agent from the role bundle (its directive after the default system block, its grants), on YOUR backend (your handler and provider fields) with `model`, as a CHILD OF THE CALLER, gives the caller pause/resume/stop on it, and lets the child `send` the caller (both ends, merged with what either already holds), so it tells its parent with a message when it is done. The child's task comes FROM this registry, so a child cannot tell its parent from it: AFTER ALL YOUR SPAWNS, send each child the team's structure (`send` with `text`): you are its parent (your id, the one it reports to with `send` when done), and every sibling's id, role and task. Refused past a limit: {error:<sentence>, reason:'limit', scope, role, running, max, hint}. Returns {id, role, model}. from:{agent:str, at:int}? branches the new agent off a fork point of `agent` instead (ai_core `fork {at}`, same memory store, so it starts with that conversation up to `at`), then applies the card and limits; it sits BESIDE its source, not under you, and you still get pause/resume/stop on it and it may `send` you; you must hold `fork` on `agent` or it is refused with reason `not_allowed`; a refusal from fork (cuts_turn, cuts_fold, no_such_row, parent_mid_turn, ...) passes through unchanged and nothing is left behind. Then the reply also has from:{agent, at} and copied. The card's grants on tools are opened on both ends (the child's own grant and the tool's callable_by, all or nothing): a card may only grant what the spawner itself holds, or the spawn is refused with reason `not_allowed`, and a grant that cannot be written undoes the whole spawn (reason `grant_failed`).",
         "fleet": "No args. Returns {roles:{<role>:[{id}]}} — the agents this registry spawned, per role, read from the records (survives restart).",
         "set_limit": "args: role:str? (omitted = all agents in total), max:int|null (req; null clears). Returns {ok:true, role, max}.",
         "get_count": "args: role:str? (omitted = in total). Returns {running, max} — running counts every agent this registry spawned that still exists (a slot frees on delete_agent); max is null when uncapped.",
@@ -105,23 +106,6 @@ fn agent_of(kernel: &Kernel, id: &AgentId) -> Option<Arc<Agent>> {
     kernel.agents.get(id).map(|e| Arc::clone(&e))
 }
 
-/// The registry's `role_dirs`, or `None` when the registry is not configured.
-fn role_dirs(meta: &Map<String, Value>) -> Option<Vec<String>> {
-    let arr = meta.get("role_dirs")?.as_array()?;
-    Some(
-        arr.iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect(),
-    )
-}
-
-fn disabled() -> Value {
-    refusal::refusal_hint(
-        refusal::DISABLED,
-        "agentic_resources is disabled",
-        "give the record role_dirs",
-    )
-}
 
 /// A refusal of the registry's own, in the kernel's shape:
 /// `{error:<sentence>, reason:<code>, ...}`.
@@ -234,8 +218,15 @@ fn grant_verbs(map: &mut Map<String, Value>, key: &str, verbs: &Value) {
     map.insert(key.to_string(), merged);
 }
 
-fn cards_of(meta: &Map<String, Value>) -> (Vec<Card>, Vec<String>) {
-    cards::load_dir(&role_dirs(meta).unwrap_or_default())
+/// The roles, and the bundles that failed to load (their errors).
+fn cards_of(kernel: &Kernel) -> (Vec<Card>, Vec<String>) {
+    let errors = kernel
+        .bundles
+        .folder_rows()
+        .iter()
+        .filter_map(|r| r.get("error").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    (roles::of(kernel), errors)
 }
 
 fn roles_list(cards: &[Card]) -> Value {
@@ -259,22 +250,6 @@ impl Bundle for AgenticResourcesBundle {
         verb_docs_json()
     }
 
-    /// The `roles` doc carries the live list, so any agent with reach learns who is who.
-    fn instance_verb_docs(&self, agent: &Agent) -> Option<Value> {
-        let meta = meta_of(agent);
-        role_dirs(&meta)?;
-        let (cards, _) = cards_of(&meta);
-        let list = cards
-            .iter()
-            .map(|c| format!("{}: {}", c.name, c.purpose))
-            .collect::<Vec<_>>()
-            .join("; ");
-        let mut docs = verb_docs_json();
-        let base = docs["roles"].as_str().unwrap_or("").to_string();
-        docs["roles"] = json!(format!("{base} Roles now: {list}"));
-        Some(docs)
-    }
-
     fn readme(&self) -> Option<&'static str> {
         Some(README)
     }
@@ -291,27 +266,21 @@ impl Bundle for AgenticResourcesBundle {
             return Ok(None);
         };
         let meta = meta_of(&me);
-        let on = role_dirs(&meta).is_some();
         let reply = match verb {
             "boot" | "shutdown" => return Ok(None),
             "reflect" => {
-                let names: Vec<String> = if on {
-                    cards_of(&meta).0.into_iter().map(|c| c.name).collect()
-                } else {
-                    Vec::new()
-                };
+                let names: Vec<String> = cards_of(kernel).0.into_iter().map(|c| c.name).collect();
                 json!({
                     "id": agent_id.as_str(),
-                    "sentence": "A registry of agent roles: list them, spawn from a card, cap how many run.",
-                    "enabled": on, "roles": names,
+                    "sentence": "A registry of agent roles (meta bundles): list them, spawn one, cap how many run.",
+                    "enabled": true, "roles": names,
                 })
             }
-            _ if !on => disabled(),
             "roles" => {
-                let (cards, errors) = cards_of(&meta);
+                let (cards, errors) = cards_of(kernel);
                 json!({"roles": roles_list(&cards), "errors": errors})
             }
-            "role" => role_reply(&meta, payload),
+            "role" => role_reply(kernel, payload),
             "spawn" => spawn_reply(agent_id, &meta, payload, kernel).await,
             "fleet" => fleet_reply(agent_id, kernel),
             "set_limit" => set_limit_reply(agent_id, &meta, payload, kernel),
@@ -334,7 +303,7 @@ impl Bundle for AgenticResourcesBundle {
 
 // ── verbs ───────────────────────────────────────────────────────────
 
-fn role_reply(meta: &Map<String, Value>, payload: &Value) -> Value {
+fn role_reply(kernel: &Kernel, payload: &Value) -> Value {
     let Some(name) = payload
         .get("name")
         .and_then(Value::as_str)
@@ -342,7 +311,7 @@ fn role_reply(meta: &Map<String, Value>, payload: &Value) -> Value {
     else {
         return missing("role", "name");
     };
-    let (cards, _) = cards_of(meta);
+    let (cards, _) = cards_of(kernel);
     match cards.iter().find(|c| c.name == name) {
         Some(c) => c.to_value(),
         None => refusal::refusal(
@@ -373,43 +342,18 @@ async fn spawn_reply(
     else {
         return missing("spawn", "role");
     };
-    let (cards, _) = cards_of(meta);
+    let (cards, _) = cards_of(kernel);
     let Some(card) = cards.iter().find(|c| c.name == role) else {
         return refusal::refusal(
             refusal::NOT_FOUND,
             format!("role {} not found", py_repr(role)),
         );
     };
-    // the tier: a KEY the card names, resolved in config
-    let tier_fields = match meta
-        .get("tiers")
-        .and_then(|t| t.get(&card.tier))
-        .and_then(Value::as_object)
-    {
-        Some(t) => t.clone(),
-        None => {
-            let mut r = fail(
-                refusal::UNKNOWN_TIER,
-                format!(
-                    "tier {} (named by role {}) is not in this registry's tiers",
-                    py_repr(&card.tier),
-                    py_repr(role)
-                ),
-            );
-            refusal::with(&mut r, "tier", json!(card.tier));
-            return r;
-        }
+    // the backend: the spawner's own (its handler and provider fields), with the model it names
+    let tier_fields = match backend_of(kernel, &current_origin(), payload) {
+        Ok(b) => b,
+        Err(r) => return r,
     };
-    if tier_fields
-        .get("handler_module")
-        .and_then(Value::as_str)
-        .is_none()
-    {
-        return fail(
-            refusal::BAD_TIER,
-            format!("tier {} has no handler_module", py_repr(&card.tier)),
-        );
-    }
     // the task: a string is the child's first message
     let first_message: Option<String> = match payload.get("task") {
         None | Some(Value::Null) => None,
@@ -580,12 +524,11 @@ async fn spawn_reply(
     }
     create.insert("type".to_string(), json!("create_agent"));
     create.insert("parent_id".to_string(), json!(parent.as_str()));
-    // the card's directive goes AFTER fantastic's default system block (the primer with the
-    // call grammar, the agent's identity and grants): `system_prompt` would replace that block
-    create.insert("post_system_prompt".to_string(), json!(card.directive));
+    // the role bundle: the kernel lays its fields (its directive, after fantastic's default
+    // system block) under these; on another base than the bundle's it keeps that backend
+    create.insert("bundle".to_string(), json!(role));
     create.insert("spawned_by".to_string(), json!(reg.as_str()));
     create.insert("role".to_string(), json!(role));
-    create.insert("tier".to_string(), json!(card.tier));
     create.insert("can_call".to_string(), Value::Object(can_call));
     create.insert("callable_by".to_string(), Value::Object(callable_by));
     if let Some(n) = &name {
@@ -632,7 +575,69 @@ async fn spawn_reply(
     if let Some(text) = first_message {
         send_first(kernel, reg, &child, text);
     }
-    json!({"id": child, "role": role, "tier": card.tier})
+    json!({"id": child, "role": role, "model": tier_fields.get("model").cloned().unwrap_or(Value::Null)})
+}
+
+/// The provider fields a child takes from its spawner (beside the handler).
+const BACKEND_FIELDS: [&str; 10] = [
+    "model", "endpoint", "credentials", "memory_store_id", "caching", "context_window",
+    "max_tokens", "context_strategy", "price_input_per_mtok", "price_output_per_mtok",
+];
+
+/// The backend a child runs on: its spawner's compiled handler (through any bundle the
+/// spawner is) and provider fields; `backend` in the payload overrides them (and is
+/// required when the caller is no AI agent — one with a `model`: the operator, a tool);
+/// `model` from the spawn wins over both.
+fn backend_of(kernel: &Kernel, caller: &Option<AgentId>, payload: &Value) -> Result<Map<String, Value>, Value> {
+    let mut out = Map::new();
+    // an AI spawner (a record with a `model`) lends its backend; any other caller (the
+    // operator's leg, a tool) names one with `backend`
+    let ai = caller
+        .as_ref()
+        .and_then(|c| agent_of(kernel, c))
+        .filter(|a| meta_of(a).get("model").and_then(Value::as_str).is_some_and(|m| !m.is_empty()));
+    match ai {
+        Some(a) => {
+            let meta = meta_of(&a);
+            let hm = a.handler_module.clone().unwrap_or_default();
+            let kind = fantastic_kernel::inherit::kind_of(&hm, &meta);
+            out.insert("handler_module".into(), json!(kernel.bundles.base_of(&kind)));
+            for k in BACKEND_FIELDS {
+                if let Some(v) = meta.get(k) {
+                    out.insert(k.to_string(), v.clone());
+                }
+            }
+        }
+        None if payload.get("backend").is_none() => {
+            return Err(missing(
+                "spawn",
+                "backend (the operator names the child's handler and provider fields; an AI spawner's are its own)",
+            ))
+        }
+        None => {}
+    }
+    // `backend` puts the child on another backend than the spawner's (a vLLM worker under
+    // an Anthropic lead): its fields over the spawner's
+    match payload.get("backend") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(b)) => {
+            for (k, v) in b {
+                out.insert(k.clone(), v.clone());
+            }
+        }
+        Some(_) => return Err(bad("spawn", "backend", "{handler_module, model?, endpoint?, …}")),
+    }
+    match payload.get("model") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(m)) if !m.is_empty() => {
+            out.insert("model".into(), json!(m));
+        }
+        Some(_) => return Err(bad("spawn", "model", "a model name")),
+    }
+    if out.get("handler_module").and_then(Value::as_str).is_none_or(str::is_empty) {
+        return Err(bad("spawn", "backend", "a handler_module to run the child on"));
+    }
+    Ok(out)
 }
 
 /// The child's grants from its card: `$registry` made real.
@@ -1046,10 +1051,12 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
     // a fork drops the source's own prompt (null clears it) so the default block is in force,
     // and takes the card's directive after it, as a spawn does
     patch.insert("system_prompt".to_string(), Value::Null);
+    // the fork keeps its source's backend and takes the role bundle's fields (its
+    // directive among them); `bundle` names the kind, so a reload reaches it too
     patch.insert("post_system_prompt".to_string(), json!(card.directive));
+    patch.insert("bundle".to_string(), json!(card.name));
     patch.insert("spawned_by".to_string(), json!(reg.as_str()));
     patch.insert("role".to_string(), json!(card.name));
-    patch.insert("tier".to_string(), json!(card.tier));
     patch.insert("can_call".to_string(), Value::Object(can_call));
     if let Some(n) = c.name {
         patch.insert("name".to_string(), json!(n));
@@ -1110,7 +1117,7 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
         send_first(kernel, reg, &child, text);
     }
     json!({
-        "id": child, "role": card.name, "tier": card.tier,
+        "id": child, "role": card.name, "model": c.tier_fields.get("model").cloned().unwrap_or(Value::Null),
         "from": {"agent": src, "at": at}, "copied": copied,
     })
 }

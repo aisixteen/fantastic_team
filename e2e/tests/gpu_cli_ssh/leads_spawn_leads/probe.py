@@ -14,8 +14,7 @@ def run(ctx):
         cli.start(ctx, roles=True)
         cli.add_base(ctx)
         cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "update_agent", "delete_agent"]}, subtree=True)
-        cli.make_registry(ctx, total=4, roles=cli.roles_dir("leads_spawn_leads"),
-                          credentials=cli.model_credentials(ctx))
+        cli.make_registry(ctx, total=4, roles=cli.roles_dir("leads_spawn_leads"))
         cli.add_cadencer(ctx)
         before = cli.tree(ctx.team)
         box.publish()

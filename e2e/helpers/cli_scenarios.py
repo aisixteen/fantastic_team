@@ -83,13 +83,13 @@ def single_end(ctx, v, label: str, before: dict) -> bool:
 
 def spawn_two_start(ctx, v, credentials: bool = False) -> dict:
     """A lead with the registry and the `worker` card (room for 2). Returns the tree before.
-    `credentials`: the workers' tier carries the model's key ref (a plug that needs one)."""
+    `credentials`: kept for the callers; a spawned agent takes its spawner's backend, the key ref
+    included."""
     cli.start(ctx, roles=True)
     cli.add_base(ctx)
     base = set(cli.ids(ctx.team))
     cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True)
-    cli.make_registry(ctx, total=2, roles=cli.roles_dir("lead_spawns_two"),
-                      credentials=cli.model_credentials(ctx) if credentials else None)
+    cli.make_registry(ctx, total=2, roles=cli.roles_dir("lead_spawns_two"))
     new = set(cli.ids(ctx.team)) - base
     v.check("create_agent made the lead and its roles registry, under fixed ids", new == {"lead", "roles"}, str(new))
     cli.add_cadencer(ctx)
@@ -159,8 +159,7 @@ def spawn_leads_start(ctx, v, credentials: bool = False) -> dict:
     cli.add_base(ctx)
     base = set(cli.ids(ctx.team))
     cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True)
-    cli.make_registry(ctx, total=4, roles=cli.roles_dir("leads_spawn_leads"),
-                      credentials=cli.model_credentials(ctx) if credentials else None)
+    cli.make_registry(ctx, total=4, roles=cli.roles_dir("leads_spawn_leads"))
     new = set(cli.ids(ctx.team)) - base
     v.check("create_agent made the lead and its roles registry, under fixed ids", new == {"lead", "roles"}, str(new))
     cli.add_cadencer(ctx)

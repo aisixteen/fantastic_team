@@ -159,10 +159,31 @@ const REVIEWER: &str = "---\nname: reviewer\npurpose: Reads a draft and says wha
 const PROJECT_LEAD: &str = include_str!("../testdata/project_lead.md");
 const SUBLEAD: &str = "---\nname: sublead\npurpose: Runs a branch of the work.\ntier: fast\ngrants:\n  $registry: [roles, spawn, get_count]\n  notes: [read]\n---\nYou run one branch.\n";
 
-fn write_cards(dir: &Path, cards: &[(&str, &str)]) {
-    std::fs::create_dir_all(dir).unwrap();
-    for (n, t) in cards {
-        std::fs::write(dir.join(n), t).unwrap();
+/// The role texts of these tests (a `---` yaml header: `name`, `purpose`, `grants`; then
+/// the directive) loaded as what roles are now: META BUNDLES over `caller.tools`, their
+/// directive and grants in `record`. A text that does not parse is a bundle that failed
+/// to load (listed with its error).
+fn write_cards(kernel: &Kernel, cards: &[(&str, &str)]) {
+    for (file, text) in cards {
+        let stem = file.trim_end_matches(".md").to_string();
+        let parsed = text.strip_prefix("---\n").and_then(|rest| rest.split_once("\n---\n"));
+        let Some((head, body)) = parsed else {
+            kernel.bundles.refuse_folder(
+                &stem,
+                json!({"name": stem, "handler_module": stem, "error": format!("card {file}: missing header")}),
+            );
+            continue;
+        };
+        let head = fantastic_kernel::yaml_io::load(head).unwrap();
+        let name = head["name"].as_str().unwrap().to_string();
+        let mut can_call = head.get("grants").and_then(Value::as_object).cloned().unwrap_or_default();
+        can_call.insert("$self".into(), json!("*"));
+        kernel.bundles.register_meta(
+            &name,
+            json!({"name": name, "handler_module": name, "base": "caller.tools",
+                   "sentence": head["purpose"],
+                   "record": {"post_system_prompt": body.trim_end(), "can_call": can_call}}),
+        );
     }
 }
 
@@ -237,13 +258,13 @@ async fn rig(tmp: &TempDir, callers: &[&str], cards: &[(&str, &str)]) -> Rig {
     let kernel = Arc::new(new_kernel());
     root_of(&kernel, tmp);
     let dir = tmp.path().join("roles");
-    write_cards(&dir, cards);
+    write_cards(&kernel, cards);
     let reg = uid(tmp, "ar");
     let ids: Vec<String> = callers.iter().map(|c| uid(tmp, c)).collect();
     for c in &ids {
         create(
             &kernel,
-            json!({"handler_module": "caller.tools", "id": c,
+            json!({"handler_module": "caller.tools", "id": c, "model": "m1", "endpoint": "http://x",
                    "can_call": {reg.clone(): "*", "notes": "*"}}),
         )
         .await;
@@ -252,13 +273,9 @@ async fn rig(tmp: &TempDir, callers: &[&str], cards: &[(&str, &str)]) -> Rig {
     for c in &ids {
         cb.insert(c.clone(), json!("*"));
     }
-    let tier = json!({"handler_module": "caller.tools", "model": "m1", "endpoint": "http://x"});
     create(
         &kernel,
-        json!({"handler_module": HANDLER_MODULE, "id": reg,
-               "role_dirs": [dir.to_string_lossy()],
-               "tiers": {"fast": tier.clone(), "lead": tier},
-               "callable_by": cb}),
+        json!({"handler_module": HANDLER_MODULE, "id": reg, "callable_by": cb}),
     )
     .await;
     Rig {
@@ -314,66 +331,7 @@ async fn deleted(r: &Rig, id: &str) -> Value {
     .await
 }
 
-// ── cards ───────────────────────────────────────────────────────────
-
-#[test]
-fn card_parses_header_and_directive() {
-    let c = cards::parse_card(WRITER, "writer.md").unwrap();
-    assert_eq!(c.name, "writer");
-    assert_eq!(c.purpose, "Writes the first draft of a text.");
-    assert_eq!(c.tier, "fast");
-    assert_eq!(c.grants["notes"], json!(["read"]));
-    assert_eq!(c.grants["$registry"], json!(["roles"]));
-    assert_eq!(c.directive, "You write clearly and briefly.");
-}
-
-#[test]
-fn bad_header_refused_with_reason() {
-    assert_eq!(
-        cards::parse_card("no header here", "a.md").unwrap_err(),
-        "card a.md: missing header"
-    );
-    let no_tier = "---\nname: x\npurpose: p\n---\nbody\n";
-    assert_eq!(
-        cards::parse_card(no_tier, "b.md").unwrap_err(),
-        "card b.md: tier required"
-    );
-    let bad_grants = "---\nname: x\npurpose: p\ntier: fast\ngrants: [roles]\n---\nbody\n";
-    assert_eq!(
-        cards::parse_card(bad_grants, "c.md").unwrap_err(),
-        "card c.md: grants must be a map of \"*\" or verb lists"
-    );
-    let bad_verbs = "---\nname: x\npurpose: p\ntier: fast\ngrants:\n  notes: 5\n---\nbody\n";
-    assert!(cards::parse_card(bad_verbs, "d.md")
-        .unwrap_err()
-        .contains("grants must be a map"));
-    // listed in `errors`, not loaded; a duplicate name is refused too
-    let tmp = TempDir::new().unwrap();
-    write_cards(
-        tmp.path(),
-        &[
-            ("a.md", "no header"),
-            ("b.md", no_tier),
-            ("w1.md", WRITER),
-            ("w2.md", WRITER),
-        ],
-    );
-    let (cards, errors) = cards::load_dir(&[tmp.path().to_string_lossy().to_string()]);
-    let names: Vec<&str> = cards.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["writer"], "no card is built in");
-    assert!(
-        errors.contains(&"card a.md: missing header".to_string()),
-        "{errors:?}"
-    );
-    assert!(
-        errors.contains(&"card b.md: tier required".to_string()),
-        "{errors:?}"
-    );
-    assert!(
-        errors.contains(&"card w2.md: duplicate role writer".to_string()),
-        "{errors:?}"
-    );
-}
+// ── roles ───────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn roles_lists_every_card_with_purpose() {
@@ -401,21 +359,9 @@ async fn roles_lists_every_card_with_purpose() {
     );
     assert!(find("project_lead").is_none(), "no card is built in: {out}");
     assert_eq!(out["errors"], json!(["card bad.md: missing header"]));
-    // the docs carry the same list; a file added later is a role added
-    let d = send(
-        &r.kernel,
-        "kernel",
-        json!({"type": "docs", "of": r.reg, "tier": "detailed"}),
-    )
-    .await;
-    let doc = d["verbs"]["roles"].as_str().unwrap_or_default().to_string();
-    assert!(
-        doc.contains("writer: Writes the first draft of a text."),
-        "{d}"
-    );
-    assert!(!doc.contains("project_lead: "), "{d}");
+    // a bundle loaded later is a role added
     write_cards(
-        &r.dir,
+        &r.kernel,
         &[(
             "extra.md",
             "---\nname: extra\npurpose: Added later.\ntier: fast\n---\nd\n",
@@ -435,7 +381,7 @@ async fn role_returns_full_card_and_unknown_is_not_found() {
     let r = rig(&tmp, &[], &[("writer.md", WRITER)]).await;
     let c = r.op(json!({"type": "role", "name": "writer"})).await;
     assert_eq!(c["name"], "writer");
-    assert_eq!(c["tier"], "fast");
+    assert!(c.get("tier").is_none(), "a role names no model and no tier: {c}");
     assert_eq!(c["directive"], "You write clearly and briefly.");
     assert_eq!(c["grants"]["notes"], json!(["read"]));
     let n = r.op(json!({"type": "role", "name": "ghost"})).await;
@@ -445,7 +391,7 @@ async fn role_returns_full_card_and_unknown_is_not_found() {
 // ── spawn ───────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn spawn_creates_child_with_directive_tier_grants() {
+async fn spawn_creates_child_with_directive_grants_on_the_spawners_backend() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
@@ -453,7 +399,7 @@ async fn spawn_creates_child_with_directive_tier_grants() {
         .spawn_as(lead, json!({"role": "writer", "name": "scribe"}))
         .await;
     assert_eq!(out["role"], "writer", "{out}");
-    assert_eq!(out["tier"], "fast");
+    assert_eq!(out["model"], "m1", "the spawner's model when the spawn names none");
     let id = out["id"].as_str().unwrap();
     let a = r.kernel.agents.get(&AgentId::from(id)).unwrap();
     assert_eq!(
@@ -464,9 +410,10 @@ async fn spawn_creates_child_with_directive_tier_grants() {
     let m = meta_of(&a);
     assert_eq!(m["post_system_prompt"], "You write clearly and briefly.");
     assert!(m.get("system_prompt").is_none_or(Value::is_null), "the default system block stays in force: {m:?}");
-    assert_eq!(m["model"], "m1", "the tier's model, never the card's");
-    assert_eq!(m["endpoint"], "http://x");
-    assert_eq!(a.handler_module.as_deref(), Some("caller.tools"));
+    assert_eq!(m["model"], "m1", "the spawner's model; a role names none");
+    assert_eq!(m["endpoint"], "http://x", "the spawner's backend");
+    assert_eq!(a.handler_module.as_deref(), Some("writer"), "an instance of the role bundle (on caller.tools)");
+    assert!(r.kernel.bundles.get("writer").is_some(), "which runs its base's code");
     assert_eq!(m["spawned_by"], json!(r.reg));
     assert_eq!(m["role"], "writer");
     assert_eq!(m["name"], "scribe");
@@ -480,7 +427,7 @@ async fn spawn_creates_child_with_directive_tier_grants() {
 }
 
 #[tokio::test]
-async fn spawn_opens_the_tiers_memory_store_to_the_child() {
+async fn spawn_opens_the_spawners_memory_store_to_the_child() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let mem = uid(&tmp, "mem");
@@ -489,10 +436,10 @@ async fn spawn_opens_the_tiers_memory_store_to_the_child() {
         json!({"handler_module": "caller.tools", "id": mem}),
     )
     .await;
-    let tier = json!({"handler_module": "caller.tools", "memory_store_id": mem});
+    // the spawner's store is the child's too
     let mut patch = Map::new();
-    patch.insert("tiers".to_string(), json!({"fast": tier}));
-    r.kernel.update(&AgentId::from(r.reg.as_str()), patch);
+    patch.insert("memory_store_id".to_string(), json!(mem));
+    r.kernel.update(&AgentId::from(r.callers[0].as_str()), patch);
     let id = r.spawn_as(&r.callers[0], json!({"role": "writer"})).await["id"]
         .as_str()
         .unwrap()
@@ -510,19 +457,16 @@ async fn spawn_opens_the_tiers_memory_store_to_the_child() {
 }
 
 #[tokio::test]
-async fn spawn_unknown_tier_refused() {
+async fn spawn_runs_the_model_the_spawner_names() {
     let tmp = TempDir::new().unwrap();
-    let card = "---\nname: odd\npurpose: Odd.\ntier: nowhere\n---\nd\n";
-    let r = rig(&tmp, &["lead"], &[("odd.md", card)]).await;
-    let out = r.spawn_as(&r.callers[0], json!({"role": "odd"})).await;
-    assert_eq!(out["reason"], "unknown_tier", "{out}");
-    assert!(
-        out["error"].as_str().unwrap().contains("'nowhere'"),
-        "{out}"
-    );
-    let none = r.spawn_as(&r.callers[0], json!({"role": "ghost"})).await;
-    assert_eq!(none["reason"], "not_found");
-    assert_eq!(r.op(json!({"type": "fleet"})).await["roles"], json!({}));
+    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
+    let out = r.spawn_as(&r.callers[0], json!({"role": "writer", "model": "m2"})).await;
+    assert_eq!(out["model"], "m2", "{out}");
+    let id = id_of(&out);
+    assert_eq!(r.meta(&id)["model"], "m2");
+    assert_eq!(r.meta(&id)["endpoint"], "http://x", "the rest of the backend is the spawner's");
+    let bad = r.spawn_as(&r.callers[0], json!({"role": "writer", "model": 5})).await;
+    assert_eq!(bad["reason"], "bad_arg", "{bad}");
 }
 
 #[tokio::test]
@@ -656,6 +600,7 @@ async fn get_count_after_spawn_delete_restart() {
     // a restart: a second kernel loaded from the persisted records
     let state = r.kernel.save();
     let k2 = Arc::new(new_kernel());
+    write_cards(&k2, &[("writer.md", WRITER), ("reviewer.md", REVIEWER), ("sublead.md", SUBLEAD)]); // the bundles load before the tree
     k2.load(state).unwrap();
     let after = send(&k2, &r.reg, json!({"type": "get_count", "role": "writer"})).await;
     assert_eq!(
@@ -723,7 +668,7 @@ fn disabled_by_default() {
 }
 
 #[tokio::test]
-async fn disabled_without_registry_handler_or_config() {
+async fn unknown_without_the_registry_handler() {
     // flag off: the handler is not in the kernel's registry, so the agent is unknown
     let tmp = TempDir::new().unwrap();
     let mut off = Kernel::new();
@@ -743,22 +688,12 @@ async fn disabled_without_registry_handler_or_config() {
             .contains("cannot be imported in this runtime"),
         "{out}"
     );
-    // flag on, but no config on the record: every verb refuses `disabled`
+    // flag on: the roles are the kernel's meta bundles (none here)
     let kernel = Arc::new(new_kernel());
     root_of(&kernel, &tmp);
     create(&kernel, json!({"handler_module": HANDLER_MODULE, "id": id})).await;
-    for v in ["roles", "role", "spawn", "fleet", "set_limit", "get_count"] {
-        let out = send(&kernel, &id, json!({"type": v})).await;
-        assert_eq!(
-            out,
-            json!({
-                "error": "agentic_resources is disabled",
-                "reason": "disabled",
-                "hint": "give the record role_dirs",
-            }),
-            "{v}"
-        );
-    }
+    let out = send(&kernel, &id, json!({"type": "roles"})).await;
+    assert_eq!(out, json!({"roles": [], "errors": []}), "{out}");
 }
 
 // ── the extended surface ────────────────────────────────────────────
@@ -968,7 +903,7 @@ async fn child_to_parent_send_is_merged_never_overwritten() {
 async fn operator_spawn_opens_no_edge_to_a_parent() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &[], &[("reviewer.md", REVIEWER)]).await;
-    let id = id_of(&r.op(json!({"type": "spawn", "role": "reviewer"})).await);
+    let id = id_of(&r.op(json!({"type": "spawn", "role": "reviewer", "backend": {"handler_module": "caller.tools", "model": "m1"}})).await);
     // no caller: the child's parent is the registry, which takes no message
     assert_eq!(keys_of(&r, &id, "can_call"), ["$self"]);
     // and a card that grants nothing on `$registry` opens no edge to it
@@ -1228,7 +1163,7 @@ async fn spawn_from_forks_and_applies_the_role_card() {
         .spawn_as(lead, json!({"role": "writer", "from": from(&src, 5)}))
         .await;
     assert_eq!(out["role"], "writer", "{out}");
-    assert_eq!(out["tier"], "fast");
+    assert_eq!(out["model"], "m1", "the spawner's model");
     assert_eq!(out["from"], from(&src, 5));
     assert_eq!(out["copied"], 3);
     let id = out["id"].as_str().unwrap();
@@ -1237,9 +1172,9 @@ async fn spawn_from_forks_and_applies_the_role_card() {
     assert_eq!(m["post_system_prompt"], "You write clearly and briefly.");
     assert!(m.get("system_prompt").is_none_or(Value::is_null), "the default system block stays in force: {m:?}");
     assert_eq!(m["role"], "writer");
-    assert_eq!(m["tier"], "fast");
+    assert_eq!(m["bundle"], "writer", "the fork names the role bundle it took");
     assert_eq!(m["spawned_by"], json!(r.reg));
-    assert_eq!(m["model"], "m1", "the tier's model, not the source's");
+    assert_eq!(m["model"], "m1", "the spawner's model, not the source's");
     assert_eq!(m["lead"], json!(lead));
     assert_eq!(m["can_call"]["notes"], json!(["read"]));
     assert_eq!(m["can_call"][&r.reg], json!(["roles"]));
@@ -1459,6 +1394,7 @@ async fn spawn_from_counts_in_fleet_and_get_count_and_survives_restart() {
     assert_eq!(r.count(Some("writer")).await["running"], 1);
     let state = r.kernel.save();
     let k2 = Arc::new(new_kernel());
+    write_cards(&k2, &[("writer.md", WRITER), ("reviewer.md", REVIEWER), ("sublead.md", SUBLEAD)]); // the bundles load before the tree
     k2.load(state).unwrap();
     let after = send(&k2, &r.reg, json!({"type": "get_count", "role": "writer"})).await;
     assert_eq!(after["running"], 1, "rebuilt from the records");
@@ -1930,7 +1866,7 @@ async fn operator_spawn_has_no_escalation_check() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &[], &[("wide.md", WIDE)]).await;
     notes_tool(&r).await;
-    let id = id_of(&r.op(json!({"type": "spawn", "role": "wide"})).await);
+    let id = id_of(&r.op(json!({"type": "spawn", "role": "wide", "backend": {"handler_module": "caller.tools", "model": "m1"}})).await);
     assert_eq!(r.meta(&id)["can_call"]["notes"], json!(["read", "write"]));
     assert_eq!(
         r.meta("notes")["callable_by"][&id],
@@ -2269,48 +2205,11 @@ async fn grant_failed_refusal_reason_is_code() {
     assert_eq!(r.count(None).await["running"], 0);
 }
 
-#[tokio::test]
-async fn unknown_tier_refusal_keeps_tier_extra() {
-    let tmp = TempDir::new().unwrap();
-    let card = "---\nname: odd\npurpose: Odd.\ntier: nowhere\n---\nd\n";
-    let r = rig(&tmp, &["lead"], &[("odd.md", card)]).await;
-    let out = r.spawn_as(&r.callers[0], json!({"role": "odd"})).await;
-    assert_shape(&out, "unknown_tier");
-    assert_eq!(out["tier"], "nowhere");
-}
-
-#[tokio::test]
-async fn bad_tier_refusal_reason_is_code() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let mut patch = Map::new();
-    patch.insert("tiers".to_string(), json!({"fast": {"model": "m"}}));
-    r.kernel.update(&AgentId::from(r.reg.as_str()), patch);
-    let out = r.spawn_as(&r.callers[0], json!({"role": "writer"})).await;
-    assert_shape(&out, "bad_tier");
-}
-
 #[test]
 fn no_root_refusal_reason_is_code() {
     // the kernel always has a root in a test rig, so assert the helper's shape
     let out = fail(refusal::NO_ROOT, "the kernel has no root".to_string());
     assert_shape(&out, "no_root");
-}
-
-#[tokio::test]
-async fn disabled_refusal_has_reason_disabled() {
-    let tmp = TempDir::new().unwrap();
-    let kernel = Arc::new(new_kernel());
-    root_of(&kernel, &tmp);
-    let id = uid(&tmp, "ar");
-    create(&kernel, json!({"handler_module": HANDLER_MODULE, "id": id})).await;
-    let out = send(&kernel, &id, json!({"type": "roles"})).await;
-    assert_eq!(out["reason"], "disabled", "{out}");
-    assert!(out["error"]
-        .as_str()
-        .unwrap()
-        .contains("agentic_resources is disabled"));
-    assert!(out["hint"].is_string(), "{out}");
 }
 
 #[test]
