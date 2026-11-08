@@ -1,7 +1,7 @@
 //! The team binary: fantastic's command line, unchanged, with this repo's
 //! bundles added to the registry (the `extras` of `fantastic_tui::main_with`).
 //! The way `canvas` sits on top of the kernel, the team's bundles sit on top of
-//! fantastic: no flag of its own, no config file of its own.
+//! fantastic: no config file of its own, and one flag (below).
 //!
 //! The binary takes fantastic's words: `--headless`, `canvas [--port N]
 //! [--host ADDR]`, `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`,
@@ -9,6 +9,8 @@
 //! Three first words are the team's own and handle their arguments themselves:
 //! `setup github`, `packs …` and `ai-readme`. One recipe word is the team's own,
 //! `webui [--port N] [--host ADDR]`: the team page from the binary (`webui.rs`).
+//! One flag is the team's own, `--worktrees DIR`: where the git connectors'
+//! default worktree roots go (`worktrees_flag.rs`).
 
 use std::process::ExitCode;
 
@@ -30,6 +32,16 @@ fn main() -> ExitCode {
         print!("{}", fantastic_team::AI_README);
         return ExitCode::SUCCESS;
     }
+    // `--worktrees DIR`: the folder of the git connectors' default worktree roots.
+    let argv = match fantastic_team::worktrees_flag::split(&argv)
+        .and_then(|(dir, rest)| dir.map_or(Ok(()), team_git_connector::set_worktrees_dir).map(|()| rest))
+    {
+        Ok(rest) => rest,
+        Err(e) => {
+            eprintln!("fantastic_team: {e}");
+            return ExitCode::from(2);
+        }
+    };
     // `webui [--port N] [--host ADDR]`: the team page from the binary. Fantastic has no
     // extension point for a recipe word, so the team cuts the word out, writes the
     // page's records, and fantastic boots them headless (`webui.rs`).

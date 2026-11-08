@@ -510,3 +510,27 @@ async fn status_on_an_empty_branch_names_the_branch() {
     assert_eq!(st["branch"], "empty", "{st}");
     assert_eq!(st["empty"], true, "{st}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_workspace_root_means_the_default_folder_made_at_the_first_worktree() {
+    let f = fx(json!({"workspace_root": null}), None).await;
+    let root = crate::default_workspace_root("git");
+    let _ = std::fs::remove_dir_all(&root); // a leftover of an earlier run
+    let r = f.call(json!({"type": "reflect"})).await;
+    assert_eq!(r["workspace_root"], root.to_str().unwrap(), "{r}");
+    let r = f
+        .call(json!({"type": "worktree_add", "path": "w1", "branch": "work/default", "base": "origin/main"}))
+        .await;
+    assert_eq!(r["created"], true, "{r}");
+    let expect = crate::paths::simplify(root.canonicalize().unwrap()).join("w1");
+    assert_eq!(r["path"], expect.to_str().unwrap());
+    let r = f.call(json!({"type": "worktree_remove", "path": "w1"})).await;
+    assert_eq!(r["removed"], true, "{r}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_default_folder_is_the_temp_one_and_worktrees_dir_must_be_absolute() {
+    assert!(crate::default_workspace_root("g").ends_with("fantastic_team/worktrees/g"));
+    assert!(crate::set_worktrees_dir(std::path::PathBuf::from("rel")).unwrap_err().contains("absolute"));
+}

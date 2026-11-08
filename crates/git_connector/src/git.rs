@@ -358,6 +358,11 @@ pub(crate) async fn worktree_add(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
     let base = arg(p, V, "base")?;
     dash(V, "branch", branch)?;
     dash(V, "base", base)?;
+    if cfg.default_root {
+        std::fs::create_dir_all(&cfg.workspace_root).map_err(|e| {
+            json!({"error": format!("team_git worktree_add: cannot make workspace_root `{}`: {e}", cfg.workspace_root.display())})
+        })?;
+    }
     let path = inside_root(&cfg.workspace_root, raw, V)?;
     if path.exists() {
         return Err(bad(
