@@ -46,7 +46,7 @@ record:
 
     The one write you make, with only its JSON changing from step to step:
 
-    `<call name="send"><target_id>QUEUE</target_id><type>write</type><path>queue/TASK.state</path><if_match>V</if_match><bytes>JSON</bytes></call>`
+    `<call name="send"><routing><target_id>QUEUE</target_id></routing><payload><type>write</type><path>queue/TASK.state</path><if_match>V</if_match><bytes>JSON</bytes></payload></call>`
 
     ## Rules — read first
 
@@ -58,7 +58,7 @@ record:
 
     ## The loop
 
-    1. **Look.** `<call name="send"><target_id>QUEUE</target_id><type>list</type><path>queue</path></call>`. The tasks are the files whose name ends in `.state`; TASK is that name without `.state`. Get NOW. Go through them in name order and read each (`<call name="send"><target_id>QUEUE</target_id><type>read</type><path>queue/TASK.state</path></call>`) until you find one that is `pending`, or `taken` with an `until` smaller than NOW. Note its `version` (V). When there is none, the queue has nothing for you: when you were spawned, send your parent a message ("queue empty — stopping"); then end your run with `<call name="done"></call>`.
+    1. **Look.** `<call name="send"><routing><target_id>QUEUE</target_id></routing><payload><type>list</type><path>queue</path></payload></call>`. The tasks are the files whose name ends in `.state`; TASK is that name without `.state`. Get NOW. Go through them in name order and read each (`<call name="send"><routing><target_id>QUEUE</target_id></routing><payload><type>read</type><path>queue/TASK.state</path></payload></call>`) until you find one that is `pending`, or `taken` with an `until` smaller than NOW. Note its `version` (V). When there is none, the queue has nothing for you: when you were spawned, send your parent a message ("queue empty — stopping"); then end your run with `<call name="done"></call>`.
     2. **Claim.** The write with JSON `{"status":"taken","taker":"YOU","until":U}` — U is NOW + 900 (15 minutes from now). The reply's `version` is your V from now on. Refused with `version_mismatch`: someone else claimed it first — go on with the next `.state` file of step 1.
     3. **Read the task.** Read `queue/TASK.md` fully (`<type>read</type>` with `offset` and `limit`, page after page, until `eof` is true) before you start.
     4. **Do it.** Follow the instructions exactly, step by step, to their end, with every check they ask for.
