@@ -77,17 +77,26 @@ def render_value(v) -> str:
     return str(v)
 
 
+# fantastic's routing names (tool_parse::grammar::ROUTING besides target_id): in a script's
+# `args` they are the call's routing, as they were inline, so they go in `<routing>`.
+ROUTING = ("to", "re", "reply_to", "title", "timeout", "retries", "exec_id")
+
+
 def render_call(c: dict) -> str:
-    """One `<call name="send">` element, one child tag per argument."""
-    parts = [f'<call name="{c.get("name", "send")}">']
-    if c.get("target"):
-        parts.append(f"<target_id>{c['target']}</target_id>")
-    if c.get("type"):
-        parts.append(f"<type>{c['type']}</type>")
-    for k, v in (c.get("args") or {}).items():
-        parts.append(f"<{k}>{render_value(v)}</{k}>")
-    parts.append("</call>")
-    return "\n".join(parts)
+    """One call element. A `send` is the routing form (fantastic#527): `<routing>` holds the
+    target and any routing name, `<payload>` the verb and its arguments, delivered whole. Any
+    other call (`done`, `await`, …) is its name with its arguments as child tags."""
+    name = c.get("name", "send")
+    args = dict(c.get("args") or {})
+    if name != "send":
+        body = [f"<{k}>{render_value(v)}</{k}>" for k, v in args.items()]
+        return "\n".join([f'<call name="{name}">', *body, "</call>"])
+    routing = [f"<target_id>{c['target']}</target_id>"] if c.get("target") else []
+    routing += [f"<{k}>{render_value(args.pop(k))}</{k}>" for k in ROUTING if k in args]
+    payload = [f"<type>{c['type']}</type>"] if c.get("type") else []
+    payload += [f"<{k}>{render_value(v)}</{k}>" for k, v in args.items()]
+    return "\n".join([f'<call name="{name}">', f"<routing>{''.join(routing)}</routing>",
+                      f"<payload>{''.join(payload)}</payload>", "</call>"])
 
 
 def render_turn(turn: dict) -> str:
