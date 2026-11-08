@@ -1301,8 +1301,10 @@ def remote_agents(reply) -> dict:
     """The remote kernel's records out of a forwarded `list_agents` (the reply may be wrapped)."""
     r = reply or {}
     for _ in range(3):
-        if isinstance(r, dict) and "agents" in r:
-            return {a.get("id"): a for a in r["agents"]}
+        if isinstance(r, dict) and isinstance(r.get("agents"), list):
+            # a record, or a bare id (a reply rendered short): either names an agent
+            return {(a.get("id") if isinstance(a, dict) else a): (a if isinstance(a, dict) else {})
+                    for a in r["agents"]}
         r = r.get("result") if isinstance(r, dict) else None
     return {}
 

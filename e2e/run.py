@@ -1553,13 +1553,12 @@ def selftest_ssh_twins(v: Verdict) -> None:
             return {"result": {"total": 1}}
     lead = History()
     watch = gpu_mod.Lead(lead, "lead")
-    watch.refresh()
-    watch.since, watch.rows, watch._after = len(watch.rows), [], None
-    early = watch.said_done()
-    watch.rows, watch._after = [], None
+    watch.mark()
+    early, again = watch.said_done(), watch.said_done()
     lead.rows = lead.rows + [{"id": 3, "kind": "user"}, {"id": 4, "kind": "assistant"}]
-    v.check("a lead told twice: its first `done` does not count, a `done` after the new message does (gpu_ssh.play)",
-            not early and watch.said_done(), f"early {early}")
+    v.check("a lead told twice: its first `done` does not count, polled again or not; a `done` after the new "
+            "message does (gpu_ssh.play)", not early and not again and watch.said_done(), f"early {early} again {again}")
+    v.check("a history re-read holds each row once", len(watch.rows) == 4, str(watch.rows))
     tmp = tempfile.mkdtemp(prefix="e2e-ssh-twins-")
     forge = None
     try:

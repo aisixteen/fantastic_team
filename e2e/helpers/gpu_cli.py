@@ -74,25 +74,31 @@ class Lead:
     def __init__(self, team, lead: str) -> None:
         self.team, self.id = team, lead
         self.rows: list[dict] = []
-        self._after = None
-        self.since = 0  # `done` counts only in a row past this many (a lead told twice, #242)
+        self.since = 0  # `done` counts only in a row whose id is past this one (a lead told twice, #242)
 
     def refresh(self) -> None:
+        """Read the whole history again: its last page has no `next`, so no cursor survives a read."""
+        rows, after = [], None
         while True:
             payload = {"type": "history"}
-            if self._after is not None:
-                payload["after"] = self._after
+            if after is not None:
+                payload["after"] = after
             res = self.team.send(self.id, payload, timeout=60).get("result") or {}
-            self.rows += res.get("rows") or []
-            nxt = res.get("next")
-            if not nxt:
-                return
-            self._after = nxt
+            rows += res.get("rows") or []
+            after = res.get("next")
+            if not after:
+                break
+        self.rows = rows
+
+    def mark(self) -> None:
+        """A new task: a `done` before now does not count."""
+        self.refresh()
+        self.since = (self.rows[-1].get("id") or 0) if self.rows else 0
 
     def said_done(self) -> bool:
         try:
             self.refresh()
-            last = self.rows[-1] if len(self.rows) > self.since else None
+            last = self.rows[-1] if self.rows and (self.rows[-1].get("id") or 0) > self.since else None
             if not last or last.get("kind") != "assistant":
                 return False
             hit = self.team.send(self.id, {"type": "grep", "query": DONE_CALL, "ids": [last["id"]]},
