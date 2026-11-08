@@ -34,9 +34,11 @@ def run(ctx):
         cli.add_base(ctx)
         base = set(cli.ids(team))
         cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "delete_agent"]})
-        v.check("the lead was made with create_agent", set(cli.ids(team)) - base == {"lead"})
+        v.check("the lead was made with create_agent (and its provider with its store)",
+                set(cli.ids(team)) - base == {"lead", cli.PROVIDER, cli.PROVIDER_STORE})
         cli.make_agent(ctx, "rlead", cli.LEAD, {cli.EXEC: "*"})
-        v.check("rlead, the remote's backend, was made on the master", set(cli.ids(team)) - base == {"lead", "rlead"})
+        v.check("rlead, the remote's backend, was made on the master",
+                set(cli.ids(team)) - base == {"lead", "rlead", cli.PROVIDER, cli.PROVIDER_STORE})
         box.open_backends(["rlead"])
         cli.add_cadencer(ctx)
         before = cli.tree(team)

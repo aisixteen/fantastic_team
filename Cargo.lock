@@ -1213,7 +1213,7 @@ dependencies = [
 [[package]]
 name = "fantastic-ai-core"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -1228,7 +1228,7 @@ dependencies = [
 [[package]]
 name = "fantastic-anthropic-backend"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-ai-core",
@@ -1243,7 +1243,7 @@ dependencies = [
 [[package]]
 name = "fantastic-bridge"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -1259,7 +1259,7 @@ dependencies = [
 [[package]]
 name = "fantastic-bundle"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "libc",
  "serde_json",
@@ -1268,7 +1268,7 @@ dependencies = [
 [[package]]
 name = "fantastic-canvas-page"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-kernel",
@@ -1279,7 +1279,7 @@ dependencies = [
 [[package]]
 name = "fantastic-core"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -1292,7 +1292,7 @@ dependencies = [
 [[package]]
 name = "fantastic-credential-store"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -1306,7 +1306,7 @@ dependencies = [
 [[package]]
 name = "fantastic-exec-bridge"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "encoding_rs",
@@ -1326,7 +1326,7 @@ dependencies = [
 [[package]]
 name = "fantastic-file"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -1343,7 +1343,7 @@ dependencies = [
 [[package]]
 name = "fantastic-home"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -1352,7 +1352,7 @@ dependencies = [
 [[package]]
 name = "fantastic-io-bridge"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "fantastic-bundle",
  "fantastic-kernel",
@@ -1365,7 +1365,7 @@ dependencies = [
 [[package]]
 name = "fantastic-kernel"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1386,7 +1386,7 @@ dependencies = [
 [[package]]
 name = "fantastic-mcp-client"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1402,7 +1402,7 @@ dependencies = [
 [[package]]
 name = "fantastic-ollama-backend"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-ai-core",
@@ -1417,7 +1417,7 @@ dependencies = [
 [[package]]
 name = "fantastic-py-agent"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -1430,7 +1430,7 @@ dependencies = [
 [[package]]
 name = "fantastic-ram-store"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -1442,7 +1442,7 @@ dependencies = [
 [[package]]
 name = "fantastic-responses-backend"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-ai-core",
@@ -1457,7 +1457,7 @@ dependencies = [
 [[package]]
 name = "fantastic-scenario-probes"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -1468,9 +1468,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fantastic-scheduler"
+version = "0.1.0"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
+dependencies = [
+ "async-trait",
+ "fantastic-bundle",
+ "fantastic-kernel",
+ "futures-util",
+ "libc",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "fantastic-sqlite-store"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -1486,6 +1500,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "ed25519-dalek",
+ "fantastic-ai-core",
  "fantastic-anthropic-backend",
  "fantastic-bundle",
  "fantastic-core",
@@ -1494,6 +1509,7 @@ dependencies = [
  "fantastic-file",
  "fantastic-kernel",
  "fantastic-ram-store",
+ "fantastic-scheduler",
  "fantastic-sqlite-store",
  "fantastic-team-secrets-guard",
  "fantastic-tui",
@@ -1548,11 +1564,12 @@ dependencies = [
 [[package]]
 name = "fantastic-tui"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "anyhow",
  "async-trait",
  "crossterm 0.29.0",
+ "fantastic-ai-core",
  "fantastic-anthropic-backend",
  "fantastic-bridge",
  "fantastic-canvas-page",
@@ -1595,7 +1612,7 @@ dependencies = [
 [[package]]
 name = "fantastic-user"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-core",
@@ -1609,7 +1626,7 @@ dependencies = [
 [[package]]
 name = "fantastic-user-home-store"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-kernel",
@@ -1621,7 +1638,7 @@ dependencies = [
 [[package]]
 name = "fantastic-vllm-backend"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-ai-core",
@@ -1638,7 +1655,7 @@ dependencies = [
 [[package]]
 name = "fantastic-web"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "axum",
@@ -1659,7 +1676,7 @@ dependencies = [
 [[package]]
 name = "fantastic-web-mcp"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-kernel",
@@ -1670,7 +1687,7 @@ dependencies = [
 [[package]]
 name = "fantastic-web-ws"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#8eca5833d80a3d44345c652a848f842600ecf13f"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#e1dc8c299df4c4078d1753c9f636840357b4fc9a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -5504,6 +5521,7 @@ name = "team-agentic-resources"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "fantastic-ai-core",
  "fantastic-bundle",
  "fantastic-core",
  "fantastic-kernel",

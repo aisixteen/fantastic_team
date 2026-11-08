@@ -9,6 +9,7 @@ description = "A generic roles registry: role cards, spawn, fleet, per-role and 
 [dependencies]
 fantastic-bundle.workspace = true
 fantastic-kernel.workspace = true
+fantastic-ai-core.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

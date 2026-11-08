@@ -2,6 +2,43 @@
  {
   "calls": [
    {
+    "target": "kernel",
+    "type": "create_agent",
+    "args": {
+     "id": "lead_checkins",
+     "parent_id": "lead",
+     "handler_module": "scheduler.tools",
+     "can_call": {
+      "$parent": [
+       "send"
+      ]
+     },
+     "callable_by": {
+      "$parent": "*"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "lead_checkins",
+    "type": "schedule",
+    "args": {
+     "target": "lead",
+     "payload": {
+      "type": "send",
+      "text": "[check-in agents] check your agents"
+     },
+     "interval_seconds": 1
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
     "target": "s1",
     "type": "send",
     "args": {
@@ -24,7 +61,11 @@
  {
   "calls": [
    {
-    "name": "done"
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "lead_checkins"
+    }
    }
   ],
   "after": [
@@ -32,7 +73,54 @@
    "s2",
    "w1",
    "w2"
+  ],
+  "delay": 3
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
   ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "create_agent",
+    "args": {
+     "id": "s1_checkins",
+     "parent_id": "s1",
+     "handler_module": "scheduler.tools",
+     "can_call": {
+      "$parent": [
+       "send"
+      ]
+     },
+     "callable_by": {
+      "$parent": "*"
+     }
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "s1_checkins",
+    "type": "schedule",
+    "args": {
+     "target": "s1",
+     "payload": {
+      "type": "send",
+      "text": "[check-in agents] check your agents"
+     },
+     "interval_seconds": 1
+    }
+   }
+  ],
+  "lane": "s1"
  },
  {
   "calls": [
@@ -49,13 +137,65 @@
  {
   "calls": [
    {
-    "name": "done"
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "s1_checkins"
+    }
    }
   ],
   "lane": "s1",
   "after": [
    "w1"
-  ]
+  ],
+  "delay": 3
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "create_agent",
+    "args": {
+     "id": "s2_checkins",
+     "parent_id": "s2",
+     "handler_module": "scheduler.tools",
+     "can_call": {
+      "$parent": [
+       "send"
+      ]
+     },
+     "callable_by": {
+      "$parent": "*"
+     }
+    }
+   }
+  ],
+  "lane": "s2"
+ },
+ {
+  "calls": [
+   {
+    "target": "s2_checkins",
+    "type": "schedule",
+    "args": {
+     "target": "s2",
+     "payload": {
+      "type": "send",
+      "text": "[check-in agents] check your agents"
+     },
+     "interval_seconds": 1
+    }
+   }
+  ],
+  "lane": "s2"
  },
  {
   "calls": [
@@ -75,13 +215,26 @@
  {
   "calls": [
    {
-    "name": "done"
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "s2_checkins"
+    }
    }
   ],
   "lane": "s2",
   "after": [
    "w2"
-  ]
+  ],
+  "delay": 3
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "lane": "s2"
  },
  {
   "calls": [

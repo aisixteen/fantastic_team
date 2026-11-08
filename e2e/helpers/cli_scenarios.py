@@ -36,11 +36,12 @@ def single_by_hand(ctx, v, sub: str = "create_agent_run"):
     base = set(cli.ids(ctx.team))
     lead = cli.make_lead(ctx, {cli.EXEC: "*"})
     made = set(cli.ids(ctx.team)) - base
-    v.check("A: create_agent made the lead alone, under the id `lead`", made == {"lead"} and lead == "lead", str(made))
+    v.check("A: create_agent made the lead (and its provider with its store), under the id `lead`",
+            made == {"lead"} | {cli.PROVIDER, cli.PROVIDER_STORE} and lead == "lead", str(made))
     cli.add_cadencer(ctx)
     before = cli.ids(ctx.team)
-    handler = ctx.model.ai_record()["handler_module"]
-    v.check(f"A: the lead is a {handler} record", before.get(lead) == handler, str(before))
+    v.check(f"A: the lead is an AI chat ({cli.CHAT}) on the team's provider",
+            before.get(lead) == cli.CHAT and before.get(cli.PROVIDER) == ctx.model.ai_record()["handler_module"], str(before))
     return lead, before
 
 
@@ -88,21 +89,25 @@ def spawn_two_start(ctx, v, credentials: bool = False) -> dict:
     cli.start(ctx, roles=True)
     cli.add_base(ctx)
     base = set(cli.ids(ctx.team))
-    cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True)
+    cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True, runs_agents=True)
     cli.make_registry(ctx, total=2, roles=cli.roles_dir("lead_spawns_two"))
     new = set(cli.ids(ctx.team)) - base
-    v.check("create_agent made the lead and its roles registry, under fixed ids", new == {"lead", "roles"}, str(new))
+    v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
+                new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
     cli.add_cadencer(ctx)
     count = ctx.team.send("roles", {"type": "get_count"})["result"]
     v.check("the registry is on and counts nothing running", count == {"running": 0, "max": 2}, str(count))
     return cli.tree(ctx.team)
 
 
+def spawns_of(ctx) -> list:
+    """The lead's `spawn` calls on the registry, from the team's log (a refused one included)."""
+    return [c for c in team_mod.log_calls(ctx.team.log()) if c == ("roles", "spawn")]
+
+
 def spawn_two_end(ctx, v, before: dict) -> None:
     ok, why = cli.solved(ctx.repo)
     v.check("solved (the test passes on HEAD, the fix is committed)", ok, why)
-    spawns = [c for c in team_mod.log_calls(ctx.team.log()) if c == ("roles", "spawn")]
-    v.check("the lead spawned 2 workers", len(spawns) == 2, str(spawns))
     after = cli.tree(ctx.team)
     v.check("the records are the ones it started with (both workers deleted)", after == before,
             f"before {sorted(before)} after {sorted(after)}")
@@ -132,10 +137,12 @@ def precreate(ctx, v, expect: dict, all_keyed: bool = False) -> dict:
     base = set(cli.ids(ctx.team))
     for id, parent in expect.items():
         kids = {c: "*" for c, p in expect.items() if p == id}
-        cli.make_agent(ctx, id, parent, kids or {cli.EXEC: "*"}, key=(id == cli.LEAD or all_keyed))
+        worker = {"model": cli.worker_model()} if not kids and cli.worker_model() else {}
+        cli.make_agent(ctx, id, parent, kids or {cli.EXEC: "*"}, key=(id == cli.LEAD or all_keyed),
+                       lead=bool(kids), **worker)
     before = cli.tree(ctx.team)
     v.check("the tree is the one made and the base, nothing else",
-            set(before) == base | set(expect), str(sorted(set(before) - base)))
+            set(before) == base | set(expect) | {cli.PROVIDER, cli.PROVIDER_STORE}, str(sorted(set(before) - base)))
     v.check("each agent sits under the parent it was made under",
             all(before[i][1] == p for i, p in expect.items()),
             str({i: before[i][1] for i in expect}))
@@ -158,10 +165,11 @@ def spawn_leads_start(ctx, v, credentials: bool = False) -> dict:
     cli.start(ctx, roles=True)
     cli.add_base(ctx)
     base = set(cli.ids(ctx.team))
-    cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True)
+    cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True, runs_agents=True)
     cli.make_registry(ctx, total=4, roles=cli.roles_dir("leads_spawn_leads"))
     new = set(cli.ids(ctx.team)) - base
-    v.check("create_agent made the lead and its roles registry, under fixed ids", new == {"lead", "roles"}, str(new))
+    v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
+                new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
     cli.add_cadencer(ctx)
     return cli.tree(ctx.team)
 
@@ -198,7 +206,7 @@ def canvas_start(ctx, v):
     base = set(cli.ids(team))
     cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent"]})
     new = set(cli.ids(team)) - base
-    v.check("the lead was made with create_agent", new == {"lead"}, str(new))
+    v.check("the lead was made with create_agent (and its provider with its store)", new == {"lead"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
     cli.add_cadencer(ctx)
     v.check("the team runs headless", team.proc.poll() is None)
     agents = team.agents()

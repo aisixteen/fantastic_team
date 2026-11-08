@@ -144,3 +144,11 @@ The agents the person makes later (`dispatcher`, `cadencer`, `pack`, `pack_listi
 - **Connector error:** the exec bridge connector keeps its setup error, so a job that can't reach its kernel says why.
 - **Turns:** a drop mid-turn ends the called agent's turn through cancel (#491). A refused remote watch reaches the watcher as a named refusal (#492). The default `max_tokens` is bounded (#495, #496).
 - **Also:** `seed_dir_with` grants on stock agents, `reflect` carries every agent's view (#483), theming is removed (#482), and the kiosk and system agents are out of the base (#475, #486).
+
+## Pin at `e1dc8c2`
+
+`Cargo.lock` now pins fantastic `e1dc8c2`.
+
+- **The AI chat apart from its provider** (#516, #521). `ai_chat.tools` is the AI agent: it holds the conversation and completes each turn through the provider agent its record names (`provider_id`), on its own `model` (absent: the provider's default). Every `*_backend` is a provider and nothing else: `complete`, `models` (`{models, default}`), `set_default_model`; a chat verb on it is refused.
+- **Embedded meta bundles** (#520). `BundleRegistry::register_meta_yaml(name, yaml)`: the team registers its stock roles from code, in RAM, on `base: ai_chat.tools`; a team folder's `bundle.yaml` of the same name overrides one.
+- **The model of a pass** (#522): the chat's `model`, else the provider's `default_model`, else the server's own (written as the default). A provider keeps its state (its default model, as a `setting` row) in its own memory store (#523). The team's compiled blueprint names no provider: the user adds one after install and sets the lead's `provider_id`.

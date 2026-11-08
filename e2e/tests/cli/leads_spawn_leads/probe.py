@@ -19,4 +19,5 @@ def run(ctx):
     S.spawn_leads_end(ctx, v, before)
     v.check("every lane asked the model", {"s1", "s2", "w1", "w2"} <= set(ctx.model.request_lanes),
             str(sorted(set(ctx.model.request_lanes))))
+    cli.check_ins_played(ctx, v)
     return v.finish()

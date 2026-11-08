@@ -81,10 +81,9 @@ fn every_record_field_the_readme_names_is_read_by_the_code() {
         );
     }
     // the roles registry's own fields: a registry made from the README block, in a team
-    // folder whose first run wrote the role bundles, lists the six roles and holds the limit
+    // whose kernel holds the stock roles (embedded), lists the six roles and holds the limit
     let reg = record_block(&text, "limits:");
     let dir = tempfile::TempDir::new().unwrap();
-    fantastic_team::roles::write_bundles(dir.path()).unwrap();
     let mut record = reg.as_object().unwrap().clone();
     record.insert("type".into(), "create_agent".into());
     record.insert("id".into(), "roles".into());

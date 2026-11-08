@@ -27,12 +27,13 @@ pub(crate) enum Change {
     Removed { id: String },
 }
 
-/// An AI agent: the field that makes one is its memory store.
+/// An AI agent: an AI chat, the agent that names its provider (`provider_id`). A provider
+/// keeps a memory store too, but holds no conversation and takes no message.
 fn is_ai(kernel: &Kernel, id: &str) -> bool {
     kernel
         .agents
         .get(&AgentId::from(id))
-        .is_some_and(|a| a.value().record().meta.contains_key("memory_store_id"))
+        .is_some_and(|a| a.value().record().meta.contains_key(fantastic_ai_core::remote_provider::PROVIDER_FIELD))
 }
 
 /// The leads whose team changed in `batch`. `parents` remembers each AI member's lead,
@@ -160,7 +161,7 @@ pub fn start(kernel: &Arc<Kernel>) -> JoinHandle<()> {
             Some(k) => k
                 .agents
                 .iter()
-                .filter(|e| e.value().record().meta.contains_key("memory_store_id"))
+                .filter(|e| e.value().record().meta.contains_key(fantastic_ai_core::remote_provider::PROVIDER_FIELD))
                 .filter_map(|e| Some((e.key().0.clone(), e.value().parent_id.as_ref()?.0.clone())))
                 .collect(),
             None => return,
@@ -245,7 +246,7 @@ mod tests {
             let mut mk = json!({"type": "create_agent", "id": id, "parent_id": parent, "handler_module": "ram_store.tools",
                 "callable_by": {"$self": "*", "$parent": "*"}});
             if ai {
-                mk["memory_store_id"] = json!("mem");
+                mk["provider_id"] = json!("p");
             }
             if !role.is_empty() {
                 mk["role"] = json!(role);
@@ -275,7 +276,7 @@ mod tests {
         k.send(vec![Item::new(DEFAULT_ROOT_ID, mk)]).await;
         let _tap = start(&k);
         let mk = json!({"type": "create_agent", "id": "b", "parent_id": "L", "handler_module": "ram_store.tools",
-            "memory_store_id": "mem", "callable_by": {"$self": "*", "$parent": "*"}});
+            "provider_id": "p", "callable_by": {"$self": "*", "$parent": "*"}});
         k.send(vec![Item::new(DEFAULT_ROOT_ID, mk)]).await;
         // the notice grants the cadencer `send` on every member it tells, then sends
         let told = |id: &str| {

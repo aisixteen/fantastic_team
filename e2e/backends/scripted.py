@@ -49,6 +49,10 @@ message is notices only is answered `<call name="await"></call>` OUTSIDE the scr
 whatever the agent waits on: a `done` there would end a chain the notice landed in): it takes no
 turn of any lane and is counted in `notice_turns`, so a script stays the test's own steps. So is
 the kernel's request to rebuild a woken agent's working context (`rebuild_turns`).
+
+CHECK-INS. A lead's own scheduler wakes it with a `send` whose text starts `[check-in <name>]`. A tick
+is a notice too (answered `await` outside the script when it is all the newest message holds); every
+request whose conversation holds one is counted in `check_in_turns`, so a test sees the tick reached it.
 """
 
 from __future__ import annotations
@@ -185,6 +189,8 @@ class ScriptedModel:
         self.served = 0
         self.notice_turns = 0  # team notices answered outside the script
         self.rebuild_turns = 0  # the kernel's context rebuilds, answered outside the script
+        self.check_in_turns = 0  # requests whose conversation holds a scheduler's check-in
+        self.check_in_lanes: set[str] = set()  # the lanes those requests came from
         self.overrun = 0
         self.leg_grant = self.no_leg_grant  # the test sets it when its script has `grant_leg` turns
         self.lock = threading.Lock()
@@ -257,11 +263,32 @@ class ScriptedModel:
     NOTICE_HEADS = ("[from cadencer]", "[team] The team of", "Members:", "- `", "[await: nothing to wait for]",
                     "[recall ")
 
+    @staticmethod
+    def is_check_in(block: str) -> bool:
+        """A tick of a lead's own scheduler: `[from <scheduler> …] [check-in <name>] …`."""
+        return block.startswith("[check-in") or (block.startswith("[from ") and "[check-in" in block[:300])
+
+    @classmethod
+    def is_notice(cls, block: str) -> bool:
+        return block.startswith(cls.NOTICE_HEADS) or cls.is_check_in(block)
+
     @classmethod
     def own_blocks(cls, msg: dict) -> list[str]:
-        """The blocks of a message (joined by a blank line) that are not team notices or fantastic's
-        await note. The wire merges consecutive user messages, so a notice and a task can share one."""
-        return [b for b in cls.blocks(msg) if not b.startswith(cls.NOTICE_HEADS)]
+        """The blocks of a message (joined by a blank line) that are not team notices, check-ins or
+        fantastic's await note. The wire merges consecutive user messages, so a notice and a task can
+        share one."""
+        return [b for b in cls.blocks(msg) if not cls.is_notice(b)]
+
+    @classmethod
+    def check_in(cls, raw: str) -> bool:
+        """Does this request's conversation hold a scheduler's check-in (a tick that arrived while
+        the agent worked sits in an earlier message than the newest)?"""
+        try:
+            msgs = json.loads(raw).get("messages", [])
+        except (ValueError, AttributeError, TypeError):
+            return False
+        return any(m.get("role") == "user" and any(cls.is_check_in(b) for b in cls.blocks(m))
+                   for m in msgs if isinstance(m, dict))
 
     @staticmethod
     def blocks(msg: dict) -> list[str]:
@@ -293,7 +320,7 @@ class ScriptedModel:
             if m.get("role") == "user":
                 blocks += cls.blocks(m)
         came = [b for b in blocks if b.startswith(("[from ", "[team] The team of"))][-int(arrived.group(1)):]
-        return bool(came) and all(b.startswith(cls.NOTICE_HEADS) for b in came)
+        return bool(came) and all(cls.is_notice(b) for b in came)
 
     @staticmethod
     def rebuild(raw: str) -> bool:
@@ -312,6 +339,10 @@ class ScriptedModel:
         """Serve one request body: record it, pick the turn of its lane, wait for the lanes the
         turn is `after`, and return (text, thinking) -- or None when the script is exhausted. The
         Messages handler and a fake of another wire (`helpers/fake_vllm.py`) both play through here."""
+        if self.check_in(raw):
+            with self.lock:
+                self.check_in_turns += 1
+                self.check_in_lanes.add(self.lane_of(raw))
         if self.notice_only(raw):
             with self.lock:
                 self.notice_turns += 1

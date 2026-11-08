@@ -60,6 +60,15 @@ pub mod worker_exec;
 /// `task_store_id`; the cabinets (`cabinet.tools`, crates/cabinet) act only for
 /// a manager agent the operator makes and wires.
 pub fn register_team(reg: &mut BundleRegistry) {
+    // the AI agent apart from any provider: the base of every stock role
+    reg.register(
+        fantastic_ai_core::chat_bundle::HANDLER_MODULE,
+        fantastic_ai_core::chat_bundle::AiChatBundle,
+    );
+    // the stock roles, embedded meta bundles over it (a team's folder may override them)
+    if let Err(e) = roles::register(reg) {
+        eprintln!("team: a stock role did not register: {e}");
+    }
     reg.register(
         team_git_connector::HANDLER_MODULE,
         team_git_connector::GitConnectorBundle,
@@ -77,6 +86,8 @@ pub fn register_team(reg: &mut BundleRegistry) {
         team_task_registry::TaskRegistryBundle::default(),
     );
     reg.register(team_cabinet::HANDLER_MODULE, team_cabinet::CabinetBundle);
+    // fantastic's scheduler: a lead makes its own as a child and schedules check-ins to itself.
+    reg.register("scheduler.tools", fantastic_scheduler::SchedulerBundle);
     // The model backend and the credential store the new team's records name (`new_team`).
     reg.register(
         fantastic_anthropic_backend::HANDLER_MODULE,

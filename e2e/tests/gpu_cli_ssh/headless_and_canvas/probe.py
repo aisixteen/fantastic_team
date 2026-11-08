@@ -38,6 +38,7 @@ def run(ctx):
         box.publish()
         v.check("canvas --port P serves the canvas page", S.wait_page(port, "/canvas_page/file/index.html") == 200)
         watch = G.play(ctx, v, "lead", G.wiring(ctx, box, ["rlead"]) + G.TASKS["headless_and_canvas"], label="1: ")
+        gpu.lead_on_default(ctx, v, label="1: ")
         v.check("the box listens on sshd and the tunnel's port only (the remote is --headless)",
                 box.listening() <= {22, box.tunnel_port}, str(box.listening()))
         T.shows_canvas(v, "the local canvas's socket (canvas_ws -> user.forward -> the bridge)",

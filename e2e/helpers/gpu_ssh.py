@@ -76,7 +76,7 @@ def wiring(ctx, box: T.Box, backends=()) -> str:
         f"bridge, stop the remote kernel with `ssh ... '{T.stop_command()}'` (the binary has no stop word; "
         "the tunnel job ends with it), and pull your local clone (`git pull --ff-only`). "
         "Both clones push to the same git server: `git push origin HEAD:main`; pull before you change a file "
-        "the other side pushed. No operator answers an inquiry here: decide yourself. ")
+        "the other side pushed. ")
 
 
 TASKS = {
@@ -96,17 +96,18 @@ TASKS = {
         f"push), whose commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the work. "
         "Read `w2`'s `history`. " + gpu.COMMIT + "Tell them to pass it on."),
     "lead_spawns_two": (
-        gpu.BROKEN + "Spawn two workers here (`spawn` on `roles`, role `worker`): `w1` for adder.py, with that task, "
-        "and one for the remote workspace, with no task. Open the second to the leg (step 5), then have the remote "
+        gpu.BROKEN + "Spawn two workers here (`spawn` on `roles`): `w1` for adder.py, role `worker`, with that task, "
+        "and one for the remote workspace, role `remote_worker` (it has no local exec), with no task. Open the second to the leg (step 5), then have the remote "
         "ask it (the work program): the work is to pull, fix muler.py, commit and push in the remote workspace, "
         f"where its commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the work. "
         "Each commits and pushes. " + gpu.COMMIT + gpu.DELETE),
     "leads_spawn_leads": (
-        gpu.BROKEN + "Spawn two sub-leads here (`spawn` on `roles`, role `sublead`): one for adder.py, with that task, "
-        "and one for the remote workspace, with no task. Open the second to the leg (step 5), then have the remote "
+        gpu.BROKEN + "Spawn two sub-leads here (`spawn` on `roles`): one for adder.py, role `sublead`, with that task, "
+        "and one for the remote workspace, role `remote_sublead`, with no task. Open the second to the leg (step 5), then have the remote "
         "ask it (the work program): the work is to have a worker pull, fix muler.py, commit and push in the remote "
         f"workspace, whose commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the "
-        "work, for the sub-lead to pass on to its worker word for word. Each sub-lead spawns one worker, and deletes it when done. " + gpu.COMMIT + gpu.DELETE),
+        "work, for the sub-lead to pass on to its worker word for word. Each sub-lead spawns one worker (the remote "
+        "sub-lead's with role `remote_worker`, which has no local exec), and deletes it when done. " + gpu.COMMIT + gpu.DELETE),
     "headless_and_canvas": (
         "Your agent `rlead` exists here (it admits the bridge). Have the remote ask it (the work program, step 5): "
         "the work is to make a canvas for its notes, a `create_agent` on the remote kernel (through the bridge) with "
@@ -132,7 +133,8 @@ CLEANUP = ("Now clean up as step 6 says: delete `sketch` on the remote kernel th
 
 def play(ctx, v, lead: str, text: str, label: str = "") -> gpu.Lead:
     """Hand `lead` its task in plain words and wait for its `done` (as `gpu_cli.play`)."""
-    watch = gpu.Lead(ctx.team, lead)
+    watch = ctx.watch = gpu.Lead(ctx.team, lead)
+    gpu.wait_booted(ctx, watch)
     watch.mark()  # a lead told before: its earlier `done` does not count
     started = time.time()
     gpu.hand_task(ctx, lead, text + gpu.END)

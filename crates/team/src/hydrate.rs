@@ -69,12 +69,9 @@ pub fn blueprint_text(dir: &Path) -> Result<String, String> {
 /// (`fantastic_tui::seed_dir_with`). Returns whether it wrote: `.fantastic` already there
 /// means nothing is written.
 pub fn seed(dir: &Path) -> Result<bool, String> {
-    let wrote = fantastic_tui::seed_dir_with(dir, &[&blueprint_text(dir)?])?;
-    // the role bundles beside the records (`.fantastic/bundles/`): the kernel loads them
-    // before the tree, so the `lead` record and every spawn resolve. One the folder
-    // already has stays as it is.
-    crate::roles::write_bundles(dir)?;
-    Ok(wrote)
+    // the stock roles are the kernel's own (embedded, `crate::roles::register`): nothing
+    // of them is written here
+    fantastic_tui::seed_dir_with(dir, &[&blueprint_text(dir)?])
 }
 
 #[cfg(test)]
@@ -217,7 +214,9 @@ mod tests {
         for (file, text) in crate::roles::ALL {
             let c = crate::roles::parse_card(text, file).unwrap();
             for tool in c.grants.keys() {
-                let known = ids.contains(&tool.as_str())
+                // a `$` key is a token (`$subtree`: the lead's own scheduler), not a tool
+                let known = tool.starts_with('$')
+                    || ids.contains(&tool.as_str())
                     || ["kernel", "kernel_state", "canvas_page"]
                         .contains(&tool.as_str());
                 assert!(

@@ -1,6 +1,6 @@
-# The `issue_keeper` role: a meta bundle over an AI backend (fantastic's bundles/<name>/bundle.yaml).
-# The model is not here: whoever spawns it says which, from its own job prompt.
-base: anthropic_backend.tools
+# The `issue_keeper` role: a meta bundle over the AI agent (`ai_chat.tools`): grants and a directive only.
+# No provider and no model here: they are the chat's own fields (`provider_id`, `model`), set at spawn.
+base: ai_chat.tools
 sentence: Keeps the issue bookkeeping in step with the team events.
 record:
   can_call:

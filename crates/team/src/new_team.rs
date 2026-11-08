@@ -7,8 +7,8 @@
 //! The ids: the main lead [`LEAD`]; under it the roles registry [`ROLES`], the task
 //! registry [`TASKS`], the queue [`QUEUE`], the board [`BOARD`], the GitHub connector
 //! [`GITHUB`] and the worker's tools [`WORKER_EXEC`] and [`WORKER_FILES`]. The cards (the
-//! files in `roles/` of the repo, embedded in [`crate::roles`]) are written next to the
-//! kernel by [`write_bundles`] (meta bundles under `.fantastic/bundles/`); the registry reads them from the kernel.
+//! stock roles, embedded meta bundles in [`crate::roles`]) are the kernel's own: registered
+//! in RAM, nothing written to the folder; the registry reads them from the kernel.
 //!
 //! There is no code here that creates, updates or grants an agent: the blueprint is the
 //! one declaration.
@@ -64,12 +64,6 @@ pub const LEAD_CANVAS_VERBS: [&str; 1] = ["new_canvas"];
 pub const LEAD_FILES_VERBS: [&str; 5] =
     ["read", "read_stream", "watch_path", "unwatch_path", "watch"];
 
-/// Write the role bundles under `dir/.fantastic/bundles/` (`roles::write_bundles`). A
-/// bundle the directory already has stays as it is. Returns how many it wrote.
-pub fn write_bundles(dir: &Path) -> Result<usize, String> {
-    roles::write_bundles(dir)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,16 +73,17 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn write_bundles_never_overwrites() {
-        let dir = tempfile::TempDir::new().unwrap();
-        assert_eq!(write_bundles(dir.path()).unwrap(), roles::ALL.len());
-        let at = |n: &str| dir.path().join(".fantastic/bundles").join(n).join("bundle.yaml");
+    fn the_stock_roles_are_the_kernels_own_and_nothing_is_written() {
+        let reg = crate::registry();
+        let rows = reg.folder_rows();
         for (name, _) in roles::ALL {
-            assert!(at(name).is_file(), "{name}");
+            let row = rows.iter().find(|r| r["name"] == name).unwrap_or_else(|| panic!("{name}: {rows:?}"));
+            assert_eq!(row["source"], "embedded", "{row}");
+            assert_eq!(row["base"], fantastic_ai_core::chat_bundle::HANDLER_MODULE, "{row}");
         }
-        std::fs::write(at("worker"), "# mine\n").unwrap();
-        assert_eq!(write_bundles(dir.path()).unwrap(), 0);
-        assert_eq!(std::fs::read_to_string(at("worker")).unwrap(), "# mine\n");
+        let dir = tempfile::TempDir::new().unwrap();
+        crate::hydrate::seed(dir.path()).unwrap();
+        assert!(!dir.path().join(".fantastic/bundles").exists(), "the first run writes no role");
     }
 
     /// An agent that makes the call it is told to AS ITSELF, so the gate and `spawn`
@@ -190,10 +185,24 @@ mod tests {
             .push(creds);
         let lead = entry_mut(list, LEAD).unwrap();
         match real_lead {
-            None => lead["handler_module"] = json!("caller.tools"),
+            None => {
+                lead["handler_module"] = json!("caller.tools");
+                // a configured team: the lead names its provider (the stand-ins never call it)
+                lead["provider_id"] = json!("prov");
+            }
             Some(endpoint) => {
-                lead["endpoint"] = json!(endpoint);
-                lead["credentials"] = json!({"store": CREDENTIALS, "ref": "plug"});
+                // what a user does after install: a provider under the lead, on the plug, and the
+                // lead's `provider_id` naming it (it runs the provider's default model)
+                lead["provider_id"] = json!("anthropic");
+                lead["model"] = json!("claude-test-5"); // the user's choice for this chat
+                lead["agents"].as_array_mut().unwrap().insert(0, json!({
+                    "id": "anthropic", "handler_module": "anthropic_backend.tools", "endpoint": endpoint,
+                    "credentials": {"store": CREDENTIALS, "ref": "plug"}, "memory_store_id": "memory",
+                    "max_tokens": 1000, "context_window": 200000,
+                    "can_call": {"$self": "*", CREDENTIALS: ["get"], "memory": "*"},
+                    "callable_by": {"$self": "*", "$parent": ["complete", "watch"]}}));
+                let creds = entry_mut(list, CREDENTIALS).unwrap();
+                creds["callable_by"] = json!({"anthropic": ["get"]});
             }
         }
         let _ = dir;
@@ -223,9 +232,15 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         fantastic_tui::seed_dir_with(dir.path(), &[&test_blueprint(dir.path(), real_lead)])
             .unwrap();
-        write_bundles(dir.path()).unwrap(); // after the seed, as `hydrate::seed` does
         let mut reg = crate::registry();
         reg.register("caller.tools", CallerBundle(log.clone()));
+        // the stock roles on the stand-in, so a spawned lead or worker makes its calls as
+        // itself (a real lead keeps them on the AI agent)
+        if real_lead.is_none() {
+            for (name, text) in roles::ALL {
+                reg.register_meta_yaml(name, &text.replace("base: ai_chat.tools", "base: caller.tools")).unwrap();
+            }
+        }
         let mut booted =
             bootstrap::bootstrap(reg, bootstrap::BootstrapOptions::one_shot(dir.path())).unwrap();
         fantastic_kernel::lock::acquire(dir.path()).unwrap();
@@ -361,9 +376,14 @@ mod tests {
         let (dir, kernel, _) = build(Some(&format!("{}/v1/messages", srv.uri()))).await;
         let lead = AgentId::from(LEAD);
         let before = meta(&kernel, LEAD)["callable_by"].clone();
+        // a sub-lead that makes its calls as itself: the lead role on the stand-in
+        kernel
+            .bundles
+            .register_meta_yaml("lead_stand_in", &crate::roles::LEAD.replace("base: ai_chat.tools", "base: caller.tools"))
+            .unwrap();
         let made = fantastic_kernel::send::as_agent(
             &lead,
-            ask(&kernel, ROLES, json!({"type": "spawn", "role": "lead", "backend": {"handler_module": "caller.tools"}})),
+            ask(&kernel, ROLES, json!({"type": "spawn", "role": "lead_stand_in"})),
         )
         .await;
         let sub = made["id"]
@@ -431,7 +451,12 @@ mod tests {
         let lead = meta(&kernel, LEAD);
         assert_eq!(lead["memory_store_id"], "memory");
         assert!(lead.get("system_prompt_file").is_none(), "the directive is the `lead` bundle's");
-        assert_eq!(lead["credentials"]["store"], "credentials");
+        assert!(lead.get("credentials").is_none() && lead.get("model").is_none(), "the lead is a chat: {lead:?}");
+        // the compiled blueprint knows no provider: the lead names none and none is declared
+        let mut shipped: Value = serde_yaml::from_str(&crate::hydrate::blueprint_text(Path::new("/team")).unwrap()).unwrap();
+        let shipped_lead = entry_mut(&mut shipped["agents"], LEAD).unwrap().clone();
+        assert!(shipped_lead.get("provider_id").is_none(), "the binary knows no provider: {shipped_lead}");
+        assert!(!serde_yaml::to_string(&shipped).unwrap().contains("_backend.tools"), "and ships none");
         assert_eq!(lead["can_call"]["roles"], json!(LEAD_ROLES_VERBS));
         assert_eq!(lead["can_call"]["kernel_state"], json!(LEAD_ROOT_VERBS));
         assert_eq!(lead["can_call"]["board"], json!(LEAD_BOARD_VERBS));

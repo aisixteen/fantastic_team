@@ -1,10 +1,12 @@
-//! The ROLES of the coder team, as META BUNDLES (fantastic's `bundles/<name>/bundle.yaml`
-//! with a `base` and no program): each is its directive (`record.post_system_prompt`) and
-//! its grants (`record.can_call`) over an AI backend, and names no model. Compiled in here
-//! and written under `.fantastic/bundles/` at the first run ([`write_bundles`]), where the
-//! kernel loads them before the tree; the roles registry reads them from the kernel.
+//! The STOCK ROLES of the coder team, as EMBEDDED META BUNDLES over the AI agent
+//! (`base: ai_chat.tools`): each is its directive (`record.post_system_prompt`) and its
+//! grants (`record.can_call`), and names no provider and no model (the chat's own
+//! `provider_id` and `model`, set at spawn). Registered from here into the kernel's bundle
+//! registry, in RAM ([`register`]): nothing is written to a team's folder. A team's own
+//! `.fantastic/bundles/<name>/bundle.yaml` overrides a stock role of that name, or adds a
+//! new one; the roles registry reads whatever meta bundles the kernel holds.
 
-use std::path::Path;
+use fantastic_kernel::bundle::BundleRegistry;
 
 /// The worker role (`bundles/worker/bundle.yaml`).
 pub const WORKER: &str = include_str!("../bundles/worker/bundle.yaml");
@@ -39,22 +41,13 @@ pub const CODER_ROLES: [&str; 6] = [
     "project_lead",
 ];
 
-/// Write the role bundles under `dir/.fantastic/bundles/<name>/bundle.yaml`. A bundle the
-/// folder already has stays as it is (it may have been edited). Returns how many it wrote.
-pub fn write_bundles(dir: &Path) -> Result<usize, String> {
-    let mut wrote = 0;
+/// Register the stock roles as embedded meta bundles. Their base, `ai_chat.tools`, is
+/// registered first.
+pub fn register(reg: &BundleRegistry) -> Result<(), String> {
     for (name, text) in ALL {
-        let folder = dir.join(".fantastic").join("bundles").join(name);
-        let p = folder.join("bundle.yaml");
-        if p.exists() {
-            continue;
-        }
-        std::fs::create_dir_all(&folder)
-            .map_err(|e| format!("cannot create {}: {e}", folder.display()))?;
-        std::fs::write(&p, text).map_err(|e| format!("cannot write {}: {e}", p.display()))?;
-        wrote += 1;
+        reg.register_meta_yaml(name, text)?;
     }
-    Ok(wrote)
+    Ok(())
 }
 
 /// One role bundle, read back (tests).
@@ -407,11 +400,9 @@ mod tests {
 
     #[test]
     fn the_role_bundles_load_as_the_registrys_roles() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        write_bundles(tmp.path()).unwrap();
+        // embedded: the kernel's registry holds them, no folder is read
         let mut kernel = fantastic_kernel::Kernel::new();
         kernel.bundles = crate::registry();
-        fantastic_core::folders::load_bundles(&kernel, &tmp.path().join(".fantastic"));
         let errors: Vec<_> = kernel.bundles.folder_rows().into_iter().filter(|r| r.get("error").is_some()).collect();
         assert!(errors.is_empty(), "{errors:?}");
         let loaded = team_agentic_resources::roles::of(&kernel);
