@@ -23,7 +23,8 @@ def run(ctx):
         cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "delete_agent"]}, subtree=True)
         cli.make_registry(ctx, total=2, roles=cli.roles_dir("lead_spawns_two"))
         new = set(cli.ids(ctx.team)) - base
-        v.check("create_agent made the lead and its roles registry, under fixed ids", new == {"lead", "roles"}, str(new))
+        v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
+                new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
         count = ctx.team.send("roles", {"type": "get_count"})["result"]
         v.check("the registry is on and counts nothing running", count == {"running": 0, "max": 2}, str(count))
         cli.add_cadencer(ctx)
@@ -50,6 +51,7 @@ def run(ctx):
                 T.came_back(ctx, None, "<exit_code>0</exit_code>"), str(T.forward_replies(ctx)[-2:])[:300])
         v.check("the box clone's last commit is w2's fix (read through the bridge)",
                 T.came_back(ctx, None, "<line>Fix mul</line>"))
+        cli.check_ins_played(ctx, v)
         box.end(v, streams=[("w2", "w2")])
     box.removed(v)
     return v.finish()

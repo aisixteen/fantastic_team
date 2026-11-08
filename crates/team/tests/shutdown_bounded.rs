@@ -123,7 +123,7 @@ fn start_with_inflight_call(dir: &Path) -> (Child, Child) {
     let mut child = start(dir, port);
     drop(wait_ready(&mut child, port));
     let create = serde_json::json!({"target": "kernel_state", "payload": {
-        "type": "create_agent", "parent_id": "kernel_state", "id": "lead",
+        "type": "create_agent", "parent_id": "kernel_state", "id": "prov",
         "handler_module": "vllm_backend.tools", "model": "m",
         "endpoint": format!("http://127.0.0.1:{backend}/v1"),
         "memory_store_id": "memory", "kv_overflow": "evict",
@@ -137,7 +137,8 @@ fn start_with_inflight_call(dir: &Path) -> (Child, Child) {
         assert!(Instant::now() < end, "create_agent never succeeded");
         std::thread::sleep(Duration::from_millis(300));
     }
-    let item = r#"{"target":"lead","payload":{"type":"send","text":"hello"}}"#;
+    // a provider's pass: the model call a chat's turn makes
+    let item = r#"{"target":"prov","payload":{"type":"complete","rid":"r","model":"m","messages":[{"role":"user","content":"hello"}]}}"#;
     let pending = send(dir, item);
     // Let the model call start.
     std::thread::sleep(Duration::from_millis(1500));

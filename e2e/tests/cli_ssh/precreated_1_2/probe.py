@@ -43,6 +43,7 @@ def run(ctx):
         v.check("w2's results are its history on the master (its calls through the bridge, in the lead's next turn)",
                 T.came_back(ctx, "w2", "<target_id>remote</target_id>", via="w2 history"))
         S.precreated_end(ctx, v, before)
+        cli.check_ins_played(ctx, v)
         box.end(v, streams=[("w2", "w2"), ("b", "master")])
     box.removed(v)
     return v.finish()

@@ -375,6 +375,24 @@ def close_turns(remote_ids=(), verify: bool = True, detached: bool = False) -> l
     return turns + [t({"name": "done"})]
 
 
+def check_ins_open(me: str, lane: str | None = None) -> list[dict]:
+    """A lead's own check-ins (`cli.CHECK_INS`): it makes its scheduler and schedules a tick to itself
+    (each second, so the scripted run sees one; the plug answers a tick outside the script)."""
+    sid = f"{me}_checkins"
+    return [t({"target": "kernel", "type": "create_agent", "args": {
+                "id": sid, "parent_id": me, "handler_module": "scheduler.tools",
+                "can_call": {"$parent": ["send"]}, "callable_by": {"$parent": "*"}}}, lane),
+            t({"target": sid, "type": "schedule", "args": {
+                "target": me, "payload": {"type": "send", "text": "[check-in agents] check your agents"},
+                "interval_seconds": 1}}, lane)]
+
+
+def check_ins_close(me: str, lane: str | None = None, after=()) -> dict:
+    """The lead deletes its scheduler when its task is complete (held a moment, so a tick lands first)."""
+    return dict(t({"target": "kernel", "type": "delete_agent", "args": {"id": f"{me}_checkins"}}, lane, after=after),
+                delay=2)
+
+
 # A backend the remote watches opens its first turn with words, so a TEXT part streams to its inbox (a turn
 # of calls alone streams call parts, which go to the agents they call, not to a watcher of the backend).
 SAY = "Working on it."
@@ -453,12 +471,12 @@ def script_precreated_1_2() -> list[dict]:
     while a call to w2 is in flight, redials with the bridge's `reconnect`, and a watcher of w2 started
     before keeps streaming (the phase, in the probe). The lead reads w2's conversation back and
     closes (message 2)."""
-    one = open_turns(backends=("w2",), detached=True) + [
+    one = open_turns(backends=("w2",), detached=True) + check_ins_open("lead") + [
         t({"target": "w1", "type": "send", "args": {"text": "[lane:w1] Fix adder.py, commit and push."}}),
         t(work("w2", "w2", "[lane:w2] Pull, fix muler.py, commit and push."), after=["w1"]),
         t({"name": "done"}),
     ]
-    two = [t(history("w2"), after=["w2"])] + close_turns(detached=True)
+    two = [t(history("w2"), after=["w2"]), check_ins_close("lead")] + close_turns(detached=True)
     # the turns of the phase: each ends its run with `done`, words first (a text part streams). The call that is
     # in flight when the tunnel breaks goes to w1 (slow); the turn of the master's after the redial is w2's
     during = [dict(t({"name": "done"}, "w3"), say="Working on it, slowly.", delay=SLOW_S),
@@ -469,7 +487,8 @@ def script_precreated_1_2() -> list[dict]:
 
 def phases_1_2() -> dict:
     """How many turns each part of `script_precreated_1_2` has, for the probe to wait for."""
-    return {"one": len(open_turns(backends=("w2",), detached=True)) + 3, "two": 1 + len(close_turns(detached=True)),
+    return {"one": len(open_turns(backends=("w2",), detached=True)) + len(check_ins_open("lead")) + 3,
+            "two": 2 + len(close_turns(detached=True)),
             "w1": len(fix_turns(ADD, "", "w1")), "w2": len(fix_turns(MUL, "", "w2", True, remote=True)), "during": 2}
 
 
@@ -477,15 +496,18 @@ def script_precreated_tree() -> list[dict]:
     """The lead, s1 and w1 under it, s2 and w2 under it: all on the master (made before the task). s1
     has w1 fix adder.py; then the remote agent sends s2 its work and watches it, and s2 has w2 (on the
     master, its tools the box's exec agent) fix muler.py."""
-    lead = open_turns(backends=("s2",)) + [
+    lead = open_turns(backends=("s2",)) + check_ins_open("lead") + [
         t({"target": "s1", "type": "send", "args": {"text": "[lane:s1] Have your worker fix adder.py."}}),
         t(work("s2", "s2", "[lane:s2] Have your worker w2 fix muler.py."), after=["s1", "w1"]),
         t(history("w2"), after=["s2", "w2"]),
+        check_ins_close("lead"),
     ] + close_turns()
-    s1 = [t({"target": "w1", "type": "send", "args": {"text": "[lane:w1] Fix adder.py, commit and push."}}, "s1"),
-          t({"name": "done"}, "s1", after=["w1"])]
-    s2 = say_first([t({"target": "w2", "type": "send", "args": {"text": "[lane:w2] Pull, fix muler.py, commit and push."}}, "s2"),
-                    t({"name": "done"}, "s2", after=["w2"])])
+    s1 = check_ins_open("s1", "s1") + [
+        t({"target": "w1", "type": "send", "args": {"text": "[lane:w1] Fix adder.py, commit and push."}}, "s1"),
+        check_ins_close("s1", "s1", after=["w1"]), t({"name": "done"}, "s1")]
+    s2 = say_first(check_ins_open("s2", "s2") + [
+        t({"target": "w2", "type": "send", "args": {"text": "[lane:w2] Pull, fix muler.py, commit and push."}}, "s2"),
+        check_ins_close("s2", "s2", after=["w2"]), t({"name": "done"}, "s2")])
     return (lead + s1 + s2 + fix_turns(ADD, "Fix add", "w1")
             + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True))
 
@@ -498,11 +520,13 @@ def script_lead_spawns_two() -> list[dict]:
     lead = open_turns() + [
         t({"target": "roles", "type": "spawn", "args": {"role": "worker", "task": "[lane:w1] Fix adder.py, commit and push."}}),
         t({"target": "roles", "type": "spawn", "args": {"role": "worker"}}),
+        *check_ins_open("lead"),
         t(work("{{minted:2}}", "w2", "[lane:w2] Pull, fix muler.py, commit and push."), after=["w1"],
           grant=["{{minted:2}}"]),
         t(remote_log_call(), after=["w2"]),
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}),
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:2}}"}}),
+        check_ins_close("lead"),
     ] + close_turns()
     return lead + fix_turns(ADD, "Fix add", "w1") + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True, say=SAY)
 
@@ -515,11 +539,13 @@ def script_leads_spawn_leads() -> list[dict]:
     lead = open_turns() + [
         t({"target": "roles", "type": "spawn", "args": {"role": "sublead", "task": "[lane:s1] Have a worker fix adder.py, then delete it."}}),
         t({"target": "roles", "type": "spawn", "args": {"role": "sublead"}}),
+        *check_ins_open("lead"),
         t(work("{{minted:2}}", "s2", "[lane:s2] Have a worker pull, fix muler.py and push, then delete it."),
           after=["s1", "w1"], grant=["{{minted:2}}"]),
         t(remote_log_call(), after=["s2", "w2"]),
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}),
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:2}}"}}),
+        check_ins_close("lead"),
     ] + close_turns()
     s1 = [t({"target": "roles", "type": "spawn", "args": {"role": "worker", "task": "[lane:w1] Fix adder.py, commit and push."}}, "s1"),
           t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}, "s1", after=["w1"]),
@@ -1014,7 +1040,9 @@ class Box:
             out = self.remote.ssh(f"git -C {DIR}/{REPO} " + " ".join(shq(c) for c in cmd), check=False).stdout
         else:
             out = cli.git(self.ctx.repo, *cmd, check=False).stdout
-        return [line.split()[0] for line in out.splitlines() if " commit" in line and "commit (initial)" not in line]
+        # a commit, or one a rebase replayed (`pull --rebase … (pick): …`: a push rejected, then rebased)
+        return [line.split()[0] for line in out.splitlines()
+                if (" commit" in line or "(pick):" in line) and "commit (initial)" not in line]
 
     # -- the checks --
 
@@ -1309,8 +1337,19 @@ def remote_agents(reply) -> dict:
     return {}
 
 
-def ask_through(port, path: str = "/team_ws/ws") -> dict:
-    """`ASK` over a local page's socket (`path`: its leg's, the team page's by default)."""
+def ask_through(port, path: str = "/team_ws/ws", wait_s: float = 30.0) -> dict:
+    """`ASK` over a local page's socket (`path`: its leg's, the team page's by default), asked again
+    for up to `wait_s` until the reply lists the remote's canvas: a page just started may route its
+    first ask before the bridge has settled, and get the master's own agents back."""
+    end = time.time() + wait_s
+    while True:
+        reply = _ask_once(port, path)
+        if "sketch" in remote_agents(reply) or time.time() >= end:
+            return reply
+        time.sleep(2)
+
+
+def _ask_once(port, path: str) -> dict:
     try:
         ws = web.WsClient(int(port), path=path)
         reply = ws.call("user", {"type": "forward", "target": BRIDGE, "payload": ASK}, timeout=60)

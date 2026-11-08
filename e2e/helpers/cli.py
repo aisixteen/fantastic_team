@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 
 from . import records, run_flow, team as team_mod
 
@@ -163,24 +164,140 @@ def add_base(ctx) -> None:
 LEAD = "lead"
 MODEL = "scripted-model"
 
+# A lead's check-ins: its own scheduler wakes it to look at its agents (the team's lead bundles
+# carry the same paragraph). Given only on a model test (costs gpu): a script follows no prompt.
+CHECK_INS = (
+    "Check-ins: before your first spawn or message to an agent, make your own scheduler (`create_agent` on "
+    "`kernel_state`: `handler_module: scheduler.tools`, `parent_id`: your id, `can_call: {\"$parent\": [\"send\"]}`, "
+    "`callable_by: {\"$parent\": \"*\"}`) and `schedule` on it `{target: <your id>, payload: {type: send, text: "
+    "\"[check-in agents] check your agents\"}, interval_seconds: 120}`; start every schedule's text with "
+    "`[check-in <name>]` so you know what ticked, and change an interval when the pace changes (`unschedule`, "
+    "then `schedule`). On each check-in look at every agent you started: one that loops or is stuck (the same "
+    "step or error again, nothing new since the last check-in) you halt (`stop`) and report "
+    "`task failed: <agent>: <why>` to your parent. Keep the check-ins until your task is complete: deleting "
+    "the scheduler (`delete_agent`) is your very last call, after every other step and wait, right before you end.")
+SCHEDULER_VERBS = ["schedule", "unschedule", "list", "pause", "resume", "tick_now", "history"]
+
+
+def check_ins_on(ctx) -> bool:
+    """Leads get `CHECK_INS` on a model test, unless `E2E_CHECK_INS=0` (the A/B run without them)."""
+    return ctx.test.get("costs") == "gpu" and os.environ.get("E2E_CHECK_INS", "1") != "0"
+
+
+def _with(grants: dict, key: str, verbs: list) -> None:
+    """Add `verbs` to `grants[key]` (a `"*"` stays)."""
+    have = grants.get(key)
+    if have == "*" or have == ["*"]:
+        return
+    grants[key] = list(dict.fromkeys([*(have or []), *verbs]))
+
+
+def check_ins(ctx, rec: dict) -> None:
+    """Make `rec` a lead with check-ins: the grants to make, use and delete its own scheduler, and
+    `$subtree` `send` so the scheduler, its child, may wake it; on a model test also `CHECK_INS`
+    (the grants go to the scripted twin too: the sub-lead bundle it spawns asks for them)."""
+    _with(rec["can_call"], "$subtree", SCHEDULER_VERBS)
+    _with(rec["can_call"], "kernel_state", ["create_agent", "delete_agent"])
+    _with(rec["callable_by"], "$subtree", ["send"])
+    if not check_ins_on(ctx):
+        return
+    rec["post_system_prompt"] = CHECK_INS
+    ctx.check_in_leads = [*getattr(ctx, "check_in_leads", []), rec["id"]]
+
+
+# THE PROVIDER: one per team, the connection to the plug's model (its kind, endpoint, key, the
+# models it serves and its default). Every AI agent of a test is an AI chat (`ai_chat.tools`)
+# completing through it; none names a provider field. Made under the first chat (the lead).
+PROVIDER = "provider"
+PROVIDER_STORE = "provider_store"
+CHAT = "ai_chat.tools"
+PROVIDER_VERBS = ["complete", "watch"]
+
+
+def provider_record(ctx, parent: str) -> dict:
+    """The provider's record: the plug's AI fields (its `model` is seeded as the default in the
+    provider's store by `add_provider`), the models the run uses (`E2E_MODEL`, and
+    `E2E_WORKER_MODEL` when set) as its list, the key when keyed."""
+    rec = dict(ctx.model.ai_record())
+    default = rec.pop("model", None)
+    models = list(dict.fromkeys(m for m in (default, worker_model()) if m))
+    rec.update({"id": PROVIDER, "parent_id": parent, "models": models,
+                "memory_store_id": PROVIDER_STORE,  # its own state (the default model) is kept there
+                "can_call": {"$self": "*", PROVIDER_STORE: "*"},
+                "callable_by": {"$self": "*", "$parent": [*PROVIDER_VERBS, "models", "set_default_model"]}})
+    if ctx.model.keyed:
+        rec["credentials"] = model_credentials(ctx)
+        rec["can_call"]["credentials"] = ["get"]
+    return rec
+
+
+def plant_provider_default(team, model: str) -> None:
+    """PRESEED the provider's memory store with its default model, from above (fantastic's e2e
+    `memory.plant`): `dump` the store, put the `setting` row under `<guid>|provider` (the key the
+    provider reads under), `inject`. The row the provider reads: `{kind: setting, name:
+    default_model, value}`."""
+    for _ in range(50):  # the kernel answers `send` a moment after its socket opens
+        r = team.send("kernel", {"type": "reflect"}).get("result") or {}
+        if r.get("guid"):
+            break
+        time.sleep(0.2)
+    owner = f"{r['guid']}|{PROVIDER}"
+    dump = team.send(PROVIDER_STORE, {"type": "dump"}).get("result") or {}
+    rows = [x for x in dump.get("rows") or []
+            if not (x.get("owner") == owner and (x.get("row") or {}).get("kind") == "setting")]
+    rows.append({"owner": owner, "row": {"id": 1, "kind": "setting", "name": "default_model", "value": model}})
+    done = team.send(PROVIDER_STORE, {"type": "inject", "tables": {"rows": rows, "fold_refs": dump.get("fold_refs") or []}})
+    assert "error" not in (done.get("result") or {}), f"plant the provider's default: {done}"
+
+
+def add_provider(ctx, parent: str) -> None:
+    """Make the provider under `parent` (once), admitting every chat that exists."""
+    team = ctx.team
+    have = team.agents()
+    if PROVIDER in have:
+        return
+    rec = provider_record(ctx, parent)
+    for id, a in have.items():
+        if a.get("handler_module") != CHAT and a.get("provider_id") != PROVIDER:
+            continue
+        rec["callable_by"][id] = PROVIDER_VERBS
+    # as fantastic's e2e plants a conversation (E75: `plant_store`, then the agent): the store
+    # first, a ram_store, a child of the lead like the provider; the provider's default model
+    # PLANTED in it under the provider's key before the provider exists; then the provider, which
+    # reads it there. A RAM store starts empty: every later start of the team plants it again.
+    records.create(team, {"id": PROVIDER_STORE, "parent_id": parent, "handler_module": "ram_store.tools",
+                          "callable_by": {"$self": "*", PROVIDER: "*"}})
+    default = ctx.model.ai_record().get("model")
+    if default:
+        plant = lambda t: plant_provider_default(t, default)  # noqa: E731
+        plant(team)
+        team.on_start = [*getattr(team, "on_start", []), plant]
+    records.create(team, rec)
+    if ctx.model.keyed and "credentials" in have:
+        records.merge(team, "credentials", "callable_by", {PROVIDER: ["get"]}, team.agents())
+
 
 def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool = False,
-               **extra) -> str:
-    """One AI agent of the plug's model: `create_agent` under `parent` with the fixed id `id`.
-    `grants` is its `can_call` beyond `$self` and the shared `memory` store (agent -> verbs,
-    `"*"` for every verb). An edge is written on both ends: the caller's `can_call` in this
-    payload, the callee's `callable_by` for the callees that exist already (a child made later
-    admits its parent through `$parent`). `key` gives it the model's credential ref (a spawned
-    agent has none: a spawn does not open the credential store). Returns `id`."""
+               lead: bool = False, **extra) -> str:
+    """One AI agent: an AI chat (`ai_chat.tools`) under `parent` with the fixed id `id`, completing
+    through the team's provider (`PROVIDER`, made under the first chat) on the provider's default
+    model, or the `model` named in `extra`. `grants` is its `can_call` beyond `$self`, the shared
+    `memory` store and its provider (agent -> verbs, `"*"` for every verb). An edge is written on
+    both ends: the caller's `can_call` in this payload, the callee's `callable_by` for the callees
+    that exist already (a child made later admits its parent through `$parent`). `key` is kept for
+    the callers: the key is the provider's, never a chat's. `lead`: it runs agents, so it gets
+    check-ins (`check_ins`). Returns `id`."""
     team = ctx.team
-    key = key and ctx.model.keyed  # a keyless server (the vllm plug without a door key) reads no key
-    can_call = {"$self": "*", "memory": "*", **({"credentials": "*"} if key else {}), **(grants or {})}
-    rec = {"id": id, "parent_id": parent, **ctx.model.ai_record(), "memory_store_id": "memory",
-           "can_call": can_call, "callable_by": {"$self": "*", "$parent": "*"}}
-    if key:
-        rec["credentials"] = model_credentials(ctx)
+    can_call = {"$self": "*", "memory": "*", PROVIDER: PROVIDER_VERBS, **(grants or {})}
+    rec = {"id": id, "parent_id": parent, "handler_module": CHAT, "provider_id": PROVIDER,
+           "memory_store_id": "memory", "can_call": can_call, "callable_by": {"$self": "*", "$parent": "*"}}
+    if lead:
+        check_ins(ctx, rec)
+        can_call = rec["can_call"]
     rec.update(extra)
     records.create(team, rec)
+    if PROVIDER not in team.agents():
+        add_provider(ctx, id)
     have = team.agents()
     for callee, verbs in can_call.items():
         if callee in have and callee != "$self":
@@ -188,9 +305,9 @@ def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool 
     return id
 
 
-def make_lead(ctx, grants: dict | None = None, subtree: bool = False) -> str:
+def make_lead(ctx, grants: dict | None = None, subtree: bool = False, runs_agents: bool = False) -> str:
     """The lead: `make_agent` under `user` with the model's key. `subtree` lets it call
-    everything below it."""
+    everything below it; `runs_agents`: it has agents to look after, so it gets check-ins."""
     grants = dict(grants or {})
     # fantastic's own hints send every agent to `send kernel {type: docs, of: ...}` for a verb's
     # signature: a lead that may not read them stops and asks the operator, who is not there
@@ -199,7 +316,7 @@ def make_lead(ctx, grants: dict | None = None, subtree: bool = False) -> str:
     if isinstance(ks, list):
         grants["kernel_state"] = list(dict.fromkeys([*ks, "docs"]))
     lead = make_agent(ctx, LEAD, "user", {**({"$subtree": "*"} if subtree else {}), **grants},
-                      key=True)
+                      key=True, lead=runs_agents)
     return lead
 
 
@@ -227,10 +344,20 @@ def add_cadencer(ctx) -> None:
     ctx.team.send("cadencer", {"type": "boot"})
 
 
+def check_ins_played(ctx, v, lanes=("main",)) -> None:
+    """Each scripted lead (its lane) made its own scheduler, a tick of it reached the lead, and the
+    scheduler is gone at the end. Call it while the team runs."""
+    got = ctx.model.check_in_lanes
+    v.check(f"a check-in from its own scheduler reached each lead ({', '.join(lanes)})", set(lanes) <= got,
+            f"lanes with a check-in: {sorted(got)}, {ctx.model.check_in_turns} requests")
+    left = [i for i, a in ctx.team.agents().items() if a.get("handler_module") == "scheduler.tools"]
+    v.check("no scheduler is left", not left, str(left))
+
+
 def worker_model() -> str | None:
-    """The model the lead is told to spawn its agents with (`E2E_WORKER_MODEL`), so a run can
-    put the lead and its workers on different models; None: a spawn names none, and the child
-    runs the lead's own (`E2E_MODEL`)."""
+    """The workers' model (`E2E_WORKER_MODEL`): a precreated worker runs it and the lead is told to
+    spawn its workers with it, so leads (`E2E_MODEL`) and workers run different models; None: every
+    agent runs the lead's own."""
     return os.environ.get("E2E_WORKER_MODEL") or None
 
 
@@ -245,6 +372,12 @@ def make_registry(ctx, total: int, parent: str = LEAD, roles: str | None = None)
     dst = os.path.join(ctx.work, ".fantastic", "bundles")
     for name in sorted(os.listdir(src)):
         shutil.copytree(os.path.join(src, name), os.path.join(dst, name), dirs_exist_ok=True)
+        if not check_ins_on(ctx):  # a sub-lead bundle carries the check-ins paragraph: off, it goes
+            y = os.path.join(dst, name, "bundle.yaml")
+            with open(y) as f:
+                text = f.read()
+            with open(y, "w") as f:
+                f.write(text.replace("\n\n    " + CHECK_INS, ""))
         loaded = team.send("kernel", {"type": "reload_bundle", "name": name})
         assert (loaded.get("result") or {}).get("reloaded") == name, f"bundle {name}: {loaded}"
     records.create(team, {"id": "roles", "parent_id": parent, "handler_module": "agentic_resources.tools",

@@ -18,10 +18,13 @@ def run(ctx):
     cli.wait_served(ctx, 120)
     v.check("the scripted model played every turn, none past the end", ctx.model.consumed,
             f"served {ctx.model.served} of {len(ctx.model.turns)}")
+    spawns = S.spawns_of(ctx)
+    v.check("the lead spawned 2 workers", len(spawns) == 2, str(spawns))
     S.spawn_two_end(ctx, v, before)
     lanes = set(ctx.model.request_lanes)
     v.check("each worker asked the model (a lane of its own)", {"w1", "w2"} <= lanes, str(lanes))
     spawned = re.findall(r"<id>(\w+_[0-9a-f]{6,})</id>", ctx.model.raw_bodies[-1])[:2]
     v.check("the lead saw two minted worker ids", len(set(spawned)) == 2, str(spawned))
     v.check("the deleted workers are gone", not any(s in cli.tree(ctx.team) for s in spawned), str(spawned))
+    cli.check_ins_played(ctx, v)
     return v.finish()

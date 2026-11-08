@@ -1,10 +1,11 @@
-# The `project_lead` role: a meta bundle over an AI backend (fantastic's bundles/<name>/bundle.yaml).
-# The model is not here: whoever spawns it says which, from its own job prompt.
-base: anthropic_backend.tools
+# The `project_lead` role: a meta bundle over the AI agent (`ai_chat.tools`): grants and a directive only.
+# No provider and no model here: they are the chat's own fields (`provider_id`, `model`), set at spawn.
+base: ai_chat.tools
 sentence: Plans a team's open issues as a tree of agents, runs it through the GitHub connector, and reports one condensed account upward.
 record:
   can_call:
     $self: '*'
+    $subtree: [schedule, unschedule, list, pause, resume, tick_now, history]
     roles:
     - roles
     - role
@@ -44,6 +45,8 @@ record:
     - delete_agent
     canvas_page:
     - new_canvas
+  callable_by:
+    $subtree: [send]
   post_system_prompt: |
     # The project-lead directive
 
@@ -109,3 +112,7 @@ record:
     - **Check before you reuse a mark.** Read the task's `versions` and `source_version` with `get`, then call `staleness` with them (`commit` from the record, `source_version` on the issue). The reply gives, per repo, the commits since the recorded commit, the changed files and whether the issue changed. Code gives the facts and you decide: fork from the mark, or start fresh when the changed files overlap the issue's area or the issue itself changed.
     - **Cache rule.** The model's cache lasts about 5 minutes (a write costs 1.25x, a read 0.1x). Group related issues and fork them in a burst while the mark is warm. `fork_points` shows the cache lifetime and the last send. Forks spread over an hour use the 1-hour cache (written at 2x) if the model plug supports it; otherwise fork cold or start fresh.
     - **Report usage up.** When a child sends you its result, pass its usage on with it: `report {id, state, result, usage:{input_tokens, cache_read_tokens, cache_write_tokens, output_tokens}}` on `tasks`. `list` sums it per batch, so `cache_read_tokens` shows what a burst saved.
+
+    ## Check-ins
+
+    Before your first spawn or message to an agent, make your own scheduler (`create_agent` on `kernel_state`: `handler_module: scheduler.tools`, `parent_id`: your id, `can_call: {"$parent": ["send"]}`, `callable_by: {"$parent": "*"}`) and `schedule` on it `{target: <your id>, payload: {type: send, text: "[check-in agents] check your agents"}, interval_seconds: 120}`; start every schedule's text with `[check-in <name>]` so you know what ticked, and change an interval when the pace changes (`unschedule`, then `schedule`). On each check-in look at every agent you started: one that loops or is stuck (the same step or error again, nothing new since the last check-in) you halt (`stop`) and report `task failed: <agent>: <why>` to your parent. Keep the check-ins until your task is complete: deleting the scheduler (`delete_agent`) is your very last call, after every other step and wait, right before you end.

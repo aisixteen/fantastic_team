@@ -142,6 +142,43 @@
  {
   "calls": [
    {
+    "target": "kernel",
+    "type": "create_agent",
+    "args": {
+     "id": "lead_checkins",
+     "parent_id": "lead",
+     "handler_module": "scheduler.tools",
+     "can_call": {
+      "$parent": [
+       "send"
+      ]
+     },
+     "callable_by": {
+      "$parent": "*"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "lead_checkins",
+    "type": "schedule",
+    "args": {
+     "target": "lead",
+     "payload": {
+      "type": "send",
+      "text": "[check-in agents] check your agents"
+     },
+     "interval_seconds": 1
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
     "target": "remote",
     "type": "forward",
     "args": {
@@ -223,6 +260,18 @@
     }
    }
   ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "lead_checkins"
+    }
+   }
+  ],
+  "delay": 2
  },
  {
   "calls": [

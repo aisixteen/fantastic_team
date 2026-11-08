@@ -78,6 +78,9 @@ class Team:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"team binary exited early ({self.proc.returncode}):\n{self.log()}")
             if os.path.exists(os.path.join(self.dir, SOCK)):
+                # what a test preseeds into a memory store (RAM) again on every start
+                for again in getattr(self, "on_start", []):
+                    again(self)
                 return
             time.sleep(0.2)
         raise RuntimeError(f"team binary did not open {SOCK} in {wait_s}s:\n{self.log()}")

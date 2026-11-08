@@ -14,11 +14,13 @@ import time
 from collections import Counter
 
 from . import app, team as team_mod
+from . import cli
 from .cli import EXEC
 
 DONE_CALL = '<call name="done"'
 POLL_S = 5.0
 SETTLE_S = 3.0
+DONE_HOLD_S = 20.0  # a `done` must stay the lead's last row this long
 CHECK_MARGIN_S = 120  # kept from the test's timeout for the checks after the wait
 
 # ---- the task, in plain words ----------------------------------------------------------
@@ -75,6 +77,8 @@ class Lead:
         self.team, self.id = team, lead
         self.rows: list[dict] = []
         self.since = 0  # `done` counts only in a row whose id is past this one (a lead told twice, #242)
+        self.task = ""  # the start of the task handed over: a `done` counts only once the lead has it
+        self.task_row = 0  # the row the task arrived in, once found
 
     def refresh(self) -> None:
         """Read the whole history again: its last page has no `next`, so no cursor survives a read."""
@@ -95,11 +99,30 @@ class Lead:
         self.refresh()
         self.since = (self.rows[-1].get("id") or 0) if self.rows else 0
 
+    def last_answer(self) -> dict | None:
+        """The lead's latest assistant row (a notice may land after it)."""
+        mine = [r for r in self.rows if "assistant" in (r.get("kind"), r.get("role"))]
+        return mine[-1] if mine else None
+
+    def got_task(self) -> bool:
+        """Has the task arrived? A lead may answer `done` to a notice that raced the task (the
+        cadencer's boot notice), and that `done` is not the end of the task."""
+        if not self.task or self.task_row:
+            return True
+        hit = self.team.send(self.id, {"type": "grep", "query": self.task, "limit": 50},
+                             timeout=60).get("result") or {}
+        ids = [m.get("id") or 0 for m in hit.get("matches") or [] if (m.get("id") or 0) > self.since]
+        self.task_row = min(ids) if ids else 0
+        return bool(self.task_row)
+
     def said_done(self) -> bool:
         try:
+            if not self.got_task():
+                return False
             self.refresh()
-            last = self.rows[-1] if self.rows and (self.rows[-1].get("id") or 0) > self.since else None
-            if not last or last.get("kind") != "assistant":
+            floor = max(self.since, self.task_row)
+            last = self.last_answer()
+            if not last or (last.get("id") or 0) <= floor:
                 return False
             hit = self.team.send(self.id, {"type": "grep", "query": DONE_CALL, "ids": [last["id"]]},
                                  timeout=60).get("result") or {}
@@ -108,13 +131,36 @@ class Lead:
             return False
 
 
+def wait_booted(ctx, watch: "Lead", wait_s: float = 60.0) -> None:
+    """Wait until the lead has answered the cadencer's boot notice (`[team] The team of … booted up`),
+    so the task is the newest message it gets: a lead that reads the notice after the task may answer
+    the notice alone ("no task yet") and end its turn."""
+    end = time.time() + wait_s
+    while time.time() < end:
+        try:
+            watch.refresh()
+        except subprocess.TimeoutExpired:
+            time.sleep(POLL_S)
+            continue
+        booted = [r for r in watch.rows if "booted up" in (r.get("head") or "")]
+        if booted and watch.rows[-1].get("id") != booted[-1].get("id") and watch.last_answer() \
+                and (watch.last_answer().get("id") or 0) > (booted[-1].get("id") or 0):
+            return
+        if not booted and time.time() > end - wait_s + 15:  # a team with no cadencer notice
+            return
+        time.sleep(POLL_S)
+
+
 def hand_task(ctx, lead: str, text: str) -> threading.Thread:
     """Send the lead its task in the background (a real model takes minutes); the team's reply, or
     the error, lands in `ctx.kicked`. With `E2E_WORKER_MODEL` the task names the model to spawn
-    with: a role names none, the spawner says which."""
-    if cli.worker_model():
-        text += f" Spawn every agent with `model` {cli.worker_model()}."
+    each with (a role names none, the spawner says which): workers that one, sub-leads the lead's."""
+    if cli.worker_model():  # leads on the lead's model, workers on the workers'
+        text += (f" Spawn every worker with `model` {cli.worker_model()}, and every sub-lead with `model` "
+                 f"{ctx.model.model_name}.")
     ctx.kicked = {}
+    if getattr(ctx, "watch", None) is not None:
+        ctx.watch.task = text.strip().split("\n")[0][:60]
     limit = ctx.test["timeout"]
 
     def go():
@@ -138,6 +184,13 @@ def wait_done(ctx, watch: Lead, wait_s: float) -> str:
         if ctx.team.proc and ctx.team.proc.poll() is not None:
             return "exited"
         if watch.said_done():
+            # a `done` counts once it stays the lead's last row: a lead may answer `done` to a notice
+            # (the cadencer's boot notice) and take up the task on its next turn
+            last = (watch.last_answer() or {}).get("id")
+            time.sleep(DONE_HOLD_S)
+            watch.refresh()
+            if (watch.last_answer() or {}).get("id") != last:
+                continue
             time.sleep(SETTLE_S)  # the last replies are routed after the turn
             return "done"
         time.sleep(POLL_S)
@@ -147,7 +200,9 @@ def wait_done(ctx, watch: Lead, wait_s: float) -> str:
 def play(ctx, v, lead: str, name: str, label: str = "") -> Lead:
     """Hand `lead` the task of scenario `name` and wait for its `done`; checks the wait. `label`
     prefixes the check ("A: ") when a test plays twice."""
-    watch = Lead(ctx.team, lead)
+    watch = ctx.watch = Lead(ctx.team, lead)
+    wait_booted(ctx, watch)
+    watch.mark()
     started = time.time()
     hand_task(ctx, lead, TASKS[name])
     how = wait_done(ctx, watch, max(60.0, ctx.test["timeout"] - CHECK_MARGIN_S))
@@ -160,6 +215,45 @@ def play(ctx, v, lead: str, name: str, label: str = "") -> Lead:
 
 
 # ---- checks and the report -------------------------------------------------------------
+
+def lead_on_default(ctx, v, label: str = "") -> None:
+    """The lead names no model and runs its provider's default (`E2E_MODEL`): the provider's
+    `models` and the relay's first request body."""
+    want = ctx.model.model_name
+    lead = ctx.team.agents().get(cli.LEAD) or {}
+    v.check(f"{label}the lead names no model: it runs its provider's default", "model" not in lead, str(lead.get("model")))
+    m = ctx.team.send(cli.PROVIDER, {"type": "models"}, timeout=60).get("result") or {}
+    v.check(f"{label}the provider's default model is {want}", m.get("default") == want, str(m))
+    seen = [r.get("model") for r in ctx.model.requests if isinstance(r, dict) and r.get("model")]
+    v.check(f"{label}the lead's first turn ran on the default ({want})", bool(seen) and seen[0] == want, str(seen[:3]))
+
+
+def workers_on_model(ctx, v, label: str = "") -> None:
+    """The workers ran on the model the lead was told to give them (`E2E_WORKER_MODEL`): the
+    relay's request bodies."""
+    worker = cli.worker_model()
+    seen = sorted({r.get("model") for r in ctx.model.requests if isinstance(r, dict) and r.get("model")})
+    v.check(f"{label}the workers ran on {worker}, as the task told the lead", bool(worker) and worker in seen, str(seen))
+
+
+def check_ins_ran(ctx, v, label: str = "") -> None:
+    """Each lead given check-ins (`cli.CHECK_INS`) made its own scheduler and was woken by it (a
+    `[check-in` row in its conversation), and no scheduler is left once the leads are done."""
+    for lead in getattr(ctx, "check_in_leads", []):
+        # the lead's own `schedule` call holds the tag too: only a row it RECEIVED counts
+        try:
+            watch = Lead(ctx.team, lead)
+            watch.refresh()
+            got = {r.get("id") for r in watch.rows if r.get("role") == "user"}
+            hit = ctx.team.send(lead, {"type": "grep", "query": "[check-in", "limit": 200},
+                                timeout=60).get("result") or {}
+            ticks = [m for m in hit.get("matches") or [] if m.get("id") in got]
+        except subprocess.TimeoutExpired:
+            ticks, hit = [], {"error": "busy"}
+        v.check(f"{label}{lead} made its own scheduler and a check-in woke it", bool(ticks), str(hit)[:200])
+    left = [i for i, a in ctx.team.agents().items() if a.get("handler_module") == "scheduler.tools"]
+    v.check(f"{label}no scheduler is left", not left, str(left))
+
 
 def check_key_not_on_disk(ctx, v) -> None:
     """The door's key is read from the environment by the credential store and never stored."""

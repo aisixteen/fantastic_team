@@ -426,7 +426,8 @@ def selftest_relay(v: Verdict) -> None:
     """The anthropic plug, against a fake upstream whose usage is known (10 in, 20 out)."""
     key = "relay-key-" + secrets.token_hex(8)  # a key of this run only, never a literal
     names = ("E2E_ANTHROPIC_KEY", "ANTHROPIC_API_KEY", "E2E_UPSTREAM", "E2E_MAX_REQUESTS",
-             "E2E_PRICE_IN_PER_MTOK", "E2E_PRICE_OUT_PER_MTOK", "E2E_MODEL", "ANTHROPIC_CACHING")
+             "E2E_PRICE_IN_PER_MTOK", "E2E_PRICE_OUT_PER_MTOK", "E2E_MODEL", "ANTHROPIC_CACHING",
+             "E2E_WORKER_MODEL")
     saved = {k: os.environ.get(k) for k in names}
     tmp = tempfile.mkdtemp(prefix="e2e-relay-")
     up = scripted.ScriptedModel([{"text": "a" * 80}] * 4).start()

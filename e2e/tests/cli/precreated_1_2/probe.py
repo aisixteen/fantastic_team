@@ -18,4 +18,5 @@ def run(ctx):
     S.precreated_end(ctx, v, before)
     v.check("each agent of the tree that was told a task asked the model", {"w1", "w2"} <= set(ctx.model.request_lanes),
             str(sorted(set(ctx.model.request_lanes))))
+    cli.check_ins_played(ctx, v)
     return v.finish()

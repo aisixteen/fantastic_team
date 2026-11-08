@@ -29,6 +29,7 @@ def run(ctx):
                 T.came_back(ctx, None, "<exit_code>0</exit_code>"), str(T.forward_replies(ctx)[-1:])[:300])
         v.check("w2's results are its history on the master (its calls through the bridge, in the lead's next turn)",
                 T.came_back(ctx, "w2", "<target_id>remote</target_id>", via="w2 history"))
+        cli.check_ins_played(ctx, v, ("main", "s1", "s2"))
         box.end(v, streams=[("s2", "s2")])
     box.removed(v)
     return v.finish()

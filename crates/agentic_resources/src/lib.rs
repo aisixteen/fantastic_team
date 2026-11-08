@@ -89,7 +89,7 @@ fn verb_docs_json() -> Value {
         "reflect": "Identity, whether the registry is enabled, and the role names. No args.",
         "roles": "No args. Returns {roles:[{name, purpose}], errors:[...]} — every role: each meta bundle (bundles/<name>/bundle.yaml) whose record carries a directive; `reflect` with bundles:'all' lists the same bundles. Read on each call.",
         "role": "args: name:str (req). Returns the role {name, purpose, grants, directive}; an unknown name is `not_found`.",
-        "spawn": "args: role:str (req — a role bundle), model:str? (the model the child runs; yours when omitted), backend:{handler_module, endpoint?, credentials?, …}? (another backend than yours for the child), task:str? (sent to the child as its first message; anything but a string is `bad_arg`), name:str?, limits:{total?, per_role?}? (part of YOUR quota handed to the child as its own subtree cap). Creates the agent from the role bundle (its directive after the default system block, its grants), on YOUR backend (your handler and provider fields) with `model`, as a CHILD OF THE CALLER, gives the caller pause/resume/stop on it, and lets the child `send` the caller (both ends, merged with what either already holds), so it tells its parent with a message when it is done. The child's task comes FROM this registry, so a child cannot tell its parent from it: AFTER ALL YOUR SPAWNS, send each child the team's structure (`send` with `text`): you are its parent (your id, the one it reports to with `send` when done), and every sibling's id, role and task. Refused past a limit: {error:<sentence>, reason:'limit', scope, role, running, max, hint}. Returns {id, role, model}. from:{agent:str, at:int}? branches the new agent off a fork point of `agent` instead (ai_core `fork {at}`, same memory store, so it starts with that conversation up to `at`), then applies the card and limits; it sits BESIDE its source, not under you, and you still get pause/resume/stop on it and it may `send` you; you must hold `fork` on `agent` or it is refused with reason `not_allowed`; a refusal from fork (cuts_turn, cuts_fold, no_such_row, parent_mid_turn, ...) passes through unchanged and nothing is left behind. Then the reply also has from:{agent, at} and copied. The card's grants on tools are opened on both ends (the child's own grant and the tool's callable_by, all or nothing): a card may only grant what the spawner itself holds, or the spawn is refused with reason `not_allowed`, and a grant that cannot be written undoes the whole spawn (reason `grant_failed`).",
+        "spawn": "args: role:str (req — a role bundle), provider:str? (the provider agent the child completes through; yours when omitted), model:str? (the model it runs there; yours when omitted, else the provider's default), task:str? (sent to the child as its first message; anything but a string is `bad_arg`), name:str?, limits:{total?, per_role?}? (part of YOUR quota handed to the child as its own subtree cap). Creates the agent from the role bundle (its directive after the default system block, its grants), an AI chat completing through `provider` on `model`, as a CHILD OF THE CALLER, gives the caller pause/resume/stop on it, and lets the child `send` the caller (both ends, merged with what either already holds), so it tells its parent with a message when it is done. The child's task comes FROM this registry, so a child cannot tell its parent from it: AFTER ALL YOUR SPAWNS, send each child the team's structure (`send` with `text`): you are its parent (your id, the one it reports to with `send` when done), and every sibling's id, role and task. Refused past a limit: {error:<sentence>, reason:'limit', scope, role, running, max, hint}. Returns {id, role, provider, model}. from:{agent:str, at:int}? branches the new agent off a fork point of `agent` instead (ai_core `fork {at}`, same memory store, so it starts with that conversation up to `at`), then applies the card and limits; it sits BESIDE its source, not under you, and you still get pause/resume/stop on it and it may `send` you; you must hold `fork` on `agent` or it is refused with reason `not_allowed`; a refusal from fork (cuts_turn, cuts_fold, no_such_row, parent_mid_turn, ...) passes through unchanged and nothing is left behind. Then the reply also has from:{agent, at} and copied. The card's grants on tools are opened on both ends (the child's own grant and the tool's callable_by, all or nothing): a card may only grant what the spawner itself holds, or the spawn is refused with reason `not_allowed`, and a grant that cannot be written undoes the whole spawn (reason `grant_failed`).",
         "fleet": "No args. Returns {roles:{<role>:[{id}]}} — the agents this registry spawned, per role, read from the records (survives restart).",
         "set_limit": "args: role:str? (omitted = all agents in total), max:int|null (req; null clears). Returns {ok:true, role, max}.",
         "get_count": "args: role:str? (omitted = in total). Returns {running, max} — running counts every agent this registry spawned that still exists (a slot frees on delete_agent); max is null when uncapped.",
@@ -349,8 +349,8 @@ async fn spawn_reply(
             format!("role {} not found", py_repr(role)),
         );
     };
-    // the backend: the spawner's own (its handler and provider fields), with the model it names
-    let tier_fields = match backend_of(kernel, &current_origin(), payload) {
+    // the chat: on the spawner's provider (or the one named), with the model named (or the spawner's)
+    let tier_fields = match chat_of(kernel, role, &current_origin(), payload) {
         Ok(b) => b,
         Err(r) => return r,
     };
@@ -499,6 +499,10 @@ async fn spawn_reply(
 
     // the child's grants: the card's, with `$registry` made real
     let mut can_call = card_can_call(reg, card);
+    // the child completes through its provider
+    if let Some(p) = provider_of(&tier_fields) {
+        grant_verbs(&mut can_call, &p, &json!(PROVIDER_VERBS));
+    }
     // a tier that names the store the agent keeps its conversation in: the agent may
     // use it (the other end is opened below, before the first message)
     let store = tier_fields
@@ -511,8 +515,11 @@ async fn spawn_reply(
     }
     let reg_verbs = reg_verbs_of(&can_call, reg);
     let mut callable_by = Map::new();
+    for (k, v) in &card.callable_by {
+        grant_verbs(&mut callable_by, k, v);
+    }
     if let Some(c) = &caller {
-        callable_by.insert(c.as_str().to_string(), json!(PARENT_VERBS));
+        grant_verbs(&mut callable_by, c.as_str(), &json!(PARENT_VERBS));
     }
     if first_message.is_some() {
         grant_verbs(&mut callable_by, reg.as_str(), &json!(["send"]));
@@ -572,72 +579,80 @@ async fn spawn_reply(
         .await;
         return e;
     }
+    if let Some(p) = provider_of(&tier_fields) {
+        open_provider(kernel, &p, &child);
+    }
     if let Some(text) = first_message {
         send_first(kernel, reg, &child, text);
     }
-    json!({"id": child, "role": role, "model": tier_fields.get("model").cloned().unwrap_or(Value::Null)})
+    json!({"id": child, "role": role, "provider": provider_of(&tier_fields),
+           "model": tier_fields.get("model").cloned().unwrap_or(Value::Null)})
 }
 
-/// The provider fields a child takes from its spawner (beside the handler).
-const BACKEND_FIELDS: [&str; 10] = [
-    "model", "endpoint", "credentials", "memory_store_id", "caching", "context_window",
-    "max_tokens", "context_strategy", "price_input_per_mtok", "price_output_per_mtok",
-];
+/// The chat fields a child takes from its spawner: where its conversation lives and how it
+/// is kept. Never a provider's (model kind, endpoint, key, prices): those are its provider's.
+const CHAT_FIELDS: [&str; 4] = ["memory_store_id", "context_window", "context_strategy", "caching"];
 
-/// The backend a child runs on: its spawner's compiled handler (through any bundle the
-/// spawner is) and provider fields; `backend` in the payload overrides them (and is
-/// required when the caller is no AI agent — one with a `model`: the operator, a tool);
-/// `model` from the spawn wins over both.
-fn backend_of(kernel: &Kernel, caller: &Option<AgentId>, payload: &Value) -> Result<Map<String, Value>, Value> {
+/// The verbs a chat calls on its provider.
+const PROVIDER_VERBS: [&str; 2] = ["complete", "watch"];
+
+/// The child's chat record: an AI chat (its role bundle's base, `ai_chat.tools`) that
+/// completes through `provider_id` on `model`. `provider` and `model` in the spawn name
+/// them; absent, the spawner's own (an AI spawner is a chat with a `provider_id`); no
+/// `model` anywhere, the provider's default. A caller that is no chat (the operator, a
+/// tool) names the `provider`.
+fn chat_of(kernel: &Kernel, role: &str, caller: &Option<AgentId>, payload: &Value) -> Result<Map<String, Value>, Value> {
     let mut out = Map::new();
-    // an AI spawner (a record with a `model`) lends its backend; any other caller (the
-    // operator's leg, a tool) names one with `backend`
-    let ai = caller
-        .as_ref()
-        .and_then(|c| agent_of(kernel, c))
-        .filter(|a| meta_of(a).get("model").and_then(Value::as_str).is_some_and(|m| !m.is_empty()));
-    match ai {
-        Some(a) => {
-            let meta = meta_of(&a);
-            let hm = a.handler_module.clone().unwrap_or_default();
-            let kind = fantastic_kernel::inherit::kind_of(&hm, &meta);
-            out.insert("handler_module".into(), json!(kernel.bundles.base_of(&kind)));
-            for k in BACKEND_FIELDS {
-                if let Some(v) = meta.get(k) {
-                    out.insert(k.to_string(), v.clone());
-                }
+    // the child runs its role's base (the AI agent, `ai_chat.tools`, for every stock role)
+    out.insert("handler_module".into(), json!(kernel.bundles.base_of(role)));
+    let spawner = caller.as_ref().and_then(|c| agent_of(kernel, c)).map(|a| meta_of(&a));
+    if let Some(meta) = &spawner {
+        for k in CHAT_FIELDS {
+            if let Some(v) = meta.get(k) {
+                out.insert(k.to_string(), v.clone());
             }
         }
-        None if payload.get("backend").is_none() => {
-            return Err(missing(
-                "spawn",
-                "backend (the operator names the child's handler and provider fields; an AI spawner's are its own)",
-            ))
-        }
-        None => {}
     }
-    // `backend` puts the child on another backend than the spawner's (a vLLM worker under
-    // an Anthropic lead): its fields over the spawner's
-    match payload.get("backend") {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(b)) => {
-            for (k, v) in b {
-                out.insert(k.clone(), v.clone());
-            }
+    let named = |k: &str| -> Result<Option<String>, Value> {
+        match payload.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
+            Some(_) => Err(bad("spawn", k, if k == "model" { "a model name" } else { "a provider agent's id" })),
         }
-        Some(_) => return Err(bad("spawn", "backend", "{handler_module, model?, endpoint?, …}")),
-    }
-    match payload.get("model") {
-        None | Some(Value::Null) => {}
-        Some(Value::String(m)) if !m.is_empty() => {
-            out.insert("model".into(), json!(m));
-        }
-        Some(_) => return Err(bad("spawn", "model", "a model name")),
-    }
-    if out.get("handler_module").and_then(Value::as_str).is_none_or(str::is_empty) {
-        return Err(bad("spawn", "backend", "a handler_module to run the child on"));
+    };
+    let own = |k: &str| spawner.as_ref().and_then(|m| m.get(k)).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
+    let Some(provider) = named("provider")?.or_else(|| own(fantastic_ai_core::remote_provider::PROVIDER_FIELD)) else {
+        return Err(missing(
+            "spawn",
+            "provider (the provider agent the child completes through; a chat spawner's is its own)",
+        ));
+    };
+    out.insert(fantastic_ai_core::remote_provider::PROVIDER_FIELD.into(), json!(provider));
+    if let Some(m) = named("model")?.or_else(|| own("model")) {
+        out.insert("model".into(), json!(m));
     }
     Ok(out)
+}
+
+/// The provider a child completes through, from its chat record.
+fn provider_of(fields: &Map<String, Value>) -> Option<String> {
+    fields
+        .get(fantastic_ai_core::remote_provider::PROVIDER_FIELD)
+        .and_then(Value::as_str)
+        .map(String::from)
+}
+
+/// Let `child` complete through `provider`: the provider admits it (a local provider; a
+/// peer's is opened on its own kernel). Its own end is in its `can_call`.
+fn open_provider(kernel: &Kernel, provider: &str, child: &str) {
+    let id = AgentId::from(provider);
+    if agent_of(kernel, &id).is_some() {
+        let cid = child.to_string();
+        let _ = kernel.edit_callable_by(&id, move |m| {
+            grant_verbs(m, &cid, &json!(PROVIDER_VERBS));
+            true
+        });
+    }
 }
 
 /// The child's grants from its card: `$registry` made real.
@@ -1040,6 +1055,11 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
     for (k, v) in card_can_call(reg, card) {
         grant_verbs(&mut can_call, &k, &v);
     }
+    // the fork completes through its provider
+    if let Some(p) = provider_of(c.tier_fields) {
+        grant_verbs(&mut can_call, &p, &json!(PROVIDER_VERBS));
+        open_provider(kernel, &p, fork.id.as_str());
+    }
     let reg_verbs = reg_verbs_of(&can_call, reg);
     let mut patch = Map::new();
     for (k, v) in c.tier_fields {
@@ -1087,8 +1107,12 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
     // the caller controls it; the registry may `send` it its task
     let (caller, first) = (c.caller.clone(), c.first_message.is_some());
     let r = reg.as_str().to_string();
+    let own = card.callable_by.clone();
     let opened = kernel
         .edit_callable_by(&fork.id, move |m| {
+            for (k, v) in &own {
+                grant_verbs(m, k, v);
+            }
             if let Some(w) = &caller {
                 grant_verbs(m, w.as_str(), &json!(PARENT_VERBS));
             }

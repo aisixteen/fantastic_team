@@ -178,11 +178,14 @@ fn write_cards(kernel: &Kernel, cards: &[(&str, &str)]) {
         let name = head["name"].as_str().unwrap().to_string();
         let mut can_call = head.get("grants").and_then(Value::as_object).cloned().unwrap_or_default();
         can_call.insert("$self".into(), json!("*"));
+        let mut record = json!({"post_system_prompt": body.trim_end(), "can_call": can_call});
+        if let Some(cb) = head.get("callable_by") {
+            record["callable_by"] = cb.clone();
+        }
         kernel.bundles.register_meta(
             &name,
             json!({"name": name, "handler_module": name, "base": "caller.tools",
-                   "sentence": head["purpose"],
-                   "record": {"post_system_prompt": body.trim_end(), "can_call": can_call}}),
+                   "sentence": head["purpose"], "record": record}),
         );
     }
 }
@@ -264,7 +267,7 @@ async fn rig(tmp: &TempDir, callers: &[&str], cards: &[(&str, &str)]) -> Rig {
     for c in &ids {
         create(
             &kernel,
-            json!({"handler_module": "caller.tools", "id": c, "model": "m1", "endpoint": "http://x",
+            json!({"handler_module": "caller.tools", "id": c, "model": "m1", "provider_id": "prov",
                    "can_call": {reg.clone(): "*", "notes": "*"}}),
         )
         .await;
@@ -411,7 +414,8 @@ async fn spawn_creates_child_with_directive_grants_on_the_spawners_backend() {
     assert_eq!(m["post_system_prompt"], "You write clearly and briefly.");
     assert!(m.get("system_prompt").is_none_or(Value::is_null), "the default system block stays in force: {m:?}");
     assert_eq!(m["model"], "m1", "the spawner's model; a role names none");
-    assert_eq!(m["endpoint"], "http://x", "the spawner's backend");
+    assert_eq!(m["provider_id"], "prov", "the spawner's provider");
+    assert!(m.get("endpoint").is_none(), "no provider field on a chat: {m:?}");
     assert_eq!(a.handler_module.as_deref(), Some("writer"), "an instance of the role bundle (on caller.tools)");
     assert!(r.kernel.bundles.get("writer").is_some(), "which runs its base's code");
     assert_eq!(m["spawned_by"], json!(r.reg));
@@ -464,7 +468,7 @@ async fn spawn_runs_the_model_the_spawner_names() {
     assert_eq!(out["model"], "m2", "{out}");
     let id = id_of(&out);
     assert_eq!(r.meta(&id)["model"], "m2");
-    assert_eq!(r.meta(&id)["endpoint"], "http://x", "the rest of the backend is the spawner's");
+    assert_eq!(r.meta(&id)["provider_id"], "prov", "on the spawner's provider");
     let bad = r.spawn_as(&r.callers[0], json!({"role": "writer", "model": 5})).await;
     assert_eq!(bad["reason"], "bad_arg", "{bad}");
 }
@@ -903,9 +907,10 @@ async fn child_to_parent_send_is_merged_never_overwritten() {
 async fn operator_spawn_opens_no_edge_to_a_parent() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &[], &[("reviewer.md", REVIEWER)]).await;
-    let id = id_of(&r.op(json!({"type": "spawn", "role": "reviewer", "backend": {"handler_module": "caller.tools", "model": "m1"}})).await);
-    // no caller: the child's parent is the registry, which takes no message
-    assert_eq!(keys_of(&r, &id, "can_call"), ["$self"]);
+    let id = id_of(&r.op(json!({"type": "spawn", "role": "reviewer", "provider": "prov", "model": "m1"})).await);
+    // no caller: the child's parent is the registry, which takes no message; it may
+    // call only its provider
+    assert_eq!(keys_of(&r, &id, "can_call"), ["$self", "prov"]);
     // and a card that grants nothing on `$registry` opens no edge to it
     assert!(r.meta(&r.reg)["callable_by"].get(&id).is_none());
 }
@@ -1223,8 +1228,8 @@ async fn spawn_from_keeps_the_source_store_and_drops_its_other_grants() {
     let keys: Vec<&String> = m["can_call"].as_object().unwrap().keys().collect();
     assert_eq!(
         keys.len(),
-        4,
-        "store, notes, registry, the spawner: {keys:?}"
+        5,
+        "store, notes, registry, the spawner, its provider: {keys:?}"
     );
     assert_eq!(m["can_call"][&r.callers[0]], json!(["send"]));
 }
@@ -1696,6 +1701,29 @@ async fn spawn_from_opens_the_cards_tool_grants_on_both_ends() {
     assert_eq!(keys_of(&r, "notes", "callable_by"), want);
 }
 
+/// A lead role whose bundle admits its own subtree's `send` (the scheduler it makes wakes it).
+const WAKEABLE: &str = "---\nname: wakeable\npurpose: Runs agents and checks on them.\ncallable_by:\n  $subtree: [send]\n---\nYou check in.\n";
+
+#[tokio::test]
+async fn spawn_adds_the_bundles_callable_by_to_the_childs() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp, &["lead"], &[("wakeable.md", WAKEABLE)]).await;
+    let id = id_of(&r.spawn_as(&r.callers[0], json!({"role": "wakeable"})).await);
+    let cb = &r.meta(&id)["callable_by"];
+    assert_eq!(cb["$subtree"], json!(["send"]), "{cb}");
+    assert_eq!(cb[&r.callers[0]], json!(["pause", "resume", "stop"]), "the spawner keeps its edge: {cb}");
+}
+
+#[tokio::test]
+async fn spawn_from_adds_the_bundles_callable_by_to_the_childs() {
+    let tmp = TempDir::new().unwrap();
+    let (r, src) = fork_rig(&tmp, &["lead"], &[("wakeable.md", WAKEABLE)]).await;
+    let id = id_of(
+        &r.spawn_as(&r.callers[0], json!({"role": "wakeable", "from": from(&src, 5)})).await,
+    );
+    assert_eq!(r.meta(&id)["callable_by"]["$subtree"], json!(["send"]));
+}
+
 #[tokio::test]
 async fn spawn_tool_grant_with_star_verbs_keeps_star() {
     let tmp = TempDir::new().unwrap();
@@ -1866,7 +1894,7 @@ async fn operator_spawn_has_no_escalation_check() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &[], &[("wide.md", WIDE)]).await;
     notes_tool(&r).await;
-    let id = id_of(&r.op(json!({"type": "spawn", "role": "wide", "backend": {"handler_module": "caller.tools", "model": "m1"}})).await);
+    let id = id_of(&r.op(json!({"type": "spawn", "role": "wide", "provider": "prov", "model": "m1"})).await);
     assert_eq!(r.meta(&id)["can_call"]["notes"], json!(["read", "write"]));
     assert_eq!(
         r.meta("notes")["callable_by"][&id],

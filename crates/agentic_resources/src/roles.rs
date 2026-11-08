@@ -18,6 +18,9 @@ pub struct Card {
     pub purpose: String,
     /// What the child may call (the bundle's `record.can_call`, `$self` aside).
     pub grants: Map<String, Value>,
+    /// Who may call the child (the bundle's `record.callable_by`), beside its spawner and
+    /// the registry: a lead's `$subtree: [send]` lets the scheduler it makes wake it.
+    pub callable_by: Map<String, Value>,
     /// The directive (the bundle's `record.post_system_prompt`).
     pub directive: String,
 }
@@ -55,7 +58,13 @@ pub fn of(kernel: &Kernel) -> Vec<Card> {
                 .cloned()
                 .unwrap_or_default();
             grants.remove("$self");
+            let callable_by = fields
+                .get("callable_by")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             Some(Card {
+                callable_by,
                 purpose: r.get("sentence").and_then(Value::as_str).unwrap_or("").to_string(),
                 name,
                 grants,

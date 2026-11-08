@@ -47,17 +47,14 @@ agents:
     - answer_inquiry
   agents:
   - id: lead
+    # the lead is an AI chat (the `lead` role, base `ai_chat.tools`). It names no provider: the
+    # binary knows none. The user adds a provider agent (its record in the team's yaml, or
+    # `create_agent`) and sets the lead's `provider_id` (and `model`, or the provider's
+    # default); until then a turn is refused naming `provider_id`. Every chat the lead spawns
+    # takes its provider unless the spawn names another, on the model the spawn names.
     handler_module: lead
-    model: claude-opus-5-5
-    endpoint: https://api.anthropic.com/v1/messages
-    credentials:
-      store: credentials
-      ref: anthropic/api.anthropic.com
-    price_input_per_mtok: 4.0
-    price_output_per_mtok: 20.0
     caching: provider_cache
     context_window: 1000000
-    max_tokens: 32000
     memory_store_id: memory
     file_bridge_id: files
     can_call:
@@ -90,6 +87,8 @@ agents:
     callable_by:
       $self: '*'
       $parent: '*'
+      $subtree:
+      - send
     agents:
     - id: queue
       handler_module: ram_store.tools
