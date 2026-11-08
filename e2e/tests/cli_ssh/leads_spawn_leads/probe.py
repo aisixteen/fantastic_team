@@ -23,6 +23,7 @@ def run(ctx):
         cli.make_registry(ctx, total=4, roles=cli.roles_dir("leads_spawn_leads"))
         new = set(cli.ids(ctx.team)) - base
         v.check("create_agent made the lead and its roles registry, under fixed ids", new == {"lead", "roles"}, str(new))
+        cli.add_cadencer(ctx)
         before = cli.tree(ctx.team)
         box.publish()
         box.bind()

@@ -70,11 +70,13 @@ def wiring(ctx, box: T.Box, backends=()) -> str:
         f"remote may call it: `update_agent` of `{T.BRIDGE}` with its `can_call` plus `<id>`: {json.dumps(T.BACKEND_VERBS)}, "
         f"and of `<id>` with its `callable_by` plus `{T.BRIDGE}`: the same four verbs (read the records first, "
         "update replaces the whole map). "
-        "(6) At the end: delete every agent you made on the remote kernel (through the bridge), delete the "
+        "(6) At the end: delete every agent you made on the remote kernel for the work (through the bridge), "
+        f"but KEEP the remote's surface (`{T.WEB}`, `{T.LEG}`) and its exec agent (`{cli.EXEC}`): they stay, "
+        f"the remote is set up for the next run. Then delete the "
         f"bridge, stop the remote kernel with `ssh ... '{T.stop_command()}'` (the binary has no stop word; "
         "the tunnel job ends with it), and pull your local clone (`git pull --ff-only`). "
         "Both clones push to the same git server: `git push origin HEAD:main`; pull before you change a file "
-        "the other side pushed. ")
+        "the other side pushed. No operator answers an inquiry here: decide yourself. ")
 
 
 TASKS = {
@@ -104,7 +106,7 @@ TASKS = {
         "and one for the remote workspace, with no task. Open the second to the leg (step 5), then have the remote "
         "ask it (the work program): the work is to have a worker pull, fix muler.py, commit and push in the remote "
         f"workspace, whose commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the "
-        "work. Each sub-lead spawns one worker, and deletes it when done. " + gpu.COMMIT + gpu.DELETE),
+        "work, for the sub-lead to pass on to its worker word for word. Each sub-lead spawns one worker, and deletes it when done. " + gpu.COMMIT + gpu.DELETE),
     "headless_and_canvas": (
         "Your agent `rlead` exists here (it admits the bridge). Have the remote ask it (the work program, step 5): "
         "the work is to make a canvas for its notes, a `create_agent` on the remote kernel (through the bridge) with "
@@ -131,8 +133,7 @@ CLEANUP = ("Now clean up as step 6 says: delete `sketch` on the remote kernel th
 def play(ctx, v, lead: str, text: str, label: str = "") -> gpu.Lead:
     """Hand `lead` its task in plain words and wait for its `done` (as `gpu_cli.play`)."""
     watch = gpu.Lead(ctx.team, lead)
-    watch.refresh()  # a lead told before: its earlier `done` does not count
-    watch.since = len(watch.rows)
+    watch.mark()  # a lead told before: its earlier `done` does not count
     started = time.time()
     gpu.hand_task(ctx, lead, text + gpu.END)
     how = gpu.wait_done(ctx, watch, max(60.0, ctx.test["timeout"] - gpu.CHECK_MARGIN_S))

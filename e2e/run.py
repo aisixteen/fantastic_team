@@ -504,7 +504,7 @@ VLLM_ENV = ("VLLM_ENDPOINT", "FANTASTIC_AI_MODEL", "VLLM_KV_SLOTS", "VLLM_KV_OVE
             "MAX_TOKENS", "E2E_MAX_REQUESTS", "E2E_PRICE_IN_PER_MTOK", "E2E_PRICE_OUT_PER_MTOK")
 #: every model variable: the vllm plug's, the anthropic plug's (its key names, model and caching) and
 #: BACKEND, which points the gpu tests at a plug. A selftest child gets none of them (`child_env`).
-MODEL_ENV = (*VLLM_ENV, "BACKEND", "E2E_MODEL", "ANTHROPIC_CACHING", *relay_mod.KEY_ENVS)
+MODEL_ENV = (*VLLM_ENV, "BACKEND", "E2E_MODEL", "E2E_WORKER_MODEL", "ANTHROPIC_CACHING", *relay_mod.KEY_ENVS)
 
 
 def child_env(environ) -> dict:
@@ -543,7 +543,16 @@ def relay_records(v: Verdict, relay, key: str) -> None:
         except RuntimeError:
             refused = True
         v.check("a caching mode that is not ai_core's is refused", refused)
+        os.environ["ANTHROPIC_CACHING"] = "provider_cache"
+        r = relay_mod.make(run_m, {"run_dir": run_m})
+        made.append(r)
+        same = cli_mod.tier_record(r)["model"] == "claude-selftest"
+        os.environ["E2E_WORKER_MODEL"] = "claude-worker-selftest"
+        v.check("E2E_WORKER_MODEL sets the workers' tier model, the lead keeps E2E_MODEL; unset, both are E2E_MODEL",
+                same and cli_mod.tier_record(r)["model"] == "claude-worker-selftest"
+                and r.ai_record()["model"] == "claude-selftest", str(cli_mod.tier_record(r)))
     finally:
+        os.environ.pop("E2E_WORKER_MODEL", None)
         os.environ.pop("E2E_MODEL", None)
         os.environ.pop("ANTHROPIC_CACHING", None)
         for r in made:
@@ -834,7 +843,7 @@ def selftest_gpu(v: Verdict) -> None:
     """Run the launcher as a child with no model variable (`child_env`), with every one of them set
     here (fakes; BACKEND=anthropic): the gpu tests would run on the vllm plug and skip, exit 0, and
     `--only-gpu --dry-run` collects their probes and starts nothing."""
-    planted = {"BACKEND": "anthropic", "E2E_MODEL": "claude-selftest", "ANTHROPIC_CACHING": "none",
+    planted = {"BACKEND": "anthropic", "E2E_MODEL": "claude-selftest", "E2E_WORKER_MODEL": "claude-selftest-worker", "ANTHROPIC_CACHING": "none",
                "E2E_ANTHROPIC_KEY": "selftest-" + secrets.token_hex(8),
                "ANTHROPIC_API_KEY": "selftest-" + secrets.token_hex(8),
                "VLLM_ENDPOINT": "https://gpu.example.invalid/v1", "FANTASTIC_AI_MODEL": "m-1",
@@ -1544,13 +1553,12 @@ def selftest_ssh_twins(v: Verdict) -> None:
             return {"result": {"total": 1}}
     lead = History()
     watch = gpu_mod.Lead(lead, "lead")
-    watch.refresh()
-    watch.since, watch.rows, watch._after = len(watch.rows), [], None
-    early = watch.said_done()
-    watch.rows, watch._after = [], None
+    watch.mark()
+    early, again = watch.said_done(), watch.said_done()
     lead.rows = lead.rows + [{"id": 3, "kind": "user"}, {"id": 4, "kind": "assistant"}]
-    v.check("a lead told twice: its first `done` does not count, a `done` after the new message does (gpu_ssh.play)",
-            not early and watch.said_done(), f"early {early}")
+    v.check("a lead told twice: its first `done` does not count, polled again or not; a `done` after the new "
+            "message does (gpu_ssh.play)", not early and not again and watch.said_done(), f"early {early} again {again}")
+    v.check("a history re-read holds each row once", len(watch.rows) == 4, str(watch.rows))
     tmp = tempfile.mkdtemp(prefix="e2e-ssh-twins-")
     forge = None
     try:

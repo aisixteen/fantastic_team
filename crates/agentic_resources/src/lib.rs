@@ -88,7 +88,7 @@ fn verb_docs_json() -> Value {
         "reflect": "Identity, whether the registry is enabled, and the role names. No args.",
         "roles": "No args. Returns {roles:[{name, purpose}], errors:[...]} — every role card the config's folders hold (none is built in). Cards are re-read on each call.",
         "role": "args: name:str (req). Returns the full card {name, purpose, tier, grants, directive}; an unknown name is `not_found`.",
-        "spawn": "args: role:str (req), task:str? (sent to the child as its first message; anything but a string is `bad_arg`), name:str?, limits:{total?, per_role?}? (part of YOUR quota handed to the child as its own subtree cap). Creates the agent from the card (directive as its system prompt, the tier's backend fields from config, the card's grants) as a CHILD OF THE CALLER, gives the caller pause/resume/stop on it, and lets the child `send` the caller (both ends, merged with what either already holds), so it tells its parent with a message when it is done. Refused past a limit: {error:<sentence>, reason:'limit', scope, role, running, max, hint}. Returns {id, role, tier}. from:{agent:str, at:int}? branches the new agent off a fork point of `agent` instead (ai_core `fork {at}`, same memory store, so it starts with that conversation up to `at`), then applies the card and limits; it sits BESIDE its source, not under you, and you still get pause/resume/stop on it and it may `send` you; you must hold `fork` on `agent` or it is refused with reason `not_allowed`; a refusal from fork (cuts_turn, cuts_fold, no_such_row, parent_mid_turn, ...) passes through unchanged and nothing is left behind. Then the reply also has from:{agent, at} and copied. The card's grants on tools are opened on both ends (the child's own grant and the tool's callable_by, all or nothing): a card may only grant what the spawner itself holds, or the spawn is refused with reason `not_allowed`, and a grant that cannot be written undoes the whole spawn (reason `grant_failed`).",
+        "spawn": "args: role:str (req), task:str? (sent to the child as its first message; anything but a string is `bad_arg`), name:str?, limits:{total?, per_role?}? (part of YOUR quota handed to the child as its own subtree cap). Creates the agent from the card (the card's directive after the default system block, the tier's backend fields from config, the card's grants) as a CHILD OF THE CALLER, gives the caller pause/resume/stop on it, and lets the child `send` the caller (both ends, merged with what either already holds), so it tells its parent with a message when it is done. The child's task comes FROM this registry, so a child cannot tell its parent from it: AFTER ALL YOUR SPAWNS, send each child the team's structure (`send` with `text`): you are its parent (your id, the one it reports to with `send` when done), and every sibling's id, role and task. Refused past a limit: {error:<sentence>, reason:'limit', scope, role, running, max, hint}. Returns {id, role, tier}. from:{agent:str, at:int}? branches the new agent off a fork point of `agent` instead (ai_core `fork {at}`, same memory store, so it starts with that conversation up to `at`), then applies the card and limits; it sits BESIDE its source, not under you, and you still get pause/resume/stop on it and it may `send` you; you must hold `fork` on `agent` or it is refused with reason `not_allowed`; a refusal from fork (cuts_turn, cuts_fold, no_such_row, parent_mid_turn, ...) passes through unchanged and nothing is left behind. Then the reply also has from:{agent, at} and copied. The card's grants on tools are opened on both ends (the child's own grant and the tool's callable_by, all or nothing): a card may only grant what the spawner itself holds, or the spawn is refused with reason `not_allowed`, and a grant that cannot be written undoes the whole spawn (reason `grant_failed`).",
         "fleet": "No args. Returns {roles:{<role>:[{id}]}} — the agents this registry spawned, per role, read from the records (survives restart).",
         "set_limit": "args: role:str? (omitted = all agents in total), max:int|null (req; null clears). Returns {ok:true, role, max}.",
         "get_count": "args: role:str? (omitted = in total). Returns {running, max} — running counts every agent this registry spawned that still exists (a slot frees on delete_agent); max is null when uncapped.",
@@ -580,7 +580,9 @@ async fn spawn_reply(
     }
     create.insert("type".to_string(), json!("create_agent"));
     create.insert("parent_id".to_string(), json!(parent.as_str()));
-    create.insert("system_prompt".to_string(), json!(card.directive));
+    // the card's directive goes AFTER fantastic's default system block (the primer with the
+    // call grammar, the agent's identity and grants): `system_prompt` would replace that block
+    create.insert("post_system_prompt".to_string(), json!(card.directive));
     create.insert("spawned_by".to_string(), json!(reg.as_str()));
     create.insert("role".to_string(), json!(role));
     create.insert("tier".to_string(), json!(card.tier));
@@ -717,7 +719,41 @@ fn open_edges(
 
 /// A string task: let the registry `send` and send it, DETACHED, as the registry
 /// (a spawn answers at once, it never waits for the child's turn to end).
+/// The child's parent: the lead that spawned it `from` a fork point (it sits beside its
+/// source), else its place in the tree.
+fn parent_of(kernel: &Kernel, child: &AgentId) -> Option<String> {
+    let a = kernel.agents.get(child)?;
+    let m = meta_of(a.value());
+    m.get("lead")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| a.value().parent_id.as_ref().map(|p| p.as_str().to_string()))
+}
+
+/// The TEAM NOTE after a spawned child's task: the task comes FROM this registry, so
+/// without it a child cannot tell whom to report to. Its parent by id, and the agents
+/// this registry spawned for the same parent (its siblings) with their roles.
+fn team_note(kernel: &Kernel, reg: &AgentId, child: &AgentId) -> String {
+    let Some(parent) = parent_of(kernel, child) else { return String::new() };
+    let siblings: Vec<String> = spawned(kernel, reg)
+        .into_iter()
+        .filter(|s| s.id != *child && parent_of(kernel, &s.id).as_deref() == Some(parent.as_str()))
+        .map(|s| format!("`{}` ({})", s.id.as_str(), s.role))
+        .collect();
+    let mut note = format!(
+        "\n\n[team] Your parent is `{parent}`: report to it when you are done, with \
+         <call name=\"send\"><target_id>{parent}</target_id><type>send</type><text>…</text></call>. \
+         `{}` only delivered this task; it takes no reports.",
+        reg.as_str()
+    );
+    if !siblings.is_empty() {
+        note.push_str(&format!(" Your siblings: {}.", siblings.join(", ")));
+    }
+    note
+}
+
 fn send_first(kernel: &Arc<Kernel>, reg: &AgentId, child: &str, text: String) {
+    let text = format!("{text}{}", team_note(kernel, reg, &AgentId::from(child)));
     let cid = child.to_string();
     let _ = kernel.edit_can_call(reg, move |m| {
         grant_verbs(m, &cid, &json!(["send"]));
@@ -1007,7 +1043,10 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
             patch.insert(k.clone(), v.clone());
         }
     }
-    patch.insert("system_prompt".to_string(), json!(card.directive));
+    // a fork drops the source's own prompt (null clears it) so the default block is in force,
+    // and takes the card's directive after it, as a spawn does
+    patch.insert("system_prompt".to_string(), Value::Null);
+    patch.insert("post_system_prompt".to_string(), json!(card.directive));
     patch.insert("spawned_by".to_string(), json!(reg.as_str()));
     patch.insert("role".to_string(), json!(card.name));
     patch.insert("tier".to_string(), json!(card.tier));

@@ -33,6 +33,7 @@ def run(ctx):
         cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "delete_agent"]})
         cli.make_agent(ctx, "rlead", cli.LEAD, {cli.EXEC: "*"}, key=ctx.model.keyed)
         box.open_backends(["rlead"])
+        cli.add_cadencer(ctx)
         before = cli.tree(team)
         box.publish()
         v.check("canvas --port P serves the canvas page", S.wait_page(port, "/canvas_page/file/index.html") == 200)

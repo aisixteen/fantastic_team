@@ -13,6 +13,7 @@ Each scenario is a `*_start(ctx, v)` that boots and builds the team (and checks 
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
@@ -36,6 +37,7 @@ def single_by_hand(ctx, v, sub: str = "create_agent_run"):
     lead = cli.make_lead(ctx, {cli.EXEC: "*"})
     made = set(cli.ids(ctx.team)) - base
     v.check("A: create_agent made the lead alone, under the id `lead`", made == {"lead"} and lead == "lead", str(made))
+    cli.add_cadencer(ctx)
     before = cli.ids(ctx.team)
     handler = ctx.model.ai_record()["handler_module"]
     v.check(f"A: the lead is a {handler} record", before.get(lead) == handler, str(before))
@@ -63,6 +65,7 @@ def single_by_recipe(ctx, v, sub: str = "recipe_run"):
         update["credentials"] = cli.model_credentials(ctx)
     r = ctx.team.send("kernel", update)
     v.check("B: send update_agent gave it the key and the exec grant", r.get("status") == "completed", str(r)[:300])
+    cli.add_cadencer(ctx)
     return "ai", cli.ids(ctx.team)
 
 
@@ -89,6 +92,7 @@ def spawn_two_start(ctx, v, credentials: bool = False) -> dict:
                       credentials=cli.model_credentials(ctx) if credentials else None)
     new = set(cli.ids(ctx.team)) - base
     v.check("create_agent made the lead and its roles registry, under fixed ids", new == {"lead", "roles"}, str(new))
+    cli.add_cadencer(ctx)
     count = ctx.team.send("roles", {"type": "get_count"})["result"]
     v.check("the registry is on and counts nothing running", count == {"running": 0, "max": 2}, str(count))
     return cli.tree(ctx.team)
@@ -104,6 +108,16 @@ def spawn_two_end(ctx, v, before: dict) -> None:
             f"before {sorted(before)} after {sorted(after)}")
     count = ctx.team.send("roles", {"type": "get_count"})["result"]
     v.check("the registry counts nothing running", count["running"] == 0, str(count))
+    rows, after = [], None
+    while True:
+        res = ctx.team.send("lead", {"type": "history", **({"after": after} if after else {})},
+                            timeout=60).get("result") or {}
+        rows += res.get("rows") or []
+        after = res.get("next")
+        if not after:
+            break
+    told = [r for r in rows if "[team] The team of `lead` changed" in json.dumps(r)]
+    v.check("the cadencer told the lead its team when the team changed", bool(told), f"{len(rows)} rows")
 
 
 # ---- precreated_1_2 and precreated_tree ------------------------------------------------
@@ -125,7 +139,8 @@ def precreate(ctx, v, expect: dict, all_keyed: bool = False) -> dict:
     v.check("each agent sits under the parent it was made under",
             all(before[i][1] == p for i, p in expect.items()),
             str({i: before[i][1] for i in expect}))
-    return before
+    cli.add_cadencer(ctx)
+    return cli.tree(ctx.team)
 
 
 def precreated_end(ctx, v, before: dict) -> None:
@@ -148,6 +163,7 @@ def spawn_leads_start(ctx, v, credentials: bool = False) -> dict:
                       credentials=cli.model_credentials(ctx) if credentials else None)
     new = set(cli.ids(ctx.team)) - base
     v.check("create_agent made the lead and its roles registry, under fixed ids", new == {"lead", "roles"}, str(new))
+    cli.add_cadencer(ctx)
     return cli.tree(ctx.team)
 
 
@@ -184,6 +200,7 @@ def canvas_start(ctx, v):
     cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent"]})
     new = set(cli.ids(team)) - base
     v.check("the lead was made with create_agent", new == {"lead"}, str(new))
+    cli.add_cadencer(ctx)
     v.check("the team runs headless", team.proc.poll() is None)
     agents = team.agents()
     v.check("the canvas is registered but not started: no web host, no canvas page",

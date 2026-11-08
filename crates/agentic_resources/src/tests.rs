@@ -462,7 +462,8 @@ async fn spawn_creates_child_with_directive_tier_grants() {
         "a child of the caller"
     );
     let m = meta_of(&a);
-    assert_eq!(m["system_prompt"], "You write clearly and briefly.");
+    assert_eq!(m["post_system_prompt"], "You write clearly and briefly.");
+    assert!(m.get("system_prompt").is_none_or(Value::is_null), "the default system block stays in force: {m:?}");
     assert_eq!(m["model"], "m1", "the tier's model, never the card's");
     assert_eq!(m["endpoint"], "http://x");
     assert_eq!(a.handler_module.as_deref(), Some("caller.tools"));
@@ -823,7 +824,7 @@ async fn spawn_task_string_is_first_message_and_object_refused() {
             .lock()
             .unwrap()
             .iter()
-            .any(|(a, t)| *a == cid && t == "do it")
+            .any(|(a, t)| *a == cid && t.starts_with("do it\n\n[team] Your parent is `") && t.contains(&format!("Your parent is `{}`", lead.as_str())))
         {
             break;
         }
@@ -833,7 +834,7 @@ async fn spawn_task_string_is_first_message_and_object_refused() {
         .lock()
         .unwrap()
         .iter()
-        .any(|(a, t)| *a == cid && t == "do it"));
+        .any(|(a, t)| *a == cid && t.starts_with("do it\n\n[team] Your parent is `") && t.contains(&format!("Your parent is `{}`", lead.as_str()))));
 }
 
 /// Did `who` receive a `send` with `text`? A `send` is answered only once the
@@ -1233,7 +1234,8 @@ async fn spawn_from_forks_and_applies_the_role_card() {
     let id = out["id"].as_str().unwrap();
     assert_eq!(forks_of(&r, &src), [id], "made by fork");
     let m = r.meta(id);
-    assert_eq!(m["system_prompt"], "You write clearly and briefly.");
+    assert_eq!(m["post_system_prompt"], "You write clearly and briefly.");
+    assert!(m.get("system_prompt").is_none_or(Value::is_null), "the default system block stays in force: {m:?}");
     assert_eq!(m["role"], "writer");
     assert_eq!(m["tier"], "fast");
     assert_eq!(m["spawned_by"], json!(r.reg));
@@ -1345,7 +1347,7 @@ async fn spawn_from_task_string_is_sent_as_first_message() {
             .lock()
             .unwrap()
             .iter()
-            .any(|(a, t)| *a == id && *t == text)
+            .any(|(a, t)| *a == id && t.starts_with(&text) && t.contains(&format!("Your parent is `{}`", r.callers[0].as_str())))
         {
             return;
         }
