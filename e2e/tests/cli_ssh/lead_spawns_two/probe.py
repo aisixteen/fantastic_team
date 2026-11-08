@@ -26,6 +26,7 @@ def run(ctx):
         v.check("create_agent made the lead and its roles registry, under fixed ids", new == {"lead", "roles"}, str(new))
         count = ctx.team.send("roles", {"type": "get_count"})["result"]
         v.check("the registry is on and counts nothing running", count == {"running": 0, "max": 2}, str(count))
+        cli.add_cadencer(ctx)
         before = cli.tree(ctx.team)
         box.publish()
         box.bind()

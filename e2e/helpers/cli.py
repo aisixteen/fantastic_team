@@ -194,9 +194,10 @@ def make_lead(ctx, grants: dict | None = None, subtree: bool = False) -> str:
     grants = dict(grants or {})
     # fantastic's own hints send every agent to `send kernel {type: docs, of: ...}` for a verb's
     # signature: a lead that may not read them stops and asks the operator, who is not there
+    # (only a listed grant is extended: with none, the lead keeps the reach it has)
     ks = grants.get("kernel_state")
-    if ks != "*":
-        grants["kernel_state"] = list(dict.fromkeys([*(ks or []), "docs"]))
+    if isinstance(ks, list):
+        grants["kernel_state"] = list(dict.fromkeys([*ks, "docs"]))
     lead = make_agent(ctx, LEAD, "user", {**({"$subtree": "*"} if subtree else {}), **grants},
                       key=True)
     return lead

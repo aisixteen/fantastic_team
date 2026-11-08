@@ -14,7 +14,9 @@ def run(ctx):
         cli.start(ctx, roles=True)
         cli.add_base(ctx)
         cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "update_agent", "delete_agent"]}, subtree=True)
-        cli.make_registry(ctx, total=2, roles=cli.roles_dir("lead_spawns_two"))
+        cli.make_registry(ctx, total=2, roles=cli.roles_dir("lead_spawns_two"),
+                          credentials=cli.model_credentials(ctx))
+        cli.add_cadencer(ctx)
         before = cli.tree(ctx.team)
         box.publish()
         watch = G.play(ctx, v, "lead", G.wiring(ctx, box) + G.TASKS["lead_spawns_two"])

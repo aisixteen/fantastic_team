@@ -45,8 +45,10 @@ the script gets a 500, and `exhausted` says so.
 
 TEAM NOTICES. The cadencer tells a lead's team its structure whenever an AI agent is added or
 removed (`[team] The team of …`), and each notice is a turn of its own. A request whose newest
-message is notices only is answered `<call name="done"></call>` OUTSIDE the script: it takes no
-turn of any lane and is counted in `notice_turns`, so a script stays the test's own steps.
+message is notices only is answered `<call name="await"></call>` OUTSIDE the script (it keeps
+whatever the agent waits on: a `done` there would end a chain the notice landed in): it takes no
+turn of any lane and is counted in `notice_turns`, so a script stays the test's own steps. So is
+the kernel's request to rebuild a woken agent's working context (`rebuild_turns`).
 """
 
 from __future__ import annotations
@@ -182,6 +184,7 @@ class ScriptedModel:
         self.keys: list[str | None] = []  # x-api-key of each POST /v1/messages
         self.served = 0
         self.notice_turns = 0  # team notices answered outside the script
+        self.rebuild_turns = 0  # the kernel's context rebuilds, answered outside the script
         self.overrun = 0
         self.leg_grant = self.no_leg_grant  # the test sets it when its script has `grant_leg` turns
         self.lock = threading.Lock()
@@ -250,24 +253,60 @@ class ScriptedModel:
             raise ValueError(f"scripted model: placeholders with no value: {left}")
         return self
 
+    # a team notice, fantastic's await note, and its memory recall row (the kernel's, after a restart)
+    NOTICE_HEADS = ("[from cadencer]", "[team] The team of", "Members:", "- `", "[await: nothing to wait for]",
+                    "[recall ")
+
+    @classmethod
+    def own_blocks(cls, msg: dict) -> list[str]:
+        """The blocks of a message (joined by a blank line) that are not team notices or fantastic's
+        await note. The wire merges consecutive user messages, so a notice and a task can share one."""
+        return [b for b in cls.blocks(msg) if not b.startswith(cls.NOTICE_HEADS)]
+
     @staticmethod
-    def notice_only(raw: str) -> bool:
-        """Is the newest message of this request team notices and nothing else? Each block of it
-        (blocks are joined by a blank line) is a `[from cadencer]` / `[team] The team of` one."""
+    def blocks(msg: dict) -> list[str]:
+        c = msg.get("content")
+        text = c if isinstance(c, str) else "\n\n".join(
+            b.get("text", "") for b in (c or []) if isinstance(b, dict))
+        return [b.strip() for b in text.split("\n\n") if b.strip()]
+
+    @classmethod
+    def notice_only(cls, raw: str) -> bool:
+        """Is the newest message of this request team notices (and await notes) and nothing else?"""
         try:
             msgs = [m for m in json.loads(raw).get("messages", []) if m.get("role") != "system"]
             last = msgs[-1]
         except (ValueError, IndexError, AttributeError, TypeError):
             return False
-        if last.get("role") != "user":
+        if last.get("role") != "user" or not last.get("content"):
             return False
-        c = last.get("content")
-        text = c if isinstance(c, str) else "\n\n".join(
-            b.get("text", "") for b in (c or []) if isinstance(b, dict))
-        blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
-        return bool(blocks) and all(
-            b.startswith("[from cadencer]") or b.startswith("[team] The team of") or b.startswith("Members:")
-            or b.startswith("- `") for b in blocks)
+        own = cls.own_blocks(last)
+        if not own:
+            return True
+        # the kernel's "[N message(s) arrived while you were working …]": a notice when the N
+        # messages that arrived (the latest `[from …]` / `[team]` blocks above it) are all notices
+        arrived = re.match(r"\[(\d+) message\(s\) arrived while you were working", own[-1])
+        if not arrived or len(own) > 1:
+            return False
+        blocks = []
+        for m in msgs[:-1]:
+            if m.get("role") == "user":
+                blocks += cls.blocks(m)
+        came = [b for b in blocks if b.startswith(("[from ", "[team] The team of"))][-int(arrived.group(1)):]
+        return bool(came) and all(b.startswith(cls.NOTICE_HEADS) for b in came)
+
+    @staticmethod
+    def rebuild(raw: str) -> bool:
+        """Is this the kernel asking the model to rebuild an agent's working context (when a notice
+        wakes it after a restart)? Not the agent's own turn: answered with a word the kernel reads as
+        no plan, so it keeps its mechanical fit."""
+        try:
+            msgs = [m for m in json.loads(raw).get("messages", []) if m.get("role") != "system"]
+            c = msgs[0].get("content")
+        except (ValueError, IndexError, AttributeError, TypeError):
+            return False
+        text = c if isinstance(c, str) else "".join(b.get("text", "") for b in (c or []) if isinstance(b, dict))
+        return len(msgs) == 1 and text.startswith("You are rebuilding your own working context.")
 
     def play(self, raw: str, key: str | None = None) -> tuple[str, str | None] | None:
         """Serve one request body: record it, pick the turn of its lane, wait for the lanes the
@@ -276,7 +315,11 @@ class ScriptedModel:
         if self.notice_only(raw):
             with self.lock:
                 self.notice_turns += 1
-            return '<call name="done"></call>', None
+            return '<call name="await"></call>', None
+        if self.rebuild(raw):
+            with self.lock:
+                self.rebuild_turns += 1
+            return "The head is fine as it is.", None
         with self.lock:
             self.raw_bodies.append(raw)
             try:
@@ -312,12 +355,13 @@ class ScriptedModel:
             msgs = [m for m in json.loads(raw).get("messages", []) if m.get("role") != "system"]
         except (ValueError, AttributeError, TypeError):
             return "main"
-        # a team notice (the cadencer's, at its boot) and its `done` may come before the agent's
-        # task: the lane is in the first user message that is not a notice
+        # notices and await notes may come before the agent's task, merged into its message: the
+        # lane is in the first user message that holds anything else
         m = None
         for msg in (x for x in msgs if x.get("role") == "user"):
-            m = re.search(r"\[lane:(\w+)\]", json.dumps(msg))
-            if m or not self.notice_only(json.dumps({"messages": [msg]})):
+            own = self.own_blocks(msg)
+            if own:
+                m = re.search(r"\[lane:(\w+)\]", "\n\n".join(own))
                 break
         return m.group(1) if m else "main"
 

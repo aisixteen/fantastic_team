@@ -38,6 +38,7 @@ def run(ctx):
         cli.make_agent(ctx, "rlead", cli.LEAD, {cli.EXEC: "*"})
         v.check("rlead, the remote's backend, was made on the master", set(cli.ids(team)) - base == {"lead", "rlead"})
         box.open_backends(["rlead"])
+        cli.add_cadencer(ctx)
         before = cli.tree(team)
         box.publish()
         box.bind()
