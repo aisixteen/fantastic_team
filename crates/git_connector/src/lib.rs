@@ -50,7 +50,7 @@ pub(crate) fn record_schema() -> &'static Value {
     S.get_or_init(|| {
         json!({"fields": [
             Field::new("repo_dir", "str", "absolute path of the local clone every worktree is made from").required().json(),
-            Field::new("workspace_root", "str", "absolute directory every worktree path must be inside").required().json(),
+            Field::new("workspace_root", "str", "absolute directory every worktree path must be inside; absent = <the default folder>/<agent id>, made at the first worktree_add (the default folder is the system temp folder's fantastic_team/worktrees, or the binary's --worktrees DIR). Set or change it (update_agent) only after the user agrees to that folder: ask first").json(),
             Field::new("remote", "str", "a remote name in repo_dir (origin) or a URL (https://…, ssh://…, git@host:org/repo.git)").required().json(),
             Field::new("default_branch", "str", "the remote's default branch — push refuses it (and main, master)").required().json(),
             credentials_field(false).json(),
@@ -69,6 +69,8 @@ pub struct Cfg {
     pub repo_dir: PathBuf,
     /// Absolute directory every worktree path must be inside.
     pub workspace_root: PathBuf,
+    /// The record names no root: `workspace_root` is the default one, made when a worktree needs it.
+    pub default_root: bool,
     /// A remote name in `repo_dir`, or a URL.
     pub remote: String,
     /// The remote's default branch; push refuses it.
@@ -90,11 +92,13 @@ fn text_of(meta: &Value, key: &str) -> Option<String> {
 }
 
 impl GitConnectorBundle {
-    /// Read the config from the agent's merged meta.
-    pub(crate) fn cfg(meta: &Value) -> Cfg {
+    /// Read the config of agent `id` from its merged meta.
+    pub(crate) fn cfg(id: &str, meta: &Value) -> Cfg {
+        let root = text_of(meta, "workspace_root").filter(|r| !r.is_empty());
         Cfg {
             repo_dir: PathBuf::from(text_of(meta, "repo_dir").unwrap_or_default()),
-            workspace_root: PathBuf::from(text_of(meta, "workspace_root").unwrap_or_default()),
+            default_root: root.is_none(),
+            workspace_root: root.map(PathBuf::from).unwrap_or_else(|| default_workspace_root(id)),
             remote: text_of(meta, "remote").unwrap_or_default(),
             default_branch: text_of(meta, "default_branch").unwrap_or_default(),
             username: text_of(meta, "username").unwrap_or_else(|| "x-access-token".into()),
@@ -116,6 +120,28 @@ impl GitConnectorBundle {
     }
 }
 
+/// The folder the default worktree roots go in, set once by the binary's `--worktrees DIR`.
+static WORKTREES_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Set the default worktrees folder (the binary's `--worktrees DIR`). It must be absolute; a
+/// second call is refused.
+pub fn set_worktrees_dir(dir: PathBuf) -> Result<(), String> {
+    if !dir.is_absolute() {
+        return Err(format!("--worktrees needs an absolute path, not `{}`", dir.display()));
+    }
+    WORKTREES_DIR.set(dir).map_err(|_| "--worktrees is set twice".to_string())
+}
+
+/// The default worktree root of git agent `id`: `<worktrees folder>/<id>`, the folder being
+/// `--worktrees DIR` or `<system temp>/fantastic_team/worktrees`.
+pub fn default_workspace_root(id: &str) -> PathBuf {
+    WORKTREES_DIR
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::temp_dir().join("fantastic_team").join("worktrees"))
+        .join(id)
+}
+
 /// The config of the git agent `id`, read from its record the way `handle` reads it.
 pub fn cfg_of(kernel: &Kernel, id: &AgentId) -> Result<Cfg, Value> {
     let entry = kernel
@@ -123,7 +149,7 @@ pub fn cfg_of(kernel: &Kernel, id: &AgentId) -> Result<Cfg, Value> {
         .get(id)
         .ok_or_else(|| json!({"error": format!("team_git: no agent `{id}`")}))?;
     let meta = entry.meta.read().expect("meta").clone();
-    Ok(GitConnectorBundle::cfg(&Value::Object(meta)))
+    Ok(GitConnectorBundle::cfg(id.as_str(), &Value::Object(meta)))
 }
 
 /// A refusal reply: `error` text plus the arg that caused it.
@@ -152,7 +178,7 @@ impl Bundle for GitConnectorBundle {
         json!({
             "reflect": "reflect → {id, sentence, repo_dir, workspace_root, remote, default_branch, credentials}",
             "boot": "boot → nothing",
-            "worktree_add": "worktree_add {path, branch, base} → {path, branch, base, created}",
+            "worktree_add": "worktree_add {path, branch, base} → {path, branch, base, created}. `path` is inside workspace_root (reflect names it; a relative path is joined to it). To use another folder, change workspace_root with update_agent on this record, and only after the user agrees to the new folder: ask first.",
             "worktree_remove": "worktree_remove {path} → {path, removed}",
             "commit": "commit {path, message, trailers?} → {path, commit, committed}",
             "push": "push {path, branch} → {path, branch, remote, pushed}",
@@ -245,7 +271,7 @@ impl Bundle for GitConnectorBundle {
             .get(agent_id)
             .map(|e| e.meta.read().expect("meta").clone())
             .unwrap_or_default();
-        let cfg = Self::cfg(&Value::Object(meta));
+        let cfg = Self::cfg(agent_id.as_str(), &Value::Object(meta));
         let out: Value = match t {
             "reflect" => json!({
                 "id": agent_id.to_string(),

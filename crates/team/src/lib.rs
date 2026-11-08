@@ -38,6 +38,7 @@ pub mod tree;
 pub mod watchdog;
 pub mod webhook;
 pub mod webui;
+pub mod worktrees_flag;
 pub mod worker_view;
 
 use std::path::Path;
