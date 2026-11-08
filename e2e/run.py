@@ -546,11 +546,12 @@ def relay_records(v: Verdict, relay, key: str) -> None:
         os.environ["ANTHROPIC_CACHING"] = "provider_cache"
         r = relay_mod.make(run_m, {"run_dir": run_m})
         made.append(r)
-        same = cli_mod.tier_record(r)["model"] == "claude-selftest"
+        same = cli_mod.worker_model() is None
         os.environ["E2E_WORKER_MODEL"] = "claude-worker-selftest"
-        v.check("E2E_WORKER_MODEL sets the workers' tier model, the lead keeps E2E_MODEL; unset, both are E2E_MODEL",
-                same and cli_mod.tier_record(r)["model"] == "claude-worker-selftest"
-                and r.ai_record()["model"] == "claude-selftest", str(cli_mod.tier_record(r)))
+        v.check("E2E_WORKER_MODEL is the model the lead is told to spawn with, the lead keeps E2E_MODEL; unset, "
+                "a spawn names none",
+                same and cli_mod.worker_model() == "claude-worker-selftest"
+                and r.ai_record()["model"] == "claude-selftest", str(cli_mod.worker_model()))
     finally:
         os.environ.pop("E2E_WORKER_MODEL", None)
         os.environ.pop("E2E_MODEL", None)

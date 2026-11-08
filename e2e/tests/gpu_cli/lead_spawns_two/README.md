@@ -1,8 +1,8 @@
 # gpu_cli/lead_spawns_two
 
 The gpu twin of `cli/lead_spawns_two` (#237): a lead with a roles registry (fantastic's
-`agentic_resources`, `FANTASTIC_AGENTIC_RESOURCES=1`; the card `cli/lead_spawns_two/roles/worker.md`,
-the tier `small`) is asked, in plain words, to fix the failing test with two workers (one file each),
+`agentic_resources`, `FANTASTIC_AGENTIC_RESOURCES=1`; the role bundle `cli/lead_spawns_two/bundles/worker/bundle.yaml`,
+its model the lead's) is asked, in plain words, to fix the failing test with two workers (one file each),
 to commit, and to delete the workers it spawned. A real model answers; there is no script.
 
 Start: `--headless`, then the lead and `roles` made with `send` + `create_agent` under the fixed ids

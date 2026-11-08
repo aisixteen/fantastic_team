@@ -50,12 +50,8 @@ def point_at_plug(ctx, team):
     agents = team.agents()
     records.update(team, "lead", model=cli.MODEL, endpoint=ctx.model.endpoint,
                    credentials={"store": "credentials", "ref": f"model/{ctx.model.host}"})
-    tiers = {}
-    for name, t in agents["roles"]["tiers"].items():
-        t = dict(t, model=cli.MODEL, endpoint=ctx.model.endpoint)
-        t.pop("credentials", None)  # WAITING on aisixteen/fantastic#467: reach writes a new agent's grants after a spawn with a task has started its first turn, so a tier with a key ref fails that turn; no sleep or grant here
-        tiers[name] = t
-    records.update(team, "roles", tiers=tiers, limits={"total": 6})
+    # a spawned agent runs on its spawner's backend: pointing the lead at the plug points its tree there
+    records.update(team, "roles", limits={"total": 6})
 
 
 def ids_once_up(team):

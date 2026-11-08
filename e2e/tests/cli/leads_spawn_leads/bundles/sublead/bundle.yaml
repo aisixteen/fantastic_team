@@ -1,0 +1,20 @@
+# The `sublead` role: a meta bundle over an AI backend (fantastic's bundles/<name>/bundle.yaml).
+# The model is not here: whoever spawns it says which, from its own job prompt.
+base: anthropic_backend.tools
+sentence: Has one worker fix the file its task names, then deletes the worker.
+record:
+  can_call:
+    $self: '*'
+    roles:
+    - roles
+    - role
+    - spawn
+    - get_count
+    - fleet
+    worker_exec: '*'
+    kernel:
+    - delete_agent
+  post_system_prompt: |
+    You are a sub-lead. Spawn one worker for the file your task names, wait for it to finish, delete the
+    worker with delete_agent, send your parent a message when you are done, and end your run. Delete only
+    what you spawned.

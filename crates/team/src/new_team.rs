@@ -8,7 +8,7 @@
 //! registry [`TASKS`], the queue [`QUEUE`], the board [`BOARD`], the GitHub connector
 //! [`GITHUB`] and the worker's tools [`WORKER_EXEC`] and [`WORKER_FILES`]. The cards (the
 //! files in `roles/` of the repo, embedded in [`crate::roles`]) are written next to the
-//! kernel by [`write_cards`]; the registry reads them from its `role_dirs`.
+//! kernel by [`write_bundles`] (meta bundles under `.fantastic/bundles/`); the registry reads them from the kernel.
 //!
 //! There is no code here that creates, updates or grants an agent: the blueprint is the
 //! one declaration.
@@ -64,22 +64,10 @@ pub const LEAD_CANVAS_VERBS: [&str; 1] = ["new_canvas"];
 pub const LEAD_FILES_VERBS: [&str; 5] =
     ["read", "read_stream", "watch_path", "unwatch_path", "watch"];
 
-/// Write the role cards under `dir/roles` (the folder the registry's `role_dirs` names,
-/// relative to the directory the team runs in). A card the directory already has stays as
-/// it is. Returns how many cards were written.
-pub fn write_cards(dir: &Path) -> Result<usize, String> {
-    let cards = dir.join("roles");
-    std::fs::create_dir_all(&cards)
-        .map_err(|e| format!("cannot create {}: {e}", cards.display()))?;
-    let mut wrote = 0;
-    for (file, text) in roles::ALL {
-        let p = cards.join(file);
-        if !p.exists() {
-            std::fs::write(&p, text).map_err(|e| format!("cannot write {}: {e}", p.display()))?;
-            wrote += 1;
-        }
-    }
-    Ok(wrote)
+/// Write the role bundles under `dir/.fantastic/bundles/` (`roles::write_bundles`). A
+/// bundle the directory already has stays as it is. Returns how many it wrote.
+pub fn write_bundles(dir: &Path) -> Result<usize, String> {
+    roles::write_bundles(dir)
 }
 
 #[cfg(test)]
@@ -91,25 +79,16 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn write_cards_never_overwrites() {
+    fn write_bundles_never_overwrites() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert_eq!(write_cards(dir.path()).unwrap(), roles::ALL.len());
-        for (file, _) in roles::ALL {
-            assert!(dir.path().join("roles").join(file).is_file(), "{file}");
+        assert_eq!(write_bundles(dir.path()).unwrap(), roles::ALL.len());
+        let at = |n: &str| dir.path().join(".fantastic/bundles").join(n).join("bundle.yaml");
+        for (name, _) in roles::ALL {
+            assert!(at(name).is_file(), "{name}");
         }
-        let mine = dir.path().join("roles/worker.md");
-        std::fs::write(&mine, "# mine\n").unwrap();
-        assert_eq!(write_cards(dir.path()).unwrap(), 0);
-        assert_eq!(std::fs::read_to_string(&mine).unwrap(), "# mine\n");
-    }
-
-    #[test]
-    fn the_embedded_cards_equal_the_repo_cards() {
-        let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../roles");
-        for (file, text) in roles::ALL {
-            let on_disk = std::fs::read_to_string(repo.join(file)).unwrap();
-            assert_eq!(text, on_disk, "{file} drifted from roles/{file}");
-        }
+        std::fs::write(at("worker"), "# mine\n").unwrap();
+        assert_eq!(write_bundles(dir.path()).unwrap(), 0);
+        assert_eq!(std::fs::read_to_string(at("worker")).unwrap(), "# mine\n");
     }
 
     /// An agent that makes the call it is told to AS ITSELF, so the gate and `spawn`
@@ -217,10 +196,7 @@ mod tests {
                 lead["credentials"] = json!({"store": CREDENTIALS, "ref": "plug"});
             }
         }
-        let roles = entry_mut(list, ROLES).unwrap();
-        roles["tiers"]["strong"]["handler_module"] = json!("caller.tools");
-        // the cards are in this directory, not the one the test runs in
-        roles["role_dirs"] = json!([dir.join("roles").to_string_lossy()]);
+        let _ = dir;
         serde_yaml::to_string(&doc).unwrap()
     }
 
@@ -235,7 +211,7 @@ mod tests {
                     cb.insert(LEAD.into(), json!("*"));
                     true
                 })
-                .unwrap();
+                .unwrap_or_else(|e| panic!("{id}: {e}"));
         }
     }
 
@@ -245,9 +221,9 @@ mod tests {
     async fn build(real_lead: Option<&str>) -> (tempfile::TempDir, Arc<Kernel>, SentLog) {
         let log: SentLog = Arc::default();
         let dir = tempfile::TempDir::new().unwrap();
-        write_cards(dir.path()).unwrap();
         fantastic_tui::seed_dir_with(dir.path(), &[&test_blueprint(dir.path(), real_lead)])
             .unwrap();
+        write_bundles(dir.path()).unwrap(); // after the seed, as `hydrate::seed` does
         let mut reg = crate::registry();
         reg.register("caller.tools", CallerBundle(log.clone()));
         let mut booted =
@@ -339,13 +315,14 @@ mod tests {
         assert!(!r.to_string().contains("may not call"), "{r}");
         let seen = srv.received_requests().await.unwrap_or_default();
         assert_eq!(seen.len(), 1, "the model got no request: {r}");
-        let card = std::fs::read_to_string(dir.path().join("roles/lead.md")).unwrap();
+        let _ = &dir;
+        let directive = crate::roles::parse_card(crate::roles::LEAD, "lead").unwrap().directive;
         let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
         assert!(
             sent["system"]
                 .to_string()
-                .contains(card.lines().nth(2).unwrap()),
-            "the system block is not the card: {}",
+                .contains(directive.lines().nth(2).unwrap()),
+            "the system block holds the lead bundle's directive: {}",
             sent["system"]
         );
         finish(dir.path(), kernel).await;
@@ -386,7 +363,7 @@ mod tests {
         let before = meta(&kernel, LEAD)["callable_by"].clone();
         let made = fantastic_kernel::send::as_agent(
             &lead,
-            ask(&kernel, ROLES, json!({"type": "spawn", "role": "lead"})),
+            ask(&kernel, ROLES, json!({"type": "spawn", "role": "lead", "backend": {"handler_module": "caller.tools"}})),
         )
         .await;
         let sub = made["id"]
@@ -453,13 +430,13 @@ mod tests {
         }
         let lead = meta(&kernel, LEAD);
         assert_eq!(lead["memory_store_id"], "memory");
-        assert_eq!(lead["system_prompt_file"], "roles/lead.md");
+        assert!(lead.get("system_prompt_file").is_none(), "the directive is the `lead` bundle's");
         assert_eq!(lead["credentials"]["store"], "credentials");
         assert_eq!(lead["can_call"]["roles"], json!(LEAD_ROLES_VERBS));
         assert_eq!(lead["can_call"]["kernel_state"], json!(LEAD_ROOT_VERBS));
         assert_eq!(lead["can_call"]["board"], json!(LEAD_BOARD_VERBS));
         let reg = meta(&kernel, ROLES);
-        assert_eq!(reg["tiers"]["small"]["model"], "claude-haiku-5-5");
+        assert!(reg.get("tiers").is_none() && reg.get("role_dirs").is_none(), "the roles are bundles; the spawner names the model");
         assert_eq!(reg["limits"]["total"], 3);
         assert_eq!(reg["callable_by"]["lead"], json!(LEAD_ROLES_VERBS));
         // the other ends on the home agents, merged with what they had
@@ -485,13 +462,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn the_lead_spawns_a_worker_and_a_project_lead_through_the_registry() {
         let (dir, kernel) = team().await;
-        let spawn = |role: &'static str| json!({"type": "spawn", "role": role});
+        let spawn = |role: &'static str| json!({"type": "spawn", "role": role, "model": "claude-haiku-5-5"});
         let w = call_as(&kernel, LEAD, ROLES, spawn("worker")).await;
         let worker = w["id"]
             .as_str()
             .unwrap_or_else(|| panic!("worker: {w}"))
             .to_string();
-        assert_eq!(w["tier"], "small", "{w}");
+        assert_eq!(w["model"], "claude-haiku-5-5", "the model the spawn named: {w}");
         let wm = meta(&kernel, &worker);
         assert_eq!(wm["model"], "claude-haiku-5-5");
         assert_eq!(wm["memory_store_id"], "memory");

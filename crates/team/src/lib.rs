@@ -52,10 +52,10 @@ pub mod worker_exec;
 
 /// This repo's bundles, added to the registry of fantastic's shell AFTER its
 /// stock set (an `fantastic_tui::Extra`): the git and github connectors. The
-/// worker exec restriction ([`worker_exec`]), the config ([`config`]) and the
-/// role cards ([`roles`]) are records and files, not bundles; the roles registry
-/// (`agentic_resources.tools`, crates/agentic_resources) is inert in a team whose
-/// registry record has no `role_dirs`; the task registry (`task_registry.tools`,
+/// worker exec restriction ([`worker_exec`]) and the config ([`config`]) are records,
+/// not bundles; the roles ([`roles`]) are META bundles (yaml over an AI backend, no
+/// code) that the roles registry (`agentic_resources.tools`, crates/agentic_resources)
+/// spawns from; the task registry (`task_registry.tools`,
 /// crates/task_registry) is inert in a team whose registry record has no
 /// `task_store_id`; the cabinets (`cabinet.tools`, crates/cabinet) act only for
 /// a manager agent the operator makes and wires.

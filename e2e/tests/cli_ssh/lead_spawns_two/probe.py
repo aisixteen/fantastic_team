@@ -44,7 +44,7 @@ def run(ctx):
         v.check("the registry counts nothing running", count["running"] == 0, str(count))
         v.check("each worker asked the model, both on the master (w1, and w2 for the remote)",
                 {"w1", "w2"} <= set(ctx.model.request_lanes), str(set(ctx.model.request_lanes)))
-        minted = list(dict.fromkeys(re.findall(r"<id>(anthropic_backend_\w+)</id>", ctx.model.raw_bodies[-1])))
+        minted = list(dict.fromkeys(re.findall(r"<id>(\w+_[0-9a-f]{6,})</id>", ctx.model.raw_bodies[-1])))
         v.check("the lead saw two minted worker ids", len(minted) >= 2, str(minted))
         v.check("the remote work ran through the bridge: the work program exited 0",
                 T.came_back(ctx, None, "<exit_code>0</exit_code>"), str(T.forward_replies(ctx)[-2:])[:300])

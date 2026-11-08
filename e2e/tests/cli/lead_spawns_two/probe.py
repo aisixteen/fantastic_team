@@ -21,7 +21,7 @@ def run(ctx):
     S.spawn_two_end(ctx, v, before)
     lanes = set(ctx.model.request_lanes)
     v.check("each worker asked the model (a lane of its own)", {"w1", "w2"} <= lanes, str(lanes))
-    spawned = re.findall(r"<id>(anthropic_backend_\w+)</id>", ctx.model.raw_bodies[-1])[:2]
+    spawned = re.findall(r"<id>(\w+_[0-9a-f]{6,})</id>", ctx.model.raw_bodies[-1])[:2]
     v.check("the lead saw two minted worker ids", len(set(spawned)) == 2, str(spawned))
     v.check("the deleted workers are gone", not any(s in cli.tree(ctx.team) for s in spawned), str(spawned))
     return v.finish()

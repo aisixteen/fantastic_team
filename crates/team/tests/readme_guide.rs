@@ -80,25 +80,16 @@ fn every_record_field_the_readme_names_is_read_by_the_code() {
             "README example uses the record field `{key}`, which the code does not read"
         );
     }
-    // the roles registry's own fields: a registry made from the README block is enabled,
-    // lists the six cards and holds the limit
-    let reg = record_block(&text, "role_dirs:");
+    // the roles registry's own fields: a registry made from the README block, in a team
+    // folder whose first run wrote the role bundles, lists the six roles and holds the limit
+    let reg = record_block(&text, "limits:");
     let dir = tempfile::TempDir::new().unwrap();
-    for (file, card) in fantastic_team::roles::ALL {
-        let p = dir.path().join("roles").join(file);
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(p, card).unwrap();
-    }
+    fantastic_team::roles::write_bundles(dir.path()).unwrap();
     let mut record = reg.as_object().unwrap().clone();
     record.insert("type".into(), "create_agent".into());
     record.insert("id".into(), "roles".into());
     record.insert("parent_id".into(), "kernel".into());
     record.insert("handler_module".into(), "agentic_resources.tools".into());
-    // the README's relative folder is relative to the directory the team runs in
-    record.insert(
-        "role_dirs".into(),
-        serde_json::json!([dir.path().join("roles").to_string_lossy()]),
-    );
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         use fantastic_kernel::Item;

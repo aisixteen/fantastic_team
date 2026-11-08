@@ -1,36 +1,35 @@
-//! The role cards of the coder team, as files in `roles/` and embedded here.
-//! A card is a `---` header (name, purpose, tier, grants) and the directive text;
-//! the roles registry (`agentic_resources`, crates/agentic_resources) reads them from the folders
-//! the registry record's `role_dirs` names. A card names a tier KEY (a key of the
-//! registry record's `tiers`), never
-//! a provider or a model; the text names none either.
+//! The ROLES of the coder team, as META BUNDLES (fantastic's `bundles/<name>/bundle.yaml`
+//! with a `base` and no program): each is its directive (`record.post_system_prompt`) and
+//! its grants (`record.can_call`) over an AI backend, and names no model. Compiled in here
+//! and written under `.fantastic/bundles/` at the first run ([`write_bundles`]), where the
+//! kernel loads them before the tree; the roles registry reads them from the kernel.
 
-/// The worker card (`roles/worker.md`).
-pub const WORKER: &str = include_str!("../../../roles/worker.md");
-/// The lead card (`roles/lead.md`).
-pub const LEAD: &str = include_str!("../../../roles/lead.md");
-/// The issue-keeper card (`roles/issue_keeper.md`).
-pub const ISSUE_KEEPER: &str = include_str!("../../../roles/issue_keeper.md");
-/// The issue-writer card (`roles/issue_writer.md`).
-pub const ISSUE_WRITER: &str = include_str!("../../../roles/issue_writer.md");
-/// The spec-reviewer card (`roles/spec_reviewer.md`).
-pub const SPEC_REVIEWER: &str = include_str!("../../../roles/spec_reviewer.md");
-/// The coder project-lead card (`roles/project_lead.md`); the registry ships no
-/// built-in card, so this is the only `project_lead`.
-pub const PROJECT_LEAD: &str = include_str!("../../../roles/project_lead.md");
+use std::path::Path;
 
-/// Every card, by file name.
+/// The worker role (`bundles/worker/bundle.yaml`).
+pub const WORKER: &str = include_str!("../bundles/worker/bundle.yaml");
+/// The lead role (`bundles/lead/bundle.yaml`): the blueprint's `lead` is one of it too.
+pub const LEAD: &str = include_str!("../bundles/lead/bundle.yaml");
+/// The issue-keeper role.
+pub const ISSUE_KEEPER: &str = include_str!("../bundles/issue_keeper/bundle.yaml");
+/// The issue-writer role.
+pub const ISSUE_WRITER: &str = include_str!("../bundles/issue_writer/bundle.yaml");
+/// The spec-reviewer role.
+pub const SPEC_REVIEWER: &str = include_str!("../bundles/spec_reviewer/bundle.yaml");
+/// The coder project-lead role.
+pub const PROJECT_LEAD: &str = include_str!("../bundles/project_lead/bundle.yaml");
+
+/// Every role bundle, by name.
 pub const ALL: [(&str, &str); 6] = [
-    ("worker.md", WORKER),
-    ("lead.md", LEAD),
-    ("issue_keeper.md", ISSUE_KEEPER),
-    ("issue_writer.md", ISSUE_WRITER),
-    ("spec_reviewer.md", SPEC_REVIEWER),
-    ("project_lead.md", PROJECT_LEAD),
+    ("worker", WORKER),
+    ("lead", LEAD),
+    ("issue_keeper", ISSUE_KEEPER),
+    ("issue_writer", ISSUE_WRITER),
+    ("spec_reviewer", SPEC_REVIEWER),
+    ("project_lead", PROJECT_LEAD),
 ];
 
-/// The role names the coder set must hold: a team with `roles:` and a folder
-/// that lacks one of them does not start.
+/// The role names the coder set holds.
 pub const CODER_ROLES: [&str; 6] = [
     "worker",
     "lead",
@@ -40,24 +39,63 @@ pub const CODER_ROLES: [&str; 6] = [
     "project_lead",
 ];
 
+/// Write the role bundles under `dir/.fantastic/bundles/<name>/bundle.yaml`. A bundle the
+/// folder already has stays as it is (it may have been edited). Returns how many it wrote.
+pub fn write_bundles(dir: &Path) -> Result<usize, String> {
+    let mut wrote = 0;
+    for (name, text) in ALL {
+        let folder = dir.join(".fantastic").join("bundles").join(name);
+        let p = folder.join("bundle.yaml");
+        if p.exists() {
+            continue;
+        }
+        std::fs::create_dir_all(&folder)
+            .map_err(|e| format!("cannot create {}: {e}", folder.display()))?;
+        std::fs::write(&p, text).map_err(|e| format!("cannot write {}: {e}", p.display()))?;
+        wrote += 1;
+    }
+    Ok(wrote)
+}
+
+/// One role bundle, read back (tests).
 #[cfg(test)]
-fn card_grants_tasks(file: &str) -> bool {
-    let text = ALL.iter().find(|(f, _)| *f == file).unwrap().1;
-    team_agentic_resources::cards::parse_card(text, file)
-        .unwrap()
-        .grants
-        .contains_key("tasks")
+pub(crate) struct Card {
+    pub name: String,
+    pub base: String,
+    pub grants: serde_json::Map<String, serde_json::Value>,
+    pub directive: String,
+}
+
+#[cfg(test)]
+pub(crate) fn parse_card(text: &str, name: &str) -> Result<Card, String> {
+    let v: serde_json::Value = serde_yaml::from_str(text).map_err(|e| format!("{name}: {e}"))?;
+    let rec = v.get("record").ok_or(format!("{name}: no record"))?;
+    let mut grants = rec.get("can_call").and_then(|g| g.as_object()).cloned().unwrap_or_default();
+    grants.remove("$self");
+    Ok(Card {
+        name: name.to_string(),
+        base: v.get("base").and_then(|b| b.as_str()).unwrap_or("").to_string(),
+        grants,
+        directive: rec.get("post_system_prompt").and_then(|d| d.as_str()).unwrap_or("").to_string(),
+    })
+}
+
+#[cfg(test)]
+fn card_grants_tasks(name: &str) -> bool {
+    let name = name.trim_end_matches(".md");
+    let text = ALL.iter().find(|(n, _)| *n == name).unwrap().1;
+    parse_card(text, name).unwrap().grants.contains_key("tasks")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-    use team_agentic_resources::cards::{self, parse_card};
 
-    fn card(file: &str) -> cards::Card {
-        let text = ALL.iter().find(|(f, _)| *f == file).unwrap().1;
-        parse_card(text, file).unwrap_or_else(|e| panic!("{e}"))
+    fn card(file: &str) -> Card {
+        let name = file.trim_end_matches(".md");
+        let text = ALL.iter().find(|(n, _)| *n == name).unwrap().1;
+        parse_card(text, name).unwrap_or_else(|e| panic!("{e}"))
     }
 
     fn words(s: &str) -> Vec<String> {
@@ -157,22 +195,18 @@ mod tests {
     }
 
     #[test]
-    fn cards_name_no_provider_or_model() {
-        for (file, text) in ALL {
-            let c = parse_card(text, file).unwrap();
+    fn roles_name_no_provider_or_model() {
+        for (name, text) in ALL {
+            let c = parse_card(text, name).unwrap();
             for d in DENY {
-                assert!(!text.to_lowercase().contains(d), "{file} names {d}");
+                assert!(!c.directive.to_lowercase().contains(d), "{name}'s directive names {d}");
             }
-            assert!(
-                ["small", "strong", "issue_keeper"].contains(&c.tier.as_str()),
-                "{file}: tier {}",
-                c.tier
-            );
+            let v: serde_json::Value = serde_yaml::from_str(text).unwrap();
+            for k in ["model", "endpoint", "credentials", "tier"] {
+                assert!(v["record"].get(k).is_none(), "{name} sets {k}: the spawner chooses it");
+            }
+            assert!(c.base.ends_with(".tools"), "{name}: base {}", c.base);
         }
-        assert_eq!(card("worker.md").tier, "small");
-        assert_eq!(card("lead.md").tier, "strong");
-        assert_eq!(card("issue_keeper.md").tier, "issue_keeper");
-        assert_eq!(card("project_lead.md").tier, "strong");
     }
 
     #[test]
@@ -195,7 +229,7 @@ mod tests {
         assert!(l.contains("Ask `roles` before starting an agent"));
         let g = card("lead.md").grants;
         assert_eq!(
-            g["$registry"],
+            g["roles"],
             serde_json::json!(["roles", "role", "spawn", "get_count", "fleet"])
         );
         assert!(g.contains_key("queue"));
@@ -237,7 +271,7 @@ mod tests {
             serde_json::json!(["await_set", "await_cancel", "create_agent", "delete_agent"]),
             "the card tells it to wait with await_set and may make a sidecar"
         );
-        assert!(c.grants["$registry"]
+        assert!(c.grants["roles"]
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("spawn")));
@@ -348,7 +382,7 @@ mod tests {
         // parent with a plain `send`, which starts the parent's next turn
         for (file, _) in ALL {
             let c = card(file);
-            if let Some(v) = c.grants.get("$registry") {
+            if let Some(v) = c.grants.get("roles") {
                 assert!(
                     !v.as_array().unwrap().contains(&serde_json::json!("report")),
                     "{file} grants report on the registry"
@@ -372,18 +406,21 @@ mod tests {
     }
 
     #[test]
-    fn the_repo_roles_folder_loads_clean() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../roles").to_string();
-        let (loaded, errors) = cards::load_dir(&[dir]);
+    fn the_role_bundles_load_as_the_registrys_roles() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_bundles(tmp.path()).unwrap();
+        let mut kernel = fantastic_kernel::Kernel::new();
+        kernel.bundles = crate::registry();
+        fantastic_core::folders::load_bundles(&kernel, &tmp.path().join(".fantastic"));
+        let errors: Vec<_> = kernel.bundles.folder_rows().into_iter().filter(|r| r.get("error").is_some()).collect();
         assert!(errors.is_empty(), "{errors:?}");
+        let loaded = team_agentic_resources::roles::of(&kernel);
         let names: BTreeSet<String> = loaded.iter().map(|c| c.name.clone()).collect();
         let want: BTreeSet<String> = CODER_ROLES.iter().map(|s| s.to_string()).collect();
         assert_eq!(names, want);
         let pl = loaded.iter().find(|c| c.name == "project_lead").unwrap();
-        assert!(
-            pl.grants.contains_key("github"),
-            "the coder card replaces the generic one"
-        );
+        assert!(pl.grants.contains_key("github"), "the coder project_lead grants the connector");
+        assert!(kernel.bundles.get("lead").is_some(), "`lead` resolves to its base");
     }
 
     #[test]

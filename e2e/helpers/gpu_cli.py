@@ -110,7 +110,10 @@ class Lead:
 
 def hand_task(ctx, lead: str, text: str) -> threading.Thread:
     """Send the lead its task in the background (a real model takes minutes); the team's reply, or
-    the error, lands in `ctx.kicked`."""
+    the error, lands in `ctx.kicked`. With `E2E_WORKER_MODEL` the task names the model to spawn
+    with: a role names none, the spawner says which."""
+    if cli.worker_model():
+        text += f" Spawn every agent with `model` {cli.worker_model()}."
     ctx.kicked = {}
     limit = ctx.test["timeout"]
 

@@ -352,15 +352,12 @@ pub struct Launched {
     pub url: String,
 }
 
-/// The app creates a team: for a `Start` target with a team directory, write the role
-/// cards under `roles/` (a card the directory already has stays as it is). Attach, tunnel
-/// and setup targets write nothing. Returns how many cards it wrote. The CLI never calls
-/// this.
-pub fn prepare_team_dir(target: &Target, dir: Option<&Path>) -> Result<usize, String> {
-    match (target, dir) {
-        (Target::Start { .. }, Some(d)) => fantastic_team::new_team::write_cards(d),
-        _ => Ok(0),
-    }
+/// The app prepares nothing in a team directory: the binary's first run there seeds the
+/// records and the role bundles (`fantastic_team::hydrate::seed`), and a file written
+/// before it would stop that seed (it writes only into a folder with no `.fantastic`).
+/// Returns how many files it wrote: none.
+pub fn prepare_team_dir(_target: &Target, _dir: Option<&Path>) -> Result<usize, String> {
+    Ok(0)
 }
 
 /// Start the binary (or attach to a URL) and wait until its web UI
@@ -590,38 +587,14 @@ mod tests {
     }
 
     #[test]
-    fn start_with_dir_writes_the_role_cards_once() {
+    fn start_with_dir_writes_nothing_before_the_first_run() {
         let dir = tempfile::tempdir().unwrap();
         let start = Target::Start {
             binary: "x".into(),
             port: 1,
         };
-        let n = fantastic_team::roles::ALL.len();
-        assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(n));
-        let card = dir.path().join("roles/project_lead.md");
-        assert!(card.is_file());
-        std::fs::write(&card, "# mine\n").unwrap();
         assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(0));
-        assert_eq!(std::fs::read_to_string(&card).unwrap(), "# mine\n");
-        // no blueprint and nothing but the cards is written
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-        // no directory: nothing to write
-        assert_eq!(prepare_team_dir(&start, None), Ok(0));
-        // attach and tunnel write nothing
-        let other = tempfile::tempdir().unwrap();
-        let attach = Target::Attach {
-            url: "http://127.0.0.1:1/".into(),
-        };
-        let tunnel = Target::Tunnel {
-            ssh: "ssh".into(),
-            host: "h".into(),
-            remote_port: 1,
-            local_port: 2,
-        };
-        for t in [&attach, &tunnel] {
-            assert_eq!(prepare_team_dir(t, Some(other.path())), Ok(0));
-        }
-        assert_eq!(std::fs::read_dir(other.path()).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "the first run seeds it all");
     }
 
     #[test]

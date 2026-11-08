@@ -207,8 +207,9 @@ TESTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def roles_dir(name: str) -> str:
-    """The role cards of the cli test `name`: the gpu twin of a test reads the same cards."""
-    return os.path.join(TESTS, "cli", name, "roles")
+    """The role bundles of the cli test `name` (`<role>/bundle.yaml` each): the gpu twin of a
+    test reads the same ones."""
+    return os.path.join(TESTS, "cli", name, "bundles")
 
 
 def model_credentials(ctx) -> dict | None:
@@ -226,30 +227,28 @@ def add_cadencer(ctx) -> None:
     ctx.team.send("cadencer", {"type": "boot"})
 
 
-def tier_record(model) -> dict:
-    """The workers' AI record: the plug's, with `E2E_WORKER_MODEL` as its model when set (the lead
-    keeps `E2E_MODEL`), so a run can put the lead and its workers on different models."""
-    rec = dict(model.ai_record())
-    if os.environ.get("E2E_WORKER_MODEL"):
-        rec["model"] = os.environ["E2E_WORKER_MODEL"]
-    return rec
+def worker_model() -> str | None:
+    """The model the lead is told to spawn its agents with (`E2E_WORKER_MODEL`), so a run can
+    put the lead and its workers on different models; None: a spawn names none, and the child
+    runs the lead's own (`E2E_MODEL`)."""
+    return os.environ.get("E2E_WORKER_MODEL") or None
 
 
-def make_registry(ctx, total: int, parent: str = LEAD, roles: str | None = None,
-                  credentials: dict | None = None) -> str:
-    """The roles registry `roles` (`agentic_resources`) under `parent`: one tier
-    `small` (the plug's model), the role cards of `roles` (a folder; default the test's own
-    `roles/`) copied next to the kernel (where `role_dirs: [roles]` reads them), `limits.total`.
-    The lead may call it. `credentials` is the tier's own, for a plug whose workers need a key
-    (a spawned agent is not on the credential store's `callable_by`: the scripted tiers carry none)."""
+def make_registry(ctx, total: int, parent: str = LEAD, roles: str | None = None) -> str:
+    """The roles registry `roles` (`agentic_resources`) under `parent`, with `limits.total`, and
+    the test's ROLE BUNDLES (a folder of `<role>/bundle.yaml`; default the test's own `bundles/`)
+    written under the team's `.fantastic/bundles/` and loaded into the running kernel
+    (`reload_bundle`). A role names no model: a spawned agent runs on its spawner's backend, with
+    the model the spawn names. The lead may call the registry."""
     team = ctx.team
-    shutil.copytree(roles or os.path.join(ctx.dir, "roles"), os.path.join(ctx.work, "roles"))
-    tier = {**tier_record(ctx.model), "memory_store_id": "memory"}
-    if credentials:
-        tier["credentials"] = credentials
+    src = roles or os.path.join(ctx.dir, "bundles")
+    dst = os.path.join(ctx.work, ".fantastic", "bundles")
+    for name in sorted(os.listdir(src)):
+        shutil.copytree(os.path.join(src, name), os.path.join(dst, name), dirs_exist_ok=True)
+        loaded = team.send("kernel", {"type": "reload_bundle", "name": name})
+        assert (loaded.get("result") or {}).get("reloaded") == name, f"bundle {name}: {loaded}"
     records.create(team, {"id": "roles", "parent_id": parent, "handler_module": "agentic_resources.tools",
-                          "role_dirs": ["roles"], "limits": {"total": total},
-                          "tiers": {"small": tier},
+                          "limits": {"total": total},
                           "can_call": {"$self": "*"}, "callable_by": {"$self": "*", "$parent": "*"}})
     records.link(team, "roles", "memory")
     records.link(team, parent, "roles", ["roles", "role", "spawn", "get_count", "fleet"])

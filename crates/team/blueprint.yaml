@@ -18,7 +18,7 @@
 #
 #   <root>
 #   +-- user                 (stock; parent entry)
-#   |   +-- lead             the main lead, the agent the person chats with
+#   |   +-- lead             the main lead (the `lead` role bundle), the agent the person chats with
 #   |       +-- queue          ram_store: tasks wait, the board caches
 #   |       +-- github         the GitHub connector
 #   |       +-- board          the open issues and pull requests
@@ -47,7 +47,7 @@ agents:
     - answer_inquiry
   agents:
   - id: lead
-    handler_module: anthropic_backend.tools
+    handler_module: lead
     model: claude-opus-5-5
     endpoint: https://api.anthropic.com/v1/messages
     credentials:
@@ -60,7 +60,6 @@ agents:
     max_tokens: 32000
     memory_store_id: memory
     file_bridge_id: files
-    system_prompt_file: roles/lead.md
     can_call:
       $self: '*'
       $subtree: '*'
@@ -138,54 +137,10 @@ agents:
         $parent: '*'
     - id: roles
       handler_module: agentic_resources.tools
-      role_dirs:
-      - roles
       limits:
         total: 3
         per_role:
           worker: 2
-      tiers:
-        strong:
-          handler_module: anthropic_backend.tools
-          model: claude-opus-5-5
-          endpoint: https://api.anthropic.com/v1/messages
-          credentials:
-            store: credentials
-            ref: anthropic/api.anthropic.com
-          price_input_per_mtok: 4.0
-          price_output_per_mtok: 20.0
-          caching: provider_cache
-          context_window: 1000000
-          max_tokens: 32000
-          memory_store_id: memory
-        small:
-          handler_module: anthropic_backend.tools
-          model: claude-haiku-5-5
-          endpoint: https://api.anthropic.com/v1/messages
-          credentials:
-            store: credentials
-            ref: anthropic/api.anthropic.com
-          price_input_per_mtok: 0.1
-          price_output_per_mtok: 0.5
-          caching: provider_cache
-          context_window: 1000000
-          max_tokens: 32000
-          memory_store_id: memory
-          context_strategy: compact
-        issue_keeper:
-          handler_module: anthropic_backend.tools
-          model: claude-haiku-5-5
-          endpoint: https://api.anthropic.com/v1/messages
-          credentials:
-            store: credentials
-            ref: anthropic/api.anthropic.com
-          price_input_per_mtok: 0.1
-          price_output_per_mtok: 0.5
-          caching: provider_cache
-          context_window: 1000000
-          max_tokens: 8000
-          memory_store_id: memory
-          context_strategy: compact
       can_call:
         $self: '*'
         memory: '*'

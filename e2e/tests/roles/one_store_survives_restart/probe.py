@@ -28,7 +28,6 @@ def task_rows(team):
 
 def run(ctx):
     v = Verdict("roles/one_store_survives_restart")
-    shutil.copytree(os.path.join(ROOT, "roles"), os.path.join(ctx.run_dir, "roles"))
     team = ctx.boot_team(puller=False, board=True, board_store="queue", groups={}, limits={"total": 3},
                          roles_tiers={"strong": S.lead_tier(ctx), "small": S.inert_tier(ctx),
                                       "issue_keeper": S.inert_tier(ctx)})

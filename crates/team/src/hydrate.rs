@@ -69,7 +69,12 @@ pub fn blueprint_text(dir: &Path) -> Result<String, String> {
 /// (`fantastic_tui::seed_dir_with`). Returns whether it wrote: `.fantastic` already there
 /// means nothing is written.
 pub fn seed(dir: &Path) -> Result<bool, String> {
-    fantastic_tui::seed_dir_with(dir, &[&blueprint_text(dir)?])
+    let wrote = fantastic_tui::seed_dir_with(dir, &[&blueprint_text(dir)?])?;
+    // the role bundles beside the records (`.fantastic/bundles/`): the kernel loads them
+    // before the tree, so the `lead` record and every spawn resolve. One the folder
+    // already has stays as it is.
+    crate::roles::write_bundles(dir)?;
+    Ok(wrote)
 }
 
 #[cfg(test)]
@@ -177,12 +182,15 @@ mod tests {
         let doc = declared(Path::new("/team"));
         let mut out = Vec::new();
         walk(&doc["agents"], DEFAULT_ROOT_ID, &mut out);
+        // a record of a role bundle (`lead`) runs on that bundle's base
+        let roles: Vec<&str> = crate::roles::ALL.iter().map(|(n, _)| *n).collect();
         let mut modules: Vec<String> = out
             .iter()
             .map(|(_, _, r)| r["handler_module"].as_str().unwrap().to_string())
+            .filter(|m| !roles.contains(&m.as_str()))
             .collect();
-        for t in rec_in(&doc, ROLES)["tiers"].as_object().unwrap().values() {
-            modules.push(t["handler_module"].as_str().unwrap().to_string());
+        for (name, text) in crate::roles::ALL {
+            modules.push(crate::roles::parse_card(text, name).unwrap().base);
         }
         let missing: Vec<&String> = modules.iter().filter(|m| reg.get(m).is_none()).collect();
         assert!(missing.is_empty(), "not registered: {missing:?}");
@@ -207,10 +215,10 @@ mod tests {
         walk(&doc["agents"], DEFAULT_ROOT_ID, &mut out);
         let ids: Vec<&str> = out.iter().map(|(i, _, _)| *i).collect();
         for (file, text) in crate::roles::ALL {
-            let c = team_agentic_resources::cards::parse_card(text, file).unwrap();
+            let c = crate::roles::parse_card(text, file).unwrap();
             for tool in c.grants.keys() {
                 let known = ids.contains(&tool.as_str())
-                    || ["$registry", "kernel", "kernel_state", "canvas_page"]
+                    || ["kernel", "kernel_state", "canvas_page"]
                         .contains(&tool.as_str());
                 assert!(
                     known,
