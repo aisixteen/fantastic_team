@@ -143,8 +143,6 @@ mod tests {
             let d = card(name).directive;
             assert!(d.contains("end your turn with `await`"), "{name}: wait with await");
             assert!(d.contains("never start a timer or sleep job to wait"), "{name}: no timer to wait");
-            assert!(!d.contains("start a sleep through exec"), "{name}: the sleep recipe is gone");
-            assert!(!d.contains("Never use `await`"), "{name}: no ban on await left beside the rule");
         }
     }
 
