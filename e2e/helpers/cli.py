@@ -174,8 +174,9 @@ CHECK_INS = (
     "`[check-in <name>]` so you know what ticked, and change an interval when the pace changes (`unschedule`, "
     "then `schedule`). On each check-in look at every agent you started: one that loops or is stuck (the same "
     "step or error again, nothing new since the last check-in) you halt (`stop`) and report "
-    "`task failed: <agent>: <why>` to your parent. Keep the check-ins until your task is complete: deleting "
-    "the scheduler (`delete_agent`) is your very last call, after every other step and wait, right before you end.")
+    "`task failed: <agent>: <why>` to your parent. Keep the check-ins until your task is complete: unscheduling every schedule "
+    "(`unschedule`) is your very last call, after every other step and wait, right before you end; the "
+    "scheduler agent stays.")
 SCHEDULER_VERBS = ["schedule", "unschedule", "list", "pause", "resume", "tick_now", "history"]
 
 
@@ -344,14 +345,26 @@ def add_cadencer(ctx) -> None:
     ctx.team.send("cadencer", {"type": "boot"})
 
 
+def schedules_left(ctx) -> list[str]:
+    """The schedules still set at the end, as `<scheduler>:<schedule id>`: a lead unschedules its
+    check-ins as its last call; its scheduler agent may stay."""
+    left = []
+    for i, a in ctx.team.agents().items():
+        if a.get("handler_module") != "scheduler.tools":
+            continue
+        got = ctx.team.send(i, {"type": "list"}, timeout=60).get("result") or {}
+        left += [f"{i}:{s.get('id') or s.get('schedule_id')}" for s in got.get("schedules") or []]
+    return left
+
+
 def check_ins_played(ctx, v, lanes=("main",)) -> None:
     """Each scripted lead (its lane) made its own scheduler, a tick of it reached the lead, and the
-    scheduler is gone at the end. Call it while the team runs."""
+    no schedule is left at the end (its scheduler agent may stay). Call it while the team runs."""
     got = ctx.model.check_in_lanes
     v.check(f"a check-in from its own scheduler reached each lead ({', '.join(lanes)})", set(lanes) <= got,
             f"lanes with a check-in: {sorted(got)}, {ctx.model.check_in_turns} requests")
-    left = [i for i, a in ctx.team.agents().items() if a.get("handler_module") == "scheduler.tools"]
-    v.check("no scheduler is left", not left, str(left))
+    left = schedules_left(ctx)
+    v.check("no schedule is left (a scheduler agent may stay)", not left, str(left))
 
 
 def worker_model() -> str | None:
