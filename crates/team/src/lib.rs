@@ -23,7 +23,6 @@ pub mod peer_transport;
 pub mod peers;
 pub mod puller;
 pub mod repo_config;
-pub mod setup_github;
 pub mod team_notice;
 pub mod team_yaml;
 pub mod tree;

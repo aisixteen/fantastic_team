@@ -6,8 +6,7 @@
 //! The binary takes fantastic's words: `--headless`, `canvas [--port N]
 //! [--host ADDR]`, `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`,
 //! `migrate-home` and `readme`. Fantastic runs in the directory it is started in.
-//! Two first words are the team's own and handle their arguments themselves:
-//! `setup github` and `ai-readme`. One recipe word is the team's own, `webui [--port N] [--host ADDR]`: the team page from the binary (`webui.rs`).
+//! One first word is the team's own and handles its arguments itself: `ai-readme`. One recipe word is the team's own, `webui [--port N] [--host ADDR]`: the team page from the binary (`webui.rs`).
 //! One flag is the team's own, `--worktrees DIR`: where the git connectors'
 //! default worktree roots go (`worktrees_flag.rs`).
 
@@ -17,10 +16,6 @@ use fantastic_team::register_team;
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    // `setup github`: handles its own arguments, then exits.
-    if argv.first().map(String::as_str) == Some("setup") {
-        return finish(fantastic_team::setup_github::run_cli(&argv[1..]));
-    }
     // `ai-readme`: print the README for AIs and stop. No flags, no team.
     if argv.first().map(String::as_str) == Some("ai-readme") {
         print!("{}", fantastic_team::AI_README);
@@ -89,16 +84,6 @@ fn serve_webui(w: &fantastic_team::webui::WebUi) -> Result<(), String> {
         fantastic_team::webui::page_url(&host, port)
     );
     Ok(())
-}
-
-fn finish(result: Result<(), String>) -> ExitCode {
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("fantastic_team: {e}");
-            ExitCode::from(2)
-        }
-    }
 }
 
 #[cfg(test)]

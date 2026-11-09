@@ -227,13 +227,9 @@ fn rust_sources(dir: &std::path::Path) -> String {
 #[test]
 fn readme_names_every_cli_subcommand_and_flag() {
     let text = readme();
-    let source = format!(
-        "{}\n{}",
-        fs::read_to_string(root().join("crates/team/src/main.rs")).unwrap(),
-        fs::read_to_string(root().join("crates/team/src/setup_github.rs")).unwrap(),
-    );
+    let source = fs::read_to_string(root().join("crates/team/src/main.rs")).unwrap();
     // the team's own first words are in the binary and in the README
-    for name in ["setup github", "ai-readme"] {
+    for name in ["ai-readme"] {
         assert!(
             text.contains(name),
             "README must document `{name}` (it is in the binary)"
@@ -362,15 +358,15 @@ fn readme_mentions_the_app() {
 }
 
 #[test]
-fn install_guide_names_the_setup_command() {
+fn install_guide_names_the_gh_token_env_ref() {
     let install = fs::read_to_string(root().join("docs/install.md")).unwrap();
     assert!(
-        install.contains("fantastic_team setup github"),
-        "docs/install.md must name `fantastic_team setup github`"
+        install.contains("GH_TOKEN"),
+        "docs/install.md must name GH_TOKEN"
     );
     assert!(
-        !install.contains("manifest flow is not in the repo"),
-        "docs/install.md still says the manifest flow is not in the repo"
+        install.contains("local only"),
+        "docs/install.md must say what no credential means"
     );
 }
 

@@ -191,6 +191,8 @@ pub fn decls() -> Vec<Decl> {
                         ("rate.limit", "limit"),
                         ("rate.remaining", "remaining"),
                         ("rate.reset", "reset"),
+                        ("auth.mode", "auth"),
+                        ("auth.note", "note"),
                     ],
                     Some(10),
                 ),
@@ -951,6 +953,18 @@ mod tests {
             "recent_calls": [{"verb": "issues", "target": "acme/widgets", "result": "ok"}],
             "rate": {"limit": 5000, "remaining": 4990, "reset": 1760000000u64}
         })
+    }
+
+    #[test]
+    fn github_tui_view_shows_the_auth_mode() {
+        let d = decl(team_github_connector::HANDLER_MODULE);
+        let c = d.sections.iter().find(|s| s.title == "Connector").unwrap();
+        assert!(c.fields.contains(&("auth.mode", "auth")));
+        assert!(c.fields.contains(&("auth.note", "note")));
+        let r = json!({"repos": ["acme/widgets"],
+            "auth": {"mode": "local", "note": "no GitHub credential defined: local work only"}});
+        let m = model_of(&d, &vec![r; d.sections.len()]);
+        assert_eq!(value_of(rows_of_section(&m, "Connector"), "auth"), "local");
     }
 
     #[test]

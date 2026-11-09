@@ -116,9 +116,6 @@ fn the_team_s_own_first_words_are_still_the_teams() {
     let o = run(&["ai-readme"]);
     assert!(o.status.success());
     assert_eq!(text(&o.stdout), fantastic_team::AI_README);
-    let o = run(&["setup"]);
-    assert_eq!(o.status.code(), Some(2));
-    assert!(text(&o.stderr).contains("usage: fantastic_team setup github"));
 }
 
 #[cfg(unix)]

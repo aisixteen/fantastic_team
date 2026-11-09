@@ -42,16 +42,20 @@ pub(crate) async fn dispatch(
 
 async fn route(t: &str, id: &AgentId, p: &Value, kernel: &Arc<Kernel>, cfg: &Cfg) -> Value {
     match t {
-        "reflect" => json!({
-            "id": id.to_string(),
-            "sentence": SENTENCE,
-            "repos": cfg.repos,
-            "api_url": cfg.api_url,
-            "git": cfg.git,
-            "directive": cfg.directive,
-            "recent_calls": crate::callog::recent(&id.to_string(), &cfg.api_url),
-            "rate": crate::callog::rate(&cfg.api_url),
-        }),
+        "reflect" => {
+            let auth = app::auth_state(kernel, cfg).await;
+            json!({
+                "id": id.to_string(),
+                "sentence": SENTENCE,
+                "repos": cfg.repos,
+                "api_url": cfg.api_url,
+                "git": cfg.git,
+                "directive": cfg.directive,
+                "recent_calls": crate::callog::recent(&id.to_string(), &cfg.api_url),
+                "rate": crate::callog::rate(&cfg.api_url),
+                "auth": auth,
+            })
+        }
         "directive" => json!({"directive": cfg.directive}),
         "whoami" => whoami(id, kernel, cfg).await,
         "push" => push::push(id, kernel, cfg, p).await,
@@ -262,24 +266,46 @@ fn base_refusal(branch: &str) -> Value {
     )
 }
 
-async fn whoami(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg) -> Value {
-    let jwt = match app::app_jwt(id, kernel, cfg).await {
-        Ok(j) => j,
-        Err(e) => return e,
+async fn whoami(_id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg) -> Value {
+    let cred = match app::read_cred(kernel, cfg).await {
+        Ok(c) => c,
+        Err(e) => return e.reply(),
     };
     let api = Api::new(cfg);
-    let r: Result<Value, Value> = async {
-        let app = ge(api
-            .call("whoami", Method::GET, "/app", &[], &jwt, None)
-            .await)?;
-        Ok(json!({
-            "app": {"id": app["id"], "slug": app["slug"], "name": app["name"]},
-            "repos": cfg.repos,
-            "api_url": cfg.api_url,
-        }))
+    match cred {
+        app::Cred::App(key) => {
+            let jwt = match app::sign_jwt(&key.app_id, &key.pem, app::now_secs()) {
+                Ok(j) => j,
+                Err(e) => return app::cred_error(cfg, &e),
+            };
+            let r: Result<Value, Value> = async {
+                let app = ge(api
+                    .call("whoami", Method::GET, "/app", &[], &jwt, None)
+                    .await)?;
+                Ok(json!({
+                    "app": {"id": app["id"], "slug": app["slug"], "name": app["name"]},
+                    "repos": cfg.repos,
+                    "api_url": cfg.api_url,
+                }))
+            }
+            .await;
+            finish(r, &jwt)
+        }
+        app::Cred::Token(t) => {
+            let r: Result<Value, Value> = async {
+                let u = ge(api
+                    .call("whoami", Method::GET, "/user", &[], &t, None)
+                    .await)?;
+                Ok(json!({
+                    "user": {"login": u["login"], "id": u["id"]},
+                    "repos": cfg.repos,
+                    "api_url": cfg.api_url,
+                }))
+            }
+            .await;
+            finish(r, &t)
+        }
     }
-    .await;
-    finish(r, &jwt)
 }
 
 async fn pr_create(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, p: &Value) -> Value {

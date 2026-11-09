@@ -12,6 +12,7 @@ credentials:
   github/app:
     host: api.github.com
     env: {app_id: FANT_GH_APP_ID, private_key: FANT_GH_APP_KEY}
+# Personal token instead of an app: a ref {host: api.github.com, env: {token: GH_TOKEN}} and app: <that ref> on the connectors.
 
 provider:                      # the anthropic_backend agent, under the lead
   endpoint: https://api.anthropic.com/v1/messages

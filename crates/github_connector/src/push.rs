@@ -130,7 +130,6 @@ pub(crate) async fn push(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, payload:
         Ok(t) => t,
         Err(e) => return e,
     };
-    let jwt_text: String = app::app_jwt(id, kernel, cfg).await.unwrap_or_default();
     let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
     let host = match parsed.port() {
         Some(p) => format!("{remote_host}:{p}"),
@@ -160,5 +159,5 @@ pub(crate) async fn push(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, payload:
         }),
         Err(e) => e,
     };
-    scrub_reply(reply, &[token.as_str(), jwt_text.as_str()])
+    scrub_reply(reply, &[token.as_str()])
 }
