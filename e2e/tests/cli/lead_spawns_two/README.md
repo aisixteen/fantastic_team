@@ -3,7 +3,7 @@
 A lead with a roles registry (`agentic_resources`, switched on by
 `FANTASTIC_AGENTIC_RESOURCES=1`; the role bundle `bundles/worker/bundle.yaml`) spawns two workers.
 They solve the shared fixture, one bug each (`adder.py`, `muler.py`) with a commit apiece, and the
-lead deletes them with `delete_agent`.
+lead deletes each with `delete_agent` as soon as it has reported (#264, lead-side: the registry frees nothing on its own).
 
 Start: `--headless`, then the lead and its roles registry made with `send` + `create_agent`
 under the fixed ids `lead` and `roles`. The probe writes the test's role bundles under the team's
@@ -11,10 +11,12 @@ under the fixed ids `lead` and `roles`. The probe writes the test's role bundles
 handler and provider fields) with the lead's model: the spawn names none.
 
 The plug is one script with lanes (`backends/scripted.py`): `main` is the lead, `w1`/`w2` the
-workers (their spawn `task` carries `[lane:w1]`); w2 waits for w1, the lead's third turn waits for
-both; `{{id:1}}` / `{{id:2}}` in its delete calls are the minted ids from the spawn replies.
+workers (their spawn `task` carries `[lane:w1]`); w2 waits for w1. A worker's last turn is its report to
+the lead, a plain `send` (#247: no `report` verb; it gives the parent a turn, which answers it) and the lead
+awaits: each report wakes it, and its turn deletes that worker (the send waits until the lead is idle, so a
+worker has no turn after it); the lead's `git log` waits for both lanes; `{{id:1}}` / `{{id:2}}` in its delete calls are the minted ids from the spawn replies.
 
-Checks: solved; two `spawn` calls; both workers asked the model; the record set after is the record
+Checks: solved; two `spawn` calls; both workers asked the model; each report reached the lead and gave it a turn; the record set after is the record
 set before (both workers deleted); the registry counts none running.
 
 Mutation: drop the lead's two `delete_agent` turns from `script.json` and the record set differs.

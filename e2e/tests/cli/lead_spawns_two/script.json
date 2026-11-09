@@ -63,21 +63,8 @@
  {
   "calls": [
    {
-    "target": "worker_exec",
-    "type": "run",
-    "args": {
-     "command": "git",
-     "args": [
-      "log",
-      "--oneline"
-     ],
-     "wait_s": 30
-    }
+    "name": "await"
    }
-  ],
-  "after": [
-   "w1",
-   "w2"
   ]
  },
  {
@@ -94,12 +81,39 @@
  {
   "calls": [
    {
+    "name": "await"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
     "target": "kernel",
     "type": "delete_agent",
     "args": {
      "id": "{{id:2}}"
     }
    }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "log",
+      "--oneline"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "after": [
+   "w1",
+   "w2"
   ]
  },
  {
@@ -197,7 +211,11 @@
  {
   "calls": [
    {
-    "name": "done"
+    "target": "lead",
+    "type": "send",
+    "args": {
+     "text": "w1 done: adder.py is fixed and committed"
+    }
    }
   ],
   "lane": "w1"
@@ -281,7 +299,11 @@
  {
   "calls": [
    {
-    "name": "done"
+    "target": "lead",
+    "type": "send",
+    "args": {
+     "text": "w2 done: muler.py is fixed and committed"
+    }
    }
   ],
   "lane": "w2"

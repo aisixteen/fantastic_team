@@ -179,6 +179,24 @@
  {
   "calls": [
    {
+    "name": "await"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "{{minted:1}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
     "target": "remote",
     "type": "forward",
     "args": {
@@ -237,17 +255,6 @@
   ],
   "after": [
    "w2"
-  ]
- },
- {
-  "calls": [
-   {
-    "target": "kernel",
-    "type": "delete_agent",
-    "args": {
-     "id": "{{minted:1}}"
-    }
-   }
   ]
  },
  {
@@ -457,7 +464,11 @@
  {
   "calls": [
    {
-    "name": "done"
+    "target": "lead",
+    "type": "send",
+    "args": {
+     "text": "w1 done: adder.py is fixed and pushed"
+    }
    }
   ],
   "lane": "w1"

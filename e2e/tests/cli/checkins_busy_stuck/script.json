@@ -1,0 +1,310 @@
+[
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "-c",
+      "import pathlib; p = pathlib.Path('muler.py'); p.write_text(p.read_text().replace('a + b', 'a * b'))"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "-c",
+      "user.name=Worker",
+      "-c",
+      "user.email=worker@example.invalid",
+      "commit",
+      "-q",
+      "-a",
+      "-m",
+      "Fix mul"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "sublead",
+     "task": "[lane:s1] Fix adder.py and commit; it takes a while."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "sublead",
+     "task": "[lane:s2] Wait for a message that never comes."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "create_agent",
+    "args": {
+     "id": "lead_checkins",
+     "parent_id": "lead",
+     "handler_module": "scheduler.tools",
+     "can_call": {
+      "$parent": [
+       "send"
+      ]
+     },
+     "callable_by": {
+      "$parent": "*"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "lead_checkins",
+    "type": "schedule",
+    "args": {
+     "target": "lead",
+     "payload": {
+      "type": "send",
+      "text": "[check-in agents] check your agents"
+     },
+     "interval_seconds": 1
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:1}}",
+    "type": "status",
+    "args": {}
+   }
+  ],
+  "delay": 2
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:2}}",
+    "type": "status",
+    "args": {}
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:2}}",
+    "type": "history",
+    "args": {}
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:1}}",
+    "type": "status",
+    "args": {}
+   }
+  ],
+  "delay": 2
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:2}}",
+    "type": "status",
+    "args": {}
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:2}}",
+    "type": "history",
+    "args": {}
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:2}}",
+    "type": "stop",
+    "args": {}
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "await"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "{{minted:1}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "{{minted:2}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "lead_checkins"
+    }
+   }
+  ],
+  "delay": 3
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "say": "task failed: the second sub-lead was not generating and added no row in two check-ins in a row; I stopped it."
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "s1",
+  "delay": 8
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "-c",
+      "import pathlib; p = pathlib.Path('adder.py'); p.write_text(p.read_text().replace('a - b', 'a + b'))"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "-c",
+      "user.name=Worker",
+      "-c",
+      "user.email=worker@example.invalid",
+      "commit",
+      "-q",
+      "-a",
+      "-m",
+      "Fix add"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "lead",
+    "type": "send",
+    "args": {
+     "text": "s1 done: adder.py is fixed and committed"
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "name": "await"
+   }
+  ],
+  "lane": "s2"
+ }
+]

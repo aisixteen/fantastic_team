@@ -1,5 +1,5 @@
 """cli_ssh/lead_spawns_two: the lead spawns w1 and w2 on the local roles registry (the master; the box
-holds tools only). w1 fixes adder.py and pushes. The remote agent (the work program in the box) sends w2
+holds tools only). w1 fixes adder.py, pushes and reports to the lead with a plain send (the lead deletes it as soon as it has read that). The remote agent (the work program in the box) sends w2
 its work and watches it, over the bridge (w2 is minted by the spawn: the operator opens it to the leg when
 the script reaches that turn): w2's turn runs on the master, its stream comes back to the box, its tools are
 the box's exec agent (pull, fix muler.py, push). The lead deletes both workers. The wiring and the shared
@@ -52,6 +52,7 @@ def run(ctx):
                 T.came_back(ctx, None, "<exit_code>0</exit_code>"), str(T.forward_replies(ctx)[-2:])[:300])
         v.check("the box clone's last commit is w2's fix (read through the bridge)",
                 T.came_back(ctx, None, "<line>Fix mul</line>"))
+        cli.reports_reached(ctx, v, [T.W1_REPORT])
         cli.check_ins_played(ctx, v)
         box.end(v, streams=[("w2", "w2")])
     box.removed(v)

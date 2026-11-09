@@ -389,6 +389,21 @@ def check_ins_played(ctx, v, lanes=("main",)) -> None:
     v.check("no more than one scheduler per lead", all(n <= 1 for n in per.values()), str(per))
 
 
+def report_call(text: str, parent: str = LEAD) -> dict:
+    """A worker's report to its parent: a plain `send` (no report verb), which gives the parent a turn."""
+    return {"target": parent, "type": "send", "args": {"text": text}}
+
+
+def reports_reached(ctx, v, texts, lane: str = "main") -> None:
+    """Each report `texts` reached the AI parent (`lane`) as a message it asked the model with: the
+    parent was given a turn by it (a request of its own whose conversation holds the text) and the
+    script's next turn for it was served."""
+    asked = [b for b, l in zip(ctx.model.raw_bodies, ctx.model.request_lanes) if l == lane]
+    missing = [t for t in texts if not any(t in b for b in asked)]
+    v.check(f"each report (a plain send) reached its parent and gave it a turn ({lane})",
+            not missing and ctx.model.consumed, f"not seen by {lane}: {missing}")
+
+
 def worker_model() -> str | None:
     """The workers' model (`E2E_WORKER_MODEL`): a precreated worker runs it and the lead is told to
     spawn its workers with it, so leads (`E2E_MODEL`) and workers run different models; None: every

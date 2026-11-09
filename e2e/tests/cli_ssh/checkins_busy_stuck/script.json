@@ -1,0 +1,641 @@
+[
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "start",
+    "args": {
+     "command": "ssh",
+     "args": [
+      "-p",
+      "{{ssh_port}}",
+      "-i",
+      "{{ssh_key}}",
+      "-o",
+      "IdentitiesOnly=yes",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=no",
+      "-o",
+      "UserKnownHostsFile=/dev/null",
+      "-o",
+      "LogLevel=ERROR",
+      "-o",
+      "ConnectTimeout=10",
+      "-o",
+      "ExitOnForwardFailure=yes",
+      "-L",
+      "{{tunnel_port}}:127.0.0.1:{{tunnel_port}}",
+      "team@127.0.0.1",
+      "mkdir -p w && cd w && echo $$ > team.pid && exec fantastic_team --headless >> team.log 2>&1"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "ssh",
+     "args": [
+      "-p",
+      "{{ssh_port}}",
+      "-i",
+      "{{ssh_key}}",
+      "-o",
+      "IdentitiesOnly=yes",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=no",
+      "-o",
+      "UserKnownHostsFile=/dev/null",
+      "-o",
+      "LogLevel=ERROR",
+      "-o",
+      "ConnectTimeout=10",
+      "team@127.0.0.1",
+      "for i in $(seq 150); do [ -S w/.fantastic/cli/mcp.sock ] && break; sleep 0.2; done && cd w && [ -S .fantastic/cli/mcp.sock ] && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"create_agent\",\"id\":\"web\",\"parent_id\":\"user\",\"handler_module\":\"web.tools\",\"port\":{{tunnel_port}}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"create_agent\",\"id\":\"remote_ws\",\"parent_id\":\"web\",\"handler_module\":\"web_ws.tools\",\"ingress_rule\":\"allow_all_ingress\",\"callable_by\":{\"$self\":\"*\",\"web\":[\"get_routes\"]},\"can_call\":{\"$self\":\"*\",\"user\":[\"forward\"]}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"update_agent\",\"id\":\"web\",\"can_call\":{\"$self\":\"*\",\"remote_ws\":[\"get_routes\"]}}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"list_agents\"}}' | python3 -c 'import json,sys; a={x[\"id\"]:x for x in json.load(sys.stdin)[\"result\"][\"agents\"]}; cb=a[\"user\"].get(\"callable_by\") or {}; cb[\"remote_ws\"]=[\"forward\",\"send\"]; sys.stdout.write(json.dumps({\"target\":\"kernel\",\"payload\":{\"type\":\"update_agent\",\"id\":\"user\",\"callable_by\":cb}}))' | xargs -0 fantastic_team send > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"id\":\"worker_exec\",\"parent_id\":\"user\",\"handler_module\":\"exec_bridge.tools\",\"ingress_rule\":\"allow_all_ingress\",\"cwd\":\"/home/team/w/repo\",\"allowed\":[\".*\"],\"inherit_env\":[\"PATH\",\"LANG\",\"HOME\"],\"env\":{\"GIT_CONFIG_NOSYSTEM\":\"1\",\"GIT_TERMINAL_PROMPT\":\"0\",\"PYTHONDONTWRITEBYTECODE\":\"1\"},\"can_call\":{\"$self\":\"*\",\"{{master_guid}}|*\":[\"send\",\"watch\",\"status\",\"stop\"]},\"type\":\"create_agent\"}}' > /dev/null && fantastic_team send '{\"target\":\"worker_exec\",\"payload\":{\"type\":\"connector\"}}' | python3 -c 'import base64,json,sys; src=json.load(sys.stdin)[\"result\"][\"source\"]; open(\"work.py\",\"w\").write(src+base64.b64decode(\"CmltcG9ydCBqc29uLCBzeXMsIHRocmVhZGluZwoKZmxhZ3MgPSB7ImNsaWVudCI6IE5vbmUsICJ1bnRpbCI6IDEsICJ0aW1lb3V0IjogNjAuMCwgIndhdGNoIjogVHJ1ZSwgInNlbmQiOiBUcnVlfQphcmdzID0gc3lzLmFyZ3ZbMTpdCndoaWxlIGFyZ3MgYW5kIGFyZ3NbMF0uc3RhcnRzd2l0aCgiLS0iKToKICAgIGYgPSBhcmdzLnBvcCgwKQogICAgaWYgZiBpbiAoIi0tY2xpZW50IiwgIi0tdW50aWwiLCAiLS10aW1lb3V0Iik6CiAgICAgICAgdiA9IGFyZ3MucG9wKDApCiAgICAgICAgZmxhZ3NbZlsyOl1dID0geyJjbGllbnQiOiBzdHIsICJ1bnRpbCI6IGludCwgInRpbWVvdXQiOiBmbG9hdH1bZlsyOl1dKHYpCiAgICBlbGlmIGYgPT0gIi0tbm8td2F0Y2giOgogICAgICAgIGZsYWdzWyJ3YXRjaCJdID0gRmFsc2UKICAgIGVsaWYgZiA9PSAiLS1uby1zZW5kIjoKICAgICAgICBmbGFnc1sic2VuZCJdID0gRmFsc2UKICAgIGVsc2U6CiAgICAgICAgc3lzLmV4aXQoIndvcms6IHVua25vd24gZmxhZyAiICsgZikKZ3VpZCwgYmFja2VuZCwgbGFiZWwgPSBhcmdzWzozXQp0ZXh0ID0gIiAiLmpvaW4oYXJnc1szOl0pCmNsaWVudCA9IGZsYWdzWyJjbGllbnQiXSBvciBsYWJlbAp0YXJnZXQgPSBndWlkICsgInwiICsgYmFja2VuZApldmVudHMgPSAiLi4vIiArIGxhYmVsICsgIi5ldmVudHMuanNvbmwiCmRvbmUgPSB7Im4iOiAwfQpyZWZ1c2VkID0gW10KZW5vdWdoID0gdGhyZWFkaW5nLkV2ZW50KCkKCgpkZWYgbm90ZShwKToKICAgIHJvdyA9IHtrOiBwW2tdIGZvciBrIGluICgidHlwZSIsICJwaGFzZSIsICJjbGllbnRfaWQiLCAia2luZCIsICJzdHJlYW1faWQiKSBpZiBwLmdldChrKSBpcyBub3QgTm9uZX0KICAgIGlmIHAuZ2V0KCJlcnJvciIpOgogICAgICAgIHJvd1siZXJyb3IiXSA9IHN0cihwWyJlcnJvciJdKVs6MjAwXQogICAgICAgIHJvd1sicmVhc29uIl0gPSBwLmdldCgicmVhc29uIikKICAgICAgICByZWZ1c2VkLmFwcGVuZChyb3cpCiAgICB3aXRoIG9wZW4oZXZlbnRzLCAiYSIpIGFzIGY6CiAgICAgICAgZi53cml0ZShqc29uLmR1bXBzKHJvdykgKyAiXG4iKQogICAgaWYgcm93LmdldCgiZXJyb3IiKToKICAgICAgICBlbm91Z2guc2V0KCkKICAgIGVsaWYgcC5nZXQoInR5cGUiKSA9PSAic3RhdHVzIiBhbmQgcC5nZXQoInBoYXNlIikgPT0gImRvbmUiIGFuZCBwLmdldCgiY2xpZW50X2lkIikgPT0gY2xpZW50OgogICAgICAgIGRvbmVbIm4iXSArPSAxCiAgICAgICAgaWYgZG9uZVsibiJdID49IGZsYWdzWyJ1bnRpbCJdOgogICAgICAgICAgICBlbm91Z2guc2V0KCkKCgpyZXBseV9lcnJvciA9IE5vbmUKaWYgZmxhZ3NbIndhdGNoIl06CiAgICBrZXJuZWwud2F0Y2godGFyZ2V0LCBub3RlKQp0cnk6CiAgICBpZiBmbGFnc1sic2VuZCJdOgogICAgICAgIHJlcGx5ID0ga2VybmVsLnNlbmQodGFyZ2V0LCB7InR5cGUiOiAic2VuZCIsICJ0ZXh0IjogdGV4dCwgImNsaWVudF9pZCI6IGNsaWVudH0pCiAgICBlbHNlOgogICAgICAgICMgd2F0Y2ggb25seTogYSBgc3RhdHVzYCBjYWxsIGlzIHRoZSBiYXJyaWVyIChvbmUgbGluayBrZWVwcyBpdHMgZnJhbWVzIGluIG9yZGVyLCBzbyB0aGUKICAgICAgICAjIHdhdGNoIGlzIHNlcnZlZCBiZWZvcmUgdGhlIGFuc3dlciBjb21lcyk7IGA8bGFiZWw+LnJlYWR5YCBzYXlzIHRoZSB3YXRjaCBpcyBpbiBwbGFjZQogICAgICAgIHJlcGx5ID0ga2VybmVsLnNlbmQodGFyZ2V0LCB7InR5cGUiOiAic3RhdHVzIn0pCiAgICAgICAgb3BlbigiLi4vIiArIGxhYmVsICsgIi5yZWFkeSIsICJ3Iikud3JpdGUoInJlYWR5IikKICAgIGlmIGlzaW5zdGFuY2UocmVwbHksIGRpY3QpIGFuZCByZXBseS5nZXQoImVycm9yIik6CiAgICAgICAgcmVwbHlfZXJyb3IgPSBzdHIocmVwbHlbImVycm9yIl0pWzozMDBdCmV4Y2VwdCBSdW50aW1lRXJyb3IgYXMgZToKICAgIHJlcGx5X2Vycm9yID0gc3RyKGUpWzozMDBdCmlmIGZsYWdzWyJ3YXRjaCJdIGFuZCBub3QgcmVwbHlfZXJyb3I6CiAgICBlbm91Z2gud2FpdChmbGFnc1sidGltZW91dCJdKQpvayA9IG5vdCByZXBseV9lcnJvciBhbmQgbm90IHJlZnVzZWQgYW5kIChlbm91Z2guaXNfc2V0KCkgb3Igbm90IGZsYWdzWyJ3YXRjaCJdKQpyZXN1bHQgPSB7ImxhYmVsIjogbGFiZWwsICJiYWNrZW5kIjogYmFja2VuZCwgIm9rIjogb2ssICJkb25lIjogZG9uZVsibiJdLCAicmVwbHlfZXJyb3IiOiByZXBseV9lcnJvciwKICAgICAgICAgICJyZWZ1c2VkIjogcmVmdXNlZH0Kd2l0aCBvcGVuKCIuLi8iICsgbGFiZWwgKyAiLnJlc3VsdC5qc29uIiwgInciKSBhcyBmOgogICAgZi53cml0ZShqc29uLmR1bXBzKHJlc3VsdCkpCnByaW50KGpzb24uZHVtcHMocmVzdWx0KSkKc3lzLmV4aXQoMCBpZiBvayBlbHNlIDEpCg==\").decode())' && fantastic_team send '{\"target\":\"web\",\"payload\":{\"type\":\"boot\"}}' > /dev/null && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"list_agents\"}}' | python3 -c 'import json,sys; print(\" \".join(sorted(a[\"id\"] for a in json.load(sys.stdin)[\"result\"][\"agents\"])))'"
+     ],
+     "wait_s": 60
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "ssh",
+     "args": [
+      "-p",
+      "{{ssh_port}}",
+      "-i",
+      "{{ssh_key}}",
+      "-o",
+      "IdentitiesOnly=yes",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=no",
+      "-o",
+      "UserKnownHostsFile=/dev/null",
+      "-o",
+      "LogLevel=ERROR",
+      "-o",
+      "ConnectTimeout=10",
+      "team@127.0.0.1",
+      "cd w && git clone -q {{remote_git_url}} repo && git -C repo log --oneline"
+     ],
+     "wait_s": 60
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "create_agent",
+    "args": {
+     "id": "remote",
+     "parent_id": "user",
+     "handler_module": "ws_bridge.tools",
+     "ingress_rule": "allow_all_ingress",
+     "transport": "ws",
+     "host": "127.0.0.1",
+     "port": "{{tunnel_port}}",
+     "peer_id": "remote_ws"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "remote",
+    "type": "forward",
+    "args": {
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "worker_exec",
+      "payload": {
+       "type": "run",
+       "command": "git",
+       "args": [
+        "pull",
+        "-q",
+        "--ff-only"
+       ],
+       "wait_s": 30
+      }
+     },
+     "forward_timeout": 120
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "remote",
+    "type": "forward",
+    "args": {
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "worker_exec",
+      "payload": {
+       "type": "run",
+       "command": "python3",
+       "args": [
+        "-c",
+        "import pathlib; p = pathlib.Path('muler.py'); p.write_text(p.read_text().replace('a + b', 'a * b'))"
+       ],
+       "wait_s": 30
+      }
+     },
+     "forward_timeout": 120
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "remote",
+    "type": "forward",
+    "args": {
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "worker_exec",
+      "payload": {
+       "type": "run",
+       "command": "python3",
+       "args": [
+        "test_calc.py"
+       ],
+       "wait_s": 30
+      }
+     },
+     "forward_timeout": 120
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "remote",
+    "type": "forward",
+    "args": {
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "worker_exec",
+      "payload": {
+       "type": "run",
+       "command": "git",
+       "args": [
+        "-c",
+        "user.name=Worker",
+        "-c",
+        "user.email=worker@example.invalid",
+        "commit",
+        "-q",
+        "-a",
+        "-m",
+        "Fix mul"
+       ],
+       "wait_s": 30
+      }
+     },
+     "forward_timeout": 120
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "remote",
+    "type": "forward",
+    "args": {
+     "target": "user",
+     "payload": {
+      "type": "forward",
+      "target": "worker_exec",
+      "payload": {
+       "type": "run",
+       "command": "git",
+       "args": [
+        "push",
+        "-q",
+        "origin",
+        "HEAD:main"
+       ],
+       "wait_s": 30
+      }
+     },
+     "forward_timeout": 120
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "sublead",
+     "task": "[lane:s1] Fix adder.py and push; it takes a while."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "sublead",
+     "task": "[lane:s2] Wait for a message that never comes."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "create_agent",
+    "args": {
+     "id": "lead_checkins",
+     "parent_id": "lead",
+     "handler_module": "scheduler.tools",
+     "can_call": {
+      "$parent": [
+       "send"
+      ]
+     },
+     "callable_by": {
+      "$parent": "*"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "lead_checkins",
+    "type": "schedule",
+    "args": {
+     "target": "lead",
+     "payload": {
+      "type": "send",
+      "text": "[check-in agents] check your agents"
+     },
+     "interval_seconds": 1
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:1}}",
+    "type": "status",
+    "args": {}
+   }
+  ],
+  "delay": 2
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:2}}",
+    "type": "status",
+    "args": {}
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:2}}",
+    "type": "history",
+    "args": {}
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:1}}",
+    "type": "status",
+    "args": {}
+   }
+  ],
+  "delay": 2
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:2}}",
+    "type": "status",
+    "args": {}
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:2}}",
+    "type": "history",
+    "args": {}
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:2}}",
+    "type": "stop",
+    "args": {}
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "await"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "{{minted:1}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "{{minted:2}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "lead_checkins"
+    }
+   }
+  ],
+  "delay": 2
+ },
+ {
+  "calls": [
+   {
+    "target": "kernel",
+    "type": "delete_agent",
+    "args": {
+     "id": "remote"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "ssh",
+     "args": [
+      "-p",
+      "{{ssh_port}}",
+      "-i",
+      "{{ssh_key}}",
+      "-o",
+      "IdentitiesOnly=yes",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=no",
+      "-o",
+      "UserKnownHostsFile=/dev/null",
+      "-o",
+      "LogLevel=ERROR",
+      "-o",
+      "ConnectTimeout=10",
+      "team@127.0.0.1",
+      "cd w && p=$(cat team.pid) && kill -TERM $p && for i in $(seq 150); do kill -0 $p 2>/dev/null || exit 0; sleep 0.2; done; exit 1"
+     ],
+     "wait_s": 60
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "await"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "pull",
+      "-q",
+      "--ff-only"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ],
+  "say": "task failed: the second sub-lead was not generating and added no row in two check-ins in a row; I stopped it."
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "pull",
+      "-q",
+      "--ff-only"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "s1",
+  "delay": 8
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "-c",
+      "import pathlib; p = pathlib.Path('adder.py'); p.write_text(p.read_text().replace('a - b', 'a + b'))"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "-c",
+      "user.name=Worker",
+      "-c",
+      "user.email=worker@example.invalid",
+      "commit",
+      "-q",
+      "-a",
+      "-m",
+      "Fix add"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "push",
+      "-q",
+      "origin",
+      "HEAD:main"
+     ],
+     "wait_s": 30
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "lead",
+    "type": "send",
+    "args": {
+     "text": "s1 done: adder.py is fixed and pushed"
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "name": "await"
+   }
+  ],
+  "lane": "s2"
+ }
+]
