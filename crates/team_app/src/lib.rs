@@ -467,11 +467,7 @@ mod tests {
             port: 1,
         };
         assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(0));
-        assert_eq!(
-            std::fs::read_dir(dir.path()).unwrap().count(),
-            0,
-            "the first run seeds it all"
-        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "the first run seeds it all");
     }
 
     #[test]

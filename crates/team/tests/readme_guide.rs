@@ -229,13 +229,14 @@ fn readme_names_every_cli_subcommand_and_flag() {
     let text = readme();
     let source = fs::read_to_string(root().join("crates/team/src/main.rs")).unwrap();
     // the team's own first words are in the binary and in the README
-    for name in ["ai-readme"] {
-        assert!(
-            text.contains(name),
-            "README must document `{name}` (it is in the binary)"
-        );
-        assert!(source.contains(name), "`{name}` is not in the code");
-    }
+    assert!(
+        text.contains("ai-readme"),
+        "README must document `ai-readme` (it is in the binary)"
+    );
+    assert!(
+        source.contains("ai-readme"),
+        "`ai-readme` is not in the code"
+    );
     // everything else is fantastic's command line, which the README says it is
     assert!(
         text.contains("The command line is fantastic's, unchanged"),

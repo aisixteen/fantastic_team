@@ -1,5 +1,5 @@
 //! #219: the team binary takes fantastic's command line unchanged. It adds its bundles
-//! and two first words of its own (`setup github`, `ai-readme`), and nothing
+//! and one first word of its own (`ai-readme`), and nothing
 //! else: the flags it used to parse (`--dir`, a bare `--port`, `--tui`, `--instructions`,
 //! `--resend-instructions`, `--workers`, `--leads`, `--per-lead`) are fantastic's
 //! unknown words now. The old team config file is read nowhere.
