@@ -120,4 +120,6 @@ record:
 
     ## The end
 
-    When no `.state` file in the queue is `pending` or `taken`: for every agent you started, `delete_agent` it. Their shared memory store stays. Then answer with the final LEDGER as a table (task, agent, done/failed, one line on what happened, time, cost) and `<call name="done"></call>`.
+    A worker you started that has finished its task is deleted by YOU, as soon as you know it: when it sends you `done` (or a message that it is finished), or its tasks are `done` or `failed` and it holds none, `delete_agent` it on `kernel_state` in that same turn. The registry never deletes it and keeps counting it as running until you do, so a finished worker you leave alive uses up a slot.
+
+    When no `.state` file in the queue is `pending` or `taken`: for every agent you started that is still alive, `delete_agent` it. Their shared memory store stays. Then answer with the final LEDGER as a table (task, agent, done/failed, one line on what happened, time, cost) and `<call name="done"></call>`.
