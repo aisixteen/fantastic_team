@@ -774,6 +774,10 @@ async fn spawn_task_string_is_first_message_and_object_refused() {
         .unwrap()
         .iter()
         .any(|(a, t)| *a == cid && t.starts_with("do it\n\n[team] Your parent is `") && t.contains(&format!("Your parent is `{}`", lead.as_str()))));
+    // the note tells the child to answer its parent with a plain `send`, never a `report` (team#247)
+    let note = SENT.lock().unwrap().iter().find(|(a, _)| *a == cid).unwrap().1.clone();
+    assert!(note.contains("send it your result when you are done"), "{note}");
+    assert!(note.contains("<call name=\"send\">") && !note.contains("report to it"), "{note}");
 }
 
 /// Did `who` receive a `send` with `text`? A `send` is answered only once the

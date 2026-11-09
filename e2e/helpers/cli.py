@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -177,7 +178,8 @@ CHECK_INS = (
     "and no new row since your last check-in, two check-ins in a row; the same step or error over and over is "
     "looping. An agent that is generating is busy, never stuck. Keep the check-ins until your task is complete: unscheduling every schedule "
     "(`unschedule`) is your very last call, after every other step and wait, right before you end; the "
-    "scheduler agent stays.")
+    "scheduler agent stays. Never end your run while an agent you started is still working; its report or your "
+    "next check-in wakes you. To wait, end your turn with `await`; never start a timer or sleep job to wait.")
 SCHEDULER_VERBS = ["schedule", "unschedule", "list", "pause", "resume", "tick_now", "history"]
 
 
@@ -387,6 +389,10 @@ def check_ins_played(ctx, v, lanes=("main",)) -> None:
     v.check("no schedule is left (a scheduler agent may stay)", not left, str(left))
     per = schedulers_per_lead(ctx)
     v.check("no more than one scheduler per lead", all(n <= 1 for n in per.values()), str(per))
+    # team#291: a lead waits by ending its turn with `await` (a tick or a report wakes it), never with a
+    # timer: no model request carries a `sleep` job (a whole-second `sleep N` as a timer; the setup's `sleep 0.2` poll loops are not one)
+    timer = [b[:80] for b in ctx.model.raw_bodies if re.search(r"<command>\s*sleep\s*</command>|sleep [1-9]\d*(?![\d.])", b)]
+    v.check("no sleep job was started to wait", not timer, str(timer[:2]))
 
 
 def report_call(text: str, parent: str = LEAD) -> dict:

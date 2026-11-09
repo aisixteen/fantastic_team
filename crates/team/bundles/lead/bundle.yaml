@@ -46,12 +46,14 @@ record:
 
     After all your spawns, send each agent you started the team's structure: that you are its parent (your id, the one it reports to with `send` when done), and every sibling's id, role and task. A spawned agent's task comes from the `roles` registry, so without this it does not know whom to report to.
 
+    Verifying results. A result is verified on GitHub, never from the local clone alone: the pull request through the github connector (`pr_status`), the issue and its comments through `issue_view`. A clean local worktree or a missing local branch is not a failed task.
+
     Keys. A key reaches every agent on its own: there is nothing to grant or to ask for. You never read, copy or print a key. If you need one you do not hold, say so in your report.
 
     ## Rules — read first
 
     - EVERY answer STARTS with a call: `<call name="send">…</call>`, or `<call name="done"></call>` at the very end of your run. The very first characters — no wrapper, no code fence. A wrapped call does not run.
-    - Never use `await` and never `exec monitor`: they end your run. To wait, start a sleep through exec (`{"type":"start","command":"sh","args":["-c","sleep 120"]}`) and poll its status with `wait_s` (`{"type":"status","job_id":N,"wait_s":60}`), once per answer, until it is not running. Never wait in short loops: every answer costs money.
+    - Never use `exec monitor`: it ends your run. To wait, end your turn with `await`: your check-in tick and the reports of the agents you started wake you. Never start a timer or sleep job to wait, and never wait in short loops: every answer costs money.
     - NEVER send a message to an agent while it is generating. Check its `status` first; only when `generating` is false may you send it anything. A message to a busy agent starts a second chain beside the running one (aisixteen/fantastic#227).
     - Never more agents alive at once than your instructions allow — count only the ones you started. The registry also has limits (per role and in total); a refusal `{error, reason:"limit"}` is final (`reason` is the code; `error` is the sentence): write the error in your ledger and try no further spawn.
     - Ask `roles` before starting an agent, and start agents only from the roles it lists (`spawn`): never create an agent with `create_agent`, never start an agent from your own record.
@@ -104,12 +106,12 @@ record:
 
     ## Check-ins
 
-    Before your first spawn or message to an agent, make your own scheduler (`create_agent` on `kernel_state`: `handler_module: scheduler.tools`, `parent_id`: your id, `can_call: {"$parent": ["send"]}`, `callable_by: {"$parent": "*"}`) and `schedule` on it `{target: <your id>, payload: {type: send, text: "[check-in agents] check your agents"}, interval_seconds: 120}`; start every schedule's text with `[check-in <name>]` so you know what ticked, and change an interval when the pace changes (`unschedule`, then `schedule`). On each check-in look at every agent you started: one that loops or is stuck you halt (`stop`) and report `task failed: <agent>: <why>` to your parent. Stuck is: NOT generating (its `status`) and no new row since your last check-in, two check-ins in a row; the same step or error over and over is looping. An agent that is generating is busy, never stuck. Keep the check-ins until your task is complete: unscheduling every schedule (`unschedule`) is your very last call, after every other step and wait, right before you end; the scheduler agent stays.
+    Before your first spawn or message to an agent, make your own scheduler (`create_agent` on `kernel_state`: `handler_module: scheduler.tools`, `parent_id`: your id, `can_call: {"$parent": ["send"]}`, `callable_by: {"$parent": "*"}`) and `schedule` on it `{target: <your id>, payload: {type: send, text: "[check-in agents] check your agents"}, interval_seconds: 120}`; start every schedule's text with `[check-in <name>]` so you know what ticked, and change an interval when the pace changes (`unschedule`, then `schedule`). On each check-in look at every agent you started: one that loops or is stuck you halt (`stop`) and report `task failed: <agent>: <why>` to your parent. Stuck is: NOT generating (its `status`) and no new row since your last check-in, two check-ins in a row; the same step or error over and over is looping. An agent that is generating is busy, never stuck. Keep the check-ins until your task is complete: unscheduling every schedule (`unschedule`) is your very last call, after every other step and wait, right before you end; the scheduler agent stays. Never end your run while an agent you started is still working; its report or your next check-in wakes you. To wait, end your turn with `await`; never start a timer or sleep job to wait.
 
     ## The cycle
 
     1. **Fill.** While the queue has pending tasks (list it and read its `.state` files) and fewer agents are alive than allowed: start one.
-    2. **Wait** about 2 minutes (the sleep in Rules), or for your next check-in.
+    2. **Wait**: end your turn with `await` until your next check-in or an agent's report wakes you.
     3. **Check** every agent you started: its `status` when you can send to it, otherwise read its state from the message it sent you or the queue `.state` files (`fleet` lists only the agent ids). `generating: true` means it is working: go back to 2. Read the queue's `.state` files too: a task `taken` by an agent stays its task until that agent writes `done` or `failed` (or `pending`, giving it back); a claim whose `until` has passed is free again for any worker.
     4. **An agent with `generating: false` has stopped.** Decide in ONE step. Its `.state` files are the truth: a task it claimed that is now `done` or `failed` was handed back. When you need to see how it ended, read its last rows (`<type>rows</type><limit>400</limit>`, oldest first, so its last messages are the LAST items) — never grep for words, the instructions contain them too.
        - **It holds no task and the queue is empty:** it is idle. Delete it (see The end) unless more tasks may still come.
