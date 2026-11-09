@@ -254,6 +254,8 @@ def check_ins_ran(ctx, v, label: str = "") -> None:
         v.check(f"{label}{lead} made its own scheduler and a check-in woke it", bool(ticks), str(hit)[:200])
     left = cli.schedules_left(ctx)
     v.check(f"{label}no schedule is left (a scheduler agent may stay)", not left, str(left))
+    per = cli.schedulers_per_lead(ctx)
+    v.check(f"{label}no more than one scheduler per lead", all(n <= 1 for n in per.values()), str(per))
 
 
 def check_key_not_on_disk(ctx, v) -> None:

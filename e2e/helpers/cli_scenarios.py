@@ -13,6 +13,8 @@ Each scenario is a `*_start(ctx, v)` that boots and builds the team (and checks 
 
 from __future__ import annotations
 
+from collections import Counter
+
 import json
 import os
 import subprocess
@@ -154,8 +156,13 @@ def precreated_end(ctx, v, before: dict) -> None:
     ok, why = cli.solved(ctx.repo)
     v.check("solved (the test passes on HEAD, the fix is committed)", ok, why)
     after = cli.tree(ctx.team)
-    v.check("the same agents under the same parents, nothing extra", after == before,
-            f"before {sorted(before)} after {sorted(after)}")
+    # a lead's scheduler agent may stay (its schedules are gone: `check_ins_ran`), one per lead
+    scheds = {i: p for i, (h, p) in after.items() if h == cli.SCHEDULER and i not in before}
+    rest = {i: s for i, s in after.items() if i not in scheds}
+    v.check("the same agents under the same parents, nothing extra (a lead's scheduler may stay)",
+            rest == before, f"before {sorted(before)} after {sorted(rest)}")
+    per = Counter(scheds.values())
+    v.check("no more than one scheduler per lead", all(n <= 1 for n in per.values()), str(dict(per)))
 
 
 # ---- leads_spawn_leads -----------------------------------------------------------------
