@@ -118,6 +118,8 @@ class Forge:
 
     def _api(self, method: str, path: str, q: dict, raw: bytes):
         r = f"/repos/{REPO}"
+        if method == "GET" and path == "/app":  # whoami: the app answers for its JWT
+            return 200, {"id": 123, "slug": "team-bot", "name": "Team Bot"}
         if method == "GET" and path == f"{r}/installation":
             return 200, {"id": 42}
         if method == "POST" and path == "/app/installations/42/access_tokens":
