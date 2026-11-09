@@ -9,18 +9,11 @@
 //!
 //! [`parse`] checks it (a missing field fails naming it), [`overlay`] folds it into the
 //! team's blueprint ([`crate::hydrate::blueprint_text`] does it, so the records are SEEDED
-//! with everything else and nothing is created at a boot), and [`apply`] is the first start
-//! of a fresh folder: seed, then keep the default model in the provider's memory store (a
-//! `set_default_model` on a kernel that is shut down again). [`run_check`] is the dry
-//! check (`fantastic_team check`), made before the first model call: it applies a fresh
-//! folder, then checks the records and asks each github connector `whoami`. No model is
-//! called.
+//! with everything else and nothing is created at a boot).
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
-use fantastic_kernel::{Item, Status};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
@@ -64,7 +57,6 @@ struct RawProvider {
     endpoint: Option<String>,
     caching: Option<String>,
     models: Option<Vec<String>>,
-    default_model: Option<String>,
     context_window: Option<u64>,
     credentials: Option<String>,
 }
@@ -131,8 +123,6 @@ pub struct Provider {
     pub caching: String,
     /// The models it serves.
     pub models: Vec<String>,
-    /// The default model, kept in its memory store at the first start.
-    pub default_model: Option<String>,
     /// The context window, when declared.
     pub context_window: Option<u64>,
     /// The credential ref its key is read through.
@@ -337,21 +327,11 @@ pub fn parse(text: &str, dir: &Path) -> Result<Preset, String> {
                 "provider.credentials names `{c}`, which credentials does not declare"
             ));
         }
-        if let Some(d) = rp
-            .default_model
-            .as_deref()
-            .filter(|d| !models.iter().any(|m| m == d))
-        {
-            p.bad(format!(
-                "provider.default_model `{d}` is not one of provider.models"
-            ));
-        }
         Provider {
             id,
             endpoint: endpoint.unwrap_or_default(),
             caching: caching.unwrap_or_default(),
             models,
-            default_model: rp.default_model,
             context_window: rp.context_window,
             credentials: credentials.unwrap_or_default(),
         }
@@ -599,256 +579,9 @@ pub fn overlay(doc: &mut Value, p: &Preset) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `dir` has been started in already (fantastic's own test for a fresh folder).
-fn started(dir: &Path) -> bool {
-    dir.join(".fantastic").exists()
-}
-
-/// THE FIRST START of a fresh team folder that holds a `team.yaml`: seed the records
-/// ([`crate::hydrate::seed`] folds the preset in), then keep the preset's default model in
-/// the provider's memory store. A folder that was started before, or one with no preset,
-/// is left alone (`Ok(false)`): the records on disk are the team from then on.
-pub fn apply(dir: &Path) -> Result<bool, String> {
-    if started(dir) || !dir.join(FILE).exists() {
-        return Ok(false);
-    }
-    let preset = load(dir)?.ok_or("no team.yaml")?;
-    if !crate::hydrate::seed(dir)? {
-        return Ok(false);
-    }
-    if let Some(model) = &preset.provider.default_model {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-        rt.block_on(set_default_model(dir, &preset.provider.id, model))?;
-    }
-    Ok(true)
-}
-
-async fn set_default_model(dir: &Path, provider: &str, model: &str) -> Result<(), String> {
-    let kernel = crate::start_all_offline(dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    let out = kernel
-        .send(vec![Item::new(
-            provider,
-            json!({"type": "set_default_model", "model": model}),
-        )])
-        .await;
-    let res = match out.first() {
-        Some(o) if matches!(o.status, Status::Completed) && o.result.get("error").is_none() => {
-            Ok(())
-        }
-        Some(o) => Err(format!("set_default_model on `{provider}`: {}", o.result)),
-        None => Err(format!("set_default_model on `{provider}`: no reply")),
-    };
-    kernel.flush_records().await;
-    kernel.shutdown().await;
-    fantastic_sqlite_store::close_all(&kernel);
-    let released = bootstrap::shutdown(dir).map_err(|e| e.to_string());
-    res.and(released)
-}
-
-/// One line of the dry check.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Check {
-    /// What was checked.
-    pub what: String,
-    /// `None` when it holds, else why not.
-    pub failed: Option<String>,
-}
-
-fn ok(what: impl Into<String>) -> Check {
-    Check {
-        what: what.into(),
-        failed: None,
-    }
-}
-
-fn fail(what: impl Into<String>, why: impl Into<String>) -> Check {
-    Check {
-        what: what.into(),
-        failed: Some(why.into()),
-    }
-}
-
-fn is_under(dir: &Path, v: &Value) -> bool {
-    v.as_str().is_some_and(|s| {
-        let p = Path::new(s);
-        p.is_absolute()
-            && !p.components().any(|c| c == Component::ParentDir)
-            && p.starts_with(dir)
-            && p != dir
-    })
-}
-
-/// The checks of the team's records against the preset (pure): `agents` is the kernel's
-/// `list_agents`, `dir` the team folder. Provider caching on, the git roots and the
-/// worktree root under the team folder, the connectors' allowlists and the roles' limits.
-pub fn check_records(agents: &[Value], p: &Preset, dir: &Path) -> Vec<Check> {
-    let find = |id: &str| agents.iter().find(|a| a["id"] == id);
-    let mut out = Vec::new();
-    match find(&p.provider.id) {
-        Some(r) if r["caching"] == CACHING => out.push(ok(format!(
-            "provider `{}` caching is {CACHING}",
-            p.provider.id
-        ))),
-        Some(r) => out.push(fail(
-            format!("provider `{}` caching", p.provider.id),
-            format!("{}, not {CACHING}", r["caching"]),
-        )),
-        None => out.push(fail(
-            format!("provider `{}`", p.provider.id),
-            "no such agent",
-        )),
-    }
-    match find(LEAD) {
-        Some(l)
-            if l["provider_id"] == p.provider.id.as_str()
-                && l["model"] == p.lead_model.as_str() =>
-        {
-            out.push(ok(format!(
-                "lead runs `{}` on {}",
-                p.provider.id, p.lead_model
-            )));
-        }
-        Some(l) => out.push(fail(
-            "lead provider and model",
-            format!("provider_id {}, model {}", l["provider_id"], l["model"]),
-        )),
-        None => out.push(fail("lead", "no such agent")),
-    }
-    for c in &p.connectors {
-        let what = format!("git `{}` roots are under the team folder", c.git_id);
-        match find(&c.git_id) {
-            Some(g) if is_under(dir, &g["repo_dir"]) && is_under(dir, &g["workspace_root"]) => {
-                out.push(ok(what))
-            }
-            Some(g) => out.push(fail(
-                what,
-                format!(
-                    "repo_dir {}, workspace_root {}",
-                    g["repo_dir"], g["workspace_root"]
-                ),
-            )),
-            None => out.push(fail(what, "no such agent")),
-        }
-        let what = format!("github `{}` allows only {}", c.github_id, c.repo);
-        match find(&c.github_id) {
-            Some(g) if g["repos"] == json!([c.repo]) && g["git"] == c.git_id.as_str() => {
-                out.push(ok(what))
-            }
-            Some(g) => out.push(fail(
-                what,
-                format!("repos {}, git {}", g["repos"], g["git"]),
-            )),
-            None => out.push(fail(what, "no such agent")),
-        }
-    }
-    let wt = p.worktrees.to_string_lossy().into_owned();
-    let what = "the workers' files and exec are rooted at the worktree root".to_string();
-    match (find(WORKER_FILES), find(WORKER_EXEC)) {
-        (Some(f), Some(e))
-            if f["root"] == wt.as_str() && e["cwd"] == wt.as_str() && is_under(dir, &f["root"]) =>
-        {
-            out.push(ok(what))
-        }
-        _ => out.push(fail(what, format!("not {wt}"))),
-    }
-    let what = format!("roles limit {} in all", p.total);
-    match find(ROLES).map(|r| &r["limits"]) {
-        Some(l) if l["total"] == p.total && l["per_role"] == json!(p.per_role) => {
-            out.push(ok(what))
-        }
-        other => out.push(fail(what, format!("{other:?}"))),
-    }
-    out
-}
-
-/// `github whoami` of every connector: the app answers for the credential, with no model
-/// called.
-async fn whoami(kernel: &std::sync::Arc<fantastic_kernel::Kernel>, p: &Preset) -> Vec<Check> {
-    let mut out = Vec::new();
-    for c in &p.connectors {
-        let what = format!("github `{}` whoami", c.github_id);
-        let o = kernel
-            .send(vec![Item::new(
-                c.github_id.as_str(),
-                json!({"type": "whoami"}),
-            )])
-            .await;
-        out.push(match o.first() {
-            Some(o) if matches!(o.status, Status::Completed) && o.result.get("error").is_none() => {
-                ok(format!("{what}: app {}", o.result["app"]["slug"]))
-            }
-            Some(o) => fail(what, o.result.to_string()),
-            None => fail(what, "no reply"),
-        });
-    }
-    out
-}
-
-/// The dry check of the team folder `dir`: the preset parses, a fresh folder is applied,
-/// the records agree with it and every github connector answers `whoami`. No model is
-/// called.
-pub async fn dry_check(dir: &Path) -> Result<Vec<Check>, String> {
-    let preset = load(dir)?.ok_or_else(|| format!("{FILE}: not found in {}", dir.display()))?;
-    let mut out = vec![ok(format!("{FILE} has every required field"))];
-    let kernel = crate::start_all_offline(dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    let listed = kernel
-        .send(vec![Item::new(
-            DEFAULT_ROOT_ID,
-            json!({"type": "list_agents"}),
-        )])
-        .await;
-    let agents: Vec<Value> = listed
-        .first()
-        .and_then(|o| o.result.get("agents"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    out.extend(check_records(&agents, &preset, dir));
-    out.extend(whoami(&kernel, &preset).await);
-    kernel.shutdown().await;
-    fantastic_sqlite_store::close_all(&kernel);
-    bootstrap::shutdown(dir).map_err(|e| e.to_string())?;
-    Ok(out)
-}
-
-/// `fantastic_team check`: print the dry check of the working directory and fail when any
-/// line fails.
-pub fn run_cli(args: &[String]) -> Result<(), String> {
-    if let Some(a) = args.first() {
-        return Err(format!(
-            "check takes no argument (got `{a}`); it reads {FILE} in this folder"
-        ));
-    }
-    let dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    // the fields are checked before anything is written
-    load(&dir)?.ok_or_else(|| format!("{FILE}: not found in {}", dir.display()))?;
-    apply(&dir)?;
-    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    let checks = rt.block_on(dry_check(&dir))?;
-    let mut failed = 0;
-    for c in &checks {
-        match &c.failed {
-            None => println!("ok   {}", c.what),
-            Some(why) => {
-                failed += 1;
-                println!("FAIL {}: {why}", c.what);
-            }
-        }
-    }
-    if failed > 0 {
-        return Err(format!("{failed} check(s) failed"));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fantastic_kernel::AgentId;
 
     /// The battle setup as a preset: two repos, the provider on Sonnet and Haiku.
     pub(crate) fn sample(dir: &Path) -> String {
@@ -865,7 +598,6 @@ provider:
   endpoint: https://api.anthropic.com/v1/messages
   caching: provider_cache
   models: [claude-sonnet-5-5, claude-haiku-5-5]
-  default_model: claude-sonnet-5-5
   context_window: 200000
   credentials: anthropic/api.anthropic.com
 connectors:
@@ -982,11 +714,6 @@ lead:
             "repeats a repo",
         );
         bad(
-            "default_model: claude-sonnet-5-5",
-            "default_model: gpt",
-            "default_model",
-        );
-        bad(
             "  model: claude-sonnet-5-5\n",
             "  model: nope\n",
             "lead.model `nope`",
@@ -1092,35 +819,6 @@ lead:
     }
 
     #[test]
-    fn the_checks_hold_for_the_seeded_records_and_name_what_is_off() {
-        let d = dir();
-        std::fs::write(d.path().join(FILE), sample(d.path())).unwrap();
-        let p = load(d.path()).unwrap().unwrap();
-        let mut all = flat(d.path());
-        let checks = check_records(&all, &p, d.path());
-        assert!(checks.iter().all(|c| c.failed.is_none()), "{checks:?}");
-        assert_eq!(checks.len(), 8);
-        for r in all.iter_mut() {
-            if r["id"] == "anthropic" {
-                r["caching"] = json!("none");
-            }
-            if r["id"] == "git" {
-                r["repo_dir"] = json!("/elsewhere/fantastic");
-            }
-        }
-        let bad: Vec<String> = check_records(&all, &p, d.path())
-            .into_iter()
-            .filter(|c| c.failed.is_some())
-            .map(|c| c.what)
-            .collect();
-        assert_eq!(bad.len(), 2, "{bad:?}");
-        assert!(
-            bad[0].contains("caching") && bad[1].contains("`git`"),
-            "{bad:?}"
-        );
-    }
-
-    #[test]
     fn the_shipped_example_is_a_whole_preset_with_no_value_in_it() {
         let text = include_str!("../../../examples/team.yaml");
         let d = dir();
@@ -1134,36 +832,11 @@ lead:
     fn a_bad_preset_writes_nothing() {
         let d = dir();
         std::fs::write(d.path().join(FILE), "provider: {}\n").unwrap();
-        let err = apply(d.path()).unwrap_err();
+        let err = crate::hydrate::seed(d.path()).unwrap_err();
         assert!(
             err.contains("missing") && err.contains("provider.endpoint"),
             "{err}"
         );
         assert!(!d.path().join(".fantastic").exists());
-    }
-
-    #[test]
-    fn the_first_start_keeps_the_default_model_and_a_started_folder_is_left_alone() {
-        let d = dir();
-        // a clone for the git connectors' roots is not needed: nothing is asked of git here
-        std::fs::write(d.path().join(FILE), sample(d.path())).unwrap();
-        assert!(apply(d.path()).unwrap());
-        assert!(d.path().join(".fantastic/memory.db").exists());
-        assert!(!apply(d.path()).unwrap(), "a second start applies nothing");
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let got = rt.block_on(async {
-            let k = crate::start_all_offline(d.path()).await.unwrap();
-            let m = k
-                .send(vec![Item::new(
-                    AgentId::from("anthropic"),
-                    json!({"type": "models"}),
-                )])
-                .await;
-            k.shutdown().await;
-            fantastic_sqlite_store::close_all(&k);
-            bootstrap::shutdown(d.path()).unwrap();
-            m[0].result.clone()
-        });
-        assert_eq!(got["default"], "claude-sonnet-5-5", "{got}");
     }
 }

@@ -39,8 +39,8 @@ pub mod tree;
 pub mod watchdog;
 pub mod webhook;
 pub mod webui;
-pub mod worktrees_flag;
 pub mod worker_view;
+pub mod worktrees_flag;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -435,12 +435,6 @@ pub(crate) async fn start_on_port(
 /// page served from this kernel answered for a team that was about to stop (#241).
 pub(crate) async fn start_offline(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>> {
     start_with(dir, registry_with(false, dir), false, None).await
-}
-
-/// [`start_offline`] with every recorded agent booted but no `web` host: what the preset's
-/// first start and the dry check ([`team_yaml`]) use. Stopped the same way.
-pub(crate) async fn start_all_offline(dir: &Path) -> Result<Arc<Kernel>, Box<dyn std::error::Error>> {
-    start_with(dir, registry_with(false, dir), true, None).await
 }
 
 /// [`start`] with `reg`; `boot_all` boots every recorded agent, else the root and its
