@@ -59,6 +59,9 @@ class Forge:
         self.token = make_token()
         self.requests: list[dict] = []
         self.extra_issues = 0  # more open issues (2, 3, ...) for the issue listing
+        self.prs: dict[int, dict] = {}  # opened pull requests by number (the first is 7)
+        # check runs by head branch: [(name, status, conclusion)]; a branch not named is green
+        self.checks: dict[str, list[tuple]] = {}
         self.lock = threading.Lock()
         forge = self
 
@@ -72,6 +75,9 @@ class Forge:
                 forge._handle(self)
 
             def do_POST(self):
+                forge._handle(self)
+
+            def do_PUT(self):
                 forge._handle(self)
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -94,6 +100,33 @@ class Forge:
 
     def pulls(self) -> list[dict]:
         return [dict(r, json=json.loads(r["body"])) for r in self.to("POST", f"/repos/{REPO}/pulls")]
+
+    def bare(self) -> str:
+        return os.path.join(self.root, OWNER, NAME + ".git")
+
+    def rev(self, ref: str) -> str:
+        r = subprocess.run(["git", "-C", self.bare(), "rev-parse", "--verify", "-q", ref],
+                           capture_output=True, text=True)
+        return r.stdout.strip()
+
+    def main_log(self) -> list[str]:
+        """The subjects on the bare repo's main, newest first."""
+        r = subprocess.run(["git", "-C", self.bare(), "log", "--format=%s", "main"],
+                           capture_output=True, text=True)
+        return r.stdout.splitlines()
+
+    def _squash(self, pr: dict, method: str) -> str:
+        """Merge the PR's head branch into main (a squash is one commit with main as parent)."""
+        bare = self.bare()
+        env = dict(os.environ, GIT_AUTHOR_NAME="Forge", GIT_AUTHOR_EMAIL="forge@example.invalid",
+                   GIT_COMMITTER_NAME="Forge", GIT_COMMITTER_EMAIL="forge@example.invalid")
+        git = lambda *a: subprocess.run(["git", "-C", bare, *a], capture_output=True, text=True,
+                                        env=env, check=True).stdout.strip()
+        tree = git("merge-tree", "--write-tree", "main", pr["head"]).splitlines()[0]
+        parents = ["-p", "main"] + (["-p", pr["head"]] if method == "merge" else [])
+        sha = git("commit-tree", tree, *parents, "-m", f"{pr['title']} (#{pr['number']})")
+        git("update-ref", "refs/heads/main", sha)
+        return sha
 
     # --- the wire -----------------------------------------------------------
     def _handle(self, h: BaseHTTPRequestHandler) -> None:
@@ -145,16 +178,52 @@ class Forge:
                           "actor": {"login": MAINTAINER}, "created_at": "2026-01-01T00:00:00Z"}]
         if method == "GET" and path == f"{r}/pulls":
             return 200, []
-        # the PR the fake forge made (number 7): what `pr_status` reads
-        if method == "GET" and path == f"{r}/pulls/7":
+        # the PR the fake forge made (number 7) when the run opened none: what `pr_status` reads
+        if method == "GET" and path == f"{r}/pulls/7" and 7 not in self.prs:
             return 200, {"number": 7, "state": "open", "draft": True, "head": {"sha": PR_SHA}}
         if method == "GET" and path == f"{r}/commits/{PR_SHA}/check-runs":
             return 200, {"total_count": 0, "check_runs": []}
         if method == "GET" and path == f"{r}/pulls/7/reviews":
             return 200, []
         if method == "POST" and path == f"{r}/pulls":
-            return 201, {"number": 7, "html_url": f"https://forge.invalid/{REPO}/pull/7",
+            body = json.loads(raw or b"{}")
+            n = 7 + len(self.prs)
+            self.prs[n] = {"number": n, "head": body.get("head", ""), "base": body.get("base", "main"),
+                           "title": body.get("title", ""), "draft": True, "state": "open"}
+            return 201, {"number": n, "html_url": f"https://forge.invalid/{REPO}/pull/{n}",
                          "draft": True}
+        m = re.fullmatch(rf"{re.escape(r)}/pulls/(\d+)(/merge)?", path)
+        pr = self.prs.get(int(m.group(1))) if m else None
+        if m and pr:
+            if method == "GET" and not m.group(2):
+                return 200, {"number": pr["number"], "state": pr["state"], "draft": pr["draft"],
+                             "node_id": f"PR_{pr['number']}", "base": {"ref": pr["base"]},
+                             "head": {"ref": pr["head"], "sha": self.rev(f"refs/heads/{pr['head']}")}}
+            if method == "PUT" and m.group(2):
+                if pr["draft"]:
+                    return 405, {"message": "Pull Request is still a draft"}
+                if pr["state"] != "open":
+                    return 405, {"message": "Pull Request is not mergeable"}
+                want = json.loads(raw or b"{}")
+                sha = self._squash(pr, want.get("merge_method", "squash"))
+                pr["state"] = "closed"
+                return 200, {"merged": True, "sha": sha, "message": "Pull Request successfully merged"}
+        m = re.fullmatch(rf"{re.escape(r)}/commits/([0-9a-f]+)/check-runs", path)
+        if method == "GET" and m:
+            runs = []
+            for p in self.prs.values():
+                if self.rev(f"refs/heads/{p['head']}") == m.group(1):
+                    runs = self.checks.get(p["head"], [("ci", "completed", "success")])
+            return 200, {"total_count": len(runs), "check_runs": [
+                {"name": n, "status": st, "conclusion": c} for n, st, c in runs]}
+        if method == "POST" and path == "/graphql":
+            q = json.loads(raw or b"{}")
+            if "markPullRequestReadyForReview" in q.get("query", ""):
+                n = str((q.get("variables") or {}).get("id", "")).removeprefix("PR_")
+                if n.isdigit() and int(n) in self.prs:
+                    self.prs[int(n)]["draft"] = False
+                    return 200, {"data": {"markPullRequestReadyForReview": {"pullRequest": {"id": f"PR_{n}"}}}}
+            return 200, {"errors": [{"message": "unknown"}]}
         return 404, {"message": "Not Found"}
 
     def _git(self, h, u, raw: bytes, rec: dict) -> None:

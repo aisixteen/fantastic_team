@@ -1,0 +1,46 @@
+[
+ {
+  "calls": [
+   {
+    "target": "github",
+    "type": "merge",
+    "args": {
+     "repo": "acme/widgets",
+     "number": "{{red_pr}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "github",
+    "type": "merge",
+    "args": {
+     "repo": "acme/widgets",
+     "number": "{{pending_pr}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "github",
+    "type": "merge",
+    "args": {
+     "repo": "acme/widgets",
+     "number": "{{green_pr}}"
+    }
+   }
+  ]
+ },
+ {
+  "say": "Merged pull request {{green_pr}}. Pull requests {{red_pr}} and {{pending_pr}} were refused: their checks have not passed.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ }
+]
