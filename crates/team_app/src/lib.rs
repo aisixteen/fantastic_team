@@ -1033,6 +1033,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn launch_tunnel_spawns_ssh_with_forward_and_returns_local_url() {
+        let _exec = EXEC_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("argv");
         let ssh = fake_binary(
@@ -1119,6 +1120,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn start_setup_forwards_args_and_returns_the_page_url() {
+        let _exec = EXEC_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("argv");
         let bin = fake_binary(
