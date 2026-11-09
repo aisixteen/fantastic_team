@@ -12,9 +12,6 @@
 //! There is no code here that creates, updates or grants an agent: the blueprint is the
 //! one declaration.
 
-use std::path::Path;
-
-use crate::roles;
 use crate::tree::ROLES_ID;
 
 /// The main lead: the agent the person chats with.
@@ -58,9 +55,11 @@ pub const LEAD_FILES_VERBS: [&str; 5] =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::roles;
     use crate::tree::ROOT_ID;
     use fantastic_kernel::{bootstrap, AgentId, Item, Kernel};
     use serde_json::{json, Value};
+    use std::path::Path;
     use std::sync::Arc;
 
     #[test]

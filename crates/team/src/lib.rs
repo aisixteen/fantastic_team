@@ -12,15 +12,9 @@ pub mod cadence_feed;
 pub mod cadencer;
 pub mod declared_views;
 pub mod dispatcher;
-pub mod driver;
-pub mod driver_config;
-pub mod driver_rules;
 pub mod hydrate;
 pub mod new_team;
 pub mod page;
-pub mod peer_envelope;
-pub mod peer_transport;
-pub mod peers;
 pub mod puller;
 pub mod repo_config;
 pub mod team_notice;
@@ -51,12 +45,7 @@ pub mod worker_exec;
 /// `task_store_id`; the cabinets (`cabinet.tools`, crates/cabinet) act only for
 /// a manager agent the operator makes and wires.
 pub fn register_team(reg: &mut BundleRegistry) {
-    // the AI agent apart from any provider: the base of every stock role
-    reg.register(
-        fantastic_ai_core::chat_bundle::HANDLER_MODULE,
-        fantastic_ai_core::chat_bundle::AiChatBundle,
-    );
-    // the stock roles, embedded meta bundles over it (a team's folder may override them)
+    // the stock roles, meta bundles over `ai_chat.tools`, which fantastic's stock set registers before this extra (a team's folder may override them)
     if let Err(e) = roles::register(reg) {
         eprintln!("team: a stock role did not register: {e}");
     }
@@ -79,15 +68,6 @@ pub fn register_team(reg: &mut BundleRegistry) {
     reg.register(team_cabinet::HANDLER_MODULE, team_cabinet::CabinetBundle);
     // fantastic's scheduler: a lead makes its own as a child and schedules check-ins to itself.
     reg.register("scheduler.tools", fantastic_scheduler::SchedulerBundle);
-    // The model backend and the credential store the new team's records name (`new_team`).
-    reg.register(
-        fantastic_anthropic_backend::HANDLER_MODULE,
-        fantastic_anthropic_backend::AnthropicBundle,
-    );
-    reg.register(
-        fantastic_credential_store::HANDLER_MODULE,
-        fantastic_credential_store::CredentialStoreBundle::default(),
-    );
     reg.register(puller::HANDLER_MODULE, puller::PullerBundle::default());
     // The team page, for the web UI that `--port` persists (`app_control::persist_web`).
     reg.register(page::HANDLER_MODULE, page::PageBundle);
@@ -106,7 +86,7 @@ pub fn register_team(reg: &mut BundleRegistry) {
 
 /// A kernel registry for [`start`] (tests, embedding): the bundles the base
 /// tree needs (the root's state, the file store, the RAM memory store, the
-/// durable `sqlite_store`, the exec bridge) plus [`register_team`]. fantastic's shell builds its own, fuller
+/// durable `sqlite_store`, the exec bridge, the AI agent, the Anthropic backend, the credential store) plus [`register_team`]. fantastic's shell builds its own, fuller
 /// set when the binary runs; that one is private to it.
 pub fn registry() -> BundleRegistry {
     registry_with(true, Path::new("."))
@@ -170,6 +150,19 @@ fn registry_with(web_serves: bool, here: &Path) -> BundleRegistry {
             fantastic_user_home_store::home_dir_from_env(),
             std::path::absolute(here).unwrap_or_else(|_| here.to_path_buf()),
         ),
+    );
+    // In fantastic's stock set, which the binary's shell registers before `register_team`; this in-process copy registers them itself, and the roles' base must come first.
+    reg.register(
+        fantastic_ai_core::chat_bundle::HANDLER_MODULE,
+        fantastic_ai_core::chat_bundle::AiChatBundle,
+    );
+    reg.register(
+        fantastic_anthropic_backend::HANDLER_MODULE,
+        fantastic_anthropic_backend::AnthropicBundle,
+    );
+    reg.register(
+        fantastic_credential_store::HANDLER_MODULE,
+        fantastic_credential_store::CredentialStoreBundle::default(),
     );
     register_team(&mut reg);
     reg
@@ -513,9 +506,9 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn register_team_registers_the_anthropic_backend_and_the_credential_store() {
-        let mut reg = BundleRegistry::new();
-        register_team(&mut reg);
+    fn the_registry_has_the_chat_the_anthropic_backend_and_the_credential_store() {
+        let reg = registry();
+        assert!(reg.get("ai_chat.tools").is_some());
         assert!(reg.get("anthropic_backend.tools").is_some());
         assert!(reg.get("credential_store.tools").is_some());
     }

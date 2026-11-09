@@ -240,5 +240,5 @@ These are facts about the binary at the commit this was built on, not decisions 
 
 ## Later
 
-- `driver/rulebook_reply_and_escalation` waits for the group driver (#95): the driver is a library (`crates/team/src/driver/`) with no agent, verb or `main.rs` wiring yet, so there is nothing for a turns test to drive. It is not written, and it is not a turns test until #95 wires the driver.
+- `driver/rulebook_reply_and_escalation` waits for the group driver (#95): there is no driver agent, verb or `main.rs` wiring (the unwired library went in #292), so there is nothing for a turns test to drive. It is not written, and it is not a turns test until #95 wires the driver.
 - the `gpu` tier (a local-model plug, aisixteen/fantastic#303).
