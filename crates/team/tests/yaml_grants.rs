@@ -204,11 +204,10 @@ fn has_grant(rec: &Value, field: &str, who: &str, want: Value) {
 
 const PAGE_USER_VERBS: [&str; 2] = ["inquiries", "answer_inquiry"];
 
-/// The five callee-side grants the yaml declares, on the live records.
-async fn assert_the_five_grants(site: &Site) {
+/// The callee-side grants the yaml declares, on the live records.
+async fn assert_the_declared_grants(site: &Site) {
     let memory = site.record("memory").await;
     has_grant(&memory, "callable_by", "roles", json!("*"));
-    has_grant(&memory, "callable_by", "tasks", json!("*"));
     // the stock grants stay next to them, and the lead's end (fantastic's own reach)
     has_grant(&memory, "callable_by", "user", json!(["*"]));
     has_grant(&memory, "callable_by", "lead", json!(["*"]));
@@ -224,7 +223,6 @@ async fn assert_the_five_grants(site: &Site) {
         );
     }
     let root = site.record("kernel_state").await;
-    has_grant(&root, "callable_by", "board", json!(["reflect"]));
     has_grant(&root, "callable_by", "lead", json!(["*"]));
     has_grant(&root, "callable_by", "user", json!(["*"]));
 }
@@ -236,7 +234,7 @@ async fn assert_the_five_grants(site: &Site) {
 async fn the_yaml_grants_hold_on_both_ends_over_a_real_call_and_a_second_boot_keeps_them() {
     let site = Site::new();
     let kernel = site.start().await;
-    assert_the_five_grants(&site).await;
+    assert_the_declared_grants(&site).await;
 
     // a boot makes nothing of its own: no key mode, no store, no helper
     let ids = Site::ids_of(&site.agents().await);
@@ -248,7 +246,7 @@ async fn the_yaml_grants_hold_on_both_ends_over_a_real_call_and_a_second_boot_ke
 
     // a second boot keeps every grant, and creates nothing either
     let again = site.start().await;
-    assert_the_five_grants(&site).await;
+    assert_the_declared_grants(&site).await;
     assert_eq!(Site::ids_of(&site.agents().await), ids);
     assert_eq!(site.mode().await, None);
     again.stop().await;
@@ -281,7 +279,7 @@ async fn the_declared_credentials_grant_is_applied_when_fantastic_creates_the_st
         "github",
         json!("*"),
     );
-    assert_the_five_grants(&site).await;
+    assert_the_declared_grants(&site).await;
     assert_eq!(site.mode().await.as_deref(), Some("plain"));
     again.stop().await;
 }

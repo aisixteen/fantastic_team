@@ -19,11 +19,8 @@
 #   <root>
 #   +-- user                 (stock; parent entry)
 #   |   +-- lead             the main lead (the `lead` role bundle), the agent the person chats with
-#   |       +-- queue          ram_store: tasks wait, the board caches
 #   |       +-- github         the GitHub connector
-#   |       +-- board          the open issues and pull requests
 #   |       +-- roles          the roles registry
-#   |       +-- tasks          the task registry
 #   |       +-- worker_exec    the worker's restricted exec
 #   |       +-- worker_files   the worker's file bridge on the work folder
 #   +-- web                  the web host
@@ -79,9 +76,6 @@ agents:
       - spawn
       - get_count
       - fleet
-      board:
-      - board
-      - rows
       canvas_page:
       - new_canvas
     callable_by:
@@ -90,12 +84,6 @@ agents:
       $subtree:
       - send
     agents:
-    - id: queue
-      handler_module: ram_store.tools
-      callable_by:
-        $self: '*'
-        $parent: '*'
-        board: '*'
     - id: github
       handler_module: team_github.tools
       app:
@@ -109,28 +97,6 @@ agents:
       can_call:
         $self: '*'
         credentials: '*'
-      callable_by:
-        $self: '*'
-        $parent: '*'
-        board: '*'
-    - id: board
-      handler_module: team_board.tools
-      repos:
-      - owner/name
-      github: github
-      store: queue
-      roles: roles
-      can_call:
-        $self: '*'
-        github: '*'
-        queue: '*'
-        roles:
-        - fleet
-        - get_count
-        tasks:
-        - list
-        '@root':
-        - reflect
       callable_by:
         $self: '*'
         $parent: '*'
@@ -152,20 +118,6 @@ agents:
         - spawn
         - get_count
         - fleet
-        board:
-        - fleet
-        - get_count
-    - id: tasks
-      handler_module: task_registry.tools
-      task_store_id: memory
-      can_call:
-        $self: '*'
-        memory: '*'
-      callable_by:
-        $self: '*'
-        $parent: '*'
-        board:
-        - list
     - id: worker_exec
       handler_module: exec_bridge.tools
       ingress_rule: allow_all_ingress
@@ -231,11 +183,6 @@ agents:
 - id: memory
   callable_by:
     roles: '*'
-    tasks: '*'
 - id: credentials
   callable_by:
     github: '*'
-- id: '@root'
-  callable_by:
-    board:
-    - reflect

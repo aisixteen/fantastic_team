@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::new_team::{
-    BOARD, CREDENTIALS, GITHUB, LEAD, MEMORY, PARENT, ROLES, WORKER_EXEC, WORKER_FILES,
+    CREDENTIALS, GITHUB, LEAD, MEMORY, PARENT, ROLES, WORKER_EXEC, WORKER_FILES,
 };
 
 /// The preset's file name, in the team folder.
@@ -487,8 +487,8 @@ fn grant(rec: &mut Value, field: &str, who: &str, verbs: Value) {
 
 /// Fold the preset into the team's blueprint `doc` (the parsed `blueprint.yaml`, its
 /// `@work` already filled): the credential store, the provider and the connectors are new
-/// records; the lead, the first github connector, the roles registry, the board and the
-/// worker's tools get the preset's values. Every edge is written on both ends.
+/// records; the lead, the first github connector, the roles registry and the worker's
+/// tools get the preset's values. Every edge is written on both ends.
 pub fn overlay(doc: &mut Value, p: &Preset) -> Result<(), String> {
     let top = doc["agents"]
         .as_array_mut()
@@ -566,8 +566,6 @@ pub fn overlay(doc: &mut Value, p: &Preset) -> Result<(), String> {
             added.push(gh);
         }
     }
-    let all_repos: Vec<&str> = p.connectors.iter().map(|c| c.repo.as_str()).collect();
-    entry(lead_kids, BOARD)?["repos"] = json!(all_repos);
     let limits = entry(lead_kids, ROLES)?;
     limits["limits"] = json!({"total": p.total, "per_role": p.per_role});
     entry(lead_kids, WORKER_FILES)?["root"] = json!(worktrees);
@@ -786,10 +784,6 @@ lead:
             )
         );
         assert_eq!(g2["directive"], "Open draft pull requests only.");
-        assert_eq!(
-            rec(&all, "board")["repos"],
-            json!(["aisixteen/fantastic", "aisixteen/fantastic_team"])
-        );
         assert_eq!(
             rec(&all, "roles")["limits"],
             json!({"total": 10, "per_role": {"lead": 2, "worker": 8}})

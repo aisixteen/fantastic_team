@@ -4,9 +4,8 @@
 //! name the tool agents by id in their grants (fantastic's import would give every agent a
 //! fresh id: `github` becomes `github_1`).
 //!
-//! The ids: the main lead [`LEAD`]; under it the roles registry [`ROLES`], the task
-//! registry [`TASKS`], the queue [`QUEUE`], the board [`BOARD`], the GitHub connector
-//! [`GITHUB`] and the worker's tools [`WORKER_EXEC`] and [`WORKER_FILES`]. The cards (the
+//! The ids: the main lead [`LEAD`]; under it the roles registry [`ROLES`], the GitHub
+//! connector [`GITHUB`] and the worker's tools [`WORKER_EXEC`] and [`WORKER_FILES`]. The cards (the
 //! stock roles, embedded meta bundles in [`crate::roles`]) are the kernel's own: registered
 //! in RAM, nothing written to the folder; the registry reads them from the kernel.
 //!
@@ -16,18 +15,12 @@
 use std::path::Path;
 
 use crate::roles;
-use crate::tree::{BOARD_ID, ROLES_ID, TASKS_ID};
+use crate::tree::ROLES_ID;
 
 /// The main lead: the agent the person chats with.
 pub const LEAD: &str = "lead";
 /// The roles registry (`agentic_resources`, crates/agentic_resources).
 pub const ROLES: &str = ROLES_ID;
-/// The task registry (`task_registry`, crates/task_registry).
-pub const TASKS: &str = TASKS_ID;
-/// The queue store: tasks wait there and the board keeps its cache there.
-pub const QUEUE: &str = "queue";
-/// The board: the cache of the open issues and pull requests.
-pub const BOARD: &str = BOARD_ID;
 /// The GitHub connector.
 pub const GITHUB: &str = "github";
 /// The worker's restricted exec.
@@ -49,8 +42,6 @@ pub const LEAD_ROOT_VERBS: [&str; 4] =
     ["await_set", "await_cancel", "create_agent", "delete_agent"];
 /// What the lead may call on the roles registry.
 pub const LEAD_ROLES_VERBS: [&str; 5] = ["roles", "role", "spawn", "get_count", "fleet"];
-/// What the lead may call on the board.
-pub const LEAD_BOARD_VERBS: [&str; 2] = ["board", "rows"];
 
 /// The canvas agent of the app (fantastic's `canvas --port`): a sidecar's canvas.
 pub const CANVAS: &str = crate::tree::CANVAS_ID;
@@ -436,16 +427,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn roles_mode_the_lead_holds_the_registry_and_its_spawn_grants() {
         let (dir, kernel) = team().await;
-        for id in [
-            LEAD,
-            QUEUE,
-            GITHUB,
-            BOARD,
-            ROLES,
-            TASKS,
-            WORKER_EXEC,
-            WORKER_FILES,
-        ] {
+        for id in [LEAD, GITHUB, ROLES, WORKER_EXEC, WORKER_FILES] {
             assert!(kernel.agents.contains_key(&AgentId::from(id)), "{id}");
         }
         let lead = meta(&kernel, LEAD);
@@ -459,7 +441,6 @@ mod tests {
         assert!(!serde_yaml::to_string(&shipped).unwrap().contains("_backend.tools"), "and ships none");
         assert_eq!(lead["can_call"]["roles"], json!(LEAD_ROLES_VERBS));
         assert_eq!(lead["can_call"]["kernel_state"], json!(LEAD_ROOT_VERBS));
-        assert_eq!(lead["can_call"]["board"], json!(LEAD_BOARD_VERBS));
         let reg = meta(&kernel, ROLES);
         assert!(reg.get("tiers").is_none() && reg.get("role_dirs").is_none(), "the roles are bundles; the spawner names the model");
         assert_eq!(reg["limits"]["total"], 3);
@@ -482,7 +463,7 @@ mod tests {
 
     /// The lead spawns through the registry as its card says: a worker with the tier's
     /// backend fields and the card's grants on the tools under their fixed ids, and a
-    /// project_lead (whose card grants the connector, board, queue, tasks and the root),
+    /// project_lead (whose card grants the connector and the root),
     /// within the registry's limit of three.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_lead_spawns_a_worker_and_a_project_lead_through_the_registry() {
@@ -498,7 +479,7 @@ mod tests {
         assert_eq!(wm["model"], "claude-haiku-5-5");
         assert_eq!(wm["memory_store_id"], "memory");
         assert_eq!(wm["spawned_by"], "roles");
-        for tool in [WORKER_EXEC, WORKER_FILES, QUEUE, MEMORY] {
+        for tool in [WORKER_EXEC, WORKER_FILES, MEMORY] {
             assert_eq!(wm["can_call"][tool], "*", "{tool}: {wm:?}");
             assert!(
                 meta(&kernel, tool)["callable_by"]
@@ -513,7 +494,7 @@ mod tests {
             .unwrap_or_else(|| panic!("project_lead: {p}"))
             .to_string();
         let pm = meta(&kernel, &pl);
-        for tool in [GITHUB, BOARD, QUEUE, TASKS, ROOT_ID] {
+        for tool in [GITHUB, ROOT_ID] {
             assert!(pm["can_call"].get(tool).is_some(), "{tool}: {pm:?}");
         }
         let count = ask(&kernel, ROLES, json!({"type": "get_count"})).await;
@@ -639,7 +620,7 @@ mod tests {
     async fn the_cadencer_made_with_create_agent_is_wired_and_delivers_a_digest() {
         let (dir, kernel, sent) = team_with_log().await;
         let edges = json!({
-            "board": ["rows"], "roles": ["fleet", "get_count"], "tasks": ["list"],
+            "roles": ["fleet", "get_count"],
             "kernel_state": ["reflect"], "lead": ["send"],
         });
         let settings = json!({"lead": {"cadence": 120, "stall_after": 600, "quiet": false,
@@ -650,7 +631,7 @@ mod tests {
             &kernel,
             ROOT_ID,
             json!({"type": "create_agent", "id": "cadencer", "parent_id": ROOT_ID,
-                   "handler_module": "team_cadencer.tools", "board": "board", "roles": "roles",
+                   "handler_module": "team_cadencer.tools", "roles": "roles",
                    "group_settings": settings, "can_call": can_call,
                    "callable_by": {"$self": "*", "$parent": "*"}}),
         )

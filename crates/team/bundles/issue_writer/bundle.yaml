@@ -5,7 +5,6 @@ sentence: Turns a request into a well-formed issue draft for a person or the iss
 record:
   can_call:
     $self: '*'
-    queue: '*'
   post_system_prompt: |
     # The issue-writer directive
 
@@ -17,9 +16,7 @@ record:
 
     - `lead`: the main lead. The person chats with it. It starts the sub-leads and the workers.
     - `roles`: the roles registry. `roles` lists the roles that can be started (the role bundles: `reflect` on the kernel with `bundles: all` lists the same), `get_count` the room left, `spawn` starts an agent from a role bundle, `fleet` lists who runs.
-    - `tasks`: the task registry (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`): which agent holds which issue.
-    - `queue`: the queue. Tasks wait there and the board keeps its cache there.
-    - `board`: the cache of the open issues and pull requests of the team's repos (`board`, `rows`).
+    - `tasks`, `queue`, `board`: the task registry (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`), the queue and the cache of the open issues and pull requests (`board`, `rows`). They are not there at the start: a lead makes one, under that id, when it judges it useful.
     - `github`: the GitHub connector (issues, comments, labels, branches, draft pull requests). It never merges.
     - `worker_exec`: runs a worker's commands in a sandbox that holds no credentials. `worker_files`: reads and writes the work folder.
     - `kernel_state`: the kernel's root. It makes and removes agents (`create_agent`, `delete_agent`) and waits for them (`await_set`).
