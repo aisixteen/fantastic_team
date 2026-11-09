@@ -26,5 +26,6 @@ def run(ctx):
     spawned = re.findall(r"<id>(\w+_[0-9a-f]{6,})</id>", ctx.model.raw_bodies[-1])[:2]
     v.check("the lead saw two minted worker ids", len(set(spawned)) == 2, str(spawned))
     v.check("the deleted workers are gone", not any(s in cli.tree(ctx.team) for s in spawned), str(spawned))
+    cli.reports_reached(ctx, v, ["w1 done: adder.py is fixed and committed", "w2 done: muler.py is fixed and committed"])
     cli.check_ins_played(ctx, v)
     return v.finish()

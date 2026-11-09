@@ -17,8 +17,11 @@ from collections import Counter
 
 import json
 import os
+import re
 import subprocess
 import time
+
+from backends.scripted import ScriptedModel
 
 from . import cli, stock, team as team_mod, web
 from .verdict import Skip
@@ -314,3 +317,60 @@ def canvas_end(ctx, v) -> None:
     v.check("--headless opens no port in a folder webui has run in", ports == set(), str(ports))
     v.check("the old webui port refuses connections", web.refuses(int(wport)))
     team.stop()
+
+
+# ---- checkins_busy_stuck (#284) ---------------------------------------------------------
+
+def busy_stuck_start(ctx, v) -> dict:
+    """A lead with the registry (room for 2) and the `sublead` card. Returns the tree before."""
+    cli.start(ctx, roles=True)
+    cli.add_base(ctx)
+    base = set(cli.ids(ctx.team))
+    cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True, runs_agents=True)
+    cli.make_registry(ctx, total=2, roles=cli.roles_dir("checkins_busy_stuck"))
+    new = set(cli.ids(ctx.team)) - base
+    v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
+            new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
+    cli.add_cadencer(ctx)
+    return cli.tree(ctx.team)
+
+
+S1_REPORT = "s1 done: adder.py is fixed and committed"
+
+
+def busy_stuck_end(ctx, v, before: dict, report: str = S1_REPORT) -> None:
+    """The outcome of the busy/stuck run: the lead read the slow sub-lead `generating` on both check-ins
+    and did not stop it (it finished and reported); it read the idle one NOT generating with no new row
+    on both, stopped it and said `task failed: …`; both are deleted and the registry counts none."""
+    team = ctx.team
+    raw = [b for b, l in zip(ctx.model.raw_bodies, ctx.model.request_lanes) if l == "main"][-1]
+    lead = "\n\n".join(b for m in json.loads(raw)["messages"] for b in ScriptedModel.blocks(m))
+    ids = list(dict.fromkeys(re.findall(r"<id>(sublead_[0-9a-f]+)</id>", lead)))[:2]
+    v.check("the lead saw the two minted sub-lead ids", len(ids) == 2, str(ids))
+    busy, stuck = ids[:1] + [""], ids[1:] + [""]
+    seen = re.findall(r"<source>(\w+)</source>\s*<client_id>[^<]*</client_id>\s*<generating>(true|false)</generating>", lead)
+    got = lambda who: [g for s, g in seen if s == who[0]]  # noqa: E731
+    v.check("the slow sub-lead read `generating` on both check-ins", got(busy).count("true") >= 2 and "false" not in got(busy),
+            str(got(busy)))
+    v.check("the idle sub-lead read NOT generating on both check-ins", got(stuck).count("false") >= 2 and "true" not in got(stuck),
+            str(got(stuck)))
+    v.check("the idle sub-lead's history had no new row on the second check-in (the reply is the first's)",
+            "[identical to the reply in row" in lead, "no repeated history reply")
+    stops = [a for a, verb in team_mod.log_calls(team.log()) if verb == "stop"]
+    v.check("the lead stopped the idle sub-lead", stuck[0] in stops, str(stops))
+    v.check("the lead did not stop the generating one", busy[0] not in stops, str(stops))
+    cli.reports_reached(ctx, v, [report])
+    rows, after = [], None
+    while True:
+        res = team.send("lead", {"type": "history", **({"after": after} if after else {})}, timeout=60).get("result") or {}
+        rows += res.get("rows") or []
+        after = res.get("next")
+        if not after:
+            break
+    v.check("the lead said `task failed: …` for the stopped one", any("task failed:" in json.dumps(r) for r in rows),
+            f"{len(rows)} rows")
+    tree = cli.without_new_schedulers(team, cli.tree(team), before)
+    v.check("the records are the ones it started with (a lead's scheduler may stay) (both sub-leads deleted)", tree == before,
+            f"before {sorted(before)} after {sorted(tree)}")
+    count = team.send("roles", {"type": "get_count"})["result"]
+    v.check("the registry counts nothing running", count["running"] == 0, str(count))

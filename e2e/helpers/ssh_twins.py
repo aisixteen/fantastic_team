@@ -80,7 +80,9 @@ SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tre
              "headless_and_canvas")
 # The twin of #253 (git credentials through the bridge) has a script of its own and no gpu twin.
 GIT_TWIN = "git_credentials"
-SCRIPTED = SCENARIOS + (GIT_TWIN,)
+# The twin of #284 (a lead's check-ins: a generating sub-lead is left alone, an idle one is stopped) has no gpu twin either.
+BUSY_TWIN = "checkins_busy_stuck"
+SCRIPTED = SCENARIOS + (GIT_TWIN, BUSY_TWIN)
 
 # The fixes, one per side: the local side fixes adder.py, the remote side muler.py.
 ADD = ("adder.py", "a - b", "a + b")
@@ -404,10 +406,12 @@ def say_first(turns: list[dict], say: str = SAY) -> list[dict]:
 
 
 def fix_turns(fix, msg: str, lane: str | None, pull: bool = False, after=(), remote: bool = False,
-              say: str | None = None) -> list[dict]:
+              say: str | None = None, report: str | None = None) -> list[dict]:
     """A worker's turns: (pull,) test, fix, test, commit, push, done. On its own kernel's exec agent;
     `remote`: on the box's, through the bridge (a master backend working in the remote workspace).
-    `say`: words before its first call (a backend the remote watches: see `SAY`)."""
+    `say`: words before its first call (a backend the remote watches: see `SAY`). `report`: the run ends with
+    this plain `send` to its parent instead of `done` (the send blocks until the parent is idle, so the parent
+    deletes the worker as soon as it has read it: a worker's `done` after it would never be served)."""
     calls = [cli.run_call("git", "pull", "-q", "--ff-only")] if pull else []
     calls += [cli.run_call("python3", "test_calc.py"), cli.replace_call(*fix), cli.run_call("python3", "test_calc.py"),
               cli.run_call("git", "-c", "user.name=Worker", "-c", "user.email=worker@example.invalid",
@@ -415,7 +419,7 @@ def fix_turns(fix, msg: str, lane: str | None, pull: bool = False, after=(), rem
               cli.run_call("git", "push", "-q", "origin", "HEAD:main")]
     if remote:
         calls = [remote_run(c) for c in calls]
-    turns = [t(c, lane) for c in calls] + [t({"name": "done"}, lane)]
+    turns = [t(c, lane) for c in calls] + [t(cli.report_call(report) if report else {"name": "done"}, lane)]
     if after:
         turns[0]["after"] = list(after)
     if say:
@@ -512,23 +516,29 @@ def script_precreated_tree() -> list[dict]:
             + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True))
 
 
+W1_REPORT = "w1 done: adder.py is fixed and pushed"
+S1_REPORT = "s1 done: adder.py is fixed and pushed"
+
+
 def script_lead_spawns_two() -> list[dict]:
-    """The lead spawns w1 and w2 on the master's registry. w1 fixes adder.py and pushes. Then the remote
+    """The lead spawns w1 and w2 on the master's registry. w1 fixes adder.py and pushes and reports to the lead
+    with a plain send; the lead deletes it as soon as it has read it. Then the remote
     agent sends w2 its work and watches it (w2 is minted when spawned: the operator opens it to the leg
     when the script reaches that turn); w2's tools are the box's exec agent: it pulls, fixes muler.py
-    and pushes. The lead deletes both."""
+    and pushes. The lead deletes w2 too."""
     lead = open_turns() + [
         t({"target": "roles", "type": "spawn", "args": {"role": "worker", "task": "[lane:w1] Fix adder.py, commit and push."}}),
         t({"target": "roles", "type": "spawn", "args": {"role": "worker"}}),
         *check_ins_open("lead"),
+        t(AWAIT),  # w1's report (a plain send) wakes the lead: it deletes w1 at once, then hands w2 its work
+        t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}),
         t(work("{{minted:2}}", "w2", "[lane:w2] Pull, fix muler.py, commit and push."), after=["w1"],
           grant=["{{minted:2}}"]),
         t(remote_log_call(), after=["w2"]),
-        t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}),
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:2}}"}}),
         check_ins_close("lead"),
     ] + close_turns()
-    return lead + fix_turns(ADD, "Fix add", "w1") + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True, say=SAY)
+    return lead + fix_turns(ADD, "Fix add", "w1", report=W1_REPORT) + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True, say=SAY)
 
 
 def script_leads_spawn_leads() -> list[dict]:
@@ -555,6 +565,43 @@ def script_leads_spawn_leads() -> list[dict]:
                     t({"name": "done"}, "s2")])
     return (lead + s1 + s2 + fix_turns(ADD, "Fix add", "w1")
             + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True))
+
+
+BUSY_S = 8  # the slow sub-lead's first turn: it stays generating across the lead's two check-ins
+STUCK_SAY = "task failed: the second sub-lead was not generating and added no row in two check-ins in a row; I stopped it."
+
+
+def script_checkins_busy_stuck() -> list[dict]:
+    """The lead fixes muler.py in the box itself (through the bridge) and pushes; then it spawns s1 and s2 on
+    the master's registry. s1 pulls, fixes adder.py, pushes and reports with a plain send, after a slow first
+    turn (it is generating the whole time); s2 awaits with nothing in flight (its run ends: idle, no new row).
+    The lead's two check-ins (its own scripted turns; a tick is a notice the plug answers outside the script)
+    read each sub-lead's `status` and `history`: s1 is generating both times and is left alone, s2 is not and
+    adds no row both times, so the lead stops it; it waits for s1's report, deletes both and says `task failed:`."""
+    sub1, sub2 = "{{minted:1}}", "{{minted:2}}"
+    ask = lambda to, verb: t({"target": to, "type": verb, "args": {}})  # noqa: E731
+    checks = []
+    for n in range(2):
+        checks += [dict(ask(sub1, "status"), delay=2), ask(sub2, "status"), ask(sub2, "history")]
+    remote = [t(remote_run(c)) for c in (
+        cli.run_call("git", "pull", "-q", "--ff-only"), cli.replace_call(*MUL), cli.run_call("python3", "test_calc.py"),
+        cli.run_call("git", "-c", "user.name=Worker", "-c", "user.email=worker@example.invalid", "commit", "-q", "-a",
+                     "-m", "Fix mul"),
+        cli.run_call("git", "push", "-q", "origin", "HEAD:main"))]
+    close = close_turns()
+    close[-1] = dict(close[-1], say=STUCK_SAY)
+    lead = open_turns() + remote + [
+        t({"target": "roles", "type": "spawn", "args": {"role": "sublead", "task": "[lane:s1] Fix adder.py and push; it takes a while."}}),
+        t({"target": "roles", "type": "spawn", "args": {"role": "sublead", "task": "[lane:s2] Wait for a message that never comes."}}),
+        *check_ins_open("lead"), *checks, ask(sub2, "stop"),
+        t(AWAIT),  # s1's report wakes the lead
+        t({"target": "kernel", "type": "delete_agent", "args": {"id": sub1}}),
+        t({"target": "kernel", "type": "delete_agent", "args": {"id": sub2}}),
+        check_ins_close("lead"),
+    ] + close
+    s1 = fix_turns(ADD, "Fix add", "s1", pull=True, report=S1_REPORT)
+    s1[0]["delay"] = BUSY_S
+    return lead + s1 + [t(AWAIT, "s2")]
 
 
 # ---- the git twin (#253): the remote's git credentials come through the bridge --------------
@@ -749,7 +796,7 @@ def script_headless_and_canvas() -> list[dict]:
 CANVAS_PHASES = (11, 4, 5, 6)  # the lead's turns per message of script_headless_and_canvas (lane r: 7 more)
 
 
-SCRIPTS = {GIT_TWIN: script_git_credentials, "single_lead": script_single_lead, "precreated_1_2": script_precreated_1_2,
+SCRIPTS = {GIT_TWIN: script_git_credentials, BUSY_TWIN: script_checkins_busy_stuck, "single_lead": script_single_lead, "precreated_1_2": script_precreated_1_2,
            "precreated_tree": script_precreated_tree, "lead_spawns_two": script_lead_spawns_two,
            "leads_spawn_leads": script_leads_spawn_leads, "headless_and_canvas": script_headless_and_canvas}
 

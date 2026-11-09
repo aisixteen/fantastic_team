@@ -72,6 +72,7 @@ CLI_SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated
 GPU_TESTS = [f"{g}/{n}" for g in ("gpu_cli", "gpu_cli_ssh") for n in CLI_SCENARIOS]
 SSH_TESTS = [f"cli_ssh/{n}" for n in CLI_SCENARIOS]
 GIT_TWIN = f"cli_ssh/{ssh_twins.GIT_TWIN}"  # #253: the box's git credentials come through the bridge
+BUSY_TWIN = f"cli_ssh/{ssh_twins.BUSY_TWIN}"  # #284: a lead's check-ins leave a generating sub-lead alone, stop an idle one
 
 
 # --- tests -------------------------------------------------------------------
@@ -1827,6 +1828,17 @@ def selftest_git_credentials(v: Verdict) -> None:
     v.check("cli_ssh/git_credentials exists, collects, and is free on the scripted plug",
             bool(t) and collect_probe(t["dir"])[0] and t["costs"] == "free" and t["plug"] == "scripted" and all(
                 os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py")))
+    try:
+        scripted.ScriptedModel(T.script_checkins_busy_stuck()).bind(**values)
+        left = ""
+    except ValueError as e:
+        left = str(e)
+    v.check("every placeholder of the busy/stuck twin's script is one the box binds", not left, left)
+    for n in (BUSY_TWIN, BUSY_TWIN.replace("cli_ssh/", "cli/")):
+        t = by.get(n)
+        v.check(f"{n} exists, collects, and is free on the scripted plug",
+                bool(t) and collect_probe(t["dir"])[0] and t["costs"] == "free" and t["plug"] == "scripted" and all(
+                    os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py")))
 
 
 def _raises(f) -> bool:
