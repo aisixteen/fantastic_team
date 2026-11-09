@@ -36,13 +36,13 @@ def run(ctx):
         number[name] = pr["result"].get("number")
         v.check(f"{name}: a draft PR was opened", number[name] in forge.prs and forge.prs[number[name]]["draft"], str(pr))
     before = forge.rev("main")
-    merges = lambda: forge.to("PUT", f"/repos/{F.REPO}/pulls/{number['green']}/merge")
+    expect = {"red": "tests (failure)", "pending": "tests (in_progress)"}
     for name in ("red", "pending"):
         r = team.send("github", {"type": "merge", "repo": F.REPO, "number": number[name]})
         replies.append(r)
         text = json.dumps(r)
-        check = "tests"
-        v.check(f"{name}: merge is refused naming the check", "error" in json.dumps(r["result"]) and check in text, text[:300])
+        v.check(f"{name}: merge is refused naming the check and its state",
+                "error" in json.dumps(r["result"]) and f"not passed: {expect[name]}" in text, text[:300])
         v.check(f"{name}: the PR is still open and main did not move",
                 forge.prs[number[name]]["state"] == "open" and forge.rev("main") == before)
     v.check("no merge request reached the forge for the red or pending PR",
