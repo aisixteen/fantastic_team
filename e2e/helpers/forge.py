@@ -178,8 +178,8 @@ class Forge:
                           "actor": {"login": MAINTAINER}, "created_at": "2026-01-01T00:00:00Z"}]
         if method == "GET" and path == f"{r}/pulls":
             return 200, []
-        # the PR the fake forge made (number 7): what `pr_status` reads
-        if method == "GET" and path == f"{r}/pulls/7":
+        # the PR the fake forge made (number 7) when the run opened none: what `pr_status` reads
+        if method == "GET" and path == f"{r}/pulls/7" and 7 not in self.prs:
             return 200, {"number": 7, "state": "open", "draft": True, "head": {"sha": PR_SHA}}
         if method == "GET" and path == f"{r}/commits/{PR_SHA}/check-runs":
             return 200, {"total_count": 0, "check_runs": []}
