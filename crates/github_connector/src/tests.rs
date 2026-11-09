@@ -20,7 +20,7 @@ use crate::{GithubConnectorBundle, HANDLER_MODULE};
 
 pub(crate) const APP_ID: &str = "12345";
 pub(crate) const STORE: &str = "creds";
-const REF: &str = "github/app";
+pub(crate) const REF: &str = "github/app";
 
 static ISOLATE: Once = Once::new();
 
@@ -116,6 +116,21 @@ pub(crate) async fn requests_to(gh: &MockServer, p: &str) -> Vec<wiremock::Reque
 
 /// A kernel with the github agent and its app credential in the store.
 pub(crate) async fn fx(extra: Value) -> Fx {
+    fx_fields(
+        extra,
+        json!({"app_id": APP_ID, "private_key": test_key().0.clone()}),
+    )
+    .await
+}
+
+/// The personal token the tests use. Built from pieces so no token-shaped literal
+/// sits in the source.
+pub(crate) fn pat() -> String {
+    format!("{}{}{}", "gh", "p_", "P4t".repeat(12))
+}
+
+/// Like `fx`, with the stored credential fields given.
+pub(crate) async fn fx_fields(extra: Value, fields: Value) -> Fx {
     isolate();
     let tmp = TempDir::new().unwrap();
     let gh = MockServer::start().await;
@@ -155,10 +170,7 @@ pub(crate) async fn fx(extra: Value) -> Fx {
     let set = k
         .send(vec![Item::new(
             STORE,
-            json!({"type": "set", "ref": REF, "fields": {
-                "app_id": APP_ID,
-                "private_key": test_key().0.clone(),
-            }}),
+            json!({"type": "set", "ref": REF, "fields": fields}),
         )])
         .await
         .remove(0);
@@ -419,7 +431,7 @@ async fn directive_reflect_and_unknown_verbs() {
 
 use wiremock::matchers::{any, path_regex};
 
-fn basic_of(token: &str) -> String {
+pub(crate) fn basic_of(token: &str) -> String {
     format!(
         "Basic {}",
         base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"))
@@ -452,7 +464,7 @@ async fn git_call(f: &Fx, payload: Value) -> Value {
 }
 
 /// A git agent over a fresh clone, with worktree `w` on `work/gh` holding one commit.
-async fn setup(f: &Fx, remote: &str) {
+pub(crate) async fn setup(f: &Fx, remote: &str) {
     let tmp = f.tmp.path();
     let seed = tmp.join("seed");
     std::fs::create_dir_all(&seed).unwrap();
@@ -502,7 +514,7 @@ async fn setup(f: &Fx, remote: &str) {
 }
 
 /// A git forge that answers every request 401, so git asks for credentials.
-async fn forge() -> MockServer {
+pub(crate) async fn forge() -> MockServer {
     let s = MockServer::start().await;
     Mock::given(any())
         .respond_with(
@@ -814,7 +826,7 @@ async fn push_refuses_a_remote_off_the_allowlist_or_off_github() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn missing_credentials_name_the_ref() {
+async fn an_undeclared_ref_is_local_only() {
     let f = fx(json!({})).await;
     let made =
         f.k.send(vec![Item::new(
@@ -840,13 +852,9 @@ async fn missing_credentials_name_the_ref() {
             .await
             .remove(0)
             .result;
-    assert!(
-        r["error"]
-            .as_str()
-            .unwrap()
-            .starts_with("team_github: credential `github/nope` in `creds`:"),
-        "{r}"
-    );
+    assert_eq!(r["error"], crate::app::LOCAL_ONLY, "{r}");
+    assert_eq!(r["reason"], "not_found", "{r}");
+    assert!(f.gh.received_requests().await.unwrap().is_empty());
 }
 
 /// The `Authorization` header of every request the mock got on `p`, in order.

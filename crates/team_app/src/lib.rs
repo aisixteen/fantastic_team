@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 
@@ -35,12 +35,6 @@ pub enum Target {
         remote_port: u16,
         local_port: u16,
     },
-    /// The GitHub App setup flow of the headless binary (`setup github`).
-    Setup {
-        binary: String,
-        name: String,
-        org: Option<String>,
-    },
 }
 
 /// A host for `--tunnel`: letters, digits and `. _ @ -`, not starting with `-`
@@ -50,11 +44,6 @@ fn valid_ssh_host(h: &str) -> bool {
         && !h.starts_with('-')
         && h.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '@' | '-'))
-}
-
-/// A GitHub app or org name for `--setup-github`: `[A-Za-z0-9-]{1,39}`.
-fn valid_slug(s: &str) -> bool {
-    (1..=39).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// Parse the value of `--tunnel`: `HOST` or `HOST:REMOTE_PORT`. The error never
@@ -90,32 +79,6 @@ pub fn tunnel_args(host: &str, remote_port: u16, local_port: u16) -> Vec<String>
     ]
 }
 
-/// The headless binary's setup command line: `setup github --name N [--org O]`.
-/// Names are checked when the flags are parsed; no secret ever goes here.
-pub fn setup_args(name: &str, org: Option<&str>) -> Vec<String> {
-    let mut v: Vec<String> = ["setup", "github", "--name", name]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    if let Some(o) = org {
-        v.push("--org".to_string());
-        v.push(o.to_string());
-    }
-    v
-}
-
-/// The setup page's URL in a line of the child's output: the first word that is
-/// `http://127.0.0.1:<port>/...`. Anything else gives None.
-pub fn setup_url(line: &str) -> Option<String> {
-    line.split_whitespace()
-        .find(|w| {
-            w.strip_prefix("http://127.0.0.1:")
-                .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
-                && validate_loopback(w).is_ok()
-        })
-        .map(str::to_string)
-}
-
 /// A port the OS says is free on loopback right now.
 pub fn free_port() -> std::io::Result<u16> {
     let l = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -132,7 +95,7 @@ fn next_value<'a, I: Iterator<Item = &'a String>>(
 }
 
 /// Parse `--attach <url>` / `--port <n>` / `--binary <path>` / `--tunnel
-/// HOST[:PORT]` (with `--ssh <path>`) / `--setup-github NAME` (with `--org O`).
+/// HOST[:PORT]` (with `--ssh <path>`).
 /// With no flags: start the headless binary on `DEFAULT_PORT`.
 pub fn target_from_args(args: &[String]) -> Result<Target, String> {
     let mut attach = None;
@@ -140,8 +103,6 @@ pub fn target_from_args(args: &[String]) -> Result<Target, String> {
     let mut binary = None;
     let mut tunnel = None;
     let mut ssh = None;
-    let mut setup = None;
-    let mut org = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -157,40 +118,11 @@ pub fn target_from_args(args: &[String]) -> Result<Target, String> {
             "--binary" => binary = Some(next_value(&mut it, arg)?),
             "--tunnel" => tunnel = Some(parse_tunnel(&next_value(&mut it, arg)?)?),
             "--ssh" => ssh = Some(next_value(&mut it, arg)?),
-            "--setup-github" => {
-                let v = next_value(&mut it, arg)?;
-                if !valid_slug(&v) {
-                    return Err("bad --setup-github: use 1-39 letters, digits or -".into());
-                }
-                setup = Some(v);
-            }
-            "--org" => {
-                let v = next_value(&mut it, arg)?;
-                if !valid_slug(&v) {
-                    return Err("bad --org: use 1-39 letters, digits or -".into());
-                }
-                org = Some(v);
-            }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
-    if org.is_some() && setup.is_none() {
-        return Err("--org needs --setup-github".into());
-    }
     if ssh.is_some() && tunnel.is_none() {
         return Err("--ssh needs --tunnel".into());
-    }
-    if let Some(name) = setup {
-        if attach.is_some() || port.is_some() || tunnel.is_some() {
-            return Err(
-                "--setup-github cannot be combined with --attach, --port or --tunnel".into(),
-            );
-        }
-        return Ok(Target::Setup {
-            binary: binary.unwrap_or_else(|| HEADLESS_BINARY.to_string()),
-            name,
-            org,
-        });
     }
     if let Some((host, remote_port)) = tunnel {
         if attach.is_some() || port.is_some() || binary.is_some() {
@@ -283,8 +215,6 @@ pub fn web_url(target: &Target) -> String {
         Target::Start { port, .. } => format!("http://127.0.0.1:{port}{READY_PATH}"),
         Target::Attach { url } => url.clone(),
         Target::Tunnel { local_port, .. } => format!("http://127.0.0.1:{local_port}{READY_PATH}"),
-        // the setup flow prints its own page URL; there is none to wait for here
-        Target::Setup { .. } => String::new(),
     }
 }
 
@@ -298,7 +228,6 @@ pub fn ready_url(target: &Target) -> String {
         Target::Start { port, .. } => format!("http://127.0.0.1:{port}{READY_PATH}"),
         Target::Attach { url } => url.clone(),
         Target::Tunnel { local_port, .. } => format!("http://127.0.0.1:{local_port}{READY_PATH}"),
-        Target::Setup { .. } => String::new(),
     }
 }
 
@@ -381,7 +310,6 @@ pub async fn launch(
             wait_ready(&ready, ready_timeout).await?;
             return Ok(Launched { child: None, url });
         }
-        Target::Setup { .. } => return Err("setup is started with start_setup".to_string()),
     };
     prepare_team_dir(target, dir)?;
     let binary = program;
@@ -416,61 +344,6 @@ pub async fn launch(
         Outcome::Ready(Err(e)) => {
             let _ = child.kill().await;
             Err(e)
-        }
-    }
-}
-
-/// Run `<binary> setup github --name N [--org O]`: forward the child's stdout and
-/// wait for the page URL it prints (see [`setup_url`]). The child stays up, with
-/// its remaining output still forwarded, until the flow ends or `stop` kills it.
-/// Nothing but [`setup_args`] reaches the child.
-pub async fn start_setup(
-    binary: &str,
-    name: &str,
-    org: Option<&str>,
-    timeout: Duration,
-) -> Result<Launched, String> {
-    let mut child = Command::new(binary)
-        .args(setup_args(name, org))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| format!("failed to start {binary}: {e}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or("no stdout from the setup child")?;
-    let mut lines = BufReader::new(stdout).lines();
-    let found = tokio::time::timeout(timeout, async {
-        while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
-            println!("{line}");
-            if let Some(url) = setup_url(&line) {
-                return Ok(url);
-            }
-        }
-        Err("the setup ended without a page URL".to_string())
-    })
-    .await;
-    match found {
-        Ok(Ok(url)) => {
-            tokio::spawn(async move {
-                while let Ok(Some(line)) = lines.next_line().await {
-                    println!("{line}");
-                }
-            });
-            Ok(Launched {
-                child: Some(child),
-                url,
-            })
-        }
-        Ok(Err(e)) => {
-            let _ = child.kill().await;
-            Err(e)
-        }
-        Err(_) => {
-            let _ = child.kill().await;
-            Err(format!("no setup page URL within {timeout:?}"))
         }
     }
 }
@@ -867,14 +740,6 @@ mod tests {
             url: "http://127.0.0.1:1/x".into(),
         };
         assert_eq!(ready_url(&attach), "http://127.0.0.1:1/x");
-        assert_eq!(
-            ready_url(&Target::Setup {
-                binary: "b".into(),
-                name: "n".into(),
-                org: None
-            }),
-            ""
-        );
     }
 
     #[test]
@@ -899,19 +764,11 @@ mod tests {
     }
 
     #[test]
-    fn web_url_for_attach_is_the_url_the_user_named_and_setup_is_empty() {
+    fn web_url_for_attach_is_the_url_the_user_named() {
         let attach = Target::Attach {
             url: "http://127.0.0.1:1/x".into(),
         };
         assert_eq!(web_url(&attach), "http://127.0.0.1:1/x");
-        assert_eq!(
-            web_url(&Target::Setup {
-                binary: "b".into(),
-                name: "n".into(),
-                org: None
-            }),
-            ""
-        );
     }
 
     #[test]
@@ -1067,83 +924,5 @@ mod tests {
         l.stop().await.unwrap();
         assert!(l.child.as_mut().unwrap().try_wait().unwrap().is_some());
         l.stop().await.unwrap();
-    }
-
-    #[test]
-    fn setup_args_carry_no_secret() {
-        assert_eq!(
-            setup_args("my-app", Some("org")),
-            args(&["setup", "github", "--name", "my-app", "--org", "org"])
-        );
-        assert_eq!(
-            setup_args("my-app", None),
-            args(&["setup", "github", "--name", "my-app"])
-        );
-        let t = target_from_args(&args(&["--setup-github", "my-app", "--org", "o-1"])).unwrap();
-        assert_eq!(
-            t,
-            Target::Setup {
-                binary: HEADLESS_BINARY.into(),
-                name: "my-app".into(),
-                org: Some("o-1".into())
-            }
-        );
-        let long = "a".repeat(40);
-        for bad in ["my app", "a=b", long.as_str(), ""] {
-            assert!(
-                target_from_args(&args(&["--setup-github", bad])).is_err(),
-                "`{bad}` accepted"
-            );
-        }
-        assert!(target_from_args(&args(&["--setup-github", "n", "--org", "a b"])).is_err());
-        assert!(target_from_args(&args(&["--org", "o"])).is_err());
-        for a in setup_args("my-app", Some("org")) {
-            assert!(!a.contains("key") && !a.contains("token"), "{a}");
-        }
-    }
-
-    #[test]
-    fn setup_url_is_picked_from_child_output() {
-        assert_eq!(
-            setup_url("open this URL in your browser to create the app:"),
-            None
-        );
-        assert_eq!(
-            setup_url("http://127.0.0.1:5555/").as_deref(),
-            Some("http://127.0.0.1:5555/")
-        );
-        assert_eq!(setup_url("http://example.com:5555/"), None);
-        assert_eq!(setup_url("http://127.0.0.1.evil.com/"), None);
-        assert_eq!(setup_url("http://127.0.0.1:5555/?k=1"), None);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn start_setup_forwards_args_and_returns_the_page_url() {
-        let _exec = EXEC_LOCK.lock().await;
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("argv");
-        let bin = fake_binary(
-            dir.path(),
-            "fake",
-            &format!(
-                "printf '%s\\n' \"$@\" > '{}'\necho 'open this URL in your browser to create the app:'\necho http://127.0.0.1:5555/\nexec sleep 30",
-                log.display()
-            ),
-        );
-        let mut l = start_setup(&bin, "my-app", Some("org"), Duration::from_secs(10))
-            .await
-            .unwrap();
-        assert_eq!(l.url, "http://127.0.0.1:5555/");
-        let seen = std::fs::read_to_string(&log).unwrap();
-        assert_eq!(
-            seen.lines().collect::<Vec<_>>(),
-            ["setup", "github", "--name", "my-app", "--org", "org"]
-        );
-        l.stop().await.unwrap();
-        let quiet = fake_binary(dir.path(), "quiet", "echo nothing here");
-        assert!(start_setup(&quiet, "n", None, Duration::from_secs(5))
-            .await
-            .is_err());
     }
 }

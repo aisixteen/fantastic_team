@@ -14,7 +14,7 @@ You are reading the text of the `fantastic_team` binary, the team's start-up. Us
 Run it from the directory the team lives in (`cd` there first).
 
 - The command line is fantastic's, unchanged (`fantastic readme` documents it): `--headless` (no screen, no port), `webui [--port N] [--host ADDR]` (serves the team page; the team's own word, refused with `canvas`), `canvas [--port N] [--host ADDR]` (serves fantastic's canvas), `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`, `migrate-home`, `readme`. It runs in the directory it is started in: there is no `--dir`. `--tui`, a bare `--port`, `--instructions` and `--resend-instructions` are gone; fantastic refuses them.
-- `fantastic_team setup github` and `fantastic_team ai-readme` are the team's own first words.
+- `fantastic_team ai-readme` is the team's own first word.
 
 Nothing is read from a config file: the team is the agent records in `.fantastic/agents/`. Make them with a recipe and `send` (`create_agent` payloads, under ids you choose; see section 3). The team uses no blueprints.
 

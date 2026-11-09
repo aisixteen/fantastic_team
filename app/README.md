@@ -110,11 +110,6 @@ headless `fantastic_team` binary for you and waits until its web UI answers:
   never starts with `-`. `--ssh <path>` names another ssh program. The keys stay
   in your ssh-agent: the app passes no key and never sees one. Stopping the app
   stops the tunnel.
-- `--setup-github NAME [--org ORG]` runs `fantastic_team setup github --name NAME
-  [--org ORG]` (NAME and ORG are `[A-Za-z0-9-]{1,39}`; nothing else is passed),
-  forwards its output and shows the setup page it prints: in the window with
-  `--features tauri`, else as a URL on the terminal. The app key never passes
-  through the app; the flow stores it in the credential agent.
 
 Ctrl-C stops the child. If the child exits before its web UI answers, the
 launcher prints the exit status and exits with code 1.
@@ -190,8 +185,6 @@ Not in this slice:
   canvas; the in-process kernel (#87); a real browser check of the page; a
   test that runs the team start with a live canvas page (the place step is
   covered only with a stand-in canvas).
-- GitHub app setup UI (#30): `--setup-github` opens the existing flow's page; the
-  flow itself is unchanged.
 - Mobile.
 - Signing and notarization stay on the maintainer's laptop.
 - App end-to-end test (launch, window, quit) on each desktop platform.

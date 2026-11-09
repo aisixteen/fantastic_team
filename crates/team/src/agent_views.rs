@@ -250,8 +250,8 @@ pub(crate) fn leaks(s: &str) -> bool {
         .any(|p| s.contains(p))
 }
 
-/// The github connector: repos, the recent calls and the permission and rate state,
-/// from a whitelist of the connector's `reflect` reply.
+/// The github connector: repos, the recent calls, the permission and rate state and
+/// the active auth mode (read-only), from a whitelist of the connector's `reflect` reply.
 pub fn github_view(reflect: &Value) -> Value {
     let repos: Vec<String> = reflect["repos"]
         .as_array()
@@ -296,15 +296,38 @@ pub fn github_view(reflect: &Value) -> Value {
         (Some(l), Some(r), Some(t)) => format!("{r}/{l} left, resets at {t}"),
         _ => "none yet".to_string(),
     };
+    let label = match reflect["auth"]["mode"].as_str() {
+        Some("personal") => "personal token (env ref)",
+        Some("app") => "GitHub App (env refs)",
+        Some("local") => "local only",
+        Some("invalid") => "credential unusable",
+        _ => "unknown",
+    };
+    let note = reflect["auth"]["note"]
+        .as_str()
+        .filter(|n| n.len() <= 300 && !leaks(n))
+        .map(str::to_string);
     let summary = vec![
         format!("{} repos, {} recent calls", repos.len(), calls.len()),
         format!("rate {rate}"),
+        format!("auth: {label}"),
     ];
     let allow = if repos.is_empty() {
         "none".to_string()
     } else {
         repos.join(", ")
     };
+    let mut state_rows = vec![
+        vec!["rate".into(), rate],
+        vec![
+            "permissions".into(),
+            format!("allowlisted repos: {allow}; drafts only; {refused} refused"),
+        ],
+        vec!["auth".into(), label.to_string()],
+    ];
+    if let Some(n) = note {
+        state_rows.push(vec!["note".into(), n]);
+    }
     let calls = if calls.is_empty() {
         vec![vec!["none yet".into(), "-".into(), "-".into()]]
     } else {
@@ -321,17 +344,7 @@ pub fn github_view(reflect: &Value) -> Value {
                 repos.iter().map(|r| vec![r.clone(), api.clone()]).collect(),
             ),
             section("recent calls", &["verb", "target", "result"], calls),
-            section(
-                "state",
-                &["what", "value"],
-                vec![
-                    vec!["rate".into(), rate],
-                    vec![
-                        "permissions".into(),
-                        format!("allowlisted repos: {allow}; drafts only; {refused} refused"),
-                    ],
-                ],
-            ),
+            section("state", &["what", "value"], state_rows),
         ],
     );
     // Last step: nothing that looks like a credential leaves in the model.
@@ -596,6 +609,28 @@ mod tests {
     }
 
     #[test]
+    fn github_view_shows_the_auth_mode_and_the_local_note() {
+        let note =
+            "no GitHub credential defined: local work only (set `GH_TOKEN`, or an app id + key)";
+        let mut r = reflect();
+        r["auth"] = json!({"mode": "local", "note": note});
+        let m = github_view(&r);
+        let st = rows(&m, 2);
+        assert!(st.contains(&row(&["auth", "local only"])), "{st:?}");
+        assert!(st.contains(&row(&["note", note])), "{st:?}");
+        assert_eq!(m["summary"][2], "auth: local only");
+        r["auth"] = json!({"mode": "personal"});
+        let st = rows(&github_view(&r), 2);
+        assert!(st.contains(&row(&["auth", "personal token (env ref)"])));
+        assert!(st.iter().all(|x| x[0] != "note"));
+        r["auth"] = json!({"mode": "app"});
+        let st = rows(&github_view(&r), 2);
+        assert!(st.contains(&row(&["auth", "GitHub App (env refs)"])));
+        let st = rows(&github_view(&reflect()), 2);
+        assert!(st.contains(&row(&["auth", "unknown"])));
+    }
+
+    #[test]
     fn github_view_without_calls_or_rate_says_none_yet() {
         let m = github_view(&json!({"repos": ["a/b"], "rate": null, "recent_calls": []}));
         assert_eq!(rows(&m, 1), vec![row(&["none yet", "-", "-"])]);
@@ -610,6 +645,7 @@ mod tests {
         r["token"] = json!(tok);
         r["private_key"] = json!(pem);
         r["authorization"] = json!(format!("Bearer {tok}"));
+        r["auth"] = json!({"mode": "personal", "note": tok});
         r["directive"] = json!(pem);
         r["recent_calls"] = json!([
             {"verb": "issue_view", "target": format!("acme/{tok}"), "result": "ok", "token": tok},

@@ -6,7 +6,7 @@ This guide installs `fantastic_team` from source. It covers what is in the repo 
 
 - There are **no releases yet**. Build from source. Releases are tracked in #15 and #251.
 - `fantastic` (the kernel) is a **git dependency** on branch `main` (see `Cargo.toml`). `Cargo.lock` pins the commit. There is no separate `fantastic_shift` binary in this repo.
-- The GitHub App is registered with `fantastic_team setup github --name NAME [--org ORG]` (step 3). The by-hand steps there are the fallback.
+- GitHub auth is configuration: a personal token from `GH_TOKEN`, or your own app by env refs (step 3).
 
 ## 1. Prerequisites
 
@@ -45,26 +45,25 @@ Both builds are reproducible in intent (#137): the same commit gives the same by
 - **CI.** The `repro` job runs with `-f e2e=true`. It builds the same commit twice, in two folders and two target directories, and compares `SHA256SUMS`. It is strict by default: a difference fails the job; `-f strict=false` turns it into a warning.
 - **The canvas zip.** fantastic's canvas packer writes its zip with the current file times and extra fields, so the zip embedded in the binary changes on every build. This is fixed in fantastic #409 (see [docs/fantastic-notes.md](fantastic-notes.md)); the pinned fantastic has it, and `tests/repro_scripts.sh` packs the canvas twice to check it.
 
-## 3. Register the GitHub App
+## 3. GitHub auth
 
-Only needed for the GitHub side (pull requests, issue comments, labels, reading the task queue). Register your own app with:
+Only needed for the GitHub side (pull requests, issue comments, labels). The mode is configuration, set by env refs; nothing pastes or stores a token.
 
-    ./target/release/fantastic_team setup github --name NAME [--org ORG]
+- Personal: export `GH_TOKEN` (a fine-grained token with Contents, Pull requests and Issues read/write, Metadata read). The stock `github_credentials` store reads it at each call; no command is needed.
+- App: create and install your own app on GitHub by hand, with these permissions, then name it in team.yaml with `env: {app_id: VAR, private_key: VAR}` (the key variable holds the PEM text or the path of the .pem file):
+  - Contents: read and write
+  - Pull requests: read and write
+  - Issues: read and write
+  - Checks: read
+  - Metadata: read
+  - Actions: read
+- Unset means local only: the team works with worktrees, branches and commits, and every GitHub verb says so.
 
-It opens a local page that posts the app's manifest to GitHub, receives the redirect, and stores the app id and private key in the credential store. The key is never written to a file or printed. `--org` creates the app under an organization. The setup asks for exactly these permissions:
-
-- Contents: read and write
-- Pull requests: read and write
-- Issues: read and write
-- Checks: read
-- Metadata: read
-- Actions: read
-
-By hand instead, store its `app_id` and its PEM `private_key` under one ref in fantastic's credential store, bound to `api_url` (default `https://api.github.com`). The key stays in the store. Never write it in a file, a config, or a doc.
+Never write a value in a file, a config, or a doc.
 
 ## 4. Models and keys
 
-Keys go in the credential store, never in a file. This repo does not define provider environment variable names, so none are listed here. The GitHub app key goes in the store as in step 3.
+Keys go in the credential store, never in a file. This repo does not define provider environment variable names, so none are listed here. The GitHub credential comes from env refs as in step 3.
 
 For remote boxes, `scripts/remote-start.sh` reads the values of the variable names passed in `--keys` on your laptop and pipes them to the remote shell over SSH stdin. They are never in argv, a file, or shell history.
 
@@ -87,9 +86,8 @@ The terminal UI (needs a terminal):
 
     ./target/release/fantastic_team
 
-Help block, the first words the team adds to fantastic's (`setup github`, `ai-readme`):
+The first word the team adds to fantastic's (`ai-readme`):
 
-    usage: fantastic_team setup github --name NAME [--org ORG]
     fantastic_team ai-readme
 
 `--dir`, `--port` outside `canvas` and `webui`, `--tui`, `--instructions` and `--resend-instructions` are not flags any more; fantastic refuses them.

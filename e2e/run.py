@@ -945,7 +945,7 @@ def selftest_source(v: Verdict) -> None:
 
 
 NEW_TESTS = ("app/launcher_start_attach_stop", "app/handle_serves_port", "app/window_per_platform",
-             "app/attach_remote", "app/connector_setup", "dispatcher/chat_history_send_stream",
+             "app/attach_remote", "dispatcher/chat_history_send_stream",
              "dispatcher/chat_features")
 
 
@@ -1262,7 +1262,7 @@ def selftest_app_helpers(v: Verdict) -> None:
 def selftest_new_tests_collect(v: Verdict) -> None:
     """Every app/ and dispatcher/ test has its files, collects, and is in the free tier."""
     by = {t["name"]: t for t in discover()}
-    v.check("the seven #37 e2e tests exist", set(NEW_TESTS) <= set(by), str(sorted(set(NEW_TESTS) - set(by))))
+    v.check("the six #37 e2e tests exist", set(NEW_TESTS) <= set(by), str(sorted(set(NEW_TESTS) - set(by))))
     bad = []
     for n in NEW_TESTS:
         t = by.get(n)

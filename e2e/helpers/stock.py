@@ -53,12 +53,13 @@ def operator_holds(team, targets: dict) -> None:
 
 # ---- the base: credentials, the worker's tools, the forge's connectors -----------------
 
-def credential_refs(ctx, github: bool = True) -> dict:
+def credential_refs(ctx, github: bool = True, github_mode: str = "app") -> dict:
     refs = {f"model/{ctx.vars['model_host']}": {"host": ctx.vars["model_host"],
                                                 "env": {"api_key": "E2E_MODEL_KEY"}}}
     if github:
-        refs["github/app"] = {"host": ctx.vars["forge_host"],
-                              "env": {"app_id": "E2E_APP_ID", "private_key": "E2E_APP_PEM"}}
+        env = ({"token": "E2E_GH_TOKEN"} if github_mode == "personal"
+               else {"app_id": "E2E_APP_ID", "private_key": "E2E_APP_PEM"})
+        refs["github/app"] = {"host": ctx.vars["forge_host"], "env": env}
     return refs
 
 
@@ -99,9 +100,9 @@ def make_tools(ctx, team, queue: bool = True) -> None:
         create(team, id="queue", parent_id="user", handler_module="ram_store.tools")
 
 
-def make_credentials(ctx, team, github: bool = True) -> None:
+def make_credentials(ctx, team, github: bool = True, github_mode: str = "app") -> None:
     create(team, id="credentials", parent_id="user", handler_module="credential_store.tools",
-           backend="env", refs=credential_refs(ctx, github))
+           backend="env", refs=credential_refs(ctx, github, github_mode))
 
 
 def make_forge(ctx, team, puller: bool = True, github_only: bool = False) -> None:

@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
-use crate::tests::{fx, mock_app, requests_to, test_key, token};
+use crate::tests::{fx, fx_fields, mock_app, pat, requests_to, test_key, token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_key_the_jwt_and_the_token_never_leave_the_agent() {
@@ -127,4 +127,71 @@ async fn the_key_the_jwt_and_the_token_never_leave_the_agent() {
             "secret {i} in the saved state"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_personal_token_never_leaves_the_agent() {
+    let f = fx_fields(json!({}), json!({"token": pat()})).await;
+    for (p, body) in [
+        ("/user", json!({"login": "me", "id": 7})),
+        ("/repos/acme/widgets/issues", json!([])),
+        (
+            "/repos/acme/widgets/issues/3",
+            json!({"number": 3, "title": "t", "state": "open", "body": "b", "labels": []}),
+        ),
+        ("/repos/acme/widgets/issues/3/comments", json!([])),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&f.gh)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/issues/99"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"message": "Not Found"})))
+        .mount(&f.gh)
+        .await;
+    let states: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let tap = states.clone();
+    f.k.add_state_subscriber(Arc::new(move |ev, body| {
+        let mut s = ev.to_string();
+        if let Some(b) = body {
+            s.push_str(&String::from_utf8_lossy(&b.bytes));
+        }
+        tap.lock().unwrap().push(s);
+    }));
+    let calls = vec![
+        json!({"type": "reflect"}),
+        json!({"type": "directive"}),
+        json!({"type": "whoami"}),
+        json!({"type": "issues", "repo": "acme/widgets"}),
+        json!({"type": "issue_view", "repo": "acme/widgets", "number": 3}),
+        json!({"type": "issue_view", "repo": "acme/widgets", "number": 99}),
+        json!({"type": "issues", "repo": "evil/other"}),
+    ];
+    let secret = pat();
+    for c in calls {
+        let r = f.call(c).await;
+        assert!(!serde_json::to_string(&r).unwrap().contains(&secret), "{r}");
+    }
+    let rows = fantastic_kernel::test_support::rows_about(
+        &f.k,
+        &fantastic_kernel::AgentId::from("github"),
+    );
+    for row in &rows {
+        let text = serde_json::to_string(row).unwrap();
+        if text.contains("\"get\"") && text.contains("token") {
+            continue;
+        }
+        assert!(!text.contains(&secret), "the token in a row");
+    }
+    for st in states.lock().unwrap().iter() {
+        if st.contains("\"get\"") && st.contains("token") {
+            continue;
+        }
+        assert!(!st.contains(&secret), "the token in a state event");
+    }
+    let saved = serde_json::to_string(&f.k.save_json()).unwrap();
+    assert!(!saved.contains(&secret), "the token in the saved state");
 }

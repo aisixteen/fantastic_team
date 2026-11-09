@@ -89,9 +89,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// The blueprint's ids with their parents, in order.
-    const TREE: [(&str, &str); 8] = [
+    const TREE: [(&str, &str); 9] = [
         (LEAD, "user"),
         (GITHUB, LEAD),
+        ("github_credentials", LEAD),
         (ROLES, LEAD),
         (WORKER_EXEC, LEAD),
         (WORKER_FILES, LEAD),

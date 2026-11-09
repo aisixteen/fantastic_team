@@ -1,5 +1,5 @@
 //! #219: the team binary takes fantastic's command line unchanged. It adds its bundles
-//! and two first words of its own (`setup github`, `ai-readme`), and nothing
+//! and one first word of its own (`ai-readme`), and nothing
 //! else: the flags it used to parse (`--dir`, a bare `--port`, `--tui`, `--instructions`,
 //! `--resend-instructions`, `--workers`, `--leads`, `--per-lead`) are fantastic's
 //! unknown words now. The old team config file is read nowhere.
@@ -116,9 +116,6 @@ fn the_team_s_own_first_words_are_still_the_teams() {
     let o = run(&["ai-readme"]);
     assert!(o.status.success());
     assert_eq!(text(&o.stdout), fantastic_team::AI_README);
-    let o = run(&["setup"]);
-    assert_eq!(o.status.code(), Some(2));
-    assert!(text(&o.stderr).contains("usage: fantastic_team setup github"));
 }
 
 #[cfg(unix)]

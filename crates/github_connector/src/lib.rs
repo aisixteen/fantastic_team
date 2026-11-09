@@ -1,16 +1,18 @@
-//! The github connector agent (`team_github.tools`): one GitHub App, bound by
-//! configuration. It pushes work branches through a git connector agent, opens
-//! draft pull requests, and reads and writes issues, comments, labels and PR status
-//! on an allowlist of repositories.
+//! The github connector agent (`team_github.tools`): a personal token or a GitHub
+//! App, bound by configuration. It pushes work branches through a git connector
+//! agent, opens draft pull requests, and reads and writes issues, comments, labels
+//! and PR status on an allowlist of repositories. Without a credential it is local
+//! only: every GitHub verb says so.
 //!
-//! NO APP IDENTITY IN CODE: the app id, key, owner and repo names all come from the
-//! record and the credential store.
+//! NO IDENTITY IN CODE: the token or app id and key, owner and repo names all come
+//! from the record and the credential store. The mode is which fields the ref holds:
+//! `token` (personal) or `app_id` + `private_key` (app).
 //!
-//! THE SECRET RULE: the app's private key is read from the credential store at each
-//! call. A JWT and an installation token are minted per call, live only in local
-//! variables of that call, and never appear in a reply, an error, a log line, a
-//! record, a payload sent to another agent, argv, a URL or a file. Every error
-//! string passes through `redact` before it is returned.
+//! THE SECRET RULE: the credential is read from the credential store at each call.
+//! In app mode a JWT and an installation token are minted per call. Neither they nor
+//! a personal token live anywhere but local variables of that call, and never appear
+//! in a reply, an error, a log line, a record, a payload sent to another agent, argv,
+//! a URL or a file. Every error string passes through `redact` before it is returned.
 #![deny(missing_docs)]
 
 mod api;
@@ -22,6 +24,8 @@ mod verbs;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_auth;
 #[cfg(test)]
 mod tests_read_file;
 #[cfg(test)]
@@ -44,7 +48,7 @@ const NAME: &str = "team_github";
 /// The readme shown by `reflect` and the kernel.
 pub const README: &str = include_str!("readme.md");
 /// One-line sentence of what the agent is.
-pub const SENTENCE: &str = "github connector — a GitHub App bound by configuration: push via a git agent, draft pull requests, issues, comments, labels and PR status on allowlisted repos.";
+pub const SENTENCE: &str = "github connector — a personal token or a GitHub App, bound by configuration (env refs): push via a git agent, draft pull requests, issues, comments, labels and PR status on allowlisted repos; local only without a credential.";
 
 const BAD_ARG: &str = "bad_arg";
 const UNHANDLED: &str = "unhandled";
@@ -59,7 +63,7 @@ pub(crate) fn record_schema() -> &'static Value {
     static S: OnceLock<Value> = OnceLock::new();
     S.get_or_init(|| {
         json!({"fields": [
-            Field::new("app", "map", "{credentials: {store, ref}} — the ref holds fields app_id and private_key (PEM), bound to api_url's host").required().json(),
+            Field::new("app", "map", "{credentials: {store, ref}} — the ref holds `token` (a personal token) or `app_id` + `private_key` (a GitHub App; PEM text or a path to the .pem), bound to api_url's host; no credential = local only").required().json(),
             Field::new("repos", "list", "the allowlist: [\"owner/name\", …] — every other repo is refused").required().json(),
             Field::new("api_url", "str", "the GitHub API root (GitHub Enterprise: https://<host>/api/v3)").default(json!(DEFAULT_API)).json(),
             Field::new("git", "str", "the id of a git connector agent (team_git.tools) whose worktrees push uses").json(),
@@ -215,10 +219,10 @@ impl Bundle for GithubConnectorBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
-            "reflect": "reflect → {id, sentence, repos, api_url, git, directive, recent_calls: [{verb, target, result}] (newest last, at most 50), rate: {limit, remaining, reset}|null}",
+            "reflect": "reflect → {id, sentence, repos, api_url, git, directive, recent_calls: [{verb, target, result}] (newest last, at most 50), rate: {limit, remaining, reset}|null, auth: {mode: personal|app|local|invalid, note?}}",
             "boot": "boot → nothing",
             "directive": "read this before using the connector → {directive}",
-            "whoami": "whoami → {app: {id, slug, name}, repos, api_url}",
+            "whoami": "whoami → {app: {id, slug, name}} (app) or {user: {login, id}} (personal), plus repos, api_url",
             "push": "push {repo, branch, path} → {repo, branch, path, pushed}",
             "pr_create": "pr_create {repo, branch, title, body?} → {repo, number, url, draft, base} (draft only)",
             "issues": "issues {repo, label?, state?} → {repo, issues: [{number, title, state, labels}]}",

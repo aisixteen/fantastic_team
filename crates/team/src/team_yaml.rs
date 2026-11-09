@@ -803,13 +803,29 @@ lead:
     }
 
     #[test]
-    fn a_folder_with_no_preset_seeds_the_plain_blueprint() {
+    fn a_folder_with_no_preset_seeds_the_gh_token_env_ref() {
         let d = dir();
         let all = flat(d.path());
-        assert!(all
+        assert!(all.iter().all(|r| r["id"] != "anthropic"));
+        let stores: Vec<_> = all
             .iter()
-            .all(|r| r["id"] != "anthropic" && r["handler_module"] != "credential_store.tools"));
-        assert_eq!(rec(&all, "github")["repos"], json!(["owner/name"]));
+            .filter(|r| r["handler_module"] == "credential_store.tools")
+            .collect();
+        assert_eq!(stores.len(), 1);
+        let s = rec(&all, "github_credentials");
+        assert_eq!(s["backend"], "env");
+        assert_eq!(
+            s["refs"],
+            json!({"github": {"host": "api.github.com", "env": {"token": "GH_TOKEN"}}})
+        );
+        assert_eq!(s["callable_by"]["github"], json!(["get"]));
+        let g = rec(&all, "github");
+        assert_eq!(
+            g["app"],
+            json!({"credentials": {"store": "github_credentials", "ref": "github"}})
+        );
+        assert_eq!(g["can_call"]["github_credentials"], json!(["get"]));
+        assert_eq!(g["repos"], json!(["owner/name"]));
     }
 
     #[test]

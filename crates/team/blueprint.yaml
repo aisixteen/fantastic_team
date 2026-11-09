@@ -20,6 +20,7 @@
 #   +-- user                 (stock; parent entry)
 #   |   +-- lead             the main lead (the `lead` role bundle), the agent the person chats with
 #   |       +-- github         the GitHub connector
+#   |       +-- github_credentials  the connector's GitHub credential (GH_TOKEN, env ref)
 #   |       +-- roles          the roles registry
 #   |       +-- worker_exec    the worker's restricted exec
 #   |       +-- worker_files   the worker's file bridge on the work folder
@@ -88,8 +89,8 @@ agents:
       handler_module: team_github.tools
       app:
         credentials:
-          store: credentials
-          ref: github/app
+          store: github_credentials
+          ref: github
       repos:
       - owner/name
       directive: Push a work branch and open a draft pull request. Never the default branch, never a force,
@@ -97,9 +98,26 @@ agents:
       can_call:
         $self: '*'
         credentials: '*'
+        github_credentials:
+        - get
       callable_by:
         $self: '*'
         $parent: '*'
+    - id: github_credentials
+      # the github connector's credential by env ref (#303): a personal token read from GH_TOKEN
+      # at each call, no value at rest. GH_TOKEN unset = the connector works local only. An
+      # own GitHub App comes from a team.yaml preset (env: {app_id: VAR, private_key: VAR}).
+      handler_module: credential_store.tools
+      backend: env
+      refs:
+        github:
+          host: api.github.com
+          env:
+            token: GH_TOKEN
+      callable_by:
+        $self: '*'
+        github:
+        - get
     - id: roles
       handler_module: agentic_resources.tools
       limits:
