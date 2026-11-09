@@ -223,7 +223,7 @@ Facts about the web UI at this commit, found while writing these tests:
 
 ## Two builds
 
-The general build (stock exec) and the GitHub build (`patches/github-exec.patch`, built by `scripts/build-github.sh`) share the `any` tests. `exec/general_allows_gh` runs on the general binary only; the four `dispatcher/*` tests (`digest_reaches_driver`, `quiet_heartbeat`, `stop_asks_then_stops`, `hand_task_add_worker`) are free and run on either build; `exec/github_refuses_forge_calls`, `secrets/github_no_credential_in_worker` and `task/github_pr_through_connector` on the GitHub binary only.
+The general build (stock exec) and the GitHub build (`patches/github-exec.patch`, built by `scripts/build-github.sh`) share the `any` tests. `exec/general_allows_gh` runs on the general binary only; the four `dispatcher/*` tests (`digest_reaches_driver`, `quiet_heartbeat`, `stop_asks_then_stops`, `hand_task_add_worker`) are free and run on either build; `exec/github_refuses_forge_calls`, `secrets/github_no_credential_in_worker` and `task/github_pr_through_connector` on the GitHub binary only. `task/github_merge_through_connector` (#273, free, either build) sends the team's `git`/`github` verbs itself and drives the `merge` verb against the fake forge's PRs, check runs (`forge.checks`), ready mutation and `PUT .../merge`: green draft merged, red and pending refused by check name, no token in a reply or log.
 
 ## How a free test runs
 
