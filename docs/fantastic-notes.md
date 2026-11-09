@@ -170,3 +170,9 @@ The agents the person makes later (`dispatcher`, `cadencer`, `pack`, `pack_listi
 `Cargo.lock` now pins fantastic `fd9351a`.
 
 - **The call checker reports any tag outside a call** (#525), an empty one included: `[unsupported tag — not read]` for `<invoke name="x"></invoke>`, `<tool_call></tool_call>`, `<b>`; code spans and fences are code, not tags.
+
+## Pin at `4a517d3`
+
+`Cargo.lock` now pins fantastic `4a517d3`.
+
+- **A turn's default output budget is 260000 tokens** (#531), never above the model's own maximum: a record with no `max_tokens` asks for the model's limit, not 16384.
