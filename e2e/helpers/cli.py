@@ -209,6 +209,7 @@ def check_ins(ctx, rec: dict) -> None:
 # THE PROVIDER: one per team, the connection to the plug's model (its kind, endpoint, key, the
 # models it serves and its default). Every AI agent of a test is an AI chat (`ai_chat.tools`)
 # completing through it; none names a provider field. Made under the first chat (the lead).
+SCHEDULER = "scheduler.tools"  # a lead's check-in scheduler: at most one per lead, may stay
 PROVIDER = "provider"
 PROVIDER_STORE = "provider_store"
 CHAT = "ai_chat.tools"
@@ -357,6 +358,15 @@ def schedules_left(ctx) -> list[str]:
     return left
 
 
+def schedulers_per_lead(ctx) -> dict:
+    """lead id -> how many scheduler agents it has (a lead keeps at most one)."""
+    per: dict = {}
+    for a in ctx.team.agents().values():
+        if a.get("handler_module") == SCHEDULER:
+            per[a.get("parent_id")] = per.get(a.get("parent_id"), 0) + 1
+    return per
+
+
 def check_ins_played(ctx, v, lanes=("main",)) -> None:
     """Each scripted lead (its lane) made its own scheduler, a tick of it reached the lead, and the
     no schedule is left at the end (its scheduler agent may stay). Call it while the team runs."""
@@ -365,6 +375,8 @@ def check_ins_played(ctx, v, lanes=("main",)) -> None:
             f"lanes with a check-in: {sorted(got)}, {ctx.model.check_in_turns} requests")
     left = schedules_left(ctx)
     v.check("no schedule is left (a scheduler agent may stay)", not left, str(left))
+    per = schedulers_per_lead(ctx)
+    v.check("no more than one scheduler per lead", all(n <= 1 for n in per.values()), str(per))
 
 
 def worker_model() -> str | None:
