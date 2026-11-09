@@ -56,6 +56,7 @@ async fn route(t: &str, id: &AgentId, p: &Value, kernel: &Arc<Kernel>, cfg: &Cfg
         "whoami" => whoami(id, kernel, cfg).await,
         "push" => push::push(id, kernel, cfg, p).await,
         "pr_create" => pr_create(id, kernel, cfg, p).await,
+        "merge" => merge(id, kernel, cfg, p).await,
         "issues" => issues(id, kernel, cfg, p).await,
         "issue_view" => issue_view(id, kernel, cfg, p).await,
         "label_events" => label_events(id, kernel, cfg, p).await,
@@ -768,6 +769,153 @@ async fn pr_status(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, p: &Value) -> 
     }
     .await;
     finish(r, &token)
+}
+
+/// `merge {repo, number, method?: squash|merge}`: squash-merge a green pull request.
+/// Refuses unless it is open, targets the default branch and every check on its head
+/// commit passed. A draft is marked ready first.
+async fn merge(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, p: &Value) -> Value {
+    const V: &str = "merge";
+    const MERGE_METHOD_TEXT: &str = "team_github merge: `method` must be squash or merge";
+    const READY: &str = "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { id } } }";
+    let repo = match repo_arg(p, V, cfg) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let number = match number_arg(p, V) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    let method = match p.get("method") {
+        None | Some(Value::Null) => "squash".to_string(),
+        Some(Value::String(s)) if matches!(s.as_str(), "squash" | "merge") => s.clone(),
+        Some(other) => return bad(MERGE_METHOD_TEXT.into(), "method", other.clone()),
+    };
+    let api = Api::new(cfg);
+    let token = match app::token_for(id, kernel, cfg, &api, V, &repo).await {
+        Ok(t) => t,
+        Err(e) => return e,
+    };
+    let r: Result<Value, Value> = async {
+        let info = ge(api
+            .call(V, Method::GET, &format!("/repos/{repo}"), &[], &token, None)
+            .await)?;
+        let default = info["default_branch"].as_str().unwrap_or("").to_string();
+        let pr = ge(api
+            .call(V, Method::GET, &format!("/repos/{repo}/pulls/{number}"), &[], &token, None)
+            .await)?;
+        let state = pr["state"].as_str().unwrap_or("").to_string();
+        if state != "open" {
+            return Err(bad(
+                format!("team_github merge: #{number} is {state}, not open"),
+                "state",
+                json!(state),
+            ));
+        }
+        let base = pr["base"]["ref"].as_str().unwrap_or("").to_string();
+        if base != default {
+            return Err(bad(
+                format!("team_github merge: #{number} targets `{base}`, not the default branch `{default}`"),
+                "base",
+                json!(base),
+            ));
+        }
+        let sha = pr["head"]["sha"].as_str().unwrap_or("").to_string();
+        let runs = ge(api
+            .call(
+                V,
+                Method::GET,
+                &format!("/repos/{repo}/commits/{sha}/check-runs"),
+                &[("per_page", "100".into())],
+                &token,
+                None,
+            )
+            .await)?;
+        let checks: Vec<Value> = runs["check_runs"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|c| json!({"name": c["name"], "status": c["status"], "conclusion": c["conclusion"]}))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let summary = checks_summary(&checks);
+        if summary != "success" {
+            let why = if checks.is_empty() {
+                "there are no checks on the head commit".to_string()
+            } else {
+                let open: Vec<String> = checks
+                    .iter()
+                    .filter(|c| {
+                        c["status"].as_str() != Some("completed")
+                            || matches!(
+                                c["conclusion"].as_str(),
+                                Some("failure" | "timed_out" | "cancelled" | "action_required" | "startup_failure")
+                            )
+                    })
+                    .map(|c| {
+                        format!(
+                            "{} ({})",
+                            c["name"].as_str().unwrap_or("?"),
+                            c["conclusion"].as_str().or(c["status"].as_str()).unwrap_or("?")
+                        )
+                    })
+                    .collect();
+                format!("not passed: {}", open.join(", "))
+            };
+            return Err(bad(
+                format!("team_github merge: #{number} is not green ({summary}): {why}"),
+                "number",
+                json!(number),
+            ));
+        }
+        if pr["draft"].as_bool() == Some(true) {
+            let reply = ge(api
+                .call(
+                    V,
+                    Method::POST,
+                    "/graphql",
+                    &[],
+                    &token,
+                    Some(&json!({"query": READY, "variables": {"id": pr["node_id"]}})),
+                )
+                .await)?;
+            if reply["errors"].is_array() {
+                return Err(bad(
+                    format!("team_github merge: #{number} could not be marked ready: {}", reply["errors"]),
+                    "number",
+                    json!(number),
+                ));
+            }
+        }
+        let made = ge(api
+            .call(
+                V,
+                Method::PUT,
+                &format!("/repos/{repo}/pulls/{number}/merge"),
+                &[],
+                &token,
+                Some(&json!({"merge_method": method, "sha": sha})),
+            )
+            .await)?;
+        if made["merged"].as_bool() != Some(true) {
+            return Err(bad(
+                format!(
+                    "team_github merge: GitHub did not merge #{number}: {}",
+                    made["message"].as_str().unwrap_or("no message")
+                ),
+                "number",
+                json!(number),
+            ));
+        }
+        Ok(json!({"merged": true, "sha": made["sha"], "number": number}))
+    }
+    .await;
+    let mut out = finish(r, &token);
+    if out.get("error").is_some() && out.get("reason").is_none() {
+        out["reason"] = json!("github_error");
+    }
+    out
 }
 
 /// The most commits and files `staleness` lists for one repo.

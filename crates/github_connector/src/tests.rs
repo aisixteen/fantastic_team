@@ -413,7 +413,7 @@ async fn directive_reflect_and_unknown_verbs() {
         .as_str()
         .unwrap()
         .contains("`number` must be a positive int"));
-    let m = f.call(json!({"type": "merge"})).await;
+    let m = f.call(json!({"type": "nope"})).await;
     assert_eq!(m["reason"], "unhandled");
 }
 
@@ -1346,4 +1346,229 @@ async fn reflect_after_calls_holds_no_token_or_key() {
             }
         }
     }
+}
+
+fn green() -> Value {
+    json!([{"name": "build", "status": "completed", "conclusion": "success"}])
+}
+
+/// Mount a pull request #7 on acme/widgets, its checks, the merge PUT and the graphql mutation.
+async fn merge_setup(f: &Fx, draft: bool, base: &str, checks: Value, status: u16, reply: Value) {
+    mock_app(&f.gh).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"default_branch": "trunk"})))
+        .mount(&f.gh)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "state": "open", "draft": draft, "node_id": "PR_node",
+            "base": {"ref": base}, "head": {"sha": "abc"}
+        })))
+        .mount(&f.gh)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widgets/commits/abc/check-runs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"check_runs": checks})))
+        .mount(&f.gh)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/repos/acme/widgets/pulls/7/merge"))
+        .respond_with(ResponseTemplate::new(status).set_body_json(reply))
+        .mount(&f.gh)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {"markPullRequestReadyForReview": {"pullRequest": {"id": "PR_node"}}}
+        })))
+        .mount(&f.gh)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_squashes_a_green_pr() {
+    let f = fx(json!({})).await;
+    merge_setup(
+        &f,
+        false,
+        "trunk",
+        green(),
+        200,
+        json!({"merged": true, "sha": "merged123", "message": "ok"}),
+    )
+    .await;
+    let r = f
+        .call(json!({"type": "merge", "repo": "acme/widgets", "number": 7}))
+        .await;
+    assert_eq!(
+        r,
+        json!({"merged": true, "sha": "merged123", "number": 7}),
+        "{r}"
+    );
+    let puts = requests_to(&f.gh, "/repos/acme/widgets/pulls/7/merge").await;
+    assert_eq!(puts.len(), 1);
+    let body: Value = serde_json::from_slice(&puts[0].body).unwrap();
+    assert_eq!(body["merge_method"], "squash");
+    assert_eq!(body["sha"], "abc");
+    assert!(requests_to(&f.gh, "/graphql").await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_makes_a_draft_ready_first() {
+    let f = fx(json!({})).await;
+    merge_setup(
+        &f,
+        true,
+        "trunk",
+        green(),
+        200,
+        json!({"merged": true, "sha": "merged123"}),
+    )
+    .await;
+    let r = f
+        .call(json!({"type": "merge", "repo": "acme/widgets", "number": 7}))
+        .await;
+    assert_eq!(r["merged"], true, "{r}");
+    let reqs = f.gh.received_requests().await.unwrap();
+    let gql = reqs
+        .iter()
+        .position(|q| q.url.path() == "/graphql")
+        .expect("graphql request");
+    let put = reqs
+        .iter()
+        .position(|q| q.url.path() == "/repos/acme/widgets/pulls/7/merge")
+        .expect("merge request");
+    assert!(gql < put, "the draft must be made ready before the merge");
+    let gb: Value = serde_json::from_slice(&reqs[gql].body).unwrap();
+    assert!(gb["query"]
+        .as_str()
+        .unwrap()
+        .contains("markPullRequestReadyForReview"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_refuses_a_red_or_pending_check_naming_it_and_sends_no_merge() {
+    let f = fx(json!({})).await;
+    merge_setup(
+        &f,
+        false,
+        "trunk",
+        json!([
+            {"name": "lint", "status": "completed", "conclusion": "failure"},
+            {"name": "build", "status": "in_progress", "conclusion": null}
+        ]),
+        200,
+        json!({"merged": true, "sha": "x"}),
+    )
+    .await;
+    let r = f
+        .call(json!({"type": "merge", "repo": "acme/widgets", "number": 7}))
+        .await;
+    let e = r["error"].as_str().unwrap();
+    assert!(e.contains("lint") && e.contains("build"), "{r}");
+    assert_eq!(r["reason"], "bad_arg");
+    assert!(requests_to(&f.gh, "/repos/acme/widgets/pulls/7/merge")
+        .await
+        .is_empty());
+    assert!(requests_to(&f.gh, "/graphql").await.is_empty());
+
+    let g = fx(json!({})).await;
+    merge_setup(&g, false, "trunk", json!([]), 200, json!({"merged": true})).await;
+    let none = g
+        .call(json!({"type": "merge", "repo": "acme/widgets", "number": 7}))
+        .await;
+    assert!(
+        none["error"].as_str().unwrap().contains("no checks"),
+        "{none}"
+    );
+    assert!(requests_to(&g.gh, "/repos/acme/widgets/pulls/7/merge")
+        .await
+        .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_refuses_a_repo_off_the_allowlist_with_no_request() {
+    let f = fx(json!({})).await;
+    let r = f
+        .call(json!({"type": "merge", "repo": "evil/other", "number": 7}))
+        .await;
+    assert_eq!(r["reason"], "bad_arg", "{r}");
+    assert!(f.gh.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_refuses_rebase_and_unknown_methods_with_no_request() {
+    let f = fx(json!({})).await;
+    for m in ["rebase", "fast-forward", ""] {
+        let r = f
+            .call(json!({"type": "merge", "repo": "acme/widgets", "number": 7, "method": m}))
+            .await;
+        assert_eq!(r["reason"], "bad_arg", "{r}");
+        assert!(
+            r["error"].as_str().unwrap().contains("squash or merge"),
+            "{r}"
+        );
+    }
+    assert!(f.gh.received_requests().await.unwrap().is_empty());
+
+    merge_setup(
+        &f,
+        false,
+        "trunk",
+        green(),
+        200,
+        json!({"merged": true, "sha": "s"}),
+    )
+    .await;
+    let r = f
+        .call(json!({"type": "merge", "repo": "acme/widgets", "number": 7, "method": "merge"}))
+        .await;
+    assert_eq!(r["merged"], true, "{r}");
+    let puts = requests_to(&f.gh, "/repos/acme/widgets/pulls/7/merge").await;
+    let body: Value = serde_json::from_slice(&puts[0].body).unwrap();
+    assert_eq!(body["merge_method"], "merge");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_refuses_a_base_that_is_not_the_default_branch() {
+    let f = fx(json!({})).await;
+    merge_setup(&f, false, "dev", green(), 200, json!({"merged": true})).await;
+    let r = f
+        .call(json!({"type": "merge", "repo": "acme/widgets", "number": 7}))
+        .await;
+    assert!(r["error"].as_str().unwrap().contains("`dev`"), "{r}");
+    assert!(requests_to(&f.gh, "/repos/acme/widgets/pulls/7/merge")
+        .await
+        .is_empty());
+    assert!(requests_to(&f.gh, "/graphql").await.is_empty());
+}
+
+async fn merge_refusal_is_named(status: u16, message: &str) {
+    let f = fx(json!({})).await;
+    merge_setup(
+        &f,
+        false,
+        "trunk",
+        green(),
+        status,
+        json!({"message": message}),
+    )
+    .await;
+    let r = f
+        .call(json!({"type": "merge", "repo": "acme/widgets", "number": 7}))
+        .await;
+    let e = r["error"].as_str().unwrap();
+    assert!(e.contains(&status.to_string()), "{r}");
+    assert!(e.contains(message), "{r}");
+    assert!(r.get("reason").is_some(), "{r}");
+    assert_eq!(r["status"], json!(status));
+    assert!(!r.to_string().contains(&token()), "token leaked: {r}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merge_github_405_and_409_come_back_as_error_and_reason_without_the_token() {
+    merge_refusal_is_named(405, "Pull Request is not mergeable").await;
+    merge_refusal_is_named(409, "Head branch was modified").await;
 }
