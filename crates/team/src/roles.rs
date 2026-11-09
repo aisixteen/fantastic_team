@@ -93,9 +93,21 @@ mod tests {
 
     #[test]
     fn the_lead_deletes_a_worker_that_is_done() {
-        let d = card("lead").directive;
-        assert!(d.contains("deleted by YOU, as soon as you know it"), "lead card must say who deletes a finished worker");
-        assert!(d.contains("`delete_agent`"));
+        // the registry never deletes a finished worker (agentic_resources: "NO CLEANUP",
+        // `delete_agent` is the only way out), so the spawner must: the worker card says
+        // the spawner deletes, and the lead card must say it does so as soon as the
+        // worker is done, not only at the end of the queue.
+        let lead = card("lead").directive;
+        let (_, end) = lead.split_once("## The end").expect("lead card has an end section");
+        assert!(
+            end.contains("deleted by YOU, as soon as you know it") && end.contains("`delete_agent`"),
+            "lead card must say who deletes a finished worker"
+        );
+        assert!(
+            end.contains("`done`") && end.contains("in that same turn"),
+            "the lead deletes when the worker sends done, in that same turn"
+        );
+        assert!(card("worker").directive.contains("The agent that spawned an agent deletes it"));
     }
 
     fn words(s: &str) -> Vec<String> {

@@ -987,7 +987,7 @@ async fn delegated_limits_bound_subtree() {
 }
 
 #[tokio::test]
-async fn finished_workers_stay_counted_until_the_spawner_deletes_them() {
+async fn done_frees_nothing_only_the_spawners_delete_agent_does() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
