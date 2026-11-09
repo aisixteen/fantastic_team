@@ -238,7 +238,8 @@ def workers_on_model(ctx, v, label: str = "") -> None:
 
 def check_ins_ran(ctx, v, label: str = "") -> None:
     """Each lead given check-ins (`cli.CHECK_INS`) made its own scheduler and was woken by it (a
-    `[check-in` row in its conversation), and no scheduler is left once the leads are done."""
+    `[check-in` row in its conversation), and no schedule is left once the leads are done (the scheduler
+    agent may stay)."""
     for lead in getattr(ctx, "check_in_leads", []):
         # the lead's own `schedule` call holds the tag too: only a row it RECEIVED counts
         try:
@@ -251,8 +252,8 @@ def check_ins_ran(ctx, v, label: str = "") -> None:
         except subprocess.TimeoutExpired:
             ticks, hit = [], {"error": "busy"}
         v.check(f"{label}{lead} made its own scheduler and a check-in woke it", bool(ticks), str(hit)[:200])
-    left = [i for i, a in ctx.team.agents().items() if a.get("handler_module") == "scheduler.tools"]
-    v.check(f"{label}no scheduler is left", not left, str(left))
+    left = cli.schedules_left(ctx)
+    v.check(f"{label}no schedule is left (a scheduler agent may stay)", not left, str(left))
 
 
 def check_key_not_on_disk(ctx, v) -> None:
