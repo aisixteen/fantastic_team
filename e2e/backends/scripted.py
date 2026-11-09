@@ -50,6 +50,11 @@ whatever the agent waits on: a `done` there would end a chain the notice landed 
 turn of any lane and is counted in `notice_turns`, so a script stays the test's own steps. So is
 the kernel's request to rebuild a woken agent's working context (`rebuild_turns`).
 
+LATE WAKES. A worker's report is a plain `send` whose reply (the parent's answer) can reach the worker after its
+last turn and before the parent deletes it; the request that wakes it (the newest message is `[reply to N · <agent> send …]`)
+is answered `await` outside the script, counted in `late_turns`. A worker's lane is also known by its id (the system
+prompt's "You are `id`"), so such a request with a fresh conversation, which holds no marker, is not taken for the lead's.
+
 CHECK-INS. A lead's own scheduler wakes it with a `send` whose text starts `[check-in <name>]`. A tick
 is a notice too (answered `await` outside the script when it is all the newest message holds); every
 request whose conversation holds one is counted in `check_in_turns`, so a test sees the tick reached it.
@@ -201,6 +206,8 @@ class ScriptedModel:
         self.check_in_turns = 0  # requests whose conversation holds a scheduler's check-in
         self.check_in_lanes: set[str] = set()  # the lanes those requests came from
         self.overrun = 0
+        self.late_turns = 0  # a finished lane's agent woken by the reply to its last send, answered outside the script
+        self.agent_lanes: dict[str, str] = {}  # agent id (the system prompt's "You are `id`") -> its lane
         self.leg_grant = self.no_leg_grant  # the test sets it when its script has `grant_leg` turns
         self.lock = threading.Lock()
         outer = self
@@ -361,6 +368,14 @@ class ScriptedModel:
                 self.rebuild_turns += 1
             return "The head is fine as it is.", None
         with self.lock:
+            lane = self.lane_of(raw)
+            if (lane != "main" and self.cursor.get(lane, 0) >= len(self.lane_turns(lane))
+                    and self.parent_answer(raw)):
+                # a worker's report is a `send` whose reply (the parent's answer) can wake it once its script is
+                # played, before the parent deletes it: that is no turn of the script, and it is not past its end
+                self.late_turns += 1
+                return '<call name="await"></call>', None
+        with self.lock:
             self.raw_bodies.append(raw)
             try:
                 self.requests.append(json.loads(raw))
@@ -386,15 +401,28 @@ class ScriptedModel:
             time.sleep(self.delays[i])
         return text, self.thinking[i]
 
+    @classmethod
+    def parent_answer(cls, raw: str) -> bool:
+        """Is the newest message of this request the reply to a `send` (`[reply to N · <agent> send …]`)?"""
+        try:
+            msgs = [m for m in json.loads(raw).get("messages", []) if m.get("role") != "system"]
+            first = (cls.blocks(msgs[-1]) or [""])[0]
+        except (ValueError, IndexError, AttributeError, TypeError):
+            return False
+        return msgs[-1].get("role") == "user" and re.match(r"\[reply to \d+ · \w+ send ", first) is not None
+
     def lane_of(self, raw: str) -> str:
         """The lane of a request: the `[lane:NAME]` marker in its first message (a system message
         is not one: an OpenAI-shaped body opens with it)."""
         if not self.laned:
             return "main"
         try:
-            msgs = [m for m in json.loads(raw).get("messages", []) if m.get("role") != "system"]
+            body = json.loads(raw)
+            msgs = [m for m in body.get("messages", []) if m.get("role") != "system"]
         except (ValueError, AttributeError, TypeError):
             return "main"
+        system = body.get("system") if isinstance(body, dict) else None
+        who = re.search(r"You are `(\w+)`", system) if isinstance(system, str) else None
         # notices and await notes may come before the agent's task, merged into its message: the
         # lane is in the first user message that holds anything else
         m = None
@@ -403,7 +431,9 @@ class ScriptedModel:
             if own:
                 m = re.search(r"\[lane:(\w+)\]", "\n\n".join(own))
                 break
-        return m.group(1) if m else "main"
+        if m and who:
+            self.agent_lanes.setdefault(who.group(1), m.group(1))
+        return m.group(1) if m else (self.agent_lanes.get(who.group(1), "main") if who else "main")
 
     @staticmethod
     def resolve_ids(text: str, raw: str) -> str:
