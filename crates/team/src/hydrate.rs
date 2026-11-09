@@ -62,7 +62,12 @@ fn fill(v: &mut Value, dir: &Path) {
 
 /// The blueprint as the text `seed_dir_with` takes, the placeholders of `dir` filled in.
 pub fn blueprint_text(dir: &Path) -> Result<String, String> {
-    serde_yaml::to_string(&filled(BLUEPRINT, dir)?).map_err(|e| format!("blueprint: {e}"))
+    let mut doc = filled(BLUEPRINT, dir)?;
+    // a `team.yaml` in the folder is part of the first run's records (#292)
+    if let Some(preset) = crate::team_yaml::load(dir)? {
+        crate::team_yaml::overlay(&mut doc, &preset)?;
+    }
+    serde_yaml::to_string(&doc).map_err(|e| format!("blueprint: {e}"))
 }
 
 /// FIRST RUN: write the team's agents into a fresh `dir` after fantastic's stock tree
@@ -217,8 +222,7 @@ mod tests {
                 // a `$` key is a token (`$subtree`: the lead's own scheduler), not a tool
                 let known = tool.starts_with('$')
                     || ids.contains(&tool.as_str())
-                    || ["kernel", "kernel_state", "canvas_page"]
-                        .contains(&tool.as_str());
+                    || ["kernel", "kernel_state", "canvas_page"].contains(&tool.as_str());
                 assert!(
                     known,
                     "{file} grants `{tool}`, which the team does not declare"
