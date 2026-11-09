@@ -63,26 +63,6 @@ Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from tw
 
 Not relevant to Team: the headless container image (fantastic#337), the Swift kernel retirement that keeps the Foundation Models bridge (fantastic#354, #359), the OS system agents and the audio agent (fantastic#355, #360), the Python ports (the `#170` series, fantastic#353 and #362), the `units_os` CI input (fantastic#356), the file agent follow-ups (fantastic#358) and the e2e model per role (fantastic#361).
 
-## Pack registry and listing
-
-The listing (`team_packs.tools`, record fields `index_path`, `templates_dir`, optional `store` and `trusted_keys`) reads a LOCAL index json through the file bridge. Nothing is fetched from the network.
-
-The index is the signed registry format: `{"entries": [...]}`. Each entry has `name`, `version` (dotted numbers, e.g. `1.2.0`), `hash` (the pack's content hash, which its `pack.yaml` pins), `signer_key` (hex ed25519 public key), `url` (https), `ports`, `grants`, `revoked` and `signature` (hex ed25519 over the canonical payload of every other field, `revoked` included). An entry whose signer is not in `trusted_keys`, or whose signature does not verify, is skipped and reported in `skipped`. So a `revoked` flag changed after signing is never honoured. A malformed entry is skipped the same way; one bad entry does not fail the index.
-
-Verbs:
-
-- `list {query?}` replies `{packs: [...]}`: one card per pack name, the newest non-revoked version (or the newest revoked one when all are revoked). Each card marks `installed` when any version of that name is in the templates directory.
-- `show {name, version?}` replies the pack's ports, grants and `install_decision` (`{allow: true}` or `{allow: false, reason: "revoked"}`). The UI disables Install on a refusal.
-- `updates {opt_in?}` replies `{updates: [...], warnings: [...]}`. Updates are opt-in: with `opt_in` false (the default) `updates` is empty. An update is the newest non-revoked version with a different hash, with its `permission_diff` (added and removed ports and grants). A revoked installed pack gets a warning. `updates` installs nothing and fetches nothing.
-
-An unsigned legacy index (`{"packs": [...]}`) is still read for display. Its entries are unverified: nothing trusts them, and a revoked one refuses install.
-
-- `publish {pack, url, signing_key, grants?}` replies `{published: {name, version, hash, signer_key}, trusted, note?}`. It is local: no network. It checks the pack folder like an install (manifest, content hash, secrets scan; nothing is signed or written when a check fails), reads the 64-hex ed25519 seed from the file bridge file `signing_key`, signs the entry (`pack_registry::sign_entry`) and appends it to the local index (`pack_registry::add_entry`), keeping existing entries as they are. `url` must be https. `grants` comes only from the payload, since `pack.yaml` has none. It refuses an existing name+version or hash. The key never appears in a reply or error. The signer need not be trusted: `trusted` is false, with a note, when its key is not in the listing's `trusted_keys`, because `list` skips such an entry.
-
-Installing stays `pack_bundle install` from a local pack directory.
-
-Not built yet: setting `trusted_keys` for the listing (`tree.rs` leaves it unset, so a real team skips every signed entry), a key-generation command and key rotation, a richer automated review step (publish runs the pack scan only), report and takedown (a signed re-publish with `revoked: true`, then a `revoke` verb), fetching index and pack files by url, the aisixteen.com listing site and the in-app browser, evals, measured record and price inside the signed payload (the payload does not cover them, so they are not trusted), install from the registry by hash (resolve, fetch, then `pack_bundle::install`).
-
 ## Pin at `8eaa08a`
 
 `Cargo.lock` now pins fantastic `8eaa08a` (#453: declared TUI views, `view.tui` on a record). Team declares `view.tui` for its agent kinds in `declared_views.rs` (#207); fantastic's panel parser is private, so team validates the shape itself.
@@ -134,7 +114,7 @@ What the ssh twins measured at `a9b7a31` (#252: the backends and the key are on 
 - the root's `callable_by` (`@root`): `board` `[reflect]`;
 - `user.callable_by`: `team_ws` `[inquiries, answer_inquiry]` (on the existing `user` entry, which also carries `agents:`).
 
-The agents the person makes later (`dispatcher`, `cadencer`, `pack`, `pack_listing`) still carry their own `callable_by: {team_ws: [...]}` on their records. Team chooses no key mode and makes no helper agent (`team_app::choose_key_mode` and `new_team::choose_key_mode` are gone): the key mode is the person's, through fantastic's set-up page. Without a mode there is no credential store, and the declared `github` grant waits in `.fantastic/cli/grants.yaml` until fantastic makes it.
+The agents the person makes later (`dispatcher`, `cadencer`) still carry their own `callable_by: {team_ws: [...]}` on their records. Team chooses no key mode and makes no helper agent (`team_app::choose_key_mode` and `new_team::choose_key_mode` are gone): the key mode is the person's, through fantastic's set-up page. Without a mode there is no credential store, and the declared `github` grant waits in `.fantastic/cli/grants.yaml` until fantastic makes it.
 
 ## Pin at `8eca583`
 

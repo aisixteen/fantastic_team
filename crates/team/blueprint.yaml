@@ -184,7 +184,7 @@ agents:
 # THE WEB HOST. `web` mounts the leg by asking it for its routes, and serves the page by
 # reading `read_stream` as itself: both ends of both edges. The leg is the page's one
 # principal: it may call the dispatcher's page verbs, and the verbs the page sends to the
-# other tool agents (the cadencer toggle, the user's inquiry panel, the Packs section) of
+# other tool agents (the cadencer toggle, the user's inquiry panel) of
 # the agents that the person or the cards make; the other end of each of those is on the
 # agent it names (its own `callable_by`, written where it is made).
 - id: web
@@ -220,13 +220,6 @@ agents:
       user:
       - inquiries
       - answer_inquiry
-      pack:
-      - install
-      - eval
-      pack_listing:
-      - browser
-      - show
-      - fetch
     callable_by:
       $self: '*'
       web:

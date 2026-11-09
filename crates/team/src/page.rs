@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 /// The handler module this bundle registers under.
 pub const HANDLER_MODULE: &str = "team_page.tools";
 
-/// The team page: the whole web UI (agent tree, agent views, packs), served on `--port`.
+/// The team page: the whole web UI (agent tree, agent views), served on `--port`.
 pub const HTML: &str = include_str!("../web/team.html");
 /// The page agent's id, under the `web` host.
 pub const PAGE_ID: &str = "team_page";

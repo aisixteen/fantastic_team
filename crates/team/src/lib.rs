@@ -17,15 +17,6 @@ pub mod driver_config;
 pub mod driver_rules;
 pub mod hydrate;
 pub mod new_team;
-pub mod pack_browser;
-pub mod pack_cli;
-pub mod pack_eval;
-pub mod pack_hosted;
-pub mod pack_listing;
-pub mod pack_manifest;
-pub mod pack_page;
-pub mod pack_record;
-pub mod pack_scan;
 pub mod page;
 pub mod peer_envelope;
 pub mod peer_transport;
@@ -101,10 +92,8 @@ pub fn register_team(reg: &mut BundleRegistry) {
     reg.register(puller::HANDLER_MODULE, puller::PullerBundle::default());
     // The team page, for the web UI that `--port` persists (`app_control::persist_web`).
     reg.register(page::HANDLER_MODULE, page::PageBundle);
-    reg.register(pack_listing::HANDLER_MODULE, pack_listing::ListingBundle);
     reg.register(webhook::HANDLER_MODULE, webhook::WebhookBundle::default());
     reg.register(board::HANDLER_MODULE, board::BoardBundle);
-    reg.register(pack_bundle::HANDLER_MODULE, pack_bundle::PackBundle);
     reg.register(dispatcher::HANDLER_MODULE, dispatcher::DispatcherBundle);
     reg.register(
         cadencer::HANDLER_MODULE,
@@ -148,7 +137,7 @@ fn registry_with(web_serves: bool, here: &Path) -> BundleRegistry {
         fantastic_exec_bridge::HANDLER_MODULE,
         fantastic_exec_bridge::ExecBridgeBundle,
     );
-    // `user.tools`: the blueprint verbs (`import_subtree`) behind `packs install --parent-id`.
+    // `user.tools`: fantastic's blueprint verbs (`export_subtree`, `import_subtree`).
     reg.register(
         fantastic_user::HANDLER_MODULE,
         fantastic_user::UserBundle::default(),
@@ -511,8 +500,6 @@ async fn persist_seeded_records(kernel: &Arc<Kernel>) -> Result<(), String> {
     Ok(())
 }
 
-pub mod pack_bundle;
-pub mod pack_registry;
 pub mod roles;
 
 /// A `web` host's state is process-wide, keyed by its agent id, so two tests that boot or

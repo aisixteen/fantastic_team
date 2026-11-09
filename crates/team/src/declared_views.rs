@@ -60,7 +60,7 @@ pub struct Decl {
 /// The handler module of the queue: a plain store named by the board's `store`.
 pub const QUEUE_MODULE: &str = "ram_store.tools";
 /// The kinds whose web view is built here (the others keep their page code).
-pub const WEB_KINDS: [&str; 6] = ["cadencer", "puller", "webhook", "packs", "pack", "git"];
+pub const WEB_KINDS: [&str; 4] = ["cadencer", "puller", "webhook", "git"];
 
 fn sec(
     title: &'static str,
@@ -168,37 +168,6 @@ pub fn decls() -> Vec<Decl> {
                     Some(10),
                 ),
             ],
-        },
-        Decl {
-            handler_module: crate::pack_listing::HANDLER_MODULE,
-            kind: "packs",
-            title: "Packs",
-            sections: vec![sec(
-                "Packs",
-                "list",
-                "table",
-                &[
-                    ("name", "name"),
-                    ("version", "version"),
-                    ("installed", "installed"),
-                    ("revoked", "revoked"),
-                    ("price", "price"),
-                ],
-                Some(30),
-            )],
-        },
-        Decl {
-            handler_module: crate::pack_bundle::HANDLER_MODULE,
-            kind: "pack",
-            title: "Pack",
-            // team_pack has no read verb; its identity is all there is to show.
-            sections: vec![sec(
-                "Pack",
-                "reflect",
-                "kv",
-                &[("id", "id"), ("sentence", "sentence")],
-                None,
-            )],
         },
         Decl {
             handler_module: team_github_connector::HANDLER_MODULE,
@@ -801,7 +770,7 @@ mod tests {
             .get("every_s")
             .is_none());
         // Arguments ride on the call.
-        let mut d = decl(crate::pack_listing::HANDLER_MODULE);
+        let mut d = decl(crate::cadencer::HANDLER_MODULE);
         d.sections[0].args = Some(json!({"limit": 5}));
         assert_eq!(tui_of(&d)[0]["call"]["args"], json!({"limit": 5}));
     }
@@ -814,8 +783,6 @@ mod tests {
             "cadencer",
             "puller",
             "webhook",
-            "packs",
-            "pack",
             "github",
             "git",
             "board",
@@ -971,34 +938,6 @@ mod tests {
         assert_ne!(value_of(beat, "digests_sent"), "-");
     }
 
-    #[test]
-    fn packs_view_renders_a_list_reply() {
-        let reply = json!({"packs": [
-            {"name": "alpha", "version": "0.1", "summary": "SUMMARYTEXT", "price": 5, "installed": true, "revoked": false},
-            {"name": "mid", "version": "2.0", "summary": "Mid", "price": 1, "installed": false, "revoked": true}
-        ]});
-        let m = model_of(&decl(crate::pack_listing::HANDLER_MODULE), &[reply]);
-        let rows = rows_of_section(&m, "Packs");
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], json!(["alpha", "0.1", "true", "false", "5"]));
-        assert_eq!(rows[1][3], "true");
-        assert!(!m.to_string().contains("SUMMARYTEXT"));
-    }
-
-    #[test]
-    fn pack_view_declares_reflect_only() {
-        let d = decl(crate::pack_bundle::HANDLER_MODULE);
-        assert_eq!(d.sections.len(), 1);
-        assert_eq!(d.sections[0].verb, "reflect");
-        let m = model_of(
-            &d,
-            &[json!({"id": "pack", "sentence": "Packs a worker.", "extra": "x"})],
-        );
-        let rows = rows_of_section(&m, "Pack");
-        assert_eq!(value_of(rows, "id"), "pack");
-        assert!(!m.to_string().contains("\"extra\"") && !m.to_string().contains(":\"x\""));
-    }
-
     fn secret_reflect() -> Value {
         json!({
             "id": "github", "sentence": "GitHub.",
@@ -1073,7 +1012,6 @@ mod tests {
             reply[k] = json!(plant);
         }
         reply["rows"] = json!([{"unlisted": plant}]);
-        reply["packs"] = json!([{"summary": plant, "url": plant}]);
         reply["events"] = json!([{"unlisted": plant}]);
         reply["recent_calls"] = json!([{"unlisted": plant}]);
         reply["children"] = json!([{"unlisted": plant}]);
@@ -1090,7 +1028,7 @@ mod tests {
                         dst.insert(k.clone(), v.clone());
                     }
                 }
-                for list in ["rows", "packs", "events", "recent_calls", "children"] {
+                for list in ["rows", "events", "recent_calls", "children"] {
                     reply[list] = json!([row.clone()]);
                 }
             }

@@ -6,8 +6,8 @@
 //! The binary takes fantastic's words: `--headless`, `canvas [--port N]
 //! [--host ADDR]`, `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`,
 //! `migrate-home` and `readme`. Fantastic runs in the directory it is started in.
-//! Three first words are the team's own and handle their arguments themselves:
-//! `setup github`, `packs …` and `ai-readme`. One recipe word is the team's own, `webui [--port N] [--host ADDR]`: the team page from the binary (`webui.rs`).
+//! Two first words are the team's own and handle their arguments themselves:
+//! `setup github` and `ai-readme`. One recipe word is the team's own, `webui [--port N] [--host ADDR]`: the team page from the binary (`webui.rs`).
 //! One flag is the team's own, `--worktrees DIR`: where the git connectors'
 //! default worktree roots go (`worktrees_flag.rs`).
 
@@ -20,11 +20,6 @@ fn main() -> ExitCode {
     // `setup github`: handles its own arguments, then exits.
     if argv.first().map(String::as_str) == Some("setup") {
         return finish(fantastic_team::setup_github::run_cli(&argv[1..]));
-    }
-    // `packs <verb> [--key value ...]`: send a pack verb to the running team, then
-    // stop. Handles its own arguments, like `setup`.
-    if argv.first().map(String::as_str) == Some("packs") {
-        return finish(fantastic_team::pack_cli::run_cli(&argv[1..]));
     }
     // `ai-readme`: print the README for AIs and stop. No flags, no team.
     if argv.first().map(String::as_str) == Some("ai-readme") {
