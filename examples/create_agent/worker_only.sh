@@ -22,7 +22,7 @@ T=${FANTASTIC_TEAM:-fantastic_team}
 $T send '{"target": "kernel_state", "payload": {"type": "list_agents"}}'
 
 # 2. the worker
-$T send '{"target": "kernel_state", "payload": {"type": "create_agent", "id": "w1", "parent_id": "user", "handler_module": "anthropic_backend.tools", "model": "example-model", "endpoint": "https://api.example.com/v1/messages", "credentials": {"store": "credentials", "ref": "EXAMPLE_KEY"}, "price_input_per_mtok": 1.0, "price_output_per_mtok": 5.0, "memory_store_id": "memory", "can_call": {"$self": "*", "memory": "*", "credentials": "*"}, "callable_by": {"$self": "*", "$parent": "*"}}}'
+$T send '{"target": "kernel_state", "payload": {"type": "create_agent", "id": "w1", "parent_id": "user", "handler_module": "anthropic_backend.tools", "model": "example-model", "endpoint": "https://api.example.com/v1/messages", "credentials": {"store": "credentials", "ref": "EXAMPLE_KEY"}, "memory_store_id": "memory", "can_call": {"$self": "*", "memory": "*", "credentials": "*"}, "callable_by": {"$self": "*", "$parent": "*"}}}'
 
 # 3. the other ends. `memory` and `credentials` keep what step 1 showed (`user` for `memory`)
 $T send '{"target": "kernel_state", "payload": {"type": "update_agent", "id": "memory", "callable_by": {"$self": "*", "user": "*", "w1": "*"}}}'
