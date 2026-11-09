@@ -21,7 +21,6 @@ body:
         - remote runner / tunnel
         - web UI (canvas --port)
         - app (Tauri wrapper)
-        - worker packs
         - docs
     validations:
       required: true

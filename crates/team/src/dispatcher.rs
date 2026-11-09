@@ -1018,8 +1018,8 @@ pub fn services_of(kernel: &fantastic_kernel::Kernel, me: &str, board: &str) -> 
     for id in gh {
         out.push(json!({"id": id, "kind": "github", "label": format!("GitHub ({id})")}));
     }
-    // The kinds a declaration draws (`declared_views`): cadencer, puller, webhook,
-    // packs, pack and git, in that order, each by id.
+    // The kinds a declaration draws (`declared_views`): cadencer, puller, webhook
+    // and git, in that order, each by id.
     let declared = crate::declared_views::declared_agents(kernel);
     for kind in crate::declared_views::WEB_KINDS {
         for (id, d) in declared.iter().filter(|(_, d)| d.kind == kind) {
@@ -1110,7 +1110,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
-            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher|cadencer|puller|webhook|packs|pack|git, label}], the team's own agents that exist",
+            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher|cadencer|puller|webhook|git, label}], the team's own agents that exist",
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
             "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher; a node in the sidebar's services → {view: panel, kind, target, model: {kind, title, summary, sections}} drawn as text in the right pane)",
             "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker from the tier named `template` in the roles registry's record (`tiers`), its memory in the store that tier names, and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start). remove_worker {node: worker, confirm} deletes the worker (its rows stay in the store) and drops it from its group",
@@ -1641,22 +1641,6 @@ mod tests {
         assert!(!HTML.contains("getElementById('back')"));
         assert!(!HTML.contains("id=\"back\""));
         assert!(HTML.contains("textContent"));
-    }
-
-    #[test]
-    fn html_shows_pack_pass_rate_time_cost_and_verdict() {
-        assert!(HTML.contains("askNode('pack'"));
-        assert!(HTML.contains("type: 'install'"));
-        assert!(HTML.contains("evals.pass_rate"));
-        assert!(HTML.contains("ev.pass_rate"));
-        assert!(HTML.contains("ev.total_time_s"));
-        assert!(HTML.contains("ev.total_cost"));
-        assert!(HTML.contains("'n/a'"));
-        assert!(HTML.contains("enable.allowed"));
-        assert!(HTML.contains("enable.reason"));
-        assert!(HTML.contains("Pack install"));
-        assert!(HTML.contains("textContent"));
-        assert!(!HTML.contains("innerHTML"));
     }
 
     #[test]
@@ -4140,7 +4124,6 @@ mod tests {
     #[test]
     fn team_agent_ids_do_not_name_the_removed_views() {
         assert!(!TEAM_AGENT_IDS.contains(&"dispatcher_view"));
-        assert!(!TEAM_AGENT_IDS.contains(&"packs_view"));
         assert_eq!(TEAM_AGENT_IDS.len(), 7);
     }
 
@@ -4274,7 +4257,6 @@ mod tests {
             dir.path(),
             &[
                 ("cad", "team_cadencer.tools", json!({})),
-                ("pk", "team_packs.tools", json!({})),
                 ("g1", "team_git.tools", json!({})),
             ],
         )
@@ -4285,7 +4267,6 @@ mod tests {
             vec![
                 pair("dispatcher", "dispatcher"),
                 pair("cad", "cadencer"),
-                pair("pk", "packs"),
                 pair("g1", "git")
             ],
             "{sb}"

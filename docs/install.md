@@ -87,13 +87,10 @@ The terminal UI (needs a terminal):
 
     ./target/release/fantastic_team
 
-Help block, the first words the team adds to fantastic's (`setup github`, `packs …`, `ai-readme`):
+Help block, the first words the team adds to fantastic's (`setup github`, `ai-readme`):
 
     usage: fantastic_team setup github --name NAME [--org ORG]
     fantastic_team ai-readme
-    usage: fantastic_team packs list|show|updates|publish|fetch|submit|report|takedown|page|pack|install|eval …
-      (`packs install` run from a terminal asks for the agent id of each port first; an empty answer skips it)
-      packs list [--query Q] | packs show --name N [--version V] | packs updates [--opt-in true|false] | packs publish --pack DIR --url HTTPS_URL --signing-key FILE | packs fetch --name N --hash H --stage DIR [--version V] | packs submit --pack DIR --url HTTPS_URL --signing-key FILE | packs report --name N --version V --reason TEXT | packs takedown --name N --version V --signing-key FILE | packs page | packs pack --worker W --out DIR | packs install --pack DIR --into DIR [--worker W] [--timeout-s N] [--parent-id AGENT [--approve] [--allow-code]] | packs eval --pack DIR --worker W [--timeout-s N]
 
 `--dir`, `--port` outside `canvas` and `webui`, `--tui`, `--instructions` and `--resend-instructions` are not flags any more; fantastic refuses them.
 

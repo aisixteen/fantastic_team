@@ -374,121 +374,6 @@ fn install_guide_names_the_setup_command() {
     );
 }
 
-#[test]
-fn readme_not_yet_no_longer_lists_the_pack_cli_and_mcp() {
-    let text = readme();
-    let line = text
-        .lines()
-        .find(|l| l.starts_with("Not yet: signatures"))
-        .expect("README must keep its `Not yet` line for the pack verbs");
-    assert!(
-        !line.contains("CLI, MCP"),
-        "the pack CLI and MCP surfaces are built, so `Not yet` must not list them"
-    );
-    assert!(
-        !line.contains("the web UI surface"),
-        "the packs panel is built, so `Not yet` must not list it"
-    );
-}
-
-#[test]
-fn readme_describes_the_packs_panel() {
-    let text = readme();
-    assert!(
-        text.contains("**Packs panel.**"),
-        "README must describe the panel"
-    );
-    let para = text
-        .lines()
-        .find(|l| l.starts_with("**Packs panel.**"))
-        .expect("README must keep the packs panel paragraph");
-    assert!(
-        para.contains("`team_page`"),
-        "README must say the team page serves it"
-    );
-    assert!(
-        !para.contains("`packs_view`"),
-        "README must not name a packs_view agent"
-    );
-    assert!(
-        text.contains("**Enabling.**"),
-        "README must describe the enable gate"
-    );
-    let line = text
-        .lines()
-        .find(|l| l.starts_with("Not yet: signatures"))
-        .expect("README must keep its `Not yet` line");
-    for gone in [
-        "enforcing the enable verdict",
-        "enforcing bindings at enable time",
-        "a pack browser panel",
-    ] {
-        assert!(
-            !line.contains(gone),
-            "`Not yet` still lists `{gone}`, which is built"
-        );
-    }
-    assert!(
-        text.contains("asks, before it sends, for the agent id of each port"),
-        "README must say the CLI asks for bindings"
-    );
-}
-
-#[test]
-fn readme_describes_the_pack_surfaces() {
-    let text = readme();
-    assert!(
-        text.contains("fantastic_team packs"),
-        "README must name the CLI"
-    );
-    assert!(
-        text.contains("`pack_listing`"),
-        "README must name the listing agent"
-    );
-    assert!(
-        text.contains("without a final newline"),
-        "README must say packed files lose their final newline"
-    );
-    assert!(
-        text.contains("exits non-zero when it carries an `error`"),
-        "README must say the CLI exit code reflects a verb error"
-    );
-}
-
-#[test]
-fn ai_readme_section_8_names_the_pack_cli() {
-    let text = fs::read_to_string(root().join("docs/ai-readme.md")).expect("ai-readme");
-    let section = text
-        .split("## 8. Pack evals")
-        .nth(1)
-        .expect("ai-readme has a section 8 for pack evals");
-    assert!(
-        !section.contains("not a CLI subcommand"),
-        "section 8 must not say the verbs have no CLI"
-    );
-    assert!(
-        section.contains("fantastic_team packs eval"),
-        "section 8 names the CLI form"
-    );
-    assert!(
-        section.contains("`pack_listing`"),
-        "section 8 names the agent ids"
-    );
-}
-
-#[test]
-fn docs_say_which_workers_the_pack_agent_can_reach() {
-    let readme =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
-    let ai = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/ai-readme.md"
-    ))
-    .unwrap();
-    assert!(readme.contains("`groups`") && readme.contains("`callable_by`"));
-    assert!(ai.contains("`groups`") && ai.contains("`can_call`") && ai.contains("`callable_by`"));
-}
-
 /// The shell test scripts CI's units job runs: the `sh tests/*.sh` lines of ci.yml.
 fn ci_shell_tests() -> Vec<String> {
     let ci = fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
@@ -531,27 +416,12 @@ fn readme_names_the_github_build_check_and_test_steps() {
 }
 
 #[test]
-fn install_help_block_matches_the_packs_usage_and_says_the_cli_is_fantastics() {
+fn install_doc_says_the_cli_is_fantastics() {
     let install = fs::read_to_string(root().join("docs/install.md")).unwrap();
     assert!(
         install.contains("The command line is fantastic's, unchanged"),
         "docs/install.md must say the CLI is fantastic's"
     );
-    let lines: Vec<&str> = fantastic_team::pack_cli::USAGE
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .collect();
-    assert!(
-        lines.len() >= 2,
-        "the packs USAGE should span several lines"
-    );
-    for line in lines {
-        assert!(
-            install.contains(line),
-            "docs/install.md help block lacks the packs USAGE line `{line}`"
-        );
-    }
 }
 
 #[test]

@@ -13,7 +13,6 @@ AISixteen Fantastic Team app open pull requests here (see CONTRIBUTING.md).
 - [ ] workers / lead / queue
 - [ ] connectors (git, GitHub)
 - [ ] web UI / app
-- [ ] packs
 - [ ] docs only
 
 ## Security

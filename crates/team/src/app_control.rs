@@ -1018,7 +1018,7 @@ mod tests {
         hydrate::seed(dir.path()).unwrap();
         let cc = read_can_call(dir.path());
         let sends = page_sends();
-        for t in ["cadencer", "user", "pack", "pack_listing"] {
+        for t in ["cadencer", "user"] {
             assert!(sends.iter().any(|(a, _)| a == t), "page sends to {t}");
         }
         for (target, verb) in sends.iter().filter(|(t, _)| t != "dispatcher") {
@@ -1030,21 +1030,22 @@ mod tests {
             cc["dispatcher"],
             json!(["sidebar", "tree", "open", "control"])
         );
-        let pack = cc["pack"].as_array().unwrap();
-        for verb in ["revoke", "enable", "uninstall"] {
-            assert!(!pack.contains(&json!(verb)), "{verb}");
+        for k in cc.as_object().unwrap().keys() {
+            if k != "$self" && k != "dispatcher" {
+                assert!(
+                    sends.iter().any(|(t, _)| t == k),
+                    "the seeded leg may call {k}, which the page never sends to: {cc}"
+                );
+            }
         }
         for id in ["kernel", "kernel_state", "queue", "tasks"] {
             assert!(cc.get(id).is_none(), "{id}: {cc}");
         }
     }
 
-    /// Every `(target, verb)` the page sends through `askNode` or `packAction`
-    /// with a literal id and verb.
+    /// Every `(target, verb)` the page sends through `askNode` with a literal id and verb.
     fn page_sends() -> Vec<(String, String)> {
-        let re =
-            regex::Regex::new(r#"(?:askNode|packAction)\('([a-z_]+)',\s*\{\s*type:\s*'([a-z_]+)'"#)
-                .unwrap();
+        let re = regex::Regex::new(r#"askNode\('([a-z_]+)',\s*\{\s*type:\s*'([a-z_]+)'"#).unwrap();
         re.captures_iter(include_str!("../web/team.html"))
             .map(|c| (c[1].to_string(), c[2].to_string()))
             .collect()

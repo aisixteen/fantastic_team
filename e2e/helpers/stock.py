@@ -7,7 +7,7 @@ edge is written on both ends (`link`):
 
 - the lead is `lead` (`ctx.lead`), made by `make_lead`;
 - the credential store, the worker's exec and files, the connectors, the puller, the board, the
-  dispatcher, the cadencer, the roles registry and the pack agents are made the same way, under
+  dispatcher, the cadencer and the roles registry are made the same way, under
   the fixed ids the product's code and the role cards name.
 
 Nothing here is a team config: every step is a fantastic verb a person can type.
@@ -152,7 +152,7 @@ def make_lead(ctx, team, tools=None, subtree: bool = True) -> str:
     return LEAD
 
 
-# ---- the machinery: roles, board, dispatcher, cadencer, packs, the page -----------------
+# ---- the machinery: roles, board, dispatcher, cadencer, the page -----------------
 
 REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -230,13 +230,11 @@ def make_board(ctx, team, groups: dict, store: str = "queue_files", roles: bool 
     create(team, id="board", parent_id=ROOT, handler_module="team_board.tools", repos=[REPO],
            github="github", store=store, team_groups=team_groups,
            can_call={"$self": "*", "github": "*", store: "*"},
-           callable_by={"$self": "*", "$parent": "*", "dispatcher": "*", "pack": ["board"],
+           callable_by={"$self": "*", "$parent": "*", "dispatcher": "*",
                         "cadencer": ["rows"], "mcp": "*"})
     link(team, "board", "github")
     link(team, "board", store)
     link(team, ctx.lead, "board", LEAD_BOARD_VERBS)
-    if "pack" in team.agents():  # `eval {from_shifts}` reads the board's tasks for the measured record
-        link(team, "pack", "board", ["board"])
     if roles:
         update(team, "board", roles="roles")
         link(team, "board", "roles", ["fleet", "get_count"])
@@ -302,28 +300,6 @@ def make_dispatcher(ctx, team, groups: dict, board: bool = True, roles: bool = F
         link(team, "team_ws", "cadencer", ["status", "set"])
 
 
-def make_packs(ctx, team) -> None:
-    """The pack agents, the `files` peer they read through, and the `user` verb they build with."""
-    lead = ctx.lead
-    create(team, id="pack", parent_id="user", handler_module="team_pack.tools",
-           can_call={"$self": "*"},
-           callable_by={"$self": "*", "$parent": "*", "dispatcher": "*", "mcp": "*"})
-    create(team, id="pack_listing", parent_id="user", handler_module="team_packs.tools",
-           index_path="packs/index.json", templates_dir="templates", store="files",
-           can_call={"$self": "*"},
-           callable_by={"$self": "*", "$parent": "*", "dispatcher": "*", "mcp": "*"})
-    link(team, "pack", "files")
-    link(team, "pack_listing", "files")
-    link(team, "pack", "user", ["import_subtree", "send"])
-    link(team, "pack", ROOT, ["list_agents"])
-    link(team, "pack", lead)
-    if "team_ws" in team.agents():  # the seeded page leg's edges to the pack agents
-        link(team, "team_ws", "pack", ["install", "eval"])
-        link(team, "team_ws", "pack_listing", ["browser", "show", "fetch"])
-    # the operator's leg writes and reads pack folders through `files`
-    merge(team, "files", "callable_by", {"mcp": "*"})
-
-
 READ_STREAM_DOC = ("args: path:str (req), offset:int?, length:int?. The team page (index.html, page.css, "
                    "shim.js, page.js, card.js) as a BINARY reply: the bytes as the body, "
                    "{path, offset, next_offset, eof, size} as the head.")
@@ -345,8 +321,7 @@ def make_web(team, workers=()) -> None:
     link(team, "web", "team_ws", ["get_routes"])
     link(team, "web", "team_page", ["read_stream"])
     for target, verbs in (("dispatcher", PAGE_VERBS), ("cadencer", ["status", "set"]),
-                          ("user", ["inquiries", "answer_inquiry"]), ("pack", ["install", "eval"]),
-                          ("pack_listing", ["browser", "show", "fetch"])):
+                          ("user", ["inquiries", "answer_inquiry"])):
         if target in have:
             link(team, "team_ws", target, verbs)
     grant_chat(team, "team_ws", list(workers))
@@ -368,7 +343,7 @@ def serve_webui(team, port: int, wait_s: float = 30.0) -> None:
     """Serve the team page from the binary: make the page's records ([`make_web`]; a folder that
     `webui` seeded has them), stop the headless team and start it again with the `webui --port N`
     word (#224), which puts the port on the host. Make the agents the page reaches first (the
-    dispatcher, the cadencer, the user, the pack agents); the folder keeps them across the restart."""
+    dispatcher, the cadencer, the user); the folder keeps them across the restart."""
     if "web" not in team.agents():
         make_web(team)
     team.stop()
@@ -399,7 +374,7 @@ def start_args(port: int | None, extra_args=None) -> list[str]:
 
 
 def boot(ctx, env: dict | None = None, *, port: int | None = None, forge: bool = True,
-         puller: bool = True, git: bool = True, packs: bool = False, groups: dict | None = None,
+         puller: bool = True, git: bool = True, groups: dict | None = None,
          board: bool = False, board_store: str = "queue_files", roles_tiers: dict | None = None,
          registry_tiers: dict | None = None, limits: dict | None = None, extra_args=None, lead_tools=None,
          credentials: bool = True, queue: bool = True, github_cred: bool | None = None,
@@ -432,8 +407,6 @@ def boot(ctx, env: dict | None = None, *, port: int | None = None, forge: bool =
         groups = {n: {**g, **({"driver": ctx.lead} if g.get("driver") == "$lead" else {})}
                   for n, g in groups.items()}
     ctx.groups = groups
-    if packs:
-        make_packs(ctx, team)
     if roles_tiers is not None:
         make_roles(ctx, team, roles_tiers, limits)
     elif registry_tiers is not None:
