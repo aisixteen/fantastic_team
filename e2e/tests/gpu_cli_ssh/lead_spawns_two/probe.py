@@ -27,7 +27,8 @@ def run(ctx):
         after = cli.tree(ctx.team)
         left = [i for i, a in ctx.team.agents().items() if a.get("spawned_by")]
         v.check("no spawned agent is left", not left, str(left))
-        v.check("the records are the ones it started with", after == before,
+        after = cli.without_new_schedulers(ctx.team, after, before)
+        v.check("the records are the ones it started with (a lead's scheduler may stay)", after == before,
                 f"before {sorted(before)} after {sorted(after)}")
         v.check("something was spawned", ("roles", "spawn") in team_mod.log_calls(ctx.team.log()))
         box.end(v)

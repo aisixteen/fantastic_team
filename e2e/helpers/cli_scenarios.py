@@ -77,7 +77,8 @@ def single_end(ctx, v, label: str, before: dict) -> bool:
     after = cli.ids(ctx.team)
     ok, why = cli.solved(ctx.repo)
     v.check(f"{label}: solved (the test passes on HEAD, the fix is committed)", ok, why)
-    v.check(f"{label}: the records are the ones it started with", after == before,
+    after = cli.without_new_schedulers(ctx.team, after, before)
+    v.check(f"{label}: the records are the ones it started with (a lead's scheduler may stay)", after == before,
             f"before {sorted(before)} after {sorted(after)}")
     return ok
 
@@ -111,7 +112,8 @@ def spawn_two_end(ctx, v, before: dict) -> None:
     ok, why = cli.solved(ctx.repo)
     v.check("solved (the test passes on HEAD, the fix is committed)", ok, why)
     after = cli.tree(ctx.team)
-    v.check("the records are the ones it started with (both workers deleted)", after == before,
+    after = cli.without_new_schedulers(ctx.team, after, before)
+    v.check("the records are the ones it started with (a lead's scheduler may stay) (both workers deleted)", after == before,
             f"before {sorted(before)} after {sorted(after)}")
     count = ctx.team.send("roles", {"type": "get_count"})["result"]
     v.check("the registry counts nothing running", count["running"] == 0, str(count))
@@ -192,7 +194,8 @@ def spawn_leads_end(ctx, v, before: dict) -> None:
     v.check("no spawned agent is left", not left, str(left))
     orphans = [i for i, (_, p) in after.items() if p and p not in after]
     v.check("no orphans: every agent's parent exists", not orphans, str(orphans))
-    v.check("the records are the ones it started with", after == before,
+    after = cli.without_new_schedulers(team, after, before)
+    v.check("the records are the ones it started with (a lead's scheduler may stay)", after == before,
             f"before {sorted(before)} after {sorted(after)}")
     count = team.send("roles", {"type": "get_count"})["result"]
     v.check("the registry counts nothing running", count["running"] == 0, str(count))
