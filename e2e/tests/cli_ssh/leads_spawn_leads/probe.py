@@ -41,7 +41,8 @@ def run(ctx):
         v.check("no spawned agent is left", not left, str(left))
         orphans = [i for i, (_, p) in after.items() if p and p not in after]
         v.check("no orphans: every agent's parent exists", not orphans, str(orphans))
-        v.check("the records are the ones it started with (the bridge deleted)", after == before,
+        after = cli.without_new_schedulers(ctx.team, after, before)
+        v.check("the records are the ones it started with (a lead's scheduler may stay) (the bridge deleted)", after == before,
                 f"before {sorted(before)} after {sorted(after)}")
         count = team.send("roles", {"type": "get_count"})["result"]
         v.check("the registry counts nothing running", count["running"] == 0, str(count))

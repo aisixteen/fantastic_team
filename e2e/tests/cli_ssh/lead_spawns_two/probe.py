@@ -39,7 +39,8 @@ def run(ctx):
         spawns = [c for c in team_mod.log_calls(ctx.team.log()) if c == ("roles", "spawn")]
         v.check("the lead spawned 2 workers, both here", len(spawns) == 2, str(spawns))
         after = cli.tree(ctx.team)
-        v.check("the records are the ones it started with (both workers and the bridge deleted)", after == before,
+        after = cli.without_new_schedulers(ctx.team, after, before)
+        v.check("the records are the ones it started with (a lead's scheduler may stay) (both workers and the bridge deleted)", after == before,
                 f"before {sorted(before)} after {sorted(after)}")
         count = ctx.team.send("roles", {"type": "get_count"})["result"]
         v.check("the registry counts nothing running", count["running"] == 0, str(count))

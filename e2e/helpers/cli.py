@@ -358,6 +358,15 @@ def schedules_left(ctx) -> list[str]:
     return left
 
 
+def without_new_schedulers(team, after, before):
+    """`after` (a tree dict or an id list) without the scheduler agents made during the run: a
+    lead's scheduler may stay (`check_ins_ran` checks it holds no schedule and is one per lead)."""
+    new = {i for i, a in team.agents().items() if a.get("handler_module") == SCHEDULER and i not in before}
+    if isinstance(after, dict):
+        return {k: v for k, v in after.items() if k not in new}
+    return type(after)(x for x in after if x not in new)
+
+
 def schedulers_per_lead(ctx) -> dict:
     """lead id -> how many scheduler agents it has (a lead keeps at most one)."""
     per: dict = {}
