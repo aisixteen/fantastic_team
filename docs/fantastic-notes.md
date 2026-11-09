@@ -176,3 +176,9 @@ The agents the person makes later (`dispatcher`, `cadencer`, `pack`, `pack_listi
 `Cargo.lock` now pins fantastic `4a517d3`.
 
 - **A turn's default output budget is 260000 tokens** (#531), never above the model's own maximum: a record with no `max_tokens` asks for the model's limit, not 16384.
+
+## Pin at `5d91e43`
+
+`Cargo.lock` now pins fantastic `5d91e43`.
+
+- **The per-send ceiling is 600 s** (#538, was 180): a model turn and every dispatched call get 10 minutes before they time out. Also in this pin: #534 (TUI composer Backspace).
