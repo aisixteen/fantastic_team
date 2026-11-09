@@ -177,6 +177,7 @@ scripts/remote-stop.sh gpu       # asks first; drains (SIGTERM); --now kills
 ## Observe
 
 - **Cost and time per task.** Each task records its worker, model, time, tokens and cost, computed from the template's prices. Compare lanes on what a task really costs.
+- **Usage per model and per agent, on demand.** The provider counts it: `fantastic_team send '{"target": "provider", "payload": {"type": "usage"}}'` (the provider's id; no new verb). `by_model` has each model's requests and tokens (input, cache write, cache read, output) with `cost_usd` from the record's `prices` map or `unpriced: true`; `by_agent` the same per calling chat id (kept after the chat is deleted); the top level is the team total. The e2e `cli/usage_report` checks it against a scripted run.
 - **The board** (`team_board.tools`): the shared picture of the work — open issues with their queue state (pending, in work, done, failed) and the agents. Verb `board`.
 - **The worker view** (`team_worker_view.tools`): one canvas per worker, with its task, files, output and chat.
 - **The dispatcher** (`team_dispatcher.tools`): the home screen of the web UI and the app. Workers by group, each with its state, current task, time and cost, and what is waiting for you.

@@ -638,3 +638,16 @@ async fn the_create_agent_script_makes_its_worker_on_a_seeded_home() {
     fantastic_sqlite_store::close_all(&kernel);
     fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
 }
+
+#[test]
+fn readme_says_how_to_read_usage_per_model_and_agent() {
+    let text = readme();
+    for word in [
+        "\"type\": \"usage\"",
+        "`by_model`",
+        "`by_agent`",
+        "`unpriced: true`",
+    ] {
+        assert!(text.contains(word), "README's Observe lacks {word}");
+    }
+}
