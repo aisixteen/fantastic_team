@@ -164,3 +164,9 @@ The agents the person makes later (`dispatcher`, `cadencer`, `pack`, `pack_listi
 `Cargo.lock` now pins fantastic `eb37c8d`.
 
 - **Every model-facing call example writes the routing form** (#530): the system prompt's `<bytes>` and `docs` examples, the recipients note, the refusal hints and the call checker's "write it as" forms.
+
+## Pin at `fd9351a`
+
+`Cargo.lock` now pins fantastic `fd9351a`.
+
+- **The call checker reports any tag outside a call** (#525), an empty one included: `[unsupported tag — not read]` for `<invoke name="x"></invoke>`, `<tool_call></tool_call>`, `<b>`; code spans and fences are code, not tags.
