@@ -189,3 +189,13 @@ The agents the person makes later (`dispatcher`, `cadencer`, `pack`, `pack_listi
 - A failed turn is retried as the chain's own next turn (aisixteen/fantastic#540, for #533).
 - The anthropic provider counts usage per model, with a `usage_reset` test (aisixteen/fantastic#537, for #535).
 - Python `ai_core` and the docs teach the routing form (aisixteen/fantastic#539, for #528); the Rust change is `transports.md` text only.
+
+## Pin at `dc1907e`
+
+`Cargo.lock` now pins fantastic `dc1907e`.
+
+- **Nested quoted calls are text** (#543): a call quoted inside another call is not dispatched.
+- **Await and docs-note wording** (#544, #545).
+- **e2e for the failed-turn retry** (#533).
+- **Prices are one `prices` map on the provider** (#535): `{<model>: {input, output, cache_read?, cache_write_5m?}}` in $ per million tokens replaces the four flat `price_*_per_mtok` fields, which are removed. A model with no entry is `unpriced`, never $0; `usage` `by_model` carries `cost_usd` per model and in total.
+- **`usage` has `by_agent`** (#546).

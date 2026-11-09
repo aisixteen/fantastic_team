@@ -36,7 +36,7 @@ Where the old `team.yaml` keys went:
 
 | was | now |
 |---|---|
-| `templates` | the `tiers` field of the `agentic_resources` record, and each AI record's own fields (`model`, `endpoint`, `credentials`, `price_input_per_mtok`, `price_output_per_mtok`, `can_call`, `callable_by`) |
+| `templates` | the `tiers` field of the `agentic_resources` record, and each AI record's own fields (`model`, `endpoint`, `credentials`, `can_call`, `callable_by`) |
 | `first_agent`, `directive_file` | an ordinary AI record; its directive is its `system_prompt_file` (read through its `file_bridge_id`), or a message sent with `send` |
 | `roles` | the role bundles (`.fantastic/bundles/<name>/bundle.yaml`) and the `agentic_resources` record's `limits` |
 | `connectors`, `queue`, `store`, `credentials` | agent records with their own fields (`team_git.tools`, `team_github.tools`, `ram_store.tools`, `sqlite_store.tools`, `credential_store.tools`) |
@@ -50,7 +50,7 @@ Where the old `team.yaml` keys went:
 The example is a script of `send` payloads: [examples/create_agent/worker_only.sh](examples/create_agent/worker_only.sh) makes one AI worker, and its `create_agent` payload is:
 
 ```json
-{"type": "create_agent", "id": "w1", "parent_id": "user", "handler_module": "anthropic_backend.tools", "model": "example-model", "endpoint": "https://api.example.com/v1/messages", "credentials": {"store": "credentials", "ref": "EXAMPLE_KEY"}, "price_input_per_mtok": 1.0, "price_output_per_mtok": 5.0, "memory_store_id": "memory", "can_call": {"$self": "*", "memory": "*", "credentials": "*"}, "callable_by": {"$self": "*", "$parent": "*"}}
+{"type": "create_agent", "id": "w1", "parent_id": "user", "handler_module": "anthropic_backend.tools", "model": "example-model", "endpoint": "https://api.example.com/v1/messages", "credentials": {"store": "credentials", "ref": "EXAMPLE_KEY"}, "memory_store_id": "memory", "can_call": {"$self": "*", "memory": "*", "credentials": "*"}, "callable_by": {"$self": "*", "$parent": "*"}}
 ```
 
 The first run of `fantastic_team` in a folder, from the CLI or the desktop app alike (`crates/team/src/hydrate.rs`), writes the blueprint's agents: `lead` (the `lead` role bundle) and, under it, `queue`, `github`, `board`, `roles` (the registry, with its limits), `tasks`, `worker_exec` and `worker_files`, with the other end of each edge on the home's `memory`, `files`, `credentials` and the root; and the role bundles beside them (a bundle you have stays as it is). The ids are fixed, so the roles' grants (`github`, `board`, `queue`, `tasks`) are true as written. Edit the records afterwards with `update_agent`, as with any agent (replace `owner/name` in `github` and `board`). The git connector is not made by the app, because it takes the absolute paths of your clone and your worktrees: make it with `send` (`create_agent`, `handler_module: team_git.tools`, `repo_dir`, `workspace_root`, `remote`, `default_branch`).
