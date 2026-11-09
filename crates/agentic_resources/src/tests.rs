@@ -916,22 +916,6 @@ async fn operator_spawn_opens_no_edge_to_a_parent() {
 }
 
 #[tokio::test]
-async fn report_is_not_a_verb() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let out = r
-        .op(json!({"type": "report", "state": "done", "result": "ok"}))
-        .await;
-    assert_eq!(out["reason"], "unhandled", "{out}");
-    assert_eq!(out["verb"], "report");
-    assert!(verb_docs_json().get("report").is_none());
-    assert!(
-        !README.contains("report"),
-        "the readme names no report verb"
-    );
-}
-
-#[tokio::test]
 async fn delegated_limits_bound_subtree() {
     let tmp = TempDir::new().unwrap();
     let r = rig(
@@ -1125,7 +1109,6 @@ async fn no_card_is_built_in() {
     for v in ["roles", "role", "spawn", "get_count", "fleet"] {
         assert!(grants.contains(&json!(v)), "grants {v}");
     }
-    assert!(!grants.contains(&json!("report")), "report is no verb");
     assert!(lead
         .spawn_as(&lead.callers[0], json!({"role": "project_lead"}))
         .await

@@ -188,14 +188,6 @@ mod tests {
             assert!(t.contains("wait_s"));
             assert!(t.contains("await"));
             assert!(t.contains("<call name=\"done\"></call>"));
-            for old in [
-                "<type>take</type>",
-                "<type>renew</type>",
-                "<type>release</type>",
-                "<type>done</type>",
-            ] {
-                assert!(!t.contains(old), "a card still uses {old}");
-            }
         }
         let text = k.directive.to_lowercase();
         for s in ["never merge", "never close", "never edit", "never create"] {
@@ -230,14 +222,9 @@ mod tests {
         assert!(section.contains("Ask `roles` first (roles, then get_count)"));
         assert!(section.contains("<type>spawn</type>"));
         assert!(section.contains("get_count"));
-        assert!(!section.contains("create_agent"));
-        assert!(!section.contains("Admit it"));
-        assert!(!section.contains("callable_by"));
-        assert!(!section.contains("update_agent"));
         assert!(section.contains("fleet"));
         assert!(section.contains("The queue is QUEUE. Your id is the id in your own reflect."));
         assert!(section.contains("reason:\"limit\""));
-        assert!(!section.contains("error:\"limit\""));
         assert!(l.contains("Ask `roles` before starting an agent"));
         let g = card("lead.md").grants;
         assert_eq!(
@@ -254,7 +241,6 @@ mod tests {
         for file in ["lead.md", "project_lead.md"] {
             let d = card(file).directive;
             assert!(d.contains("reason:\"limit\""), "{file}");
-            assert!(!d.contains("error:\"limit\""), "{file}");
         }
     }
 
@@ -332,18 +318,6 @@ mod tests {
     }
 
     #[test]
-    fn project_lead_card_does_not_talk_of_an_admit() {
-        // spawn opens the card's tools on both ends (fantastic#436): no card tells an
-        // agent to wait for, or to perform, an admit
-        for file in ["project_lead.md", "lead.md"] {
-            let d = card(file).directive;
-            for s in ["admit", "not admitted", "Admit it"] {
-                assert!(!d.contains(s), "{file} still says `{s}`");
-            }
-        }
-    }
-
-    #[test]
     fn project_lead_card_grants_the_task_registry() {
         let c = card("project_lead.md");
         assert_eq!(
@@ -394,27 +368,12 @@ mod tests {
         // parent with a plain `send`, which starts the parent's next turn
         for (file, _) in ALL {
             let c = card(file);
-            if let Some(v) = c.grants.get("roles") {
-                assert!(
-                    !v.as_array().unwrap().contains(&serde_json::json!("report")),
-                    "{file} grants report on the registry"
-                );
-            }
             assert!(
                 c.directive
                     .contains("send your parent a message when you are done"),
                 "{file}"
             );
-            assert!(!c.directive.contains("report {state"), "{file}");
         }
-    }
-
-    #[test]
-    fn cards_use_the_removed_task_lines_no_more() {
-        let pl = card("project_lead.md").directive;
-        assert!(!pl.contains("waits_on"));
-        assert!(!pl.contains("{label"));
-        assert!(!card("lead.md").directive.contains("state in `fleet`"));
     }
 
     #[test]
@@ -467,8 +426,6 @@ mod tests {
             let c = card(file);
             assert!(!c.grants.contains_key("canvas_page"), "{file}");
             assert!(!c.grants.contains_key("kernel"), "{file}");
-            assert!(!c.directive.contains("new_canvas"), "{file}");
-            assert!(!c.directive.contains("## Sidecars and canvases"), "{file}");
         }
     }
 

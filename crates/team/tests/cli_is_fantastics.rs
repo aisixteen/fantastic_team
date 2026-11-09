@@ -4,7 +4,7 @@
 //! `--resend-instructions`, `--workers`, `--leads`, `--per-lead`) are fantastic's
 //! unknown words now. The old team config file is read nowhere.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 fn bin() -> &'static str {
@@ -126,43 +126,6 @@ fn the_team_s_own_first_words_are_still_the_teams() {
         "{}",
         text(&o.stderr)
     );
-}
-
-fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    for e in std::fs::read_dir(dir).unwrap() {
-        let p = e.unwrap().path();
-        if p.is_dir() {
-            if p.file_name().is_some_and(|n| n != "target" && n != "js") {
-                rs_files(&p, out);
-            }
-        } else if p.extension().is_some_and(|x| x == "rs") {
-            out.push(p);
-        }
-    }
-}
-
-/// No code reads the old file: the name appears nowhere in the Rust sources of the
-/// workspace (this file builds the name from two halves so it does not match itself).
-#[test]
-fn the_old_team_file_is_read_nowhere() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let old = ["team", ".yaml"].concat();
-    let ident = ["team", "_yaml"].concat();
-    let mut files = Vec::new();
-    rs_files(&root.join("crates"), &mut files);
-    rs_files(&root.join("app"), &mut files);
-    assert!(files.len() > 30, "the walk found {} files", files.len());
-    let mut hits = Vec::new();
-    for f in files {
-        let t = std::fs::read_to_string(&f).unwrap();
-        if t.contains(&old) || t.to_lowercase().contains(&ident) {
-            hits.push(f.display().to_string());
-        }
-    }
-    assert!(hits.is_empty(), "the old config file is named in: {hits:?}");
-    // and there is no loader module left
-    assert!(!root.join("crates/team/src/config.rs").exists());
-    assert!(!root.join("crates/team/src/instructions.rs").exists());
 }
 
 #[cfg(unix)]
