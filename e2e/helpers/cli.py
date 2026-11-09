@@ -172,9 +172,10 @@ CHECK_INS = (
     "`callable_by: {\"$parent\": \"*\"}`) and `schedule` on it `{target: <your id>, payload: {type: send, text: "
     "\"[check-in agents] check your agents\"}, interval_seconds: 120}`; start every schedule's text with "
     "`[check-in <name>]` so you know what ticked, and change an interval when the pace changes (`unschedule`, "
-    "then `schedule`). On each check-in look at every agent you started: one that loops or is stuck (the same "
-    "step or error again, nothing new since the last check-in) you halt (`stop`) and report "
-    "`task failed: <agent>: <why>` to your parent. Keep the check-ins until your task is complete: unscheduling every schedule "
+    "then `schedule`). On each check-in look at every agent you started: one that loops or is stuck you halt "
+    "(`stop`) and report `task failed: <agent>: <why>` to your parent. Stuck is: NOT generating (its `status`) "
+    "and no new row since your last check-in, two check-ins in a row; the same step or error over and over is "
+    "looping. An agent that is generating is busy, never stuck. Keep the check-ins until your task is complete: unscheduling every schedule "
     "(`unschedule`) is your very last call, after every other step and wait, right before you end; the "
     "scheduler agent stays.")
 SCHEDULER_VERBS = ["schedule", "unschedule", "list", "pause", "resume", "tick_now", "history"]
