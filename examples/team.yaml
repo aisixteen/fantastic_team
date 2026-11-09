@@ -1,5 +1,5 @@
 # A team's setup as one preset (docs/team-yaml.md): copy it to `team.yaml` in a NEW team folder.
-# The first start (or `fantastic_team check`) seeds these records; a folder that was started
+# Seeding a fresh team folder writes these records; a folder that was started
 # before keeps the records it has. The same two-repo setup the battle runs use.
 #
 # Keys are never written here: a credential names the environment variables the credential store
@@ -15,9 +15,8 @@ credentials:
 
 provider:                      # the anthropic_backend agent, under the lead
   endpoint: https://api.anthropic.com/v1/messages
-  caching: provider_cache      # the only mode the dry check accepts
+  caching: provider_cache      # the only mode a preset accepts
   models: [claude-sonnet-5-5, claude-haiku-5-5]
-  default_model: claude-sonnet-5-5   # kept in the provider's memory store at the first start
   context_window: 200000
   credentials: anthropic/api.anthropic.com
 

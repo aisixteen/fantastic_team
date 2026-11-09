@@ -6,9 +6,8 @@
 //! The binary takes fantastic's words: `--headless`, `canvas [--port N]
 //! [--host ADDR]`, `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`,
 //! `migrate-home` and `readme`. Fantastic runs in the directory it is started in.
-//! Four first words are the team's own and handle their arguments themselves:
-//! `setup github`, `packs …`, `ai-readme` and `check` (the dry check of
-//! `team.yaml`, `team_yaml.rs`). One recipe word is the team's own, `webui [--port N] [--host ADDR]`: the team page from the binary (`webui.rs`).
+//! Three first words are the team's own and handle their arguments themselves:
+//! `setup github`, `packs …` and `ai-readme`. One recipe word is the team's own, `webui [--port N] [--host ADDR]`: the team page from the binary (`webui.rs`).
 //! One flag is the team's own, `--worktrees DIR`: where the git connectors'
 //! default worktree roots go (`worktrees_flag.rs`).
 
@@ -32,24 +31,11 @@ fn main() -> ExitCode {
         print!("{}", fantastic_team::AI_README);
         return ExitCode::SUCCESS;
     }
-    // `check`: the dry check of the team folder's `team.yaml` (#292), no model called.
-    if argv.first().map(String::as_str) == Some("check") {
-        return finish(fantastic_team::team_yaml::run_cli(&argv[1..]));
-    }
-    // THE FIRST START of a fresh folder with a `team.yaml`: its records are seeded (#292).
-    if !fantastic_team::is_one_shot(&argv) {
-        let applied = std::env::current_dir()
-            .map_err(|e| e.to_string())
-            .and_then(|cwd| fantastic_team::team_yaml::apply(&cwd));
-        if let Err(e) = applied {
-            eprintln!("fantastic_team: {e}");
-            return ExitCode::from(2);
-        }
-    }
     // `--worktrees DIR`: the folder of the git connectors' default worktree roots.
-    let argv = match fantastic_team::worktrees_flag::split(&argv)
-        .and_then(|(dir, rest)| dir.map_or(Ok(()), team_git_connector::set_worktrees_dir).map(|()| rest))
-    {
+    let argv = match fantastic_team::worktrees_flag::split(&argv).and_then(|(dir, rest)| {
+        dir.map_or(Ok(()), team_git_connector::set_worktrees_dir)
+            .map(|()| rest)
+    }) {
         Ok(rest) => rest,
         Err(e) => {
             eprintln!("fantastic_team: {e}");
