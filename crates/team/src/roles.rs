@@ -91,6 +91,13 @@ mod tests {
         parse_card(text, name).unwrap_or_else(|e| panic!("{e}"))
     }
 
+    #[test]
+    fn the_lead_deletes_a_worker_that_is_done() {
+        let d = card("lead").directive;
+        assert!(d.contains("deleted by YOU, as soon as you know it"), "lead card must say who deletes a finished worker");
+        assert!(d.contains("`delete_agent`"));
+    }
+
     fn words(s: &str) -> Vec<String> {
         s.to_lowercase()
             .split(|c: char| !c.is_ascii_alphanumeric())

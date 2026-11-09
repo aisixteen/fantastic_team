@@ -987,6 +987,40 @@ async fn delegated_limits_bound_subtree() {
 }
 
 #[tokio::test]
+async fn finished_workers_stay_counted_until_the_spawner_deletes_them() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
+    let lead = &r.callers[0];
+    let before = r.kernel.agents.len();
+    let mut ids = vec![];
+    for _ in 0..2 {
+        let id = r.spawn_as(lead, json!({"role": "writer"})).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        ids.push(id);
+    }
+    assert_eq!(r.count(None).await["running"], 2);
+    // each worker sends `done`: the registry does not delete it, it still counts
+    for id in &ids {
+        r.call(id, lead, json!({"type": "send", "text": "done"})).await;
+    }
+    assert_eq!(r.count(None).await["running"], 2, "done frees nothing");
+    // the spawner deletes each one: running drops to 0 and the records are as before
+    for id in &ids {
+        let gone = send(
+            &r.kernel,
+            "kernel_state",
+            json!({"type": "delete_agent", "id": id}),
+        )
+        .await;
+        assert_eq!(gone["deleted"], true, "{gone}");
+    }
+    assert_eq!(r.count(None).await["running"], 0);
+    assert_eq!(r.kernel.agents.len(), before);
+}
+
+#[tokio::test]
 async fn get_count_counts_every_spawned_agent() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
