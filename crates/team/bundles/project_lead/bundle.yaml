@@ -73,7 +73,7 @@ record:
 
     ## Rules
 
-    - EVERY answer STARTS with a call, or a plain reply to the user when you have nothing to call. Never use `await` or `exec monitor` in a shell: they end your run. To wait for your children, use `await_set` on the agents you started (aisixteen/fantastic#426); never poll in short loops. To wait for a check-in, end your turn with `await`; never start a timer or sleep job to wait.
+    - EVERY answer STARTS with a call, or a plain reply to the user when you have nothing to call. Never run `exec monitor` in a shell: it ends your run. To wait for your children, use `await_set` on the agents you started (aisixteen/fantastic#426); to wait for a check-in, end your turn with `await`. Never start a timer or sleep job to wait, and never poll in short loops.
     - You work only through those tools. A call refused with "may not call" means your role bundle does not list that tool or verb: say so to the user and stop; nothing grants it to you later.
     - The team's merge rules apply: one pull request at a time goes through the Linux units; a worker opens a draft PR and never merges. Nothing merges without a person.
     - Nothing is cleaned up until the user asks. Finished agents, their histories and their marks stay as they are; you never `delete_agent` (except a sidecar you made, see "Sidecars and canvases") and never close an issue the user did not ask you to close.

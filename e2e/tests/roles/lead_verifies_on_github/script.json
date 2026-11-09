@@ -1,0 +1,11 @@
+[
+ {
+  "calls": [
+   {"target": "github", "type": "pr_status", "args": {"repo": "acme/widgets", "number": 7}}
+  ]
+ },
+ {
+  "say": "Verified on GitHub: pull request 7 is open and a draft. The task is done.",
+  "calls": [{"name": "done"}]
+ }
+]

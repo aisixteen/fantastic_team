@@ -27,6 +27,7 @@ REPO = f"{OWNER}/{NAME}"
 MAINTAINER = "maintainer-login"
 APP_LOGIN = "team-bot[bot]"
 ISSUE_NUMBER = 1
+PR_SHA = "abc123def456"  # the head of the forge's pull request 7
 ISSUE_TITLE = "Add a greeting file"
 SPEC = "## SPEC\nAdd a file greeting.txt that says hello, and check it with cat.\n"
 
@@ -141,6 +142,13 @@ class Forge:
             return 200, [{"event": "labeled", "label": {"name": "team-ready"},
                           "actor": {"login": MAINTAINER}, "created_at": "2026-01-01T00:00:00Z"}]
         if method == "GET" and path == f"{r}/pulls":
+            return 200, []
+        # the PR the fake forge made (number 7): what `pr_status` reads
+        if method == "GET" and path == f"{r}/pulls/7":
+            return 200, {"number": 7, "state": "open", "draft": True, "head": {"sha": PR_SHA}}
+        if method == "GET" and path == f"{r}/commits/{PR_SHA}/check-runs":
+            return 200, {"total_count": 0, "check_runs": []}
+        if method == "GET" and path == f"{r}/pulls/7/reviews":
             return 200, []
         if method == "POST" and path == f"{r}/pulls":
             return 201, {"number": 7, "html_url": f"https://forge.invalid/{REPO}/pull/7",

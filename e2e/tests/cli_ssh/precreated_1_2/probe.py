@@ -36,6 +36,9 @@ def run(ctx):
         v.check("the remote work ran through the bridge: the work program exited 0",
                 T.came_back(ctx, None, "<exit_code>0</exit_code>"), str(T.forward_replies(ctx)[-1:])[:300])
         box.check_stream(v, "w2", "w2")
+        v.check("w2 took the remote's hand-off, a message headed [from remote] (team#290)",
+                any("[from remote]" in b and "[lane:w2]" in b for b in ctx.model.raw_bodies),
+                "no request of w2 holds a message headed [from remote]")
         T.reconnect_phase(ctx, box, v)
         v.check("2: the scripted model played every turn, none past the end",
                 T.hand(ctx, cli.LEAD, CLOSE) and ctx.model.consumed,
