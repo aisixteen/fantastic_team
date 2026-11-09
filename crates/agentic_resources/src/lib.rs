@@ -761,7 +761,7 @@ fn team_note(kernel: &Kernel, reg: &AgentId, child: &AgentId) -> String {
         .map(|s| format!("`{}` ({})", s.id.as_str(), s.role))
         .collect();
     let mut note = format!(
-        "\n\n[team] Your parent is `{parent}`: report to it when you are done, with \
+        "\n\n[team] Your parent is `{parent}`: send it your result when you are done, with \
          <call name=\"send\"><routing><target_id>{parent}</target_id></routing><payload><type>send</type><text>…</text></payload></call>. \
          `{}` only delivered this task; it takes no reports.",
         reg.as_str()

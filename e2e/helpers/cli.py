@@ -177,7 +177,8 @@ CHECK_INS = (
     "and no new row since your last check-in, two check-ins in a row; the same step or error over and over is "
     "looping. An agent that is generating is busy, never stuck. Keep the check-ins until your task is complete: unscheduling every schedule "
     "(`unschedule`) is your very last call, after every other step and wait, right before you end; the "
-    "scheduler agent stays.")
+    "scheduler agent stays. Never end your run while an agent you started is still working; its report or your "
+    "next check-in wakes you. To wait, end your turn with `await`; never start a timer or sleep job to wait.")
 SCHEDULER_VERBS = ["schedule", "unschedule", "list", "pause", "resume", "tick_now", "history"]
 
 
