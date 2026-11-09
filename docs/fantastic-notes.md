@@ -182,3 +182,10 @@ The agents the person makes later (`dispatcher`, `cadencer`, `pack`, `pack_listi
 `Cargo.lock` now pins fantastic `5d91e43`.
 
 - **The per-send ceiling is 600 s** (#538, was 180): a model turn and every dispatched call get 10 minutes before they time out. Also in this pin: #534 (TUI composer Backspace).
+
+## Pin at `4bb0969`
+
+`Cargo.lock` now pins fantastic `4bb0969`. Since `5d91e43` it brings:
+- A failed turn is retried as the chain's own next turn (aisixteen/fantastic#540, for #533).
+- The anthropic provider counts usage per model, with a `usage_reset` test (aisixteen/fantastic#537, for #535).
+- Python `ai_core` and the docs teach the routing form (aisixteen/fantastic#539, for #528); the Rust change is `transports.md` text only.
