@@ -229,6 +229,7 @@ impl Bundle for GithubConnectorBundle {
             "comment": "comment {repo, number, body} → {repo, number, comment_id, url}",
             "label": "label {repo, number, add?, remove?} → {repo, number, labels}",
             "pr_status": "pr_status {repo, number} → {repo, number, state, draft, head_sha, checks, checks_summary, reviews, review_state}",
+            "merge": "merge {repo, number, method?: squash|merge} → {merged, sha, number} (squash by default, never rebase; refuses unless every check on the head commit passed and the base is the default branch; a draft is made ready first)",
             "staleness": "staleness {versions?: [{repo, branch, commit?}], issue?: {repo, number, source_version?}} → {repos?: [{repo, branch, head, state: same|ahead|diverged|unknown, ahead_by, behind_by, commits: [{sha, subject}] (at most 50), files (at most 100), truncated}], issue?: {repo, number, updated_at, changed: bool|null}} (facts only; no commit = the head only)",
         })
     }
