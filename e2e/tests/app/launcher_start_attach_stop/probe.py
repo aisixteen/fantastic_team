@@ -112,7 +112,7 @@ def run(ctx):
         # The first run seeded the team's agents from the blueprint (#261), ids as written.
         seeded = before.get("agents", {})
         v.check("the first run seeded the team's fixed agents before the app starts",
-                {"lead", "board", "roles", "tasks", "queue", "github", "worker_exec", "worker_files"} <= set(seeded),
+                {"lead", "roles", "github", "worker_exec", "worker_files"} <= set(seeded),
                 str(sorted(seeded)))
         n = app.free_port()
         s2 = app.run_app(ctx, ["--binary", ctx.binary, "--port", n, "--dir", new_dir], name="start_new")
@@ -125,25 +125,22 @@ def run(ctx):
                 bool(line) and key_mode(t2) is None)
         v.check("no credential store and no helper agent exist until the person chooses a mode",
                 not {"credentials", "key_mode_setup"} & set(agents), str(sorted(agents)))
-        want_ids = {"lead", "queue", "github", "board", "roles", "tasks", "worker_exec", "worker_files"}
+        want_ids = {"lead", "roles", "github", "worker_exec", "worker_files"}
         v.check("the first run seeded the team under the fixed ids the role cards name",
                 want_ids <= set(agents), str(sorted(set(agents))))
         v.check("no id carries an import's suffix", not [i for i in agents if i.endswith("_1")],
                 str(sorted(agents)))
-        v.check("the roles registry, the queue and the board sit under the lead",
-                all(agents.get(i, {}).get("parent_id") == "lead" for i in ("roles", "queue", "board", "tasks")),
+        v.check("the roles registry, the connector and the worker's tools sit under the lead",
+                all(agents.get(i, {}).get("parent_id") == "lead" for i in ("roles", "github", "worker_exec", "worker_files")),
                 str({i: agents.get(i, {}).get("parent_id") for i in want_ids}))
         mem = agents.get("memory", {}).get("callable_by", {})
         v.check("fantastic's boot wrote the other end of the lead's edge on the home's memory, and what it had stays",
                 mem.get("lead") in ("*", ["*"]) and mem.get("user") in ("*", ["*"]), str(mem))
-        v.check("the yaml's parent entry wrote the other end of roles' and tasks' edge on memory",
-                mem.get("roles") in ("*", ["*"]) and mem.get("tasks") in ("*", ["*"]), str(mem))
+        v.check("the yaml's parent entry wrote the other end of roles' edge on memory",
+                mem.get("roles") in ("*", ["*"]), str(mem))
         ucb = agents.get("user", {}).get("callable_by", {}).get("team_ws", [])
         v.check("the yaml's parent entry wrote the page leg's end on user (inquiries, answer_inquiry)",
                 {"inquiries", "answer_inquiry"} <= set(ucb), str(ucb))
-        rcb = agents.get("kernel_state", {}).get("callable_by", {}).get("board", [])
-        v.check("the yaml's @root entry wrote the board's end on the root (reflect)",
-                "reflect" in rcb, str(rcb))
         v.check("the role cards were written next to the kernel",
                 os.path.isfile(os.path.join(new_dir, "roles", "project_lead.md")))
         s2.signal(signal.SIGINT)

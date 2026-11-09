@@ -82,20 +82,17 @@ pub fn seed(dir: &Path) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::new_team::{BOARD, GITHUB, LEAD, QUEUE, ROLES, TASKS, WORKER_EXEC, WORKER_FILES};
+    use crate::new_team::{GITHUB, LEAD, ROLES, WORKER_EXEC, WORKER_FILES};
     use crate::page::{PAGE_ID, WEB_ID, WS_ID};
     use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
     use serde_json::{json, Map};
     use std::collections::BTreeMap;
 
     /// The blueprint's ids with their parents, in order.
-    const TREE: [(&str, &str); 11] = [
+    const TREE: [(&str, &str); 8] = [
         (LEAD, "user"),
-        (QUEUE, LEAD),
         (GITHUB, LEAD),
-        (BOARD, LEAD),
         (ROLES, LEAD),
-        (TASKS, LEAD),
         (WORKER_EXEC, LEAD),
         (WORKER_FILES, LEAD),
         (WEB_ID, DEFAULT_ROOT_ID),
@@ -354,8 +351,6 @@ mod tests {
             lead["can_call"]["roles"],
             json!(crate::new_team::LEAD_ROLES_VERBS)
         );
-        assert_eq!(disk_record(dir.path(), BOARD)["github"], GITHUB);
-        assert_eq!(disk_record(dir.path(), QUEUE)["callable_by"]["board"], "*");
         assert_eq!(
             disk_record(dir.path(), WEB_ID)["can_call"][PAGE_ID],
             json!(["read_stream"])
@@ -421,20 +416,20 @@ mod tests {
         webui(dir.path(), port).unwrap();
         let stock = dir.path().join(".fantastic/agents/user/agents/exec");
         assert!(stock.is_dir());
-        std::fs::remove_dir_all(on_disk(dir.path(), BOARD).parent().unwrap()).unwrap();
+        std::fs::remove_dir_all(on_disk(dir.path(), WORKER_EXEC).parent().unwrap()).unwrap();
         std::fs::remove_dir_all(&stock).unwrap();
 
         webui(dir.path(), port).unwrap();
         let live = boot_and_stop(dir.path()).await;
         assert!(
-            !live.contains_key(BOARD),
-            "the team's board is not made again"
+            !live.contains_key(WORKER_EXEC),
+            "the team's worker_exec is not made again"
         );
         assert!(!live.contains_key("exec"), "nor fantastic's stock exec");
-        assert!(!on_disk(dir.path(), BOARD).exists());
+        assert!(!on_disk(dir.path(), WORKER_EXEC).exists());
         assert!(!stock.exists());
         // the rest of the team is as it was
-        for id in [LEAD, QUEUE, GITHUB, ROLES, TASKS, WEB_ID, PAGE_ID, WS_ID] {
+        for id in [LEAD, GITHUB, ROLES, WORKER_FILES, WEB_ID, PAGE_ID, WS_ID] {
             assert!(live.contains_key(id), "{id}");
         }
     }
@@ -448,7 +443,7 @@ mod tests {
         seed(dir.path()).unwrap();
         let port = free_port();
         webui(dir.path(), port).unwrap();
-        // a declared grant of the queue, a declared view-ish field of the board, and a stock
+        // a declared grant of worker_files, a declared field of the connector, and a stock
         // agent's declared field
         let edit = |id_path: std::path::PathBuf, f: &dyn Fn(&mut Value)| {
             let mut rec: Value =
@@ -456,11 +451,11 @@ mod tests {
             f(&mut rec);
             std::fs::write(id_path, serde_yaml::to_string(&rec).unwrap()).unwrap();
         };
-        edit(on_disk(dir.path(), QUEUE), &|r| {
+        edit(on_disk(dir.path(), WORKER_FILES), &|r| {
             r["callable_by"] = json!({"$self": "*", "extra": ["read"]});
             r["display_name"] = json!("changed");
         });
-        edit(on_disk(dir.path(), BOARD), &|r| {
+        edit(on_disk(dir.path(), GITHUB), &|r| {
             r["repos"] = json!(["me/mine"])
         });
         let files = dir
@@ -470,14 +465,14 @@ mod tests {
 
         webui(dir.path(), port).unwrap();
         let live = boot_and_stop(dir.path()).await;
-        let q = &live[QUEUE];
+        let q = &live[WORKER_FILES];
         assert_eq!(q["display_name"], "changed", "{q}");
         assert!(
-            q["callable_by"].get("board").is_none(),
+            q["callable_by"].get("$parent").is_none(),
             "the declared grant is not put back"
         );
         assert_eq!(q["callable_by"]["extra"], json!(["read"]));
-        assert_eq!(live[BOARD]["repos"], json!(["me/mine"]));
+        assert_eq!(live[GITHUB]["repos"], json!(["me/mine"]));
         assert_eq!(
             live["files"]["allow"],
             json!(["docs"]),
@@ -519,19 +514,14 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         assert!(seed(dir.path()).unwrap());
 
-        // the credential store and the root have no record at seed time: fantastic keeps
-        // their declared grants in its shell corner until it makes the store / the root runs
+        // the credential store has no record at seed time: fantastic keeps its declared
+        // grants in its shell corner until it makes the store
         let pending: Value = serde_yaml::from_str(
             &std::fs::read_to_string(dir.path().join(".fantastic/cli/grants.yaml")).unwrap(),
         )
         .unwrap();
         assert_eq!(pending["credentials"]["callable_by"]["github"], "*");
-        assert_eq!(
-            pending[DEFAULT_ROOT_ID]["callable_by"]["board"],
-            json!(["reflect"])
-        );
-        assert!(pending.get("@root").is_none(), "@root is resolved");
-        // the three that have a record are on disk, unioned into the stock grants
+        // the two that have a record are on disk, unioned into the stock grants
         let on = |rel: &str| -> Value {
             serde_yaml::from_str(
                 &std::fs::read_to_string(dir.path().join(".fantastic/agents").join(rel)).unwrap(),
@@ -540,7 +530,6 @@ mod tests {
         };
         let memory = on("user/agents/memory/agent.yaml");
         assert_eq!(memory["callable_by"]["roles"], "*");
-        assert_eq!(memory["callable_by"]["tasks"], "*");
         assert!(
             memory["callable_by"].get("user").is_some(),
             "the stock grant stays: {memory}"
@@ -565,17 +554,11 @@ mod tests {
             )
         };
         let doc = declared(dir.path());
-        for (caller, callee) in [
-            (ROLES, "memory"),
-            (TASKS, "memory"),
-            (GITHUB, "credentials"),
-            (BOARD, "@root"),
-            (WS_ID, "user"),
-        ] {
+        for (caller, callee) in [(ROLES, "memory"), (GITHUB, "credentials"), (WS_ID, "user")] {
             let can = &rec_in(&doc, caller)["can_call"][callee];
             assert!(!can.is_null(), "{caller} declares can_call {callee}");
         }
-        for (who, verb) in [(ROLES, "read"), (TASKS, "read")] {
+        for (who, verb) in [(ROLES, "read")] {
             admitted(
                 &as_caller(&k, who, "memory", json!({"type": verb})).await,
                 &format!("{who} -> memory {verb}"),
@@ -589,7 +572,7 @@ mod tests {
         }
         // the gate is real: an edge nobody granted, and a verb nobody granted
         for (who, target, verb) in [
-            (QUEUE, "memory", "read"),
+            (WORKER_EXEC, "memory", "read"),
             (WS_ID, "memory", "read"),
             (WS_ID, "user", "send"),
         ] {
@@ -617,7 +600,6 @@ mod tests {
         let before = tree_of(dir.path());
         let again = boot_and_stop(dir.path()).await;
         assert_eq!(tree_of(dir.path()), before);
-        assert_eq!(again["memory"]["callable_by"]["tasks"], "*");
         assert_eq!(again["memory"]["callable_by"]["roles"], "*");
         assert_eq!(
             again["user"]["callable_by"]["team_ws"],

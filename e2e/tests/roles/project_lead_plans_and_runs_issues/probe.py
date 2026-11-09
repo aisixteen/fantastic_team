@@ -57,12 +57,12 @@ def run(ctx):
 
     # the probe plays the user: it starts the project_lead through the registry. A spawner grants only
     # what it holds, so the operator holds what the card grants first.
-    S.operator_holds(team, {"github": "*", "board": "*", "queue": "*", "tasks": "*", "roles": "*",
+    S.operator_holds(team, {"github": "*", "roles": "*",
                             "kernel_state": "*", "canvas_page": ["new_canvas"]})
     # this team's workers may also use the GitHub connector: the worker bundle, edited in place
     w = os.path.join(team.dir, ".fantastic", "bundles", "worker", "bundle.yaml")
     text = open(w).read()
-    open(w, "w").write(text.replace("    queue: '*'\n", "    queue: '*'\n    github: [issue_view, pr_create, pr_status]\n", 1))
+    open(w, "w").write(text.replace("    worker_files: '*'\n", "    worker_files: '*'\n    github: [issue_view, pr_create, pr_status]\n", 1))
     team.send("kernel", {"type": "reload_bundle", "name": "worker"})
     # the operator is no AI agent: it names the project_lead's backend (its workers take that one)
     made = team.send("roles", {"type": "spawn", "role": "project_lead", "backend": S.lead_tier(ctx)})["result"]

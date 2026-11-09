@@ -224,7 +224,7 @@ These are facts about the binary at the commit this was built on, not decisions 
 
 1. `worker_files` and the puller's queue folder are sealed by default (`edge sealed by policy`); `stock.py` makes them with `ingress_rule: allow_all_ingress`, and writes the callers on both ends.
 2. The binary never calls `prepare_sandbox`: `stock.make_tools` makes `work/`, `work/wt`, `work/tasks` and `sandbox/home` first. The worker's HOME is the relative `./sandbox/home`.
-3. Agents are made with `create_agent` under fixed ids, so a string field that names another agent (the board's `github`, the dispatcher's `team`) and a card's grant on `github` or `queue` are true as written (fantastic's import would rename them `_1`).
+3. Agents are made with `create_agent` under fixed ids, so a string field that names another agent (the board's `github`, the dispatcher's `team`) and a card's grant on `github` or `worker_exec` are true as written (fantastic's import would rename them `_1`).
 4. A spawner grants only what it holds, and the operator is the `mcp` leg: `stock.operator_holds` gives it the grants a card names before a probe spawns a role as the operator.
 5. A model cannot pass `title` to `github pr_create`: `title` is a call-level field of the `<call>` grammar. The scripted model therefore stops after the push, and the probe sends `pr_create` itself, as the operator. The PR request is still what the github connector sends.
 6. The roles registry and the board are made by `stock.py`, not by a start-up step: nothing in the binary plans a tree now.

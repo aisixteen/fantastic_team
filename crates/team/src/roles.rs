@@ -74,13 +74,6 @@ pub(crate) fn parse_card(text: &str, name: &str) -> Result<Card, String> {
 }
 
 #[cfg(test)]
-fn card_grants_tasks(name: &str) -> bool {
-    let name = name.trim_end_matches(".md");
-    let text = ALL.iter().find(|(n, _)| *n == name).unwrap().1;
-    parse_card(text, name).unwrap().grants.contains_key("tasks")
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
@@ -287,7 +280,6 @@ mod tests {
             g["roles"],
             serde_json::json!(["roles", "role", "spawn", "get_count", "fleet"])
         );
-        assert!(g.contains_key("queue"));
         // the main lead holds nothing on `kernel`, so a card granting it cannot be spawned (#227)
         assert!(!g.contains_key("kernel"));
     }
@@ -301,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn project_lead_card_grants_the_connector_and_board() {
+    fn project_lead_card_grants_the_connector() {
         let c = card("project_lead.md");
         assert_eq!(
             c.grants["github"],
@@ -319,7 +311,6 @@ mod tests {
                 "push"
             ])
         );
-        assert_eq!(c.grants["board"], serde_json::json!(["board", "rows"]));
         assert_eq!(
             c.grants["kernel_state"],
             serde_json::json!(["await_set", "await_cancel", "create_agent", "delete_agent"]),
@@ -329,7 +320,6 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&serde_json::json!("spawn")));
-        assert!(c.grants.contains_key("queue"));
         for s in [
             "await_set",
             "fork_points",
@@ -366,20 +356,11 @@ mod tests {
         ] {
             assert!(c.directive.contains(s), "project_lead card lacks {s}");
         }
-        // no new registry verbs: the grants stay as they were
-        assert_eq!(
-            c.grants["tasks"],
-            serde_json::json!(["add", "assign", "reassign", "status", "report", "list", "get"])
-        );
     }
 
     #[test]
-    fn project_lead_card_grants_the_task_registry() {
+    fn project_lead_card_records_issues_in_the_task_registry() {
         let c = card("project_lead.md");
-        assert_eq!(
-            c.grants["tasks"],
-            serde_json::json!(["add", "assign", "reassign", "status", "report", "list", "get"])
-        );
         for s in [
             "gh:",
             "update_to",
@@ -390,9 +371,6 @@ mod tests {
             "YOURSELF",
         ] {
             assert!(c.directive.contains(s), "project_lead card lacks {s}");
-        }
-        for card in ["lead.md", "worker.md"] {
-            assert!(!super::card_grants_tasks(card), "{card} grants tasks");
         }
     }
 
@@ -545,6 +523,10 @@ mod tests {
                 brief.contains("there is nothing to grant or to ask for"),
                 "{file}: the brief says keys reach every agent"
             );
+            assert!(
+                brief.contains("They are not there at the start: a lead makes one, under that id, when it judges it useful."),
+                "{file}"
+            );
             assert!(brief.len() < 2500, "{file}: the brief stays short");
         }
         // the worker's card never names the connector (it has no git or github words)
@@ -552,6 +534,30 @@ mod tests {
         for file in ["lead.md", "project_lead.md", "issue_keeper.md"] {
             assert!(card(file).directive.contains("- `github`:"), "{file}");
         }
+    }
+
+    /// The lead decides how to plan and track the work: its card names the agents it may
+    /// make for it, under the ids and bundles the team's code names.
+    #[test]
+    fn the_lead_card_leaves_planning_and_tracking_to_the_lead() {
+        let l = card("lead.md").directive;
+        let start = l
+            .find("## Planning and tracking the work")
+            .expect("the lead card has the planning section");
+        let rest = &l[start + 3..];
+        let section = &rest[..rest.find("\n## ").unwrap_or(rest.len())];
+        assert!(section.contains("in your own context"));
+        for (id, module) in [
+            ("tasks", "task_registry.tools"),
+            ("queue", "ram_store.tools"),
+            ("board", "team_board.tools"),
+            ("dispatcher", "team_dispatcher.tools"),
+            ("cadencer", "team_cadencer.tools"),
+        ] {
+            assert!(section.contains(&format!("`{id}` (`{module}`)")), "{id}");
+            assert!(crate::registry().get(module).is_some(), "{module} is registered");
+        }
+        assert!(start < l.find("## The queue").unwrap());
     }
 
     #[test]
