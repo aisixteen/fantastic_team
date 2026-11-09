@@ -95,32 +95,6 @@ pub fn grant_chat_to(kernel: &Arc<Kernel>, workers: &[String], principal: &str) 
     granted
 }
 
-/// The agent ids whose cards a chat shows, from its history digests (rows of kind `embed`
-/// and `unembed` with the agent id as `head`, or `content` in a full row), oldest first:
-/// an embed adds its agent once, an unembed removes it. The rule of ai_core's
-/// `embed::cards`; a row without a string id is ignored.
-pub fn card_ids(rows: &[Value]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for r in rows {
-        let kind = r.get("kind").and_then(Value::as_str);
-        if kind != Some("embed") && kind != Some("unembed") {
-            continue;
-        }
-        let Some(id) = r
-            .get("content")
-            .or_else(|| r.get("head"))
-            .and_then(Value::as_str)
-        else {
-            continue;
-        };
-        out.retain(|c| c != id);
-        if kind == Some("embed") {
-            out.push(id.to_string());
-        }
-    }
-    out
-}
-
 /// Let `principal` (the page's `web_ws` leg) call the agents of `ids` that have a `view`
 /// record, on both ends: the agent's `callable_by` and the leg's `can_call` name the
 /// verbs of its panel (`view.calls`) plus `get_html` and `watch`, never `*`. An id that is
@@ -203,7 +177,7 @@ pub async fn grant_cards(kernel: &Arc<Kernel>, principal: &str, chat_agent: &str
             None => break,
         }
     }
-    grant_card_ids(kernel, principal, &card_ids(&rows))
+    grant_card_ids(kernel, principal, &fantastic_ai_core::embed::cards(&rows))
 }
 
 /// The verbs the dispatcher relays to a worker: `send` (hand_task) and the `control`
@@ -573,7 +547,7 @@ mod tests {
         let leg = crate::page::WS_ID;
         panel_host(&kernel, "h", serde_json::from_str(CARD_VIEW).unwrap()).await;
         panel_host(&kernel, "other", serde_json::from_str(CARD_VIEW).unwrap()).await;
-        let ids = card_ids(&rows_of_cards(&[("embed", "h")]));
+        let ids = fantastic_ai_core::embed::cards(&rows_of_cards(&[("embed", "h")]));
         assert_eq!(grant_card_ids(&kernel, leg, &ids), 1);
         assert_eq!(
             field_of(&kernel, "h", "callable_by")[leg],
@@ -596,26 +570,13 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = started_with_leg(dir.path()).await;
         panel_host(&kernel, "h", serde_json::from_str(CARD_VIEW).unwrap()).await;
-        let ids = card_ids(&rows_of_cards(&[("embed", "h"), ("unembed", "h")]));
+        let ids =
+            fantastic_ai_core::embed::cards(&rows_of_cards(&[("embed", "h"), ("unembed", "h")]));
         assert!(ids.is_empty());
         assert_eq!(grant_card_ids(&kernel, crate::page::WS_ID, &ids), 0);
         assert!(field_of(&kernel, "h", "callable_by")
             .get(crate::page::WS_ID)
             .is_none());
-        // a row with no string id is ignored
-        let odd = vec![
-            json!({"kind": "embed"}),
-            json!({"kind": "embed", "head": 3}),
-        ];
-        assert!(card_ids(&odd).is_empty());
-        // an embed again after the unembed shows it once
-        let again = card_ids(&rows_of_cards(&[
-            ("embed", "h"),
-            ("unembed", "h"),
-            ("embed", "h"),
-            ("embed", "h"),
-        ]));
-        assert_eq!(again, ["h"]);
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
