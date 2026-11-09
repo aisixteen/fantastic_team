@@ -1,0 +1,94 @@
+[
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "-c",
+      "import pathlib; p = pathlib.Path('adder.py'); p.write_text(p.read_text().replace('a - b', 'a + b'))"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "-c",
+      "import pathlib; p = pathlib.Path('muler.py'); p.write_text(p.read_text().replace('a + b', 'a * b'))"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "test_calc.py"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "-c",
+      "user.name=Worker",
+      "-c",
+      "user.email=worker@example.invalid",
+      "commit",
+      "-q",
+      "-a",
+      "-m",
+      "Fix the calc"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ }
+]
