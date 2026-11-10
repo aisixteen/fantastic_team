@@ -1,4 +1,4 @@
 costs: free
 timeout: 240
 plug: scripted
-fleet: stock team_tools team_core team_page
+fleet: stock team_tools team_core team_page provider_{{provider_shape}}

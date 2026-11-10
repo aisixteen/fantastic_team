@@ -4,8 +4,8 @@ Every AI agent's memory and the task registry point at ONE store agent (#185): a
 
 The lead, on the scripted model, spawns one worker through the roles registry, then adds one row to `tasks`, then `done`.
 
-Asserts: the agent list holds exactly one `sqlite_store.tools` agent, `memory`, and no `*_memory` agent besides the kernel's own `kernel_memory`; the lead's `memory_store_id`, every tier's `memory_store_id` and `tasks`' `task_store_id` name it; the spawned worker names it too and the store admits the worker; `.fantastic/memory.db` exists in the run dir; after the team is stopped and started again on the same directory, the `tasks` row (`list`) is back, unchanged (that an agent's history rows survive a restart is base's, `E136_sqlite_history_restart`).
+Asserts: the agent list holds exactly one `sqlite_store.tools` agent, `memory`, and no `*_memory` agent besides the kernel's own `kernel_memory`; the lead's `memory_store_id`, the lead's `provider_id` (the fleet's provider, which keeps its own state in `provider_store`) and `tasks`' `task_store_id` name it; the spawned worker names it too and the store admits the worker; `.fantastic/memory.db` exists in the run dir; after the team is stopped and started again on the same directory, the `tasks` row (`list`) is back, unchanged (that an agent's history rows survive a restart is base's, `E136_sqlite_history_restart`).
 
-The scripted model serves the lead only: the worker tier is inert (a RAM store handler), so no worker calls the model.
+The scripted model serves the lead only: the spawn carries no task, so the worker calls the model never.
 
 Coded for a manual run (`python3 e2e/run.py --only roles/one_store_survives_restart`); CI does not run the e2e.

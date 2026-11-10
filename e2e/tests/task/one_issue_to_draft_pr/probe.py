@@ -13,6 +13,8 @@ BODY = "Adds greeting.txt, checked with cat."
 
 
 def git(*args, cwd=None):
+    if cwd and not os.path.isdir(cwd):  # nothing ran, so there is no worktree: the check fails, the probe goes on
+        return ""
     r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
                        env={"PATH": os.environ.get("PATH", ""), "HOME": "/nonexistent",
                             "GIT_CONFIG_NOSYSTEM": "1"})

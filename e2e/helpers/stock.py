@@ -78,16 +78,6 @@ def spawn_project_lead(ctx, team) -> dict:
     return made
 
 
-def lead_tier(ctx, **extra) -> dict:
-    """A tier the scripted model answers: the lead's own backend fields."""
-    t = {"handler_module": "anthropic_backend.tools", "model": "scripted-model",
-         "endpoint": ctx.vars["model_endpoint"],
-         "credentials": {"store": "credentials", "ref": f"model/{ctx.vars['model_host']}"},
-         "memory_store_id": "memory", "context_window": 100000, "max_tokens": 4000}
-    t.update(extra)
-    return t
-
-
 def serve_webui(team, port: int, wait_s: float = 30.0) -> None:
     """Stop the headless team and start it again with the `webui --port N` word (#224), which puts
     the port on the `web` host its fleet laid; wait until the page is served."""
@@ -135,6 +125,9 @@ def boot(ctx, env: dict | None = None, *, extra_args=None, seeded: bool = False,
             lay_role_bundles(ctx.work)
         laid = cli.lay_test_fleet(ctx)
     ctx.team = team = T.Team(ctx.binary, ctx.work, env)
+    default = ctx.model.ai_record().get("model")
+    if cli.PROVIDER in laid and default:  # a RAM store starts empty: every start plants the default again
+        team.on_start = [*getattr(team, "on_start", []), lambda t: cli.plant_provider_default(t, default)]
     team.start(extra_args=T.HEADLESS if extra_args is None else extra_args)
     if fleet:
         missing = [i for i in laid if i not in team.agents()]

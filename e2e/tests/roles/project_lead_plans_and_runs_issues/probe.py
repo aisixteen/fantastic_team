@@ -48,17 +48,15 @@ def run(ctx):
     forge.extra_issues = 3  # four open issues in all
     team = ctx.boot_team(cards=True)
 
-    # the probe plays the user: it starts the project_lead through the registry. A spawner grants only
-    # what it holds, so the operator holds what the card grants first.
-    S.operator_holds(team, {"github": "*", "roles": "*",
-                            "kernel_state": "*", "canvas_page": ["new_canvas"]})
+    # the probe plays the user: it starts the project_lead through the registry, naming the team's
+    # provider (the fleet's `provider`) and the model; its workers take the same ones. The operator
+    # holds what the card grants first (`S.spawn_project_lead`), and gives the spawned lead the team's store.
     # this team's workers may also use the GitHub connector: the worker bundle, edited in place
     w = os.path.join(team.dir, ".fantastic", "bundles", "worker", "bundle.yaml")
     text = open(w).read()
     open(w, "w").write(text.replace("    worker_files: '*'\n", "    worker_files: '*'\n    github: [issue_view, pr_create, pr_status]\n", 1))
     team.send("kernel", {"type": "reload_bundle", "name": "worker"})
-    # the operator is no AI agent: it names the project_lead's backend (its workers take that one)
-    made = team.send("roles", {"type": "spawn", "role": "project_lead", "backend": S.lead_tier(ctx)})["result"]
+    made = S.spawn_project_lead(ctx, team)
     pl = made.get("id")
     v.check("the registry spawned the project_lead", bool(pl) and made.get("model") == "scripted-model", str(made))
     if not pl:
@@ -67,9 +65,9 @@ def run(ctx):
     # a worker tells its parent with a plain `send` (team#247): the script names the
     # project_lead, whose id is minted only now
     ctx.model.bind(pl=pl)
-    # the operator names the project_lead on the key and on the tools it was given (a spawned
+    # the operator names the project_lead on the tools it was given (a spawned
     # agent is not named in them, and only the tools' parent or the operator can write them)
-    admit(team, pl, ["credentials", "github", "queue", "board"])
+    admit(team, pl, ["github", "queue", "board"])
 
     # 1. "do your best choice": it reads, then proposes and waits
     team.send(pl, {"type": "send", "text": "do your best choice"})
@@ -86,8 +84,8 @@ def run(ctx):
             str(fleet(team)))
 
     # 2. "yes": worker 1, then (on "continue") worker 2. A spawned worker's first message is
-    # refused (its record names no key), so it asks the model nothing; the probe plays the
-    # lead's admit step (the key, and the connector and queue it was given), sends the task
+    # given no task (the spawn has none), so it asks the model nothing; the probe plays the
+    # lead's admit step (the connector and queue it was given), sends the task
     # again, and the worker plays its turns: it sends its parent a message (`send`, which
     # spawn let it make), the message starts the project_lead's turn, then the worker closes.
     handled = []
@@ -106,9 +104,7 @@ def run(ctx):
         started = before + (4 if n == 1 else 2)
         v.check(f"worker {n} asked the model nothing before it was admitted",
                 ctx.model.served == started, str(ctx.model.served))
-        team.send("kernel", {"type": "update_agent", "id": wid,
-                             "credentials": {"store": "credentials", "ref": f"model/{ctx.vars['model_host']}"}})
-        admit(team, wid, ["credentials", "github", "queue"])
+        admit(team, wid, ["github", "queue"])
         task = f"The queue is queue. Your id is the id in your own reflect. Work on issue {n}."
         team.send(wid, {"type": "send", "text": task})
         settle(ctx, started + 3)  # the worker's send, the project_lead's turn it starts, the worker's close

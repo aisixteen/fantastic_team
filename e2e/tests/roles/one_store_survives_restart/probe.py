@@ -29,9 +29,9 @@ def run(ctx):
             str(live["memory"].get("path")))
     v.check("the lead's memory_store_id names it", live[ctx.lead].get("memory_store_id") == "memory",
             str(live[ctx.lead].get("memory_store_id")))
-    tiers = live["roles"].get("tiers", {})
-    v.check("every tier's memory_store_id names it",
-            len(tiers) == 3 and all(t.get("memory_store_id") == "memory" for t in tiers.values()), str(tiers))
+    v.check("the lead's chat completes through the fleet's provider, which keeps its own state apart",
+            live[ctx.lead].get("provider_id") == "provider" and live["provider"].get("memory_store_id") == "provider_store",
+            str((live[ctx.lead].get("provider_id"), live.get("provider", {}).get("memory_store_id"))))
     v.check("tasks' task_store_id names it", live["tasks"].get("task_store_id") == "memory",
             str(live["tasks"].get("task_store_id")))
 

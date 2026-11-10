@@ -2,15 +2,10 @@ id: roles
 handler_module: agentic_resources.tools
 tiers:
   lead_t:
-    handler_module: anthropic_backend.tools
+    handler_module: ai_chat.tools
+    provider_id: provider
     model: scripted-model
-    endpoint: "{{model_endpoint}}"
-    credentials:
-      store: credentials
-      ref: "model/{{model_host}}"
     memory_store_id: memory
-    context_window: 100000
-    max_tokens: 4000
 can_call:
   "$self": "*"
   memory: "*"
