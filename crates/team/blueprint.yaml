@@ -107,7 +107,7 @@ agents:
     - id: github_credentials
       # the github connector's credential by env ref (#303): a personal token read from GH_TOKEN
       # at each call, no value at rest. GH_TOKEN unset = the connector works local only. An
-      # own GitHub App comes from a team.yaml preset (env: {app_id: VAR, private_key: VAR}).
+      # own GitHub App is set on this record (env: {app_id: VAR, private_key: VAR}).
       handler_module: credential_store.tools
       backend: env
       refs:

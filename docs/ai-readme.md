@@ -13,7 +13,7 @@ You are reading the text of the `fantastic_team` binary, the team's start-up. Us
 
 Run it from the directory the team lives in (`cd` there first).
 
-- The command line is fantastic's, unchanged (`fantastic readme` documents it): `--headless` (no screen; the page's `web` host listens on its recorded or a free 127.0.0.1 port), `webui [--port N] [--host ADDR]` (serves the team page; the team's own word, refused with `canvas`), `canvas [--port N] [--host ADDR]` (serves fantastic's canvas), `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`, `migrate-home`, `readme`. It runs in the directory it is started in: there is no `--dir`. `--tui`, a bare `--port`, `--instructions` and `--resend-instructions` are gone; fantastic refuses them.
+- The command line is fantastic's, unchanged (`fantastic readme` documents it): `--headless` (no screen; the page's `web` host listens on its recorded or a free 127.0.0.1 port), `webui [--port N] [--host ADDR]` (serves the team page; the team's own word, refused with `canvas`), `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`, `migrate-home`, `readme`. It runs in the directory it is started in: there is no `--dir`. `--tui`, a bare `--port`, `--instructions` and `--resend-instructions` are gone; fantastic refuses them.
 
 Nothing is read from a config file: the team is the agent records in `.fantastic/agents/`. Make them with a recipe and `send` (`create_agent` payloads, under ids you choose; see section 3). The team uses no blueprints.
 
@@ -30,7 +30,7 @@ The right pane fills the height beside the tree: the chat's transcript scrolls i
 
 ## 3. Records
 
-There is no `team.yaml`. Every key it had is a field of an agent record, set with `create_agent` / `update_agent` through `fantastic_team send`, with a `create_agent` payload sent to the root (`kernel_state`) under an id you choose. A grant is written on both ends: the new agent's `can_call` and the other agent's `callable_by` (`update_agent` replaces a whole map, so restate the keys it has). The app makes its own team the same way (`crates/team/src/new_team.rs`): `lead`, and under it `github`, `roles`, `worker_exec` and `worker_files`. The task-management agents (`tasks`, `queue`, `board`, `dispatcher`, `cadencer`) are not there at the start: the lead makes them under those ids when it judges them useful (#292). The role cards grant tools by id, so keep the ids.
+The agents are record files under `.fantastic/agents/` that the kernel loads at start. Every setting is a field of an agent record, set with `create_agent` / `update_agent` through `fantastic_team send`, with a `create_agent` payload sent to the root (`kernel_state`) under an id you choose. A grant is written on both ends: the new agent's `can_call` and the other agent's `callable_by` (`update_agent` replaces a whole map, so restate the keys it has). The app makes its own team the same way (`crates/team/src/new_team.rs`): `lead`, and under it `github`, `roles`, `worker_exec` and `worker_files`. The task-management agents (`tasks`, `queue`, `board`, `dispatcher`, `cadencer`) are not there at the start: the lead makes them under those ids when it judges them useful (#292). The role cards grant tools by id, so keep the ids.
 
 - Templates are the `tiers` field of the `agentic_resources` (roles registry) record, plus each AI record's own fields: `handler_module`, `model`, `endpoint`, `credentials` (a store and a ref), prices, `can_call`, `callable_by`.
 - The first agent is an ordinary AI record. Its directive is its `system_prompt_file` (read through its `file_bridge_id`), or a message sent with `send`. The caller defines the agents: nothing is created behind the records.
@@ -54,4 +54,4 @@ Work comes from GitHub issues. A maintainer adds the label `team-ready` to an is
 ## 6. Troubleshooting
 
 - `fantastic: the UI needs a terminal`: where there is none, run `fantastic_team webui` or `fantastic_team --headless`.
-- `fantastic: unknown \`--tui\``: the team's own surface flags are gone; use fantastic's words (`webui --port N`, `canvas --port N`, `--headless`).
+- `fantastic: unknown \`--tui\``: the team's own surface flags are gone; use fantastic's words (`webui --port N`, `--headless`).

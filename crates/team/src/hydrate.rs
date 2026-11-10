@@ -62,11 +62,7 @@ fn fill(v: &mut Value, dir: &Path) {
 
 /// The blueprint as the text `seed_dir_with` takes, the placeholders of `dir` filled in.
 pub fn blueprint_text(dir: &Path) -> Result<String, String> {
-    let mut doc = filled(BLUEPRINT, dir)?;
-    // a `team.yaml` in the folder is part of the first run's records (#292)
-    if let Some(preset) = crate::team_yaml::load(dir)? {
-        crate::team_yaml::overlay(&mut doc, &preset)?;
-    }
+    let doc = filled(BLUEPRINT, dir)?;
     serde_yaml::to_string(&doc).map_err(|e| format!("blueprint: {e}"))
 }
 

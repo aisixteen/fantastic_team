@@ -48,7 +48,7 @@ The build is reproducible in intent (#137): the same commit gives the same bytes
 Only needed for the GitHub side (pull requests, issue comments, labels). The mode is configuration, set by env refs; nothing pastes or stores a token.
 
 - Personal: export `GH_TOKEN` (a fine-grained token with Contents, Pull requests and Issues read/write, Metadata read). The stock `github_credentials` store reads it at each call; no command is needed.
-- App: create and install your own app on GitHub by hand, with these permissions, then name it in team.yaml with `env: {app_id: VAR, private_key: VAR}` (the key variable holds the PEM text or the path of the .pem file):
+- App: create and install your own app on GitHub by hand, with these permissions, then set the connector's credential record to `env: {app_id: VAR, private_key: VAR}` (the key variable holds the PEM text or the path of the .pem file):
   - Contents: read and write
   - Pull requests: read and write
   - Issues: read and write

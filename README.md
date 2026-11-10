@@ -30,20 +30,7 @@ There is no config file. A team is agent records, and config is fantastic's: a r
 - **A recipe, then `send`**: `fantastic_team --headless ai anthropic --model M` makes the root AI; further agents are `create_agent` payloads: `fantastic_team send '{"target": "kernel_state", "payload": {"type": "create_agent", ...}}'`.
 - **A directory that already holds `.fantastic/agents/`** (records you wrote or copied).
 
-Where the old `team.yaml` keys went:
-
-| was | now |
-|---|---|
-| `templates` | the `tiers` field of the `agentic_resources` record, and each AI record's own fields (`model`, `endpoint`, `credentials`, `can_call`, `callable_by`) |
-| `first_agent`, `directive_file` | an ordinary AI record; its directive is its `system_prompt_file` (read through its `file_bridge_id`), or a message sent with `send` |
-| `roles` | the role bundles (`.fantastic/bundles/<name>/bundle.yaml`) and the `agentic_resources` record's `limits` |
-| `connectors`, `queue`, `store`, `credentials` | agent records with their own fields (`team_git.tools`, `team_github.tools`, `ram_store.tools`, `sqlite_store.tools`, `credential_store.tools`) |
-| `groups` | the `groups` field of the dispatcher and the `group_settings` field of the cadencer |
-| `board` | the board's record (`repos`, `github`, `store`) |
-| `cadencer` | the cadencer's record (`enabled`) |
-| `canvases` | no switch: the canvas is fantastic's |
-| `.github/team.yaml` of a repo | the `repo_config` field of the puller's record, keyed by `owner/name` |
-| `--instructions`, `--workers`, `--leads`, `--per-lead` (no longer flags) | the lead's `system_prompt_file`, or a `send` to it |
+A `.github/team.yaml` of a repo is the `repo_config` field of the puller's record, keyed by `owner/name`. The agents are record files under `.fantastic/agents/` that the kernel loads at start; change one with `update_agent`.
 
 The first run of `fantastic_team` in a folder, from the CLI or the desktop app alike (`crates/team/src/hydrate.rs`), writes the blueprint's agents: `lead` (the `lead` role bundle) and, under it, `github`, `roles` (the registry, with its limits), `worker_exec` and `worker_files`, with the other end of each edge on the home's `memory`, `files`, `credentials` and the root; and the role bundles beside them (a bundle you have stays as it is). The ids are fixed, so the roles' grants (`github`, `roles`, `worker_exec`, `worker_files`) are true as written. Edit the records afterwards with `update_agent`, as with any agent (replace `owner/name` in `github`). The agents that manage tasks (`tasks`, `queue`, `board`, `dispatcher`, `cadencer`) are not seeded: the lead makes one with `create_agent`, under that id, when it judges it useful (#292). The git connector is not made by the app, because it takes the absolute paths of your clone and your worktrees: make it with `send` (`create_agent`, `handler_module: team_git.tools`, `repo_dir`, `workspace_root`, `remote`, `default_branch`).
 
@@ -112,7 +99,7 @@ github: git
 
 `templates/` holds example directive files to start from.
 
-**GitHub auth.** With `GH_TOKEN` set, the stock tree's `github_credentials` store (`env: {token: GH_TOKEN}`) gives the connector a personal token, with no setup. For your own GitHub App, use a team.yaml credential ref `env: {app_id: VAR, private_key: VAR}` (PEM text or a .pem path), see docs/team-yaml.md. Without a credential the team works local only (worktrees, branches, commits) and every GitHub verb says so. Nothing pastes or stores a token.
+**GitHub auth.** With `GH_TOKEN` set, the stock tree's `github_credentials` store (`env: {token: GH_TOKEN}`) gives the connector a personal token, with no setup. For your own GitHub App, set the connector's credential record to `env: {app_id: VAR, private_key: VAR}` (PEM text or a .pem path). Without a credential the team works local only (worktrees, branches, commits) and every GitHub verb says so. Nothing pastes or stores a token.
 
 ## Lanes
 
@@ -122,20 +109,19 @@ Tasks are exact: each says what to read, what to produce, and how to check it. T
 
 ## Run
 
-The command line is fantastic's, unchanged. `fantastic_team` is `fantastic` with this repo's bundles added to its registry, the way `canvas` sits on top of the kernel. It takes fantastic's words and one of its own (`webui`), and it runs in the directory it is started in (`cd` there first; fantastic has no `--dir`):
+The command line is fantastic's, unchanged. `fantastic_team` is `fantastic` with this repo's bundles added to its registry. It takes fantastic's words and one of its own (`webui`), and it runs in the directory it is started in (`cd` there first; fantastic has no `--dir`):
 
 ```
 fantastic_team                                  # the terminal UI, on a terminal
 fantastic_team --headless                       # no screen; the page's web host listens on its recorded or a free 127.0.0.1 port
 fantastic_team webui --port 8123                # serves the team page on 127.0.0.1:8123
-fantastic_team canvas --port 8123               # serves fantastic's canvas on 127.0.0.1:8123
 fantastic_team ai anthropic --model M           # the root AI on a backend, then the terminal
 fantastic_team run htop                         # a terminal cell running that command
 fantastic_team send '<item json>'               # one call into the team running here
 fantastic_team readme                           # fantastic's own readme
 ```
 
-`canvas [--port N] [--host ADDR]`, `ai <backend> …`, `run …`, `system`, `--headless`, `mcp`, `send`, `import`, `migrate-home` and `readme` are fantastic's words; `fantastic readme` documents them. The team page, the board and the dispatcher are agents like any other: the bundles are registered, and an agent comes from a record. The canvas is registered too but only started by the `canvas` word; an agent can still make a canvas of its own with `create_agent`. `webui [--port N] [--host ADDR]` is the team's own recipe word: it serves the team page (two columns and the agent list) and its socket from the binary, headless like `canvas` (the browser is the View), with the same `--port` and `--host`. Without `--port` it keeps the port recorded here, else picks a free one, and it prints `the team page: <url>` when `--port` is given. A recorded `web` boots in every mode, so a plain `--headless` listens on a free 127.0.0.1 port. `webui` and `canvas` together are refused: both mount a socket leg on the web host's one `/{host_id}/ws` route and the second would win, so run one. The team no longer has its own `--dir`, `--port`, `--tui`, `--instructions` or `--resend-instructions`; they are refused as unknown. Ctrl-C to stop.
+`ai <backend> …`, `run …`, `system`, `--headless`, `mcp`, `send`, `import`, `migrate-home` and `readme` are fantastic's words; `fantastic readme` documents them. The team page, the board and the dispatcher are agents like any other: the bundles are registered, and an agent comes from a record. `webui [--port N] [--host ADDR]` is the team's own recipe word: it serves the team page (two columns and the agent list) and its socket from the binary, headless like `canvas` (the browser is the View), with the same `--port` and `--host`. Without `--port` it keeps the port recorded here, else picks a free one, and it prints `the team page: <url>` when `--port` is given. A recorded `web` boots in every mode, so a plain `--headless` listens on a free 127.0.0.1 port. `webui` and `canvas` together are refused: both mount a socket leg on the web host's one `/{host_id}/ws` route and the second would win, so run one. The team no longer has its own `--dir`, `--port`, `--tui`, `--instructions` or `--resend-instructions`; they are refused as unknown. Ctrl-C to stop.
 
 A directive for the lead is its record's `system_prompt_file`, or a message sent to it: `fantastic_team send '{"target": "lead", "payload": {"type": "send", "text": "..."}}'`.
 
@@ -250,7 +236,6 @@ CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh w
 | declared views | Cadencer, puller, git, github, dispatcher and queue declare their read-only views as data in `declared_views.rs`, and the team page draws the declaration for cadencer, puller and git. The queue, board, github and team pages stay page code (`agent_views.rs`, with the reason). No view shows a secret. |
 | `team_app` | The launcher `fantastic_team_app` for the desktop app. See The app. |
 | `crates/team/src/new_team.rs` | The team's fixed ids (the lead, the roles registry, the GitHub connector, the worker's tools; the blueprint `crates/team/blueprint.yaml` declares them) and the writer of the role bundles (`crates/team/bundles/`, embedded in `crates/team/src/roles.rs`). |
-| `examples/team.yaml` | A team's setup as one preset yaml ([docs/team-yaml.md](docs/team-yaml.md)). |
 
 ## Updating fantastic
 

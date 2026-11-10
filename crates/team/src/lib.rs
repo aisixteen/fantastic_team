@@ -16,7 +16,6 @@ pub mod page;
 pub mod puller;
 pub mod repo_config;
 pub mod team_notice;
-pub mod team_yaml;
 pub mod tree;
 pub mod webui;
 pub mod worker_view;

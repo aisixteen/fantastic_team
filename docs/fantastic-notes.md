@@ -186,5 +186,5 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 - The launcher seeds the folder before `main_with`; the kernel never seeds.
 - `BootstrapOptions::one_shot(state_dir, work_dir)` has two folders.
 - The `status` reply of an AI agent has `inquiry_from`: the cadencer holds `send` and `status` on its digest leads and reads an open inquiry from it.
-- Base's boot writes the way back, so `team_ws` and every agent may `send` to `user` and an AI agent holds `*`. Owner decision pending (DECISIONS says `team_ws` keeps exactly its calls); the blueprint is unchanged.
+- Base's boot writes the way back, so `team_ws` and every agent may `send` to `user` and an AI agent holds `*`. This is base's behaviour and the team keeps it; the blueprint is unchanged.
 - The team calls base's `error_text`, `Kernel::exists`, `grants::union` and `USAGE_KEYS` in place of its own copies.
