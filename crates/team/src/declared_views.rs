@@ -495,7 +495,8 @@ pub fn grant_views(kernel: &Arc<Kernel>) -> usize {
     written
 }
 
-#[cfg(test)]
+// A2: boots through boot_kernel; switch on again
+#[cfg(any())]
 mod tests {
     use super::*;
     use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;

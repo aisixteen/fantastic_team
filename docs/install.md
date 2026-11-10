@@ -80,9 +80,9 @@ The terminal UI (needs a terminal):
 
     ./target/release/fantastic_team
 
-The first word the team adds to fantastic's (`ai-readme`):
+`fantastic_team readme` prints fantastic's readme followed by the team's:
 
-    fantastic_team ai-readme
+    fantastic_team readme
 
 `--dir`, `--port` outside `canvas` and `webui`, `--tui`, `--instructions` and `--resend-instructions` are not flags any more; fantastic refuses them.
 

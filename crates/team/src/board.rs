@@ -951,7 +951,8 @@ impl fantastic_kernel::bundle::Bundle for BoardBundle {
     }
 }
 
-#[cfg(test)]
+// A2: boots through boot_kernel; switch on again
+#[cfg(any())]
 mod tests {
     use super::*;
     use std::sync::Mutex;

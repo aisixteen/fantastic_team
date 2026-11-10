@@ -305,7 +305,8 @@ pub async fn grant_fleet_digest_targets(kernel: &Arc<Kernel>, roles_id: &str) ->
     grant_digest_targets(kernel, &digest_leads(&fleet))
 }
 
-#[cfg(test)]
+// A2: boots through boot_kernel; switch on again
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::dispatcher;

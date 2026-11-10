@@ -189,16 +189,16 @@ The older groups (`task`, `secrets`, `dispatcher`, `roles`, `ui`, `app`, `turns`
 The `app/` and `dispatcher/` tests drive the web UI of a live team: they serve the team page (`stock.serve_team_page`, or `webui --port N` through `stock.boot(ctx, extra_args=...)`), talk HTTP and a websocket with `helpers/web.py` (stdlib only), and run the app shell `fantastic_team_app` and the in-process handle driver `crates/team/examples/handle_serve.rs` as processes (`helpers/app.py`). `run.py` builds all three; with `--bin`, build them yourself and keep them in the same folder:
 
 ```
-cargo build -p fantastic-team --bin fantastic_team --example handle_serve
+cargo build -p fantastic-team --bin fantastic_team
 cargo build -p fantastic-team-app --bin fantastic_team_app
 python3 e2e/run.py --only dispatcher/quiet_heartbeat --bin "$PWD/target/debug/fantastic_team"   # --bin must be absolute
 ```
 
-A probe that cannot run here raises `helpers.verdict.Skip(reason)`; the launcher prints `SKIP <name> (<reason>)` and the run still exits 0. A test whose binary (`fantastic_team_app`, `examples/handle_serve`) is not next to `--bin` skips the same way. `app/window_per_platform` also skips without a tauri build (`E2E_APP_TAURI_BIN`), a Linux display and `xdotool`.
+A probe that cannot run here raises `helpers.verdict.Skip(reason)`; the launcher prints `SKIP <name> (<reason>)` and the run still exits 0. A test whose binary (`fantastic_team_app`) is not next to `--bin` skips the same way. `app/window_per_platform` also skips without a tauri build (`E2E_APP_TAURI_BIN`), a Linux display and `xdotool`.
 
 Facts about the web UI at this commit, found while writing these tests:
 
-1. `fantastic_team webui --port P` serves the team page `/team_page/file/index.html` and its socket `/team_ws/ws` (#224; the app's in-process handle serves the same page: `TeamHandle`, `examples/handle_serve`). The tests that need the team page build it with `stock.serve_team_page`.
+1. `fantastic_team webui --port P` serves the team page `/team_page/file/index.html` and its socket `/team_ws/ws` (#224). The tests that need the team page build it with `stock.serve_team_page`.
 2. The launcher (`fantastic_team_app`) starts `webui --port N` in the team folder and waits for a 200 at `/team_page/file/index.html` (`READY_PATH`), the page that command serves. It writes the role cards under `roles/` and, once the page answers, makes the team with `create_agent` under fixed ids when the kernel has no `lead` (it needs the home's `credentials` agent); a folder whose kernel has its `lead` is started as it is, so `app/launcher_start_attach_stop` makes one first (and has a second leg for the folder with no team). `app/attach_remote` keeps a small proxy front for its tunnel leg.
 3. The Rust ai-core never emits the `tool_calling` status the page's tool blocks key on; a tool call is a `call` part sent to the watchers of its addressee.
 4. The scripted plug takes `"thinking": "..."` (a reasoning block before the text) and `"delay": seconds` (the plug waits before it answers) on a turn.

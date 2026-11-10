@@ -15,7 +15,7 @@
 # an absolute path); `allowed` is the entry's own value, any command, as in fantastic's
 # blueprint, and the user can change it. `web`
 # carries no `port`: the port is the run's (`--port`, the recorded one) and is set on the
-# host by `webui`, as fantastic's `canvas` sets its own (`app_control::set_run_flags`).
+# host by fantastic's boot (`--headless --port N`).
 #
 #   <root>
 #   +-- user                 (stock; parent entry)

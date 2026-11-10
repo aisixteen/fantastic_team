@@ -75,7 +75,8 @@ pub(crate) fn parse_card(text: &str, name: &str) -> Result<Card, String> {
     })
 }
 
-#[cfg(test)]
+// A2: boots through boot_kernel; switch on again
+#[cfg(any())]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;

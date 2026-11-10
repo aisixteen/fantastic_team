@@ -5,7 +5,7 @@ You are reading the text of the `fantastic_team` binary, the team's start-up. Us
 ## 1. Build and check
 
 - Build: `cargo build --workspace`. The binary is `fantastic_team`.
-- Check: `fantastic_team ai-readme` prints this file. `fantastic_team readme` prints fantastic's readme (the command line is fantastic's).
+- Check: `fantastic_team readme` prints fantastic's readme followed by this file (the command line is fantastic's).
 - Tests: `cargo test --workspace`.
 - e2e: `python3 e2e/run.py --only-free` runs the binary on a scripted model and a fake forge (no network, no key). See `e2e/README.md`.
 
@@ -13,8 +13,7 @@ You are reading the text of the `fantastic_team` binary, the team's start-up. Us
 
 Run it from the directory the team lives in (`cd` there first).
 
-- The command line is fantastic's, unchanged (`fantastic readme` documents it): `--headless` (no screen, no port), `webui [--port N] [--host ADDR]` (serves the team page; the team's own word, refused with `canvas`), `canvas [--port N] [--host ADDR]` (serves fantastic's canvas), `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`, `migrate-home`, `readme`. It runs in the directory it is started in: there is no `--dir`. `--tui`, a bare `--port`, `--instructions` and `--resend-instructions` are gone; fantastic refuses them.
-- `fantastic_team ai-readme` is the team's own first word.
+- The command line is fantastic's, unchanged (`fantastic readme` documents it): `--headless` (no screen; the page's `web` host listens on its recorded or a free 127.0.0.1 port), `webui [--port N] [--host ADDR]` (serves the team page; the team's own word, refused with `canvas`), `canvas [--port N] [--host ADDR]` (serves fantastic's canvas), `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`, `migrate-home`, `readme`. It runs in the directory it is started in: there is no `--dir`. `--tui`, a bare `--port`, `--instructions` and `--resend-instructions` are gone; fantastic refuses them.
 
 Nothing is read from a config file: the team is the agent records in `.fantastic/agents/`. Make them with a recipe and `send` (`create_agent` payloads, under ids you choose; see section 3). The team uses no blueprints.
 

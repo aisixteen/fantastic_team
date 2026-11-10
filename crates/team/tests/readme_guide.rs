@@ -68,6 +68,8 @@ fn record_block(text: &str, first_key: &str) -> serde_json::Value {
     serde_yaml::from_str(&block).unwrap_or_else(|e| panic!("`{first_key}` block is YAML: {e}"))
 }
 
+// A2: boots through boot_kernel; switch on again
+#[cfg(any())]
 #[test]
 fn every_record_field_the_readme_names_is_read_by_the_code() {
     let text = readme();

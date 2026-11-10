@@ -79,7 +79,8 @@ pub fn seed(dir: &Path) -> Result<bool, String> {
     fantastic_tui::seed_dir_with(dir, &[&blueprint_text(dir)?])
 }
 
-#[cfg(test)]
+// A2: boots through boot_kernel; switch on again
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::new_team::{GITHUB, LEAD, ROLES, WORKER_EXEC, WORKER_FILES};

@@ -16,23 +16,13 @@ path = "src/lib.rs"
 [dependencies]
 fantastic-tui.workspace = true
 fantastic-kernel.workspace = true
-fantastic-bundle.workspace = true
-fantastic-core.workspace = true
-fantastic-file.workspace = true
 fantastic-ai-core.workspace = true
-fantastic-scheduler.workspace = true
-fantastic-ram-store.workspace = true
 fantastic-sqlite-store.workspace = true
 team-agentic-resources = { path = "../agentic_resources" }
 team-task-registry = { path = "../task_registry" }
-fantastic-user.workspace = true
-fantastic-anthropic-backend.workspace = true
-fantastic-credential-store.workspace = true
 fantastic-exec-bridge.workspace = true
 fantastic-web.workspace = true
 fantastic-web-ws.workspace = true
-fantastic-web-mcp.workspace = true
-fantastic-user-home-store.workspace = true
 team-git-connector = { path = "../git_connector" }
 team-github-connector = { path = "../github_connector" }
 tokio.workspace = true

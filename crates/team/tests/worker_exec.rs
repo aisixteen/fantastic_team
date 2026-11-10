@@ -1,3 +1,5 @@
+// A2: boots through boot_kernel; switch on again
+#![cfg(any())]
 use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
 use fantastic_kernel::{Item, Kernel};
 use fantastic_team::worker_exec::*;

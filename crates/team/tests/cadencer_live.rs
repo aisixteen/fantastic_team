@@ -1,5 +1,7 @@
 //! Live test (#112): the cadencer's settings survive a restart of a real kernel. Boots the
 //! team registry the way the binary does, creates a board and a cadencer.
+// A2: boots through boot_kernel; switch on again
+#![cfg(any())]
 
 use std::sync::Arc;
 

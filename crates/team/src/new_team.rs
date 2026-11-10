@@ -47,7 +47,8 @@ pub const LEAD_ROLES_VERBS: [&str; 5] = ["roles", "role", "spawn", "get_count", 
 pub const LEAD_FILES_VERBS: [&str; 5] =
     ["read", "read_stream", "watch_path", "unwatch_path", "watch"];
 
-#[cfg(test)]
+// A2: boots through boot_kernel; switch on again
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::roles;

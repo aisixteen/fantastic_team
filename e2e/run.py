@@ -223,10 +223,9 @@ def summary(results: dict) -> int:
 
 
 def build() -> str:
-    print("building fantastic_team, fantastic_team_app and the handle_serve example ...", flush=True)
+    print("building fantastic_team and fantastic_team_app ...", flush=True)
     for cmd in (["-p", "fantastic-team", "--bin", "fantastic_team"],
-                ["-p", "fantastic-team-app", "--bin", "fantastic_team_app"],
-                ["-p", "fantastic-team", "--example", "handle_serve"]):
+                ["-p", "fantastic-team-app", "--bin", "fantastic_team_app"]):
         if subprocess.run(["cargo", "build", *cmd], cwd=ROOT).returncode != 0:
             sys.exit("cargo build failed")
     meta = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=ROOT,
@@ -911,7 +910,7 @@ def selftest_source(v: Verdict) -> None:
             ", ".join(hits))
 
 
-NEW_TESTS = ("app/launcher_start_attach_stop", "app/handle_serves_port", "app/window_per_platform",
+NEW_TESTS = ("app/launcher_start_attach_stop", "app/window_per_platform",
              "app/attach_remote")
 
 
@@ -1188,13 +1187,13 @@ def selftest_app_helpers(v: Verdict) -> None:
         class C:
             binary = os.path.join(tmp, "fantastic_team")
         errs = []
-        for fn in (app_mod.app_binary, app_mod.handle_example):
+        for fn in (app_mod.app_binary,):
             try:
                 fn(C())
             except Skip as e:
                 errs.append(e.reason)
-        v.check("app_binary and handle_example raise Skip when the file is not built next to --bin",
-                len(errs) == 2 and "fantastic_team_app" in errs[0] and "handle_serve" in errs[1], str(errs))
+        v.check("app_binary raises Skip when the file is not built next to --bin",
+                len(errs) == 1 and "fantastic_team_app" in errs[0], str(errs))
         open(os.path.join(tmp, "fantastic_team_app"), "w").close()
         v.check("app_binary finds the file next to --bin", app_mod.app_binary(C()).endswith("fantastic_team_app"))
         parent = subprocess.Popen(["sh", "-c", "sleep 30 & wait"])
