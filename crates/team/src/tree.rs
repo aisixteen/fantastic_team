@@ -10,8 +10,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
+use fantastic_kernel::grants::union;
 use fantastic_kernel::{Item, Kernel};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 /// The root agent's id: the target of `create_agent` and the other kernel verbs.
 pub const ROOT_ID: &str = DEFAULT_ROOT_ID;
@@ -248,33 +249,34 @@ pub fn digest_leads(fleet: &Value) -> Vec<String> {
     out
 }
 
-/// Let the cadencer `send` to the given live agents, on both ends: the agent's
+/// Let the cadencer call `verbs` on the given live agents, on both ends: the agent's
 /// `callable_by[cadencer]` and the cadencer's `can_call[agent]`. A spawned agent's
 /// `callable_by` names only its spawner, so the digest could not reach it otherwise.
-/// An operator write; idempotent; a dead id is skipped. Returns how many agents got a
-/// new grant.
-pub fn grant_digest_targets(kernel: &Arc<Kernel>, ids: &[String]) -> usize {
+/// The fleet leads get `send` and `status` (the digest, and the open inquiry read from
+/// their `status`); a team notice passes `send` only. The verbs are merged with what an
+/// end already holds, never narrowed. An operator write; idempotent; a dead id is
+/// skipped. Returns how many agents got a new grant.
+pub fn grant_digest_targets(kernel: &Arc<Kernel>, ids: &[String], verbs: &[&str]) -> usize {
     if !kernel.exists(CADENCER_ID) {
         return 0;
     }
-    let verbs = json!(["send"]);
+    let verbs = json!(verbs);
     let mut granted = 0;
     for id in ids.iter().filter(|i| kernel.exists(i)) {
         let by_agent =
             kernel.edit_callable_by(&fantastic_kernel::AgentId::from(id.as_str()), |cb| {
-                if cb.get(CADENCER_ID) == Some(&verbs) {
-                    return false;
-                }
-                cb.insert(CADENCER_ID.into(), verbs.clone());
-                true
+                let before = cb.clone();
+                union(
+                    cb,
+                    &Map::from_iter([(CADENCER_ID.to_string(), verbs.clone())]),
+                );
+                *cb != before
             });
         let by_cadencer =
             kernel.edit_can_call(&fantastic_kernel::AgentId::from(CADENCER_ID), |cc| {
-                if cc.get(id.as_str()) == Some(&verbs) {
-                    return false;
-                }
-                cc.insert(id.clone(), verbs.clone());
-                true
+                let before = cc.clone();
+                union(cc, &Map::from_iter([(id.clone(), verbs.clone())]));
+                *cc != before
             });
         match (by_agent, by_cadencer) {
             (Ok(a), Ok(b)) => granted += usize::from(a || b),
@@ -293,7 +295,7 @@ pub async fn grant_fleet_digest_targets(kernel: &Arc<Kernel>, roles_id: &str) ->
         .first()
         .map(|o| o.result.clone())
         .unwrap_or(Value::Null);
-    grant_digest_targets(kernel, &digest_leads(&fleet))
+    grant_digest_targets(kernel, &digest_leads(&fleet), &["send", "status"])
 }
 
 #[cfg(test)]
@@ -315,7 +317,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn grant_digest_targets_grants_send_to_fleet_leads() {
+    async fn grant_digest_targets_grants_send_and_status_to_fleet_leads() {
         let dir = tempfile::tempdir().unwrap();
         let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
         for id in [CADENCER_ID, "pl", "sub", "w1"] {
@@ -327,19 +329,28 @@ mod tests {
             "worker": [{"id": "w1"}]}});
         let ids = digest_leads(&fleet);
         assert_eq!(
-            grant_digest_targets(&kernel, &ids),
+            grant_digest_targets(&kernel, &ids, &["send", "status"]),
             2,
             "the dead id is skipped"
         );
-        assert_eq!(grant_digest_targets(&kernel, &ids), 0, "idempotent");
+        assert_eq!(
+            grant_digest_targets(&kernel, &ids, &["send", "status"]),
+            0,
+            "idempotent"
+        );
+        assert_eq!(
+            grant_digest_targets(&kernel, &ids, &["send"]),
+            0,
+            "a notice never narrows"
+        );
         for id in ["pl", "sub"] {
             assert_eq!(
                 field_of(&kernel, id, "callable_by")[CADENCER_ID],
-                json!(["send"])
+                json!(["send", "status"])
             );
             assert_eq!(
                 field_of(&kernel, CADENCER_ID, "can_call")[id],
-                json!(["send"])
+                json!(["send", "status"])
             );
         }
         assert!(field_of(&kernel, "w1", "callable_by")[CADENCER_ID].is_null());

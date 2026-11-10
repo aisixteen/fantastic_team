@@ -587,13 +587,13 @@ mod tests {
             "settings": {"enabled": true, "cadence": 300, "stall_after": 1800, "quiet": false, "off": []},
             "ticks": 7, "last_beat_s": 1760000100u64, "next_beat_s": 1760000400u64,
             "digests_sent": 3, "delivery_errors": 0,
-            "digest_bytes_per_hour": 1200, "driver_tokens_per_hour": 55,
+            "digest_bytes_per_hour": 1200,
             "load": {
                 "workers": {"busy": 2, "idle": 1, "stalled": 4},
                 "groups": {"g": {"busy": 2, "idle": 1, "stalled": 4, "driver": "d"}},
                 "tasks": {"held": 2, "in_review": 1, "done": 9, "blocked": 0, "queued": 5},
-                "done_last_hour": 2, "tokens_total": 10,
-                "digest_bytes_per_hour": 1200, "driver_tokens_per_hour": 55}
+                "done_last_hour": 2,
+                "digest_bytes_per_hour": 1200}
         })
     }
 

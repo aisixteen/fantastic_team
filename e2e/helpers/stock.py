@@ -230,11 +230,9 @@ def inert_tier(ctx) -> dict:
             "endpoint": ctx.vars["model_endpoint"], "memory_store_id": "memory"}
 
 
-def make_board(ctx, team, groups: dict, store: str = "queue_files", roles: bool = False) -> None:
-    team_groups = {n: {"driver": g.get("driver", ""), "members": list(g.get("members", []))}
-                   for n, g in groups.items()}
+def make_board(ctx, team, store: str = "queue_files", roles: bool = False) -> None:
     create(team, id="board", parent_id=ROOT, handler_module="team_board.tools", repos=[REPO],
-           github="github", store=store, team_groups=team_groups,
+           github="github", store=store,
            can_call={"$self": "*", "github": "*", store: "*"},
            callable_by={"$self": "*", "$parent": "*", "dispatcher": "*",
                         "mcp": "*"})
@@ -277,8 +275,6 @@ def make_dispatcher(ctx, team, groups: dict, board: bool = True, roles: bool = F
     c = dict(id="cadencer", parent_id=ROOT, handler_module="team_cadencer.tools",
              group_settings=settings, can_call={"$self": "*"},
              callable_by={"$self": "*", "$parent": "*", "mcp": "*"})
-    if board:
-        c["board"] = "board"
     if roles:
         c["roles"] = "roles"
     create(team, **c)
@@ -410,7 +406,7 @@ def boot(ctx, env: dict | None = None, *, forge: bool = True,
     elif registry_tiers is not None:
         make_registry(ctx, team, registry_tiers, limits)
     if board:
-        make_board(ctx, team, groups or {}, board_store, roles=roles_tiers is not None)
+        make_board(ctx, team, board_store, roles=roles_tiers is not None)
     if (groups is not None) if dispatcher is None else dispatcher:
         make_dispatcher(ctx, team, groups or {}, board=board, roles=roles_tiers is not None,
                         registry=registry_tiers is not None)

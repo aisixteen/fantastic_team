@@ -687,7 +687,7 @@ mod tests {
         let (_dir, kernel, sent) = team_with_log().await;
         let edges = json!({
             "roles": ["fleet", "get_count"],
-            "kernel_state": ["reflect"], "lead": ["send"],
+            "kernel_state": ["reflect"], "lead": ["send", "status"],
         });
         let settings = json!({"lead": {"cadence": 120, "stall_after": 600, "quiet": false,
                                        "enabled": true}});

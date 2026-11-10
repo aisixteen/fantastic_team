@@ -246,7 +246,7 @@ fn worker_items(
 /// in one more. Subagents start collapsed; `expanded` names the open workers.
 /// `load` is the roles registry's `load` object (`Null` when none came). The team gets `load`
 /// {tasks, done_last_hour} when one came, plus the cadencer's
-/// `digest_bytes_per_hour` and `driver_tokens_per_hour` when `load` carries them,
+/// `digest_bytes_per_hour` when `load` carries it,
 /// and `waiting` {prs, stalled}: the PRs waiting for approval and the stalled
 /// workers, the figures that need the person. (The bundle adds `fleet` after this.)
 pub fn sidebar(
@@ -282,7 +282,7 @@ pub fn sidebar(
             "tasks": load["tasks"],
             "done_last_hour": load["done_last_hour"],
         });
-        for k in ["digest_bytes_per_hour", "driver_tokens_per_hour"] {
+        for k in ["digest_bytes_per_hour"] {
             if load.get(k).is_some_and(|v| !v.is_null()) {
                 team_load[k] = load[k].clone();
             }
@@ -1765,7 +1765,6 @@ mod tests {
             "tasks": {"held": 1, "in_review": 3, "done": 2, "blocked": 0, "queued": 3},
             "done_last_hour": 2,
             "digest_bytes_per_hour": 480,
-            "driver_tokens_per_hour": 1200,
         })
     }
 
@@ -1783,20 +1782,15 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_load_carries_digest_bytes_and_driver_tokens_per_hour() {
+    fn sidebar_load_carries_digest_bytes_per_hour() {
         let sb = sidebar_of(&rows_w(), &load_full());
         assert_eq!(sb["load"]["digest_bytes_per_hour"], 480);
-        assert_eq!(sb["load"]["driver_tokens_per_hour"], 1200);
         let mut bare = load_full();
         bare.as_object_mut()
             .unwrap()
             .remove("digest_bytes_per_hour");
-        bare.as_object_mut()
-            .unwrap()
-            .remove("driver_tokens_per_hour");
         let sb = sidebar_of(&rows_w(), &bare);
         assert!(sb["load"].get("digest_bytes_per_hour").is_none(), "{sb}");
-        assert!(sb["load"].get("driver_tokens_per_hour").is_none(), "{sb}");
     }
 
     #[test]
@@ -2261,7 +2255,7 @@ mod tests {
             Ok(match payload["type"].as_str() {
                 Some("status") => Some(json!({"load": {
                     "tasks": {"in_review": 2}, "workers": {"stalled": 1},
-                    "digest_bytes_per_hour": 99, "driver_tokens_per_hour": 7}})),
+                    "digest_bytes_per_hour": 99}})),
                 _ => None,
             })
         }
@@ -2285,7 +2279,6 @@ mod tests {
         }
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
         assert_eq!(sb["load"]["digest_bytes_per_hour"], 99, "{sb}");
-        assert_eq!(sb["load"]["driver_tokens_per_hour"], 7, "{sb}");
         assert_eq!(sb["waiting"], json!({"prs": 2, "stalled": 1}), "{sb}");
         kernel.stop().await;
     }

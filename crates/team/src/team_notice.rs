@@ -138,7 +138,7 @@ async fn notify(kernel: &Arc<Kernel>, lead: &str, why: &str) {
     if to.is_empty() {
         return;
     }
-    crate::tree::grant_digest_targets(kernel, &to);
+    crate::tree::grant_digest_targets(kernel, &to, &["send"]);
     for id in to {
         let _ = kernel
             .send(vec![Item::new(

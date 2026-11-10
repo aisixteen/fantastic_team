@@ -334,50 +334,6 @@ pub fn is_stalled(holds_task: bool, idle_s: u64, stall_after_s: u64) -> bool {
     holds_task && idle_s >= stall_after_s
 }
 
-/// How an inquiry's first row begins (ai-core's `inquiry_head`).
-const INQUIRY_HEAD: &str = "[inquiry from ";
-
-fn content_of(row: &Value) -> &str {
-    row["content"].as_str().unwrap_or("")
-}
-
-/// The asker an inquiry row names in its header, `None` when the row is not an inquiry.
-fn asker_of(content: &str) -> Option<&str> {
-    let rest = content.strip_prefix(INQUIRY_HEAD)?;
-    let end = rest.find(" · ").or_else(|| rest.find(']'))?;
-    Some(rest[..end].trim())
-}
-
-/// The open inquiry in an agent's conversation rows (the `rows` verb), as its text
-/// after the header line. The newest row that starts with `[inquiry from <driver> `
-/// is open unless a later row of the agent holds an `inquiry_answer` call. With no
-/// driver known, an inquiry from anyone counts.
-pub fn open_inquiry(rows: &[Value], driver: &str) -> Option<String> {
-    let at = rows
-        .iter()
-        .rposition(|r| asker_of(content_of(r)).is_some_and(|a| driver.is_empty() || a == driver))?;
-    let answered = rows[at + 1..].iter().any(|r| {
-        let c = content_of(r);
-        !c.starts_with(INQUIRY_HEAD) && c.contains("name=\"inquiry_answer\"")
-    });
-    if answered {
-        return None;
-    }
-    let body = content_of(&rows[at])
-        .split_once('\n')
-        .map(|(_, b)| b.trim().to_string())
-        .unwrap_or_default();
-    Some(body)
-}
-
-/// The time of the newest row, unix seconds.
-pub fn newest_row(rows: &[Value]) -> Option<u64> {
-    rows.iter()
-        .filter_map(|r| r["ts"].as_f64())
-        .map(|t| t as u64)
-        .max()
-}
-
 /// The board's config, read from its own record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardCfg {
@@ -1240,30 +1196,6 @@ mod tests {
         assert_eq!(board.asks.len(), 1);
         assert_eq!(board.asks[0].text, "ship it?");
         assert!(board.asks[0].answer.as_deref().unwrap().contains("noted"));
-    }
-
-    #[test]
-    fn an_inquiry_is_open_until_the_member_answers_it() {
-        let inquiry = json!({"role": "user", "ts": 5.0,
-            "content": "[inquiry from lead · re 7 — do any work it needs, then answer with <call name=\"inquiry_answer\"><answer>…</answer></call> before done: nothing else counts as your answer]\ndo X\nmore"});
-        let other = json!({"role": "user", "ts": 6.0,
-            "content": "[inquiry from user · re 8 — x]\nsomething else"});
-        let working = json!({"role": "assistant", "ts": 7.0, "content": "reading files"});
-        let answer = json!({"role": "assistant", "ts": 9.0,
-            "content": "<call name=\"inquiry_answer\"><answer>ok</answer></call>"});
-        let open = open_inquiry(&[inquiry.clone(), working.clone()], "lead");
-        assert_eq!(open.as_deref().and_then(|b| b.lines().next()), Some("do X"));
-        // an inquiry from someone else is not the driver's
-        assert_eq!(
-            open_inquiry(&[inquiry.clone(), other], "lead").unwrap(),
-            "do X\nmore"
-        );
-        assert_eq!(open_inquiry(&[inquiry, working, answer], "lead"), None);
-        assert_eq!(open_inquiry(&[], "lead"), None);
-        assert_eq!(
-            newest_row(&[json!({"ts": 5.5}), json!({"ts": 9.0}), json!({})]),
-            Some(9)
-        );
     }
 
     #[test]
