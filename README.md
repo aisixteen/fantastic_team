@@ -126,7 +126,7 @@ The command line is fantastic's, unchanged. `fantastic_team` is `fantastic` with
 
 ```
 fantastic_team                                  # the terminal UI, on a terminal
-fantastic_team --headless                       # no screen and no port
+fantastic_team --headless                       # no screen; the team page on a free local port
 fantastic_team webui --port 8123                # serves the team page on 127.0.0.1:8123
 fantastic_team canvas --port 8123               # serves fantastic's canvas on 127.0.0.1:8123
 fantastic_team ai anthropic --model M           # the root AI on a backend, then the terminal
@@ -189,21 +189,17 @@ With a `roles:` section the digest tree is the spawned tree (the project_lead, i
 sub-leads and their workers, read from the roles registry, the root's `reflect` and the
 task registry): each lead gets a digest of its own children, with stalls and the
 heartbeat. Without `roles:` it reads the board's rows, as before. For the digests the
-cadencer is granted `send` on the leads the roles registry lists, at the start and
-before each beat.
+cadencer is granted `send` and `status` on the leads the roles registry lists, at the
+start and before each beat; the `inquiry_from` of a lead's `status` tells it an inquiry is open on that lead.
 
 The cadencer's `status` carries the team's load as plain counts: workers busy,
 idle and stalled (per group and in all), tasks held, in review, done, blocked
-and queued, the number done in the last hour, and the tokens the drivers have
-spent. The code gives only these numbers. It has no mode, no total and no bar.
+and queued, and the number done in the last hour. The code gives only these numbers. It has no mode, no total and no bar.
 The group's driver AI reads them in its digest, one plain `load:` line, and
 decides what to show: progress against a fixed list, or load alone when work
 keeps arriving. With no AI in a group, the raw numbers are all that is shown.
 Tasks waiting on CI are not counted (that needs a GitHub poll). Lanes in use are
-not reported: the pinned fantastic does not expose them. Tokens come from the
-`reflect` usage of each group driver (workers are not counted); the first beat
-after a restart counts the driver's lifetime total once, and a counter that
-drops (a restarted driver) counts from zero again.
+not reported: the pinned fantastic does not expose them.
 
 ## Any model, any mix
 

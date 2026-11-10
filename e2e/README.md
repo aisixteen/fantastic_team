@@ -178,7 +178,7 @@ The older groups (`task`, `secrets`, `dispatcher`, `roles`, `ui`, `app`, `turns`
 - `run.py`: the launcher.
 - `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted`, `plug: anthropic` or `plug: vllm`); a test never names a model, an endpoint or a key. A test takes the plug's model, endpoint and host from `ctx.vars` (`model_name`, `model_endpoint`, `model_host`).
 - `helpers/`: `cli.py` (the cli group: the fixture repo, fantastic's start, `create_agent` helpers, the shared script turns), `records.py` (`create`, `update`, `merge`, `link`), `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start with fantastic's words such as `webui --port N`, stop, `send`, wiring, the page's chat grant), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks), `page.py` and `page_driver.js` (the team page's own script on a stub DOM over the live `/team_ws/ws`; needs `node` >= 22), `podman_remote.py` (the ssh remote in a Podman container, #242), `ssh_twins.py` (the ssh twins: the raw commands and scripts, the box, the shared checks) and `gpu_ssh.py` (their gpu tier: the wiring in plain words).
-- `helpers/web.py`, `helpers/app.py`: HTTP and websocket client; the app shell and handle driver as processes.
+- `helpers/web.py`, `helpers/app.py`: HTTP and websocket client; the app shell as a process.
 - `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`), `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code).
 - `ui/sidebar_opens_agent_full_screen` (free): drives the team page the binary serves with `webui`, with `helpers/page_driver.js` (the page's own script `page.js` on a stub DOM, over the live `/team_ws/ws`); needs node >= 22, else it prints `SKIP` and passes.
 - `tests/ui/`: the web UI (the team page on a web host, its websocket via `helpers/web.py`). The browser overflow check is not built.
@@ -186,7 +186,7 @@ The older groups (`task`, `secrets`, `dispatcher`, `roles`, `ui`, `app`, `turns`
 
 ## The app and the dispatcher's web UI (#37)
 
-The `app/` and `dispatcher/` tests drive the web UI of a live team: they serve the team page (`stock.serve_team_page`, or `webui --port N` through `stock.boot(ctx, extra_args=...)`), talk HTTP and a websocket with `helpers/web.py` (stdlib only), and run the app shell `fantastic_team_app` and the in-process handle driver `crates/team/examples/handle_serve.rs` as processes (`helpers/app.py`). `run.py` builds all three; with `--bin`, build them yourself and keep them in the same folder:
+The `app/` and `dispatcher/` tests drive the web UI of a live team: they serve the team page (`stock.serve_team_page`, or `webui --port N` through `stock.boot(ctx, extra_args=...)`), talk HTTP and a websocket with `helpers/web.py` (stdlib only), and run the app shell `fantastic_team_app` as a process (`helpers/app.py`). `run.py` builds both binaries; with `--bin`, build them yourself and keep them in the same folder:
 
 ```
 cargo build -p fantastic-team --bin fantastic_team

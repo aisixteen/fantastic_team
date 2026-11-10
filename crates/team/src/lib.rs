@@ -20,7 +20,6 @@ pub mod team_yaml;
 pub mod tree;
 pub mod webui;
 pub mod worker_view;
-pub mod worktrees_flag;
 
 use fantastic_kernel::BundleRegistry;
 

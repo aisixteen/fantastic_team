@@ -68,7 +68,7 @@ group with a driver shows nothing here, since its AI writes the summary.
 The team load {tasks, done_last_hour} is drawn as a footer row under the tree:
 `tasks: held N · in review N · done N · blocked N · queued N · done last hour N`.
 It is left out when the board gave no load. When the cadencer answers, the footer
-also shows the cost per hour: ` · digests N B/h · driver N tok/h`. Above the footer a
+also shows the cost per hour: ` · digests N B/h`. Above the footer a
 `waiting for you: N PRs · N stalled` line shows the PRs in review and the stalled
 workers; stalled worker rows are marked.
 

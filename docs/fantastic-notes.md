@@ -185,4 +185,5 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 - The stop is bounded: 15 s grace, then exit 1.
 - The launcher seeds the folder before `main_with`; the kernel never seeds.
 - `BootstrapOptions::one_shot(state_dir, work_dir)` has two folders.
-- The `status` reply of an AI agent has `inquiry_from`.
+- The `status` reply of an AI agent has `inquiry_from`: the cadencer holds `send` and `status` on its digest leads and reads an open inquiry from it.
+- The team calls base's `error_text`, `Kernel::exists`, `grants::union` and `USAGE_KEYS` in place of its own copies.

@@ -48,7 +48,7 @@ pub(crate) fn record_schema() -> &'static Value {
     S.get_or_init(|| {
         json!({"fields": [
             Field::new("repo_dir", "str", "absolute path of the local clone every worktree is made from").required().json(),
-            Field::new("workspace_root", "str", "absolute directory every worktree path must be inside; absent = <the default folder>/<agent id>, made at the first worktree_add (the default folder is the system temp folder's fantastic_team/worktrees, or the binary's --worktrees DIR). Set or change it (update_agent) only after the user agrees to that folder: ask first").json(),
+            Field::new("workspace_root", "str", "absolute directory every worktree path must be inside; absent = <the default folder>/<agent id>, made at the first worktree_add (the default folder is the system temp folder's fantastic_team/worktrees). Set or change it (update_agent) only after the user agrees to that folder: ask first").json(),
             Field::new("remote", "str", "a remote name in repo_dir (origin) or a URL (https://…, ssh://…, git@host:org/repo.git)").required().json(),
             Field::new("default_branch", "str", "the remote's default branch — push refuses it (and main, master)").required().json(),
             credentials_field(false).json(),
@@ -121,34 +121,12 @@ impl GitConnectorBundle {
     }
 }
 
-/// The folder the default worktree roots go in, set once by the binary's `--worktrees DIR`.
-static WORKTREES_DIR: OnceLock<PathBuf> = OnceLock::new();
-
-/// Set the default worktrees folder (the binary's `--worktrees DIR`). It must be absolute; a
-/// second call is refused.
-pub fn set_worktrees_dir(dir: PathBuf) -> Result<(), String> {
-    if !dir.is_absolute() {
-        return Err(format!(
-            "--worktrees needs an absolute path, not `{}`",
-            dir.display()
-        ));
-    }
-    WORKTREES_DIR
-        .set(dir)
-        .map_err(|_| "--worktrees is set twice".to_string())
-}
-
 /// The default worktree root of git agent `id`: `<worktrees folder>/<id>`, the folder being
-/// `--worktrees DIR` or `<system temp>/fantastic_team/worktrees`.
+/// `<system temp>/fantastic_team/worktrees`.
 pub fn default_workspace_root(id: &str) -> PathBuf {
-    WORKTREES_DIR
-        .get()
-        .cloned()
-        .unwrap_or_else(|| {
-            std::env::temp_dir()
-                .join("fantastic_team")
-                .join("worktrees")
-        })
+    std::env::temp_dir()
+        .join("fantastic_team")
+        .join("worktrees")
         .join(id)
 }
 

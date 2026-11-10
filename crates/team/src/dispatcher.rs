@@ -282,10 +282,11 @@ pub fn sidebar(
             "tasks": load["tasks"],
             "done_last_hour": load["done_last_hour"],
         });
-        for k in ["digest_bytes_per_hour"] {
-            if load.get(k).is_some_and(|v| !v.is_null()) {
-                team_load[k] = load[k].clone();
-            }
+        if load
+            .get("digest_bytes_per_hour")
+            .is_some_and(|v| !v.is_null())
+        {
+            team_load["digest_bytes_per_hour"] = load["digest_bytes_per_hour"].clone();
         }
         out["load"] = team_load;
         out["waiting"] = json!({
