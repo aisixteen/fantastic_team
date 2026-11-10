@@ -1,33 +1,5 @@
 id: roles
 handler_module: agentic_resources.tools
-tiers:
-  strong:
-    handler_module: anthropic_backend.tools
-    model: scripted-model
-    endpoint: "{{model_endpoint}}"
-    credentials:
-      store: credentials
-      ref: "model/{{model_host}}"
-    memory_store_id: memory
-    context_window: 100000
-    max_tokens: 4000
-  # the small tier names a ref the store does not hold: a spawned worker's first message is
-  # refused until the operator gives it the real ref
-  small:
-    handler_module: anthropic_backend.tools
-    model: scripted-model
-    endpoint: "{{model_endpoint}}"
-    credentials:
-      store: credentials
-      ref: model/unprovisioned
-    memory_store_id: memory
-    context_window: 100000
-    max_tokens: 4000
-  issue_keeper:
-    handler_module: ram_store.tools
-    model: inert
-    endpoint: "{{model_endpoint}}"
-    memory_store_id: memory
 limits:
   total: 5
   per_role:

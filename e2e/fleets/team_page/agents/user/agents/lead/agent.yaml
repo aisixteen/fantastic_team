@@ -1,15 +1,11 @@
 id: lead
-handler_module: anthropic_backend.tools
+handler_module: ai_chat.tools
+provider_id: provider
 model: "{{model_name}}"
-endpoint: "{{model_endpoint}}"
-credentials:
-  store: credentials
-  ref: "model/{{model_host}}"
 memory_store_id: memory
-context_window: 100000
-max_tokens: 4000
 can_call:
   "$self": "*"
+  provider: [complete, watch]
   "$subtree": "*"
   memory: "*"
   credentials: "*"

@@ -1,18 +1,13 @@
 id: w1
-handler_module: anthropic_backend.tools
+handler_module: ai_chat.tools
+provider_id: provider
 model: scripted-model
-endpoint: "{{model_endpoint}}"
-credentials:
-  store: credentials
-  ref: "model/{{model_host}}"
 memory_store_id: w1_memory
 can_call:
   "$self": "*"
-  credentials: "*"
+  provider: [complete, watch]
   w1_memory: "*"
 callable_by:
   "$self": "*"
   "$parent": "*"
   team_ws: [history, send, stop, status, watch]
-context_window: 100000
-max_tokens: 4000
