@@ -5,7 +5,6 @@ cost.json) holds it, nor the app key or the minted token. Outcomes only."""
 import json
 import os
 import re
-import subprocess
 
 from helpers import app, run_flow
 from helpers.verdict import Verdict
