@@ -79,12 +79,6 @@ pub fn tunnel_args(host: &str, remote_port: u16, local_port: u16) -> Vec<String>
     ]
 }
 
-/// A port the OS says is free on loopback right now.
-pub fn free_port() -> std::io::Result<u16> {
-    let l = std::net::TcpListener::bind("127.0.0.1:0")?;
-    Ok(l.local_addr()?.port())
-}
-
 fn next_value<'a, I: Iterator<Item = &'a String>>(
     it: &mut I,
     flag: &str,
@@ -128,7 +122,8 @@ pub fn target_from_args(args: &[String]) -> Result<Target, String> {
         if attach.is_some() || port.is_some() || binary.is_some() {
             return Err("--tunnel cannot be combined with --attach, --port or --binary".into());
         }
-        let local_port = free_port().map_err(|e| format!("no free local port: {e}"))?;
+        let local_port = fantastic_team::app_control::free_port("127.0.0.1")
+            .map_err(|e| format!("no free local port: {e}"))?;
         return Ok(Target::Tunnel {
             ssh: ssh.unwrap_or_else(|| DEFAULT_SSH.to_string()),
             host,
