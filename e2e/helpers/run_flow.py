@@ -48,22 +48,6 @@ def boot(ctx, **kw) -> dict:
     return ctx.secrets
 
 
-def boot_page(ctx, workers=("lead",), watch_only=()) -> int:
-    """Boot the team with `--port` on a free port and give the canvas's socket leg the
-    page's chat grant on `workers` (and `watch` on `watch_only`). Returns the port."""
-    from . import app, team as team_mod
-
-    from . import stock
-
-    port = app.free_port()
-    stock.boot(ctx, port=port, forge=False)
-    workers = [ctx.lead if w == "lead" else w for w in workers]
-    team_mod.grant_chat(ctx.team, "canvas_ws", list(workers))
-    if watch_only:
-        team_mod.grant_chat(ctx.team, "canvas_ws", list(watch_only), ["watch"])
-    return port
-
-
 def hand_over(ctx, text: str, wait_s: float = 120.0) -> bool:
     """Send the lead its message and wait until the scripted model has played every turn."""
     r = ctx.team.send(ctx.lead, {"type": "send", "text": text})

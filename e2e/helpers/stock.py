@@ -1,6 +1,6 @@
 """The stock team of the older e2e tests, as fantastic records (issues #219, #221).
 
-The team binary is fantastic's command line (`--headless`, `canvas --port N`) and has no
+The team binary is fantastic's command line (`--headless`, `webui --port N`) and has no
 config file and no blueprint, so a test builds its team the way anyone does: every agent is a
 `create_agent` payload sent with `fantastic_team send`, under an id the test chooses, and every
 edge is written on both ends (`link`):
@@ -368,13 +368,7 @@ def grant_chat(team, leg: str, workers, verbs=CHAT) -> None:
 
 # ---- the whole stock team ---------------------------------------------------------------
 
-def start_args(port: int | None, extra_args=None) -> list[str]:
-    if extra_args is not None:
-        return list(extra_args)
-    return ["canvas", "--port", str(port)] if port else list(T.HEADLESS)
-
-
-def boot(ctx, env: dict | None = None, *, port: int | None = None, forge: bool = True,
+def boot(ctx, env: dict | None = None, *, forge: bool = True,
          puller: bool = True, git: bool = True, groups: dict | None = None,
          board: bool = False, board_store: str = "queue_files", roles_tiers: dict | None = None,
          registry_tiers: dict | None = None, limits: dict | None = None, extra_args=None, lead_tools=None,
@@ -392,7 +386,7 @@ def boot(ctx, env: dict | None = None, *, port: int | None = None, forge: bool =
     ctx.work = os.path.join(ctx.run_dir, sub) if sub else ctx.run_dir
     os.makedirs(ctx.work, exist_ok=True)
     ctx.team = team = T.Team(ctx.binary, ctx.work, env)
-    team.start(extra_args=start_args(port, extra_args))
+    team.start(extra_args=T.HEADLESS if extra_args is None else extra_args)
     if credentials:
         make_credentials(ctx, team, github=forge if github_cred is None else github_cred)
     if seeded:
