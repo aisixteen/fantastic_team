@@ -581,6 +581,7 @@ mod tests {
         for (who, target, verb) in [
             (WORKER_EXEC, "memory", "read"),
             (WS_ID, "memory", "read"),
+            // `send` on `user` is admitted by base's way back, so the probe is `forward`
             (WS_ID, "user", "forward"),
         ] {
             let r = as_caller(&k, who, target, json!({"type": verb})).await;

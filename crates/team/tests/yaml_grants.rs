@@ -122,7 +122,7 @@ impl Site {
     }
 }
 
-/// How long a SIGTERM stop may take (the shell drains, the watchdog allows 4s).
+/// How long a SIGTERM stop may take (the shell drains; base's bounded stop allows 15 s).
 const STOP_BOUND: Duration = Duration::from_secs(30);
 
 struct Kernel {

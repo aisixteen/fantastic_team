@@ -70,7 +70,7 @@ The command line is fantastic's, unchanged: `fantastic_team` is `fantastic` with
     cd ./my-team
     ./target/release/fantastic_team --headless
 
-No screen; the team page is served on a free 127.0.0.1 port.
+No screen; the team page is served on the recorded or a free 127.0.0.1 port.
 
 Serve the web UI on a port:
 

@@ -126,7 +126,7 @@ The command line is fantastic's, unchanged. `fantastic_team` is `fantastic` with
 
 ```
 fantastic_team                                  # the terminal UI, on a terminal
-fantastic_team --headless                       # no screen; the team page on a free local port
+fantastic_team --headless                       # no screen; the page's web host listens on its recorded or a free 127.0.0.1 port
 fantastic_team webui --port 8123                # serves the team page on 127.0.0.1:8123
 fantastic_team canvas --port 8123               # serves fantastic's canvas on 127.0.0.1:8123
 fantastic_team ai anthropic --model M           # the root AI on a backend, then the terminal

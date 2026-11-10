@@ -30,7 +30,7 @@ Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from tw
 
 ## Pin at `b175660`
 
-`Cargo.lock` now pins fantastic `b175660`. It brings `fantastic_tui::seed_dir(dir) -> Result<bool, String>` (fantastic#444: the shell's first-run seeding, a no-op once `.fantastic` exists) and spawn applying the card's tool grants on both ends (fantastic#436: a card may only grant what its spawner holds, so the lead holds `board` and the root's await verbs). Team calls `seed_dir` before it boots a fresh directory (`run_at_start`, `persist_web`), so the first `--port` start serves the page; `seed_base_tree` keeps the stores the seed wrote.
+`Cargo.lock` now pins fantastic `b175660`. It brings `fantastic_tui::seed_dir(dir) -> Result<bool, String>` (fantastic#444: the shell's first-run seeding, a no-op once `.fantastic` exists) and spawn applying the card's tool grants on both ends (fantastic#436: a card may only grant what its spawner holds, so the lead holds `board` and the root's await verbs). Team calls `seed_dir` before it boots a fresh directory, so the first `--port` start serves the page.
 
 ## Pin at `b980705`
 
@@ -186,4 +186,5 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 - The launcher seeds the folder before `main_with`; the kernel never seeds.
 - `BootstrapOptions::one_shot(state_dir, work_dir)` has two folders.
 - The `status` reply of an AI agent has `inquiry_from`: the cadencer holds `send` and `status` on its digest leads and reads an open inquiry from it.
+- Base's boot writes the way back, so `team_ws` and every agent may `send` to `user` and an AI agent holds `*`. Owner decision pending (DECISIONS says `team_ws` keeps exactly its calls); the blueprint is unchanged.
 - The team calls base's `error_text`, `Kernel::exists`, `grants::union` and `USAGE_KEYS` in place of its own copies.

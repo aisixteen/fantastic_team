@@ -1605,8 +1605,8 @@ mod tests {
 
     /// The live check the issue asks for: after a real beat (the board read, the
     /// digest built and delivered to the driver) `status` shows the digest bytes per
-    /// hour. The fake `Peers` stands in for the driver, since no stock agent of
-    /// `registry()` answers `send`.
+    /// hour. The fake `Peers` stands in for the driver, since no stock agent
+    /// answers `send`.
     #[tokio::test(start_paused = true)]
     async fn status_shows_digest_bytes_per_hour_after_a_live_beat() {
         let load = board_load(12, 17, false);
