@@ -42,8 +42,7 @@ pub mod worker_exec;
 /// code) that the roles registry (`agentic_resources.tools`, crates/agentic_resources)
 /// spawns from; the task registry (`task_registry.tools`,
 /// crates/task_registry) is inert in a team whose registry record has no
-/// `task_store_id`; the cabinets (`cabinet.tools`, crates/cabinet) act only for
-/// a manager agent the operator makes and wires.
+/// `task_store_id`.
 pub fn register_team(reg: &mut BundleRegistry) {
     // the stock roles, meta bundles over `ai_chat.tools`, which fantastic's stock set registers before this extra (a team's folder may override them)
     if let Err(e) = roles::register(reg) {
@@ -65,7 +64,6 @@ pub fn register_team(reg: &mut BundleRegistry) {
         team_task_registry::HANDLER_MODULE,
         team_task_registry::TaskRegistryBundle::default(),
     );
-    reg.register(team_cabinet::HANDLER_MODULE, team_cabinet::CabinetBundle);
     // fantastic's scheduler: a lead makes its own as a child and schedules check-ins to itself.
     reg.register("scheduler.tools", fantastic_scheduler::SchedulerBundle);
     reg.register(puller::HANDLER_MODULE, puller::PullerBundle::default());
@@ -516,14 +514,6 @@ mod tests {
     #[test]
     fn register_team_registers_the_task_registry() {
         assert!(registry().get("task_registry.tools").is_some());
-    }
-
-    #[test]
-    fn register_team_registers_the_cabinet() {
-        assert!(registry().get("cabinet.tools").is_some());
-        let mut reg = BundleRegistry::new();
-        register_team(&mut reg);
-        assert!(reg.get("cabinet.tools").is_some());
     }
 
     /// Boot the root and write its record without starting the kernel, so a
