@@ -3,7 +3,7 @@
 One lead solves the shared fixture (a git repo with one failing test; solved = the test
 passes on HEAD and the fix is committed), started the two ways #219 allows:
 
-- A, the lead made by hand: `fantastic_team --headless`, then `send` of `create_agent` for the lead, under the fixed id `lead`.
+- A, the lead laid as a record file under the fixed id `lead`, before the first start of `fantastic_team --headless`.
 - B, with the recipe: fantastic's recipe `--headless ai anthropic --model M --endpoint URL` (the
   root AI `ai`), then `send` of `create_agent` / `update_agent`.
 

@@ -167,6 +167,26 @@ The older groups (`task`, `secrets`, `dispatcher`, `roles`, `ui`, `app`, `turns`
 - `stock.serve_webui(team, port)` stops the headless team and starts it again with `webui --port N` (#224); the page and its leg are already on disk;
 - the tests that run on the product's seed (`app/launcher_start_attach_stop`, `app/attach_remote`, `roles/app_team_spawn_trees`) name no fleet and call `stock.boot(ctx, seeded=True)` / keep their own setup steps; only the credential store of the first two is made with `send`.
 
+## Tiers
+
+| costs | what answers | status |
+| --- | --- | --- |
+| `free` | a scripted model (`backends/scripted.py`) and a fake forge (`helpers/forge.py`) | built |
+| `turns` | a real model through the `anthropic` plug (aisixteen/fantastic#302), run by hand, needs `ANTHROPIC_API_KEY` or `E2E_ANTHROPIC_KEY` | built |
+| `gpu` | a vLLM server reached directly, through the `vllm` plug (`backends/vllm.py`, #237), run by hand, needs `VLLM_ENDPOINT` and its kin; or, with `BACKEND=anthropic`, the `anthropic` plug (#251) | built |
+
+## Layout
+
+- `run.py`: the launcher.
+- `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted`, `plug: anthropic` or `plug: vllm`); a test never names a model, an endpoint or a key. A test takes the plug's model, endpoint and host from `ctx.vars` (`model_name`, `model_endpoint`, `model_host`).
+- `helpers/`: `cli.py` (the cli group: the fixture repo, fantastic's start with the test's fleet laid before it, the shared script turns), `records.py` (`create`, `update`, `merge`, `link`), `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (start with fantastic's words such as `webui --port N`, stop, `send`, `fill_text` / `lay_fleet`, the page's chat grant), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks), `page.py` and `page_driver.js` (the team page's own script on a stub DOM over the live `/team_ws/ws`; needs `node` >= 22), `podman_remote.py` (the ssh remote in a Podman container, #242), `ssh_twins.py` (the ssh twins: the raw commands and scripts, the box, the shared checks) and `gpu_ssh.py` (their gpu tier: the wiring in plain words).
+- `helpers/web.py`, `helpers/app.py`: HTTP and websocket client; the app shell as a process.
+- `fleets/`: the shared layers of record files a test's fleet is made of (relative to `.fantastic/`: `agents/<id>/agent.yaml`).
+- `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`, `fleet`: the layers it names), `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code), and the optional `fleet/` folder (the test's own last layer).
+- `ui/sidebar_opens_agent_full_screen` (free): drives the team page the binary serves with `webui`, with `helpers/page_driver.js` (the page's own script `page.js` on a stub DOM, over the live `/team_ws/ws`); needs node >= 22, else it prints `SKIP` and passes.
+- `tests/ui/`: the web UI (the team page on a web host, its websocket via `helpers/web.py`). The browser overflow check is not built.
+- `runs/`: one folder per run, gitignored (it holds model output).
+
 ## The app and the dispatcher's web UI (#37)
 
 The `app/` and `dispatcher/` tests drive the web UI of a live team: they serve the team page (a `web` record of the fleet, or `webui --port N` through `stock.boot(ctx, extra_args=...)`), talk HTTP and a websocket with `helpers/web.py` (stdlib only), and run the app shell `fantastic_team_app` as a process (`helpers/app.py`). `run.py` builds both binaries; with `--bin`, build them yourself and keep them in the same folder:
@@ -203,7 +223,7 @@ These are facts about the binary at the commit this was built on, not decisions 
 1. `worker_files` and the puller's queue folder are sealed by default (`edge sealed by policy`); the fleet's record files carry `ingress_rule: allow_all_ingress` and the callers on both ends.
 2. The binary never calls `prepare_sandbox`: `stock.boot` makes `work/`, `work/wt`, `work/tasks` and `sandbox/home` before the first start. The worker's HOME is the relative `./sandbox/home`.
 3. Agents are record files under fixed ids, so a string field that names another agent (the board's `github`, the dispatcher's `team`) and a card's grant on `github` or `worker_exec` are true as written (fantastic's import would rename them `_1`).
-4. A spawner grants only what it holds, and the operator is the `mcp` leg, which base's boot grants every agent on disk.
+4. A spawner grants only what it holds, and the operator is the `mcp` leg: `stock.operator_holds` gives it the grants a card names before a probe spawns a role as the operator.
 5. A model cannot pass `title` to `github pr_create`: `title` is a call-level field of the `<call>` grammar. The scripted model therefore stops after the push, and the probe sends `pr_create` itself, as the operator. The PR request is still what the github connector sends.
 6. The roles registry and the board are record files of the fleet, not a start-up step: nothing in the binary plans a tree now.
 7. The team page for the older UI tests is the `team_page` layer (see above).

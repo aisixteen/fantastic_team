@@ -17,7 +17,7 @@ import os
 import time
 
 from . import cli, records, run_flow, team as T
-from .records import link, update
+from .records import link, merge, update
 
 LEAD = "lead"
 
@@ -51,12 +51,24 @@ def lay_role_bundles(work: str, src: str | None = None) -> list[str]:
     return names
 
 
+def operator_holds(team, targets: dict) -> None:
+    """The operator (the `send` leg, `mcp`) may call `targets` (agent -> verbs): both ends. A
+    spawner grants only what it holds, so the operator holds what a card grants before it spawns."""
+    have = team.agents()
+    for t, verbs in targets.items():
+        if t in have:
+            merge(team, t, "callable_by", {"mcp": verbs}, have)
+    merge(team, "mcp", "can_call", dict(targets))
+
+
 def spawn_project_lead(ctx, team) -> dict:
     """The registry's spawned tree is rooted at the `project_lead` (what the cadencer digests, in roles
     mode): the team gets its provider (the scripted model, under the lead) and the operator spawns
-    one naming it. A child takes its memory store from its spawner and the operator has none, so the
+    one naming it. A spawner grants only what it holds, so the operator holds what the card grants
+    first. A child takes its memory store from its spawner and the operator has none, so the
     spawned lead gets the team's store here, before its first message (its workers copy it).
     Returns the spawn's result (`id`, ...)."""
+    operator_holds(team, {"github": "*", "roles": "*", "kernel_state": "*", "canvas_page": ["new_canvas"]})
     cli.add_provider(ctx, ctx.lead)
     made = team.send("roles", {"type": "spawn", "role": "project_lead", "provider": cli.PROVIDER,
                                "model": ctx.vars["model_name"]})["result"]

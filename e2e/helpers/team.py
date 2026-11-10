@@ -5,7 +5,7 @@ it works in the directory it is started in): `--headless` by default, `webui --p
 for the web. Everything it is told goes through `fantastic_team send '<item>'` (attach-only, over
 `.fantastic/cli/mcp.sock`): `create_agent` and `update_agent` on the root. A test's agents are record files
 under `e2e/fleets/` (named by `fleet:` in its `test.yaml`), laid into `<run>/.fantastic/` before the first
-start (`lay_fleet`); `helpers/stock.py` builds the stock team with `send` + `create_agent`.
+start (`lay_fleet`); the older tests' fleets are record files too (`helpers/stock.py` keeps only their own steps).
 """
 
 from __future__ import annotations

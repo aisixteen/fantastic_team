@@ -436,7 +436,7 @@ def remote_log_call() -> dict:
 # ---- the five scripts -------------------------------------------------------------------
 
 def script_single_lead() -> list[dict]:
-    """The lead alone, twice (A: made with create_agent; B: fantastic's recipe). Locally it fixes
+    """The lead alone, twice (A: laid as a record file; B: fantastic's recipe). Locally it fixes
     adder.py and pushes; in its remote workspace (the box's exec agent, through the bridge) it
     pulls, fixes muler.py, commits and pushes. The lead is the only backend, on the master."""
     def one() -> list[dict]:

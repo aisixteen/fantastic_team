@@ -1,7 +1,7 @@
 # gpu_cli/precreated_1_2
 
-The gpu twin of `cli/precreated_1_2` (#237): a lead and two workers (`w1`, `w2` under `lead`) made with
-`create_agent` under fixed ids, each worker able to call the exec agent. The lead is asked, in plain words,
+The gpu twin of `cli/precreated_1_2` (#237): a lead and two workers (`w1`, `w2` under `lead`) laid as record
+files under fixed ids before the first start, each worker able to call the exec agent. The lead is asked, in plain words,
 to have `w1` fix adder.py and `w2` muler.py, committed, and to check the test. A real model answers; there
 is no script.
 

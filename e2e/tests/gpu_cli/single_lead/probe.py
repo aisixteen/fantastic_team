@@ -1,6 +1,6 @@
 """gpu_cli/single_lead: one lead solves the fixture on a real model, started two ways.
 
-A: `--headless`, then the lead made with `send` + `create_agent` under the fixed id `lead`.
+A: the lead laid as a record file (fixed id `lead`) before the first start of `--headless`.
 B: fantastic's recipe `--headless ai vllm -p PORT --host H --kv-overflow O` (the root AI `ai`), then
    `send` of `update_agent` (the server's `/v1` URL as given, the model, the budgets, the slots, the
    key, the exec grant).

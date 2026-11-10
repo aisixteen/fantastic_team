@@ -1,6 +1,6 @@
 # cli/precreated_1_2
 
-A lead and two workers, all three made with `send` + `create_agent` (the workers are the lead's children,
+A lead and two workers, all three laid as record files before the first start (the workers are the lead's children,
 keyless against the scripted server). Nothing is spawned: the probe makes them under
 the fixed ids `lead`, `w1`, `w2`, hands the lead its task, and the lead `send`s each worker its file (`[lane:w1]`,
 `[lane:w2]` mark the workers' lanes in the plug). The workers fix one bug each and commit; w2 waits

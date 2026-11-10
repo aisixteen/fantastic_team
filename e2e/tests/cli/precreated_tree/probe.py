@@ -1,4 +1,4 @@
-"""precreated_tree: a lead, two sub-leads, and a worker under each, all made with create_agent. The lead
+"""precreated_tree: a lead, two sub-leads, and a worker under each, all laid as record files before the first start. The lead
 tells each sub-lead, each sub-lead tells its worker, the workers solve. The tree is unchanged. The
 steps and the outcome checks are `helpers/cli_scenarios.py`'s (the gpu twin uses them too)."""
 

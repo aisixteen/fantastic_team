@@ -48,8 +48,10 @@ def run(ctx):
     forge.extra_issues = 3  # four open issues in all
     team = ctx.boot_team(cards=True)
 
-    # the probe plays the user: it starts the project_lead through the registry (the operator, `mcp`,
-    # holds every agent laid on disk: the reach the kernel gives it at boot)
+    # the probe plays the user: it starts the project_lead through the registry. A spawner grants only
+    # what it holds, so the operator holds what the card grants first.
+    S.operator_holds(team, {"github": "*", "roles": "*",
+                            "kernel_state": "*", "canvas_page": ["new_canvas"]})
     # this team's workers may also use the GitHub connector: the worker bundle, edited in place
     w = os.path.join(team.dir, ".fantastic", "bundles", "worker", "bundle.yaml")
     text = open(w).read()

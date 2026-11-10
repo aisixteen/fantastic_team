@@ -5,8 +5,8 @@ The gpu twin of `cli/lead_spawns_two` (#237): a lead with a roles registry (fant
 its model the lead's) is asked, in plain words, to fix the failing test with two workers (one file each),
 to commit, and to delete the workers it spawned. A real model answers; there is no script.
 
-Start: `--headless`, then the lead and `roles` made with `send` + `create_agent` under the fixed ids
-`lead` and `roles`. The tier carries the model's `credentials`, like any AI that needs a key.
+Start: the lead and `roles` laid as record files under the fixed ids
+`lead` and `roles` before the first start of `--headless`. The tier carries the model's `credentials`, like any AI that needs a key.
 
 Waits for the lead's `done` (or the test's `timeout`), then checks, as the cli test does: solved; two
 `spawn` calls; the records are the ones it started with (both workers deleted); the registry counts none

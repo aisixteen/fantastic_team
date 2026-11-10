@@ -61,11 +61,13 @@ def single_by_hand(ctx, v, sub: str = "create_agent_run"):
     return lead, before
 
 
-def single_by_recipe(ctx, v, sub: str = "recipe_run"):
+def single_by_recipe(ctx, v, sub: str = "recipe_run", fleet: str = "fleet_recipe"):
     """B: fantastic's recipe makes the root AI `ai`, then `send` of `create_agent` /
     `update_agent` gives it the key, the exec grant and whatever the recipe leaves to the plug.
+    The creates here are this step's own live creates: `fleet` names a key no `test.yaml` carries, so
+    no fleet is laid and the recipe starts on a fresh folder.
     Returns ("ai", the records before the task)."""
-    cli.start(ctx, ctx.model.recipe_args(), sub=sub)
+    cli.start(ctx, ctx.model.recipe_args(), sub=sub, fleet=fleet)
     cli.create(ctx.team, {"id": "credentials", "parent_id": "user",
                           "handler_module": "credential_store.tools", "backend": "env",
                           "refs": {f"model/{ctx.model.host}": {"host": ctx.model.host,
