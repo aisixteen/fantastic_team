@@ -94,13 +94,6 @@ fn fail_hint(code: &str, error: String, hint: &str) -> Value {
     refusal::refusal_hint(code, error, hint)
 }
 
-fn now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
-}
-
 /// Every id above `id`, nearest first.
 fn ancestors(kernel: &Kernel, id: &AgentId) -> Vec<AgentId> {
     let mut out = Vec::new();
@@ -342,8 +335,7 @@ async fn save(kernel: &Arc<Kernel>, store: &str, entry: &Value) -> Result<(), Va
 
 /// One history step; it carries the entry's recorded facts only when it has any.
 fn history_item(from: &Value, to: &Value, by: &Option<AgentId>, entry: &Value) -> Value {
-    let mut item =
-        json!({"from": from, "to": to, "by": by.as_ref().map(AgentId::as_str), "at": now()});
+    let mut item = json!({"from": from, "to": to, "by": by.as_ref().map(AgentId::as_str), "at": fantastic_ai_core::helpers::now_secs()});
     for k in ["versions", "source_version", "fork_from"] {
         let v = &entry[k];
         let empty = v.is_null() || v.as_array().is_some_and(Vec::is_empty);
@@ -649,7 +641,7 @@ async fn report_inner(
         .ok_or_else(|| not_found_task("report", id))?;
     entry["report"] = json!({
         "from": from.as_ref().map(AgentId::as_str), "state": state,
-        "result": result, "at": now(), "usage": usage,
+        "result": result, "at": fantastic_ai_core::helpers::now_secs(), "usage": usage,
     });
     if usage.is_some() {
         entry["usage"] = entry["report"]["usage"].clone();

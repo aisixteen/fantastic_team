@@ -616,10 +616,7 @@ async fn read_roles(
     roles: &str,
     stall_after_s: u64,
 ) -> Option<(Vec<Node>, Value)> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = fantastic_ai_core::helpers::now_secs() as u64;
     let (rows, load) = crate::board::roles_tree_rows(peers, roles, now, stall_after_s).await;
     if rows.is_empty() {
         return None;

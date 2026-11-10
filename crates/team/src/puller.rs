@@ -347,13 +347,6 @@ impl PullState {
     }
 }
 
-fn now_s() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// The `status` reply: the source (repos, connector, store) from the record and the
 /// figures from the state. Never the maintainer or app login.
 pub fn status_of(cfg: &PullerCfg, state: &PullState) -> serde_json::Value {
@@ -382,7 +375,7 @@ impl PullerBundle {
         self.state
             .lock()
             .expect("puller state")
-            .record(&report, now_s());
+            .record(&report, fantastic_ai_core::helpers::now_secs() as u64);
         report
     }
 

@@ -409,13 +409,6 @@ pub struct BoardCfg {
     pub roles: Option<String>,
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 fn cfg_of(
     kernel: &Arc<fantastic_kernel::Kernel>,
     id: &fantastic_kernel::AgentId,
@@ -863,7 +856,7 @@ pub async fn roles_tree_rows(
 }
 
 async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Value {
-    let now = now_secs();
+    let now = fantastic_ai_core::helpers::now_secs() as u64;
     let mut board = load(peers, &cfg.store).await;
     let out = match t {
         "pull" => {
