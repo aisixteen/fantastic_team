@@ -27,7 +27,7 @@ For the step-by-step version, with the GitHub App registration and troubleshooti
 
 There is no config file. A team is agent records, and config is fantastic's: a record's own fields, a recipe's arguments and `send`. The `fantastic_team` binary is fantastic's command line with this repo's bundles added (see Run), so the records are made the way fantastic makes any agent: with `create_agent` under an id you choose. The first run in a folder seeds the team's fixed agents from `crates/team/blueprint.yaml` (ids as written: the roles grant their tools by id, and fantastic's `import` would rename `github` to `github_1`) and its role bundles under `.fantastic/bundles/`; every later run rehydrates them from disk.
 
-- **A recipe, then `send`**: `fantastic_team --headless ai anthropic --model M` makes the root AI; further agents are `create_agent` payloads: `fantastic_team send '{"target": "kernel_state", "payload": {"type": "create_agent", ...}}'`. [examples/create_agent](examples/create_agent/README.md) shows the payloads.
+- **A recipe, then `send`**: `fantastic_team --headless ai anthropic --model M` makes the root AI; further agents are `create_agent` payloads: `fantastic_team send '{"target": "kernel_state", "payload": {"type": "create_agent", ...}}'`.
 - **A directory that already holds `.fantastic/agents/`** (records you wrote or copied).
 
 Where the old `team.yaml` keys went:
@@ -44,12 +44,6 @@ Where the old `team.yaml` keys went:
 | `canvases` | no switch: the canvas is fantastic's |
 | `.github/team.yaml` of a repo | the `repo_config` field of the puller's record, keyed by `owner/name` |
 | `--instructions`, `--workers`, `--leads`, `--per-lead` (no longer flags) | the lead's `system_prompt_file`, or a `send` to it |
-
-The example is a script of `send` payloads: [examples/create_agent/worker_only.sh](examples/create_agent/worker_only.sh) makes one AI worker, and its `create_agent` payload is:
-
-```json
-{"type": "create_agent", "id": "w1", "parent_id": "user", "handler_module": "anthropic_backend.tools", "model": "example-model", "endpoint": "https://api.example.com/v1/messages", "credentials": {"store": "credentials", "ref": "EXAMPLE_KEY"}, "memory_store_id": "memory", "can_call": {"$self": "*", "memory": "*", "credentials": "*"}, "callable_by": {"$self": "*", "$parent": "*"}}
-```
 
 The first run of `fantastic_team` in a folder, from the CLI or the desktop app alike (`crates/team/src/hydrate.rs`), writes the blueprint's agents: `lead` (the `lead` role bundle) and, under it, `github`, `roles` (the registry, with its limits), `worker_exec` and `worker_files`, with the other end of each edge on the home's `memory`, `files`, `credentials` and the root; and the role bundles beside them (a bundle you have stays as it is). The ids are fixed, so the roles' grants (`github`, `roles`, `worker_exec`, `worker_files`) are true as written. Edit the records afterwards with `update_agent`, as with any agent (replace `owner/name` in `github`). The agents that manage tasks (`tasks`, `queue`, `board`, `dispatcher`, `cadencer`) are not seeded: the lead makes one with `create_agent`, under that id, when it judges it useful (#292). The git connector is not made by the app, because it takes the absolute paths of your clone and your worktrees: make it with `send` (`create_agent`, `handler_module: team_git.tools`, `repo_dir`, `workspace_root`, `remote`, `default_branch`).
 
@@ -264,7 +258,6 @@ CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh w
 | declared views | Each kind above (cadencer, puller, git, github, board, dispatcher, queue) declares its read-only views as data in `declared_views.rs`: the fantastic TUI draws them from `view.tui`, written into the records at every start, and the team page draws the same declaration for cadencer, puller and git. The queue, board, github and team pages stay page code (`agent_views.rs`, with the reason). No view shows a secret. |
 | `team_app` | The launcher `fantastic_team_app` for the desktop app. See The app. |
 | `crates/team/src/new_team.rs` | The team's fixed ids (the lead, the roles registry, the GitHub connector, the worker's tools; the blueprint `crates/team/blueprint.yaml` declares them) and the writer of the role bundles (`crates/team/bundles/`, embedded in `crates/team/src/roles.rs`). |
-| `examples/create_agent/` | A script of `fantastic_team send` `create_agent` payloads. |
 | `examples/team.yaml` | A team's setup as one preset yaml ([docs/team-yaml.md](docs/team-yaml.md)). |
 
 ## Updating fantastic
