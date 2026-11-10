@@ -186,37 +186,3 @@ class WsClient:
             self.sock.close()
         except OSError:
             pass
-
-
-class StateTap:
-    """A subscriber of a kernel's state stream through a web_ws leg (`state_subscribe`): every frame it gets, as text,
-    in a list, read by a thread until `stop`. What a page that watches the kernel would be shown."""
-
-    def __init__(self, port: int, path: str, host_port: int | None = None) -> None:
-        import threading
-        self.ws = WsClient(port, path=path, host_port=host_port)
-        self.frames: list[str] = []
-        self.error: str | None = None
-        self.ws.send_json({"type": "state_subscribe"})
-        self.thread = threading.Thread(target=self._read, daemon=True)
-        self.thread.start()
-
-    def _read(self) -> None:
-        while True:
-            try:
-                self.frames.append(self.ws.recv_text(timeout=3600))
-            except (OSError, TimeoutError) as e:
-                self.error = str(e)
-                return
-
-    def text(self) -> bytes:
-        return "\n".join(self.frames).encode()
-
-    def stop(self) -> None:
-        try:
-            self.ws.sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        self.ws.close()
-        self.thread.join(5)
-

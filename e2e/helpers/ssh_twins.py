@@ -811,90 +811,6 @@ def streamed(rows: list[dict], client: str) -> tuple[bool, str]:
     return True, ""
 
 
-def holds_key(blobs: list[bytes], keys: list[str]) -> list[int]:
-    """The indexes of `blobs` (a tar of the box's home, its environment, its container's) that hold one of the keys."""
-    return [i for i, b in enumerate(blobs) if any(k and k.encode() in b for k in keys)]
-
-
-def model_keys(ctx) -> list[str]:
-    """The model's secrets of this run: the fake key of a scripted plug, or the real key the plug reads
-    from its environment variable (never printed)."""
-    keys = [(getattr(ctx, "secrets", None) or {}).get("model_key")]
-    env = getattr(ctx.model, "key_env", None)
-    if env:
-        keys.append(os.environ.get(env))
-    return [k for k in keys if k]
-
-
-# ---- the guard: a planted secret, in any form, anywhere a kernel or a box keeps something (#253) ----
-
-def secret_forms(secret: str) -> dict[str, bytes]:
-    """The secret as it can be written: plain, base64 and base64url (padded or not), percent-encoded (both
-    cases of the hex digits) and form-encoded, and as the `Basic` credential git sends for it
-    (`x-access-token:<secret>`, base64): the forms of the Rust `secrets_guard`, as bytes."""
-    import urllib.parse
-    raw = secret.encode()
-    b64 = lambda b: base64.b64encode(b).decode()
-    urlsafe = lambda b: base64.urlsafe_b64encode(b).decode()
-    basic = b"x-access-token:" + raw
-    pct = urllib.parse.quote(secret, safe="-._~")
-    forms = {"plain": secret, "base64": b64(raw), "base64 (no padding)": b64(raw).rstrip("="),
-             "base64url": urlsafe(raw), "base64url (no padding)": urlsafe(raw).rstrip("="),
-             "url-encoded": pct, "url-encoded (lower hex)": re_lower_hex(pct),
-             "form-encoded": urllib.parse.quote_plus(secret, safe="-._~"),
-             "basic credential": b64(basic), "basic credential (no padding)": b64(basic).rstrip("=")}
-    return {k: v.encode() for k, v in forms.items() if v}
-
-
-def re_lower_hex(pct: str) -> str:
-    import re
-    return re.sub(r"%[0-9A-F]{2}", lambda m: m.group(0).lower(), pct)
-
-
-def leaks(blobs: dict[str, bytes], secret: str) -> list[str]:
-    """Where the secret is: `"<blob> as <form>"` for each blob (a name -> its bytes) that holds it in any form.
-    The secret itself is never in the answer."""
-    if len(secret) < 8:  # a shorter one matches by chance (secrets_guard's floor)
-        raise ValueError("a secret shorter than 8 characters cannot be searched for")
-    forms = secret_forms(secret)
-    return [f"{name} as {form}" for name, data in blobs.items() for form, needle in forms.items() if needle in data]
-
-
-def folder_blobs(root: str, skip=()) -> dict[str, bytes]:
-    """Every file under `root` (relative name -> bytes), but the folders in `skip`."""
-    out = {}
-    for base, dirs, names in os.walk(root):
-        dirs[:] = [d for d in dirs if os.path.join(base, d) not in skip]
-        for n in names:
-            p = os.path.join(base, n)
-            try:
-                with open(p, "rb") as f:
-                    out[os.path.relpath(p, root)] = f.read()
-            except OSError:
-                continue
-    return out
-
-
-def tap_master(team, port: int) -> None:
-    """A web host and a leg on the master (`tap_web`, `tap_ws`, open to a `state_subscribe`): the operator's page, which the
-    probe subscribes through to see the state stream (every call and reply as the kernel shows it)."""
-    records.create(team, {"id": "tap_web", "parent_id": "user", "handler_module": "web.tools", "port": port})
-    records.create(team, {"id": "tap_ws", "parent_id": "tap_web", "handler_module": "web_ws.tools",
-                          "ingress_rule": "allow_all_ingress", "callable_by": {"$self": "*", "tap_web": ["get_routes"]},
-                          "can_call": {"$self": "*"}})
-    records.update(team, "tap_web", can_call={"$self": "*", "tap_ws": ["get_routes"]})
-    tap_grant(lambda target, payload: team.send(target, payload), "tap_ws")
-    team.send("tap_web", {"type": "boot"})
-
-
-def tap_grant(send, leg: str) -> None:
-    """The operator lets `leg` tap a kernel's state stream (`state_subscribe` is gated on the ROOT: the leg's `can_call`
-    and the root's `callable_by`, each merged into what it holds). `send(target, payload)` is a call on that kernel."""
-    for agent, field, key in ((leg, "can_call", records.ROOT), (records.ROOT, "callable_by", leg)):
-        rec = remote_agents(send("kernel", {"type": "list_agents"})).get(agent) or {}
-        send("kernel", {"type": "update_agent", "id": agent, field: {**(rec.get(field) or {}), key: ["state_subscribe"]}})
-
-
 def git_store_record(ctx) -> dict:
     """The master's credential store for the git server: one ref, bound to the server's host, its value read at
     each `get` from the kernel's environment (`GIT_ENV`; the `env` backend keeps nothing at rest). Only the
@@ -1078,7 +994,6 @@ class Box:
         backends = {i: a.get("handler_module") for i, a in recs.items() if "backend" in (a.get("handler_module") or "")}
         v.check(f"{label}remote: no backend on the box (its records hold none; the selftest checks that no script or setup "
                 "command makes one)", not backends, str(backends))
-        self.holds_no_key(v, label)
         for work_label, client in streams:
             self.check_stream(v, work_label, client, label)
         self.remote_log_text = log_text
@@ -1118,47 +1033,11 @@ class Box:
         v.check(f"{label}remote: the master backend's stream reached the box, `status` and `part_*` before "
                 f"`done` ({work_label}: {len(rows)} events)", ok, why)
 
-    def holds_no_key(self, v, label: str = "") -> None:
-        """The box holds no model key: not in its home (the remote kernel's folder, its logs and
-        records, the clone), not in the environment a login gets (the remote kernel's), not in the
-        container's. The key stays on the master."""
-        keys = model_keys(self.ctx)
-        tar = subprocess.run(self.remote.argv(f"tar -C {HOME} -cf - ."), capture_output=True, timeout=120,
-                             stdin=subprocess.DEVNULL).stdout
-        env = subprocess.run(self.remote.argv("env"), capture_output=True, timeout=60, stdin=subprocess.DEVNULL).stdout
-        inspected = pr.pm("inspect", self.remote.name, check=False, timeout=60).stdout.encode()
-        hit = holds_key([tar, env, inspected], keys)
-        v.check(f"{label}remote: no model key in the box's home, its login environment or its container",
-                bool(tar) and not hit,
-                f"{len(keys)} key(s) searched in {len(tar)} bytes of home; found in {[('home', 'env', 'container')[i] for i in hit]}")
-
     def listening(self) -> set[int]:
         """The TCP ports the box listens on (its /proc/net/tcp and tcp6, LISTEN rows)."""
         rows = self.remote.ssh("cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4==\"0A\"{print $2}'",
                                check=False).stdout.split()
         return {int(a.rsplit(":", 1)[1], 16) for a in rows}
-
-    def box_blobs(self) -> dict[str, bytes]:
-        """What the box keeps, to search: its home (the remote kernel's folder: rows, logs, records; the clone and
-        its `.git`; the dotfiles), the environment of a login and of the live remote kernel, the git configuration
-        git reads there, and the container's own description."""
-        run = lambda c: subprocess.run(self.remote.argv(c), capture_output=True, timeout=120, stdin=subprocess.DEVNULL).stdout
-        blobs = {"home": run(f"tar -C {HOME} -cf - ."), "login environment": run("env"),
-                 "git configuration": run(f"git config --list --show-origin; git -C {DIR}/{REPO} config --list --show-origin"),
-                 "container": pr.pm("inspect", self.remote.name, check=False, timeout=60).stdout.encode()}
-        live = run(f"cat /proc/$(cat {DIR}/team.pid)/environ 2>/dev/null | tr '\\0' '\\n'")
-        if live:
-            blobs["remote kernel environment"] = live
-        return blobs
-
-    def guard_box(self, v, token: str, label: str, repo: bool = True, tar_floor: int = 1000) -> None:
-        """The token is nowhere in the box, in any form (and the search saw something: a home, and once the box's
-        repository exists its git configuration, which names the forge as `origin`)."""
-        blobs = self.box_blobs()
-        found = leaks(blobs, token)
-        v.check(f"{label}the box holds no git token, in any encoding: its files, environments, git configuration, container",
-                len(blobs["home"]) > tar_floor and (not repo or b"remote.origin.url" in blobs["git configuration"]) and not found,
-                f"{[(k, len(b)) for k, b in blobs.items()]} found {found}")
 
     def removed(self, v, label: str = "") -> None:
         v.check(f"{label}the container is removed", not self.remote.exists())

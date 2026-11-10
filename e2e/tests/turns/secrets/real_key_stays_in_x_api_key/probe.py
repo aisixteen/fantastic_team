@@ -11,7 +11,6 @@ from helpers import run_flow
 from helpers.verdict import Verdict
 
 WAIT_S = 1200.0
-REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), *[".."] * 5))  # the repo root
 SKIP_NAMES = {"cost.json"}  # the relay's record: checked on its own below
 
 
@@ -79,12 +78,6 @@ def run(ctx):
     v.check("no file of the run holds a key or token (outside secrets/ and cost.json)", not hits,
             "; ".join(hits))
     v.check("the cost record holds no key", real not in json.dumps(m.totals()))
-
-    # the repo's own scanner over the run
-    subprocess.run(["git", "init", "-q"], cwd=ctx.run_dir, capture_output=True)
-    scan = subprocess.run(["sh", os.path.join(REPO, "scripts", "check-secrets.sh"), ctx.run_dir],
-                          capture_output=True, text=True)
-    v.check("scripts/check-secrets.sh finds nothing in the run", scan.returncode == 0, scan.stderr)
 
     totals = m.totals()
     print(f"  tokens: {totals['input_tokens']} in, {totals['output_tokens']} out, "

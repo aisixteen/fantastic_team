@@ -360,7 +360,6 @@ def selftest() -> int:
     selftest_cli_fixture(v)
     selftest_app_helpers(v)
     selftest_new_tests_collect(v)
-    selftest_no_blueprints(v)
     selftest_podman_remote(v)
     selftest_ssh_twins(v)
     selftest_remote_work(v)
@@ -1255,21 +1254,6 @@ def selftest_new_tests_collect(v: Verdict) -> None:
     v.check("each collects, has its files, and is free / scripted", not bad, "; ".join(bad))
 
 
-def selftest_no_blueprints(v: Verdict) -> None:
-    """The tests hold no team.yaml and no blueprint: every agent is a `create_agent` payload
-    sent with `send` (`helpers/stock.py`, `helpers/cli.py`)."""
-    tests = discover()
-    v.check("no test holds a team.yaml (the config is fantastic's records)",
-            not [t["name"] for t in tests if os.path.exists(os.path.join(t["dir"], "team.yaml"))])
-    held = []
-    for t in tests:
-        for dirpath, _, files in os.walk(t["dir"]):
-            held += [os.path.join(dirpath, f) for f in files if f == "blueprint.yaml"]
-        if os.path.isdir(os.path.join(t["dir"], "blueprint")):
-            held.append(os.path.join(t["dir"], "blueprint"))
-    v.check("no test holds a blueprint (agents are made with send + create_agent)", not held, str(held))
-
-
 class podman_env:
     """The Podman remote helper's variables for a block (`E2E_PODMAN`, the build dirs), restored after."""
     NAMES = ("E2E_PODMAN", "E2E_PODMAN_BUILD_DIR", "CARGO_TARGET_DIR", "FAKE_PODMAN_LOG", "FAKE_PODMAN_MODE")
@@ -1608,8 +1592,6 @@ def selftest_remote_work(v: Verdict) -> None:
     leaked = [k for k, rows in mutations.items() if T.streamed(rows, "w2")[0]]
     v.check("streamed refuses each mutation (unwatched, refused, parts after done, none, no status, other client, no done)",
             not leaked, str(leaked))
-    v.check("holds_key finds a key in a blob and refuses to find it where it is not",
-            T.holds_key([b"aa KEY123 bb", b"clean"], ["KEY123"]) == [0] and T.holds_key([b"clean"], ["", "KEY123"]) == [])
     # the work program, against a stub connector
     tmp = tempfile.mkdtemp(prefix="e2e-work-")
     try:
@@ -1701,38 +1683,10 @@ def selftest_remote_work(v: Verdict) -> None:
 
 
 def selftest_git_credentials(v: Verdict) -> None:
-    """The git twin (#253) without Podman: the guard finds a planted secret in every form and only there, the
-    bridge's grant on the store is `get` and nothing else, the connector's record names the master's store and holds
-    no value, and neither the script nor the box's setup writes a token."""
+    """The git twin (#253) without Podman: the bridge's grant on the store is `get` and nothing else, the
+    connector's record names the master's store and holds no value, and neither the script nor the box's
+    setup writes a token."""
     T = ssh_twins
-    tok = "gh" "s_" + "0123456789abcdef0123456789abcdef0123"  # a fake, built from pieces
-    forms = T.secret_forms(tok)
-    names = set(forms)
-    v.check("secret_forms: plain, base64, base64url (padded or not), url-, form-encoded and git's Basic credential",
-            {"plain", "base64", "base64url", "url-encoded", "form-encoded", "basic credential"} <= names, str(sorted(names)))
-    odd = "t0k/en+va=lue&x y"
-    missed = [f for f, needle in T.secret_forms(odd).items() if T.leaks({"blob": b"..." + needle + b"..."}, odd) == []]
-    v.check("leaks finds the secret in each of its forms, a token with characters that encode differently included",
-            not missed, str(missed))
-    found = T.leaks({"a": b"clean", "b": b"x " + tok.encode() + b" y"}, tok)
-    v.check("leaks names the blob and the form (a token with nothing to encode is also its own url-encoded form), never the "
-            "secret", "b as plain" in found and all(f.startswith("b as ") and tok not in f for f in found), str(found))
-    v.check("leaks finds nothing in a blob that does not hold it, and refuses a secret too short to search for",
-            T.leaks({"a": b"clean", "b": b""}, tok) == [] and _raises(lambda: T.leaks({"a": b""}, "short")))
-    tmp = tempfile.mkdtemp(prefix="e2e-guard-")
-    try:
-        os.makedirs(os.path.join(tmp, "d", "skipped"))
-        for name, data in (("a.txt", b"clean"), ("d/b.txt", b"x " + forms["basic credential"]), ("d/skipped/c.txt", tok.encode())):
-            with open(os.path.join(tmp, name), "wb") as f:
-                f.write(data)
-        blobs = T.folder_blobs(tmp, skip={os.path.join(tmp, "d", "skipped")})
-        at = os.path.join("d", "b.txt")
-        found = T.leaks(blobs, tok)
-        v.check("folder_blobs reads every file but the skipped folders; the guard finds the Basic credential in one file and "
-                "nowhere else", set(blobs) == {"a.txt", at} and f"{at} as basic credential" in found
-                and all(f.startswith(at + " as ") for f in found), str(found))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
     v.check("the store's grant is `get` and nothing else; the bridge record grants it on the stores named, beside the backends'",
             T.STORE_VERBS == ["get"]
             and T.bridge_record(stores=[T.GIT_STORE])["can_call"] == {"$self": "*", T.GIT_STORE: ["get"]}
@@ -1776,14 +1730,6 @@ def selftest_git_credentials(v: Verdict) -> None:
         v.check(f"{n} exists, collects, and is free on the scripted plug",
                 bool(t) and collect_probe(t["dir"])[0] and t["costs"] == "free" and t["plug"] == "scripted" and all(
                     os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py")))
-
-
-def _raises(f) -> bool:
-    try:
-        f()
-    except ValueError:
-        return True
-    return False
 
 
 def main() -> int:

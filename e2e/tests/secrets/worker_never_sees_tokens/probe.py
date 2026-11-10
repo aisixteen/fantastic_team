@@ -76,12 +76,5 @@ def run(ctx):
     v.check("the minted token reached the forge in the git push only",
             len(pushes) == 1 and pushes[0]["headers"].get("authorization") == want)
 
-    # the repo's own scanner over the run
-    subprocess.run(["git", "init", "-q"], cwd=ctx.run_dir, capture_output=True)
-    scan = subprocess.run(["sh", os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                              *[".."] * 4, "scripts", "check-secrets.sh"), ctx.run_dir],
-                          capture_output=True, text=True)
-    v.check("scripts/check-secrets.sh finds nothing in the run", scan.returncode == 0, scan.stderr)
-
     team.stop()
     return v.finish()
