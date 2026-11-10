@@ -56,13 +56,30 @@ fn plant() -> PathBuf {
         .join("planted-home")
 }
 
-async fn boot(team: &Path, id: &str, allowed: Option<Value>) -> Arc<Kernel> {
+/// The `allowed` value of the worker exec entry in the blueprint the first run writes.
+fn blueprint_allowed(team: &Path) -> Value {
+    fn find(v: &Value) -> Option<Value> {
+        match v {
+            Value::Array(a) => a.iter().find_map(find),
+            Value::Object(o)
+                if o.get("id") == Some(&json!(fantastic_team::new_team::WORKER_EXEC)) =>
+            {
+                Some(v["allowed"].clone())
+            }
+            Value::Object(o) => o.values().find_map(find),
+            _ => None,
+        }
+    }
+    let doc: Value =
+        serde_yaml::from_str(&fantastic_team::hydrate::blueprint_text(team).unwrap()).unwrap();
+    find(&doc["agents"]).expect("the blueprint declares the worker exec")
+}
+
+async fn boot(team: &Path, id: &str) -> Arc<Kernel> {
     prepare_sandbox(team).unwrap();
     let kernel = fantastic_team::start(team).await.unwrap();
     let mut rec = worker_exec_record(team);
-    if let Some(a) = allowed {
-        rec["allowed"] = a;
-    }
+    rec["allowed"] = blueprint_allowed(team);
     let mut create = rec.as_object().unwrap().clone();
     create.insert("type".into(), json!("create_agent"));
     create.insert("parent_id".into(), json!("kernel"));
@@ -208,7 +225,7 @@ async fn a_worker_shell_sees_the_sandbox_home_and_no_credentials() {
     let planted = plant();
     let _ = planted;
     let team = TempDir::new().unwrap();
-    let kernel = boot(team.path(), "worker_exec_env", None).await;
+    let kernel = boot(team.path(), "worker_exec_env").await;
     let reply = run(&kernel, "worker_exec_env", "sh", &["-c", "echo $HOME; env"]).await;
     assert_eq!(reply["exit_code"], json!(0), "{reply}");
     let out = lines(&reply);
@@ -262,11 +279,11 @@ async fn a_push_from_a_worker_sends_no_credentials() {
         "control: planted helper did not answer"
     );
 
-    // WORKER: the same push through a record with only `allowed` widened.
+    // WORKER: the same push through the worker's record.
     let team = TempDir::new().unwrap();
     let (port, hits, saw) = auth_wall().await;
     let url = format!("http://127.0.0.1:{port}/r.git");
-    let kernel = boot(team.path(), "worker_exec_push", Some(json!([".*"]))).await;
+    let kernel = boot(team.path(), "worker_exec_push").await;
     repo_with_a_commit(&work_dir(team.path())).await;
     let reply = run(
         &kernel,
@@ -297,7 +314,7 @@ async fn gh_version_is_not_refused_in_the_general_build() {
     let planted = plant();
     let _ = planted;
     let team = TempDir::new().unwrap();
-    let kernel = boot(team.path(), "worker_exec_open", None).await;
+    let kernel = boot(team.path(), "worker_exec_open").await;
     // gh may not be installed: only the allowlist gate is asserted.
     let reply = run(&kernel, "worker_exec_open", "gh", &["--version"]).await;
     assert_ne!(reply["reason"], json!("unauthorized"), "{reply}");

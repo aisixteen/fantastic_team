@@ -11,8 +11,9 @@
 #
 # ONE PLACEHOLDER is filled by the first run: `@work` is the team folder's work dir (an
 # absolute path, not the same on every machine). The worker's exec record (`cwd`,
-# `allowed`, `inherit_env`, `env`) is added from `worker_exec_record` for the same reason
-# (its HOME is an absolute path, and the GitHub build narrows `allowed` by patch). `web`
+# `inherit_env`, `env`) is added from `worker_exec_record` for the same reason (its HOME is
+# an absolute path); `allowed` is the entry's own value, any command, as in fantastic's
+# blueprint, and the user can change it. `web`
 # carries no `port`: the port is the run's (`--port`, the recorded one) and is set on the
 # host by `webui`, as fantastic's `canvas` sets its own (`app_control::set_run_flags`).
 #
@@ -138,6 +139,7 @@ agents:
         - fleet
     - id: worker_exec
       handler_module: exec_bridge.tools
+      allowed: [".*"]
       ingress_rule: allow_all_ingress
       callable_by:
         $self: '*'

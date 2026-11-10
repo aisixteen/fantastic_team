@@ -45,8 +45,8 @@ fn fill(v: &mut Value, dir: &Path) {
         }
         Value::Array(a) => a.iter_mut().for_each(|x| fill(x, dir)),
         Value::Object(o) => {
-            // The worker's exec record has one source, `worker_exec_record` (the GitHub
-            // build narrows its `allowed`); the blueprint's own fields win.
+            // The worker's exec record has one source, `worker_exec_record`; the
+            // blueprint's own fields win (`allowed` is the blueprint's alone).
             if o.get("id").and_then(Value::as_str) == Some(crate::new_team::WORKER_EXEC) {
                 if let Value::Object(rec) = crate::worker_exec::worker_exec_record(dir) {
                     for (k, x) in rec {
@@ -151,8 +151,8 @@ mod tests {
             .to_string_lossy()
             .into_owned();
         assert_eq!(rec_in(&doc, WORKER_FILES)["root"], work.as_str());
-        // the exec record is the one `worker_exec_record` makes (the GitHub build patches
-        // that one), with the blueprint's grants on top
+        // the exec record is the one `worker_exec_record` makes, with the blueprint's
+        // grants and `allowed` on top
         let want = crate::worker_exec::worker_exec_record(dir);
         for (k, v) in want.as_object().unwrap() {
             assert_eq!(&rec_in(&doc, WORKER_EXEC)[k], v, "{k}");

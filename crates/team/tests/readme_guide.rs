@@ -399,20 +399,6 @@ fn readme_lists_every_shell_test_ci_runs() {
 }
 
 #[test]
-fn readme_names_the_github_build_check_and_test_steps() {
-    let ci = fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
-    let text = readme();
-    for step in ["build-github.sh --check", "build-github.sh --test"] {
-        if ci.contains(step) {
-            assert!(
-                text.contains(step),
-                "ci.yml runs `{step}`, which the README does not name"
-            );
-        }
-    }
-}
-
-#[test]
 fn install_doc_says_the_cli_is_fantastics() {
     let install = fs::read_to_string(root().join("docs/install.md")).unwrap();
     assert!(

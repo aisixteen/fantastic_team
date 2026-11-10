@@ -1,9 +1,9 @@
 # CI, run by hand (#46): `gh workflow run ci.yml --ref <branch>`, or the Actions tab.
-# Units by default (lint, test, github and tauri run in parallel); `-f e2e=true` adds release
+# Units by default (lint, test and tauri run in parallel); `-f e2e=true` adds release
 # builds and the model-free e2e after every unit leg passed; `-f cleanup=true` also saves the
 # build caches; run that on main after a Cargo.lock or toolchain change so branch runs restore warm
 # caches from main. No automatic runs. No secrets: the tests use fake models and a fake forge.
-# Cache keys: <OS>-<job>-<hash of Cargo.lock>, one per job (lint/test/github/tauri/release) so parallel jobs never race on one key; PR/branch runs only restore.
+# Cache keys: <OS>-<job>-<hash of Cargo.lock>, one per job (lint/test/tauri/release) so parallel jobs never race on one key; PR/branch runs only restore.
 name: ci
 run-name: ci · ${{ inputs.e2e && 'full' || 'units' }}
 
@@ -42,7 +42,7 @@ defaults:
     shell: bash
 
 jobs:
-  # Units, three parallel legs per OS (lint, test, github); every leg must pass before build/repro.
+  # Units, two parallel legs per OS (lint, test); every leg must pass before build/repro.
   lint:
     name: units · fmt+clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -143,7 +143,6 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           sh tests/new_task.sh
-          sh tests/build_github.sh
           sh tests/repro_scripts.sh
       # cleanup: save the finished cache (a restore-only run leaves it alone)
       - uses: actions/cache/save@v4
@@ -154,63 +153,6 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
-
-  github:
-    name: units · github (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # the github build has no Windows leg (its steps never ran there): ubuntu and macOS, or ubuntu only
-        os: ${{ fromJSON((inputs.units_os == 'all' || inputs.e2e == true) && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
-    env:
-      RUSTC_WRAPPER: sccache
-    steps:
-      - uses: actions/checkout@v4
-      # the toolchain is the pin in rust-toolchain.toml; rustup installs it (#137)
-      - name: toolchain (rust-toolchain.toml)
-        run: |
-          pin=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
-          echo "pinned: $pin"
-          rustup show
-          # guard: the runner's rustc must be the pin (rustup reads rust-toolchain.toml)
-          case "$(rustc -V)" in
-            "rustc $pin "*) ;;
-            *) echo "::error::rustc is $(rustc -V), not the pin $pin"; exit 1 ;;
-          esac
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      # fantastic's canvas page builds esbuild from pinned source with Go, and packs with zip
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.23.4"
-          cache: false
-      - name: zip (the canvas packer's; not on the Windows image)
-        if: runner.os == 'Windows'
-        run: choco install zip --no-progress -y
-      - uses: actions/cache/restore@v4
-        id: cache
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-github-${{ hashFiles('**/Cargo.lock') }}
-      # the GitHub build is the general tree plus patches/github-exec.patch (#136)
-      - name: github patch applies
-        if: runner.os != 'Windows'
-        run: sh scripts/build-github.sh --check
-      - name: github build tests
-        if: runner.os != 'Windows'
-        run: sh scripts/build-github.sh --test
-      # cleanup: save the finished cache (a restore-only run leaves it alone)
-      - uses: actions/cache/save@v4
-        if: inputs.cleanup == true && steps.cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-github-${{ hashFiles('**/Cargo.lock') }}
 
   # The Tauri window crate builds with its off-by-default feature (#37). No secrets, no signing.
   tauri:
@@ -270,7 +212,7 @@ jobs:
   build:
     name: build (${{ matrix.os }})
     if: inputs.e2e == true
-    needs: [lint, test, github]
+    needs: [lint, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -309,19 +251,10 @@ jobs:
           key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
       - name: release build (general)
         run: sh scripts/build.sh
-      - name: release build (github)
-        if: runner.os != 'Windows'
-        run: sh scripts/build-github.sh
       - uses: actions/upload-artifact@v4
         with:
           name: fantastic_team-${{ matrix.os }}
           path: target/release/fantastic_team${{ runner.os == 'Windows' && '.exe' || '' }}
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        if: runner.os != 'Windows'
-        with:
-          name: fantastic_team-github-${{ matrix.os }}
-          path: target/github/release/fantastic_team-github
           if-no-files-found: error
 
       # cleanup: save the finished cache (a restore-only run leaves it alone)
@@ -340,7 +273,7 @@ jobs:
   repro:
     name: repro (${{ matrix.os }})
     if: inputs.e2e == true
-    needs: [lint, test, github]
+    needs: [lint, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -372,13 +305,12 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/a/src" "$HEAD_SHA"
           sleep 2
           git worktree add --detach "$RUNNER_TEMP/b/src" "$HEAD_SHA"
-      - name: build twice (general and github, two target dirs each)
+      - name: build twice (two target dirs)
         run: |
           set -eu
           for side in a b; do
             cd "$RUNNER_TEMP/$side/src"
             CARGO_TARGET_DIR="$RUNNER_TEMP/$side/target" sh scripts/build.sh | tee "$RUNNER_TEMP/$side/build.log"
-            CARGO_TARGET_DIR="$RUNNER_TEMP/$side/target-github" sh scripts/build-github.sh | tee -a "$RUNNER_TEMP/$side/build.log"
           done
       - name: checksum both sets and compare
         run: |
@@ -424,23 +356,10 @@ jobs:
         with:
           name: fantastic_team-${{ matrix.os }}
           path: bin
-      - uses: actions/download-artifact@v4
-        if: runner.os != 'Windows'
-        with:
-          name: fantastic_team-github-${{ matrix.os }}
-          path: bin-github
       - name: model-free e2e on the built binary
         run: |
           chmod +x bin/fantastic_team || true
           sh tests/e2e.sh bin/fantastic_team${{ runner.os == 'Windows' && '.exe' || '' }}
-      - name: model-free e2e on the github binary
-        if: runner.os != 'Windows'
-        run: |
-          chmod +x bin-github/fantastic_team-github
-          sh tests/e2e.sh bin-github/fantastic_team-github
       - name: scripted e2e tests, general build
         if: runner.os != 'Windows'
         run: python3 e2e/run.py --only-free --build general --bin bin/fantastic_team
-      - name: scripted e2e tests, github build
-        if: runner.os != 'Windows'
-        run: python3 e2e/run.py --only-free --build github --bin bin-github/fantastic_team-github

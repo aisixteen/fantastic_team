@@ -17,13 +17,11 @@ sh scripts/build.sh
 ./target/release/fantastic_team --help
 ```
 
-The script ends with two lines: `sha256: <hash>  <name>` and `built: <path>`. The `built:` path is a versioned copy, `target/release/fantastic_team-<version>-<target>`, with the same bytes as the plain binary. `scripts/build-github.sh` prints the same two lines for `fantastic_team-github-<version>-<target>`.
+The script ends with two lines: `sha256: <hash>  <name>` and `built: <path>`. The `built:` path is a versioned copy, `target/release/fantastic_team-<version>-<target>`, with the same bytes as the plain binary.
 
-There are two builds. The **general** build (Team, the default) gives workers stock exec. The **GitHub** build (Team GitHub) applies [patches/github-exec.patch](patches/github-exec.patch) to a copy of the tree, so workers cannot reach forge CLIs, `git push` or credentials: `sh scripts/build-github.sh` makes `target/github/release/fantastic_team-github`. The github connector is in both builds.
+The binary is `target/release/fantastic_team`. There are no releases yet, so build from source. On macOS the build needs `MACOSX_DEPLOYMENT_TARGET=14.0`; `.cargo/config.toml.example` sets it under `[env]`.
 
-The general binary is `target/release/fantastic_team`. There are no releases yet, so build from source. On macOS the build needs `MACOSX_DEPLOYMENT_TARGET=14.0`; `.cargo/config.toml.example` sets it under `[env]`.
-
-For the step-by-step version, with the GitHub App registration and troubleshooting, see docs/install.md. The builds are reproducible in intent: `rust-toolchain.toml` pins the toolchain, `scripts/checksums.sh` writes `SHA256SUMS`, and `scripts/verify.sh` checks a binary against it (docs/install.md, Reproducible builds).
+For the step-by-step version, with the GitHub App registration and troubleshooting, see docs/install.md. The build is reproducible in intent: `rust-toolchain.toml` pins the toolchain, `scripts/checksums.sh` writes `SHA256SUMS`, and `scripts/verify.sh` checks a binary against it (docs/install.md, Reproducible builds).
 
 ## Configure
 
@@ -164,7 +162,7 @@ The build packs fantastic's canvas page with a pinned esbuild. With no vendored 
 
 ## The app
 
-`crates/team_app` builds `fantastic_team_app`, a launcher that starts the binary (`webui --port 8765`) and waits until its web UI answers. `app/tauri.conf.json` is the packaging for a desktop window (macOS, Windows, Linux); the window loads the web UI on `127.0.0.1` only. The window is not built yet. The dispatcher is the home screen: each worker row has Start, Pause and Stop buttons, and Stop asks first. The GitHub build is the same app with the GitHub patch applied. Build steps, controls and the signing notes are in [app/README.md](app/README.md).
+`crates/team_app` builds `fantastic_team_app`, a launcher that starts the binary (`webui --port 8765`) and waits until its web UI answers. `app/tauri.conf.json` is the packaging for a desktop window (macOS, Windows, Linux); the window loads the web UI on `127.0.0.1` only. The window is not built yet. The dispatcher is the home screen: each worker row has Start, Pause and Stop buttons, and Stop asks first. Build steps, controls and the signing notes are in [app/README.md](app/README.md).
 
 ## Security model
 
@@ -232,7 +230,7 @@ A worker or the whole team is exported and imported with fantastic's own bluepri
 
 ## Tests and CI
 
-Unit tests: `cargo test --workspace`. Also `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, and the shell tests `sh tests/new_task.sh`, `sh tests/build_github.sh`, `sh tests/repro_scripts.sh`. CI also runs `sh scripts/build-github.sh --check` (the GitHub patch applies) and `sh scripts/build-github.sh --test` (the GitHub build's tests). None of them needs a network or a key.
+Unit tests: `cargo test --workspace`. Also `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, and the shell tests `sh tests/new_task.sh`, `sh tests/repro_scripts.sh`. None of them needs a network or a key.
 
 End to end (e2e/README.md) has three tiers:
 

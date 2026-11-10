@@ -5,8 +5,9 @@
 //! team with no credentials in it, and its environment is a fixed list of names;
 //! no token, key or SSH agent is among them, so a push from a worker fails.
 //!
-//! This is the general build: its `allowed` pattern is any command line. The
-//! GitHub build (`patches/github-exec.patch`) narrows it to refuse forge CLIs.
+//! The `allowed` pattern is not here: it is a value of the worker exec record in
+//! `crates/team/blueprint.yaml`, any command line as in fantastic's own, and the user
+//! can change it.
 //!
 //! This is NOT an OS sandbox. The worker runs as the user, so files the user
 //! can read (`~/.ssh` keys, the login keychain) stay readable to a worker that
@@ -55,10 +56,6 @@ pub const CREDENTIAL_FILES: &[&str] = &[
 /// ssh for git with no config, no agent and no key files, never asking.
 pub const NO_SSH: &str =
     "ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes";
-
-/// The one `allowed` pattern: any command line. The exec bridge refuses every
-/// command when `allowed` is empty, so the general build names the match-all.
-pub const WORKER_ALLOWED: &str = ".*";
 
 /// Join a `/`-separated relative constant one component at a time, so the
 /// result has the OS's separators (a single `join` of "a/b" keeps a mixed
@@ -119,7 +116,6 @@ pub fn worker_exec_record(team_dir: &Path) -> Value {
         "handler_module": EXEC_HANDLER,
         "ingress_rule": "allow_all_ingress",
         "cwd": s(&work_dir(team_dir)),
-        "allowed": [WORKER_ALLOWED],
         "inherit_env": INHERIT_ENV,
         "env": env,
     })
@@ -246,8 +242,21 @@ mod tests {
 
     #[test]
     fn stock_record_passes_exec_validation_and_refuses_nothing() {
+        // the record as the first run writes it: `allowed` is the blueprint entry's own value
+        fn find(v: &Value) -> Option<Value> {
+            match v {
+                Value::Array(a) => a.iter().find_map(find),
+                Value::Object(o) if o.get("id") == Some(&json!(crate::new_team::WORKER_EXEC)) => {
+                    Some(v.clone())
+                }
+                Value::Object(o) => o.values().find_map(find),
+                _ => None,
+            }
+        }
         let dir = tempfile::TempDir::new().unwrap();
-        let rec = worker_exec_record(dir.path());
+        let doc: Value =
+            serde_yaml::from_str(&crate::hydrate::blueprint_text(dir.path()).unwrap()).unwrap();
+        let rec = find(&doc["agents"]).expect("the blueprint declares the worker exec");
         assert!(fantastic_exec_bridge::ExecBridgeBundle
             .validate_meta(rec.as_object().unwrap(), &Map::new())
             .is_none());

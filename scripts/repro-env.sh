@@ -1,6 +1,6 @@
 # sh-sourced, not run: `. scripts/repro-env.sh` (#137). The environment that makes a build
 # reproducible: a fixed time, a fixed locale and zone, and the source, cargo and rustup paths
-# remapped out of the binary. Sourced by scripts/build.sh and scripts/build-github.sh.
+# remapped out of the binary. Sourced by scripts/build.sh.
 #   REPRO_SRC   the tree being built; its path is remapped to /src (default: the current dir)
 #   REPRO_REPO  the git work tree that gives the commit time (default: REPRO_SRC)
 #   SOURCE_DATE_EPOCH  set it to override the commit time (default: last commit's %ct, else 0)

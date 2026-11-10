@@ -73,7 +73,7 @@ fn run_text(job: &Value) -> String {
 }
 
 /// The unit legs run as parallel jobs; together they are what a single `units` job used to be.
-const UNIT_LEGS: [&str; 3] = ["lint", "test", "github"];
+const UNIT_LEGS: [&str; 2] = ["lint", "test"];
 
 fn unit_legs_run_text(doc: &Value) -> String {
     UNIT_LEGS
@@ -264,40 +264,19 @@ fn ci_e2e_runs_the_driver_on_built_binaries() {
 }
 
 #[test]
-fn ci_builds_and_tests_both_builds() {
+fn ci_builds_and_tests_the_build() {
     let doc = doc();
     let root = repo_root();
-    assert!(root.join("patches").join("github-exec.patch").is_file());
-    for script in ["build.sh", "build-github.sh"] {
-        assert!(root.join("scripts").join(script).is_file(), "{script}");
-    }
-    assert!(root.join("tests").join("build_github.sh").is_file());
-    let units = unit_legs_run_text(&doc);
-    assert!(
-        units.contains("scripts/build-github.sh --check"),
-        "units lack the patch check"
-    );
-    assert!(
-        units.contains("scripts/build-github.sh --test"),
-        "units lack the github tests"
-    );
-    assert!(
-        units.contains("tests/build_github.sh"),
-        "units lack the build script test"
-    );
+    assert!(root.join("scripts").join("build.sh").is_file(), "build.sh");
     let build = run_text(job(&doc, "build"));
     assert!(
-        build.contains("scripts/build-github.sh"),
-        "build job lacks the github build"
+        build.contains("scripts/build.sh"),
+        "build job lacks the build"
     );
     let text = raw();
     assert!(text.contains("name: fantastic_team-${{ matrix.os }}"));
-    assert!(text.contains("name: fantastic_team-github-${{ matrix.os }}"));
     let e2e = run_text(job(&doc, "e2e"));
-    assert!(
-        e2e.contains("--build general") && e2e.contains("--build github"),
-        "{e2e}"
-    );
+    assert!(e2e.contains("--build general"), "{e2e}");
 }
 
 #[test]
@@ -310,7 +289,7 @@ fn repro_job_builds_twice_in_different_dirs_and_has_no_signing() {
     );
     assert_eq!(needs(repro), unit_legs(), "repro needs every unit leg");
     let text = run_text(repro);
-    for want in ["scripts/build.sh", "scripts/build-github.sh", "SHA256SUMS"] {
+    for want in ["scripts/build.sh", "SHA256SUMS"] {
         assert!(text.contains(want), "repro steps lack `{want}`");
     }
     assert!(
@@ -346,7 +325,7 @@ fn repro_job_builds_twice_in_different_dirs_and_has_no_signing() {
         .expect("rust-toolchain.toml exists");
     assert!(pin.contains("channel = \"1."), "toolchain pin: {pin}");
     // Every job that builds or tests guards that rustc is the pin, not whatever the runner has.
-    for name in ["lint", "test", "github", "build", "repro", "tauri"] {
+    for name in ["lint", "test", "build", "repro", "tauri"] {
         assert!(
             run_text(job(&doc, name)).contains("rustc -V"),
             "job `{name}` lacks the rustc -V guard against the pin"

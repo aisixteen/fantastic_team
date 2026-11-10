@@ -24,10 +24,7 @@ cargo_lines_locked() {
 }
 ok_locked=1
 cargo_lines_locked "$ROOT/scripts/build.sh" 1 || ok_locked=0
-cargo_lines_locked "$ROOT/scripts/build-github.sh" 2 || ok_locked=0
-for s in build.sh build-github.sh; do
-  grep -q 'repro-env.sh' "$ROOT/scripts/$s" || ok_locked=0
-done
+grep -q 'repro-env.sh' "$ROOT/scripts/build.sh" || ok_locked=0
 env_out=$(cd "$ROOT" && sh -c '. scripts/repro-env.sh; echo $SOURCE_DATE_EPOCH $RUSTFLAGS' 2>"$T/env.err")
 epoch=${env_out%% *}
 case "$epoch" in
@@ -59,17 +56,14 @@ WANT
 2c1743a391305fbf367df8e4f069f9f9  a.bin
 987bcab01b929eb2c07877b224215c92  b.bin
 WANT
-  want_patch="patch sha256: $(sha256_of "$ROOT/patches/github-exec.patch")"
   sums_ok=0
   md5_ok=0
-  patch_ok=0
   cmp -s "$T/want.sha256" "$T/art/SHA256SUMS" && sums_ok=1
   cmp -s "$T/want.md5" "$T/art/MD5SUMS" && md5_ok=1
-  grep -qxF "$want_patch" "$T/art/RELEASE-INFO.txt" && patch_ok=1
-  if [ "$sums_ok" = 1 ] && [ "$md5_ok" = 1 ] && [ "$patch_ok" = 1 ]; then
+  if [ "$sums_ok" = 1 ] && [ "$md5_ok" = 1 ]; then
     ok checksums_lists_sha256_and_md5_sorted
   else
-    bad checksums_lists_sha256_and_md5_sorted "sums=$sums_ok md5=$md5_ok patch=$patch_ok: $(cat "$T/art/SHA256SUMS" 2>/dev/null)"
+    bad checksums_lists_sha256_and_md5_sorted "sums=$sums_ok md5=$md5_ok: $(cat "$T/art/SHA256SUMS" 2>/dev/null)"
   fi
 else
   bad checksums_lists_sha256_and_md5_sorted "checksums.sh failed: $(cat "$T/cs.out")"
