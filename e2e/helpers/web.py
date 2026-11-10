@@ -168,19 +168,6 @@ class WsClient:
         return [f for f in self.seen if f.get("type") == "event"
                 and (src is None or f.get("src") == src)]
 
-    def wait_event(self, pred, timeout: float = 30.0) -> bool:
-        """Read frames until `pred(event_frame)` holds for one (already read ones count)."""
-        end = time.time() + timeout
-        while True:
-            if any(pred(f) for f in self.seen if f.get("type") == "event"):
-                return True
-            if time.time() >= end:
-                return False
-            try:
-                self._read(max(0.05, end - time.time()))
-            except TimeoutError:
-                return False
-
     def close(self) -> None:
         try:
             self.sock.close()

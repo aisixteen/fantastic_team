@@ -1,7 +1,9 @@
 # dispatcher/digest_reaches_driver (free)
 
-Group `g` (driver `lead`, members `w1`, `w2`) and a board. The probe sets the cadencer's cadence to 2s; it never sends a `tick`.
+Roles mode (`roles_tiers`, the roles registry, the task registry, the cadencer reading the spawned tree from them). The probe spawns a `project_lead` through the registry as the operator and hands it one message; its scripted turns spawn two workers through `roles`. The probe then sets the cadencer's cadence to 2s; it never sends a `tick`.
 
-Asserts: a model request reaches the driver holding the digest (`w1: idle`, `w2: idle`, the `load:` line); the cadencer's `status` shows `ticks` and `digests_sent` of at least 1, `delivery_errors` 0 and a metered `digest_bytes_per_hour`; the team log has no `cadencer call tick`.
+Asserts: a model request reaches the lead holding the digest (both spawned workers, named as the registry's `fleet` lists them, as `<id>: idle`, then the `load:` line); the cadencer's `status` shows `ticks` and `digests_sent` of at least 1, `delivery_errors` 0 and a metered `digest_bytes_per_hour`; the team log has no `cadencer call tick`.
+
+The digest tree is the one under the registry's `project_lead` (`crates/team/src/board.rs` `roles_tree_rows`), so the scripted lead is the spawned `project_lead`, not the stock `lead`. The script has spare turns; `consumed` is not asserted.
 
 Mutation: return early in `restart_timer` (`crates/team/src/cadencer.rs`) before the timer is spawned and the test fails.

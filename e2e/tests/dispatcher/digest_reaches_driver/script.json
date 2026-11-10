@@ -1,1 +1,140 @@
-[{"text": "noted"},{"text": "noted"},{"text": "noted"},{"text": "noted"},{"text": "noted"},{"text": "noted"},{"text": "noted"},{"text": "noted"},{"text": "noted"},{"text": "noted"},{"text": "noted"},{"text": "noted"}]
+[
+ {
+  "say": "Starting worker 1 of 2.",
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "worker",
+     "task": "The queue is queue. Your id is the id in your own reflect.",
+     "backend": {
+      "handler_module": "ram_store.tools",
+      "model": "inert"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "say": "Starting worker 2 of 2.",
+  "calls": [
+   {
+    "target": "roles",
+    "type": "spawn",
+    "args": {
+     "role": "worker",
+     "task": "The queue is queue. Your id is the id in your own reflect.",
+     "backend": {
+      "handler_module": "ram_store.tools",
+      "model": "inert"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "say": "Both workers are started.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "noted",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ }
+]

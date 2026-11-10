@@ -198,6 +198,18 @@ def make_roles(ctx, team, tiers: dict, limits: dict | None = None) -> None:
     merge(team, lead, "can_call", {"canvas_page": ["new_canvas"]})
 
 
+def spawn_project_lead(ctx, team) -> dict:
+    """The registry's spawned tree is rooted at the `project_lead` (what the cadencer digests, in roles
+    mode): the operator spawns one on the scripted backend and names it on the credential store so
+    its model key can be read. A spawner grants only what it holds, so the operator holds what the
+    card grants first. Returns the spawn's result (`id`, ...)."""
+    operator_holds(team, {"github": "*", "roles": "*", "kernel_state": "*", "canvas_page": ["new_canvas"]})
+    made = team.send("roles", {"type": "spawn", "role": "project_lead", "backend": lead_tier(ctx)})["result"]
+    if made.get("id"):
+        merge(team, "credentials", "callable_by", {made["id"]: "*"})
+    return made
+
+
 def lead_tier(ctx, **extra) -> dict:
     """A tier the scripted model answers: the lead's own backend fields."""
     t = {"handler_module": "anthropic_backend.tools", "model": "scripted-model",

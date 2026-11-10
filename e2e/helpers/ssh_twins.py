@@ -673,7 +673,7 @@ def set_store_grant(grant: dict) -> dict:
 
 def script_git_credentials() -> list[dict]:
     """One lead, three messages. 1 (setup): the box and the bridge (the leg may `get` from the master's store), the git
-    connector on the remote kernel naming that store. Then the operator taps both kernels' state streams. 2 (the work,
+    connector on the remote kernel naming that store. 2 (the work,
     ON THE REMOTE): fetch, a worktree of origin/main, the fix to muler.py, commit, fetch, push a work branch. Then the
     operator's phase (the probe looks for the token on both sides). 3: the store's grant revoked, a push over the open
     bridge (refused), the grant given back, the push again (lands); the bridge deleted, a push by the box's own `send`
