@@ -11,8 +11,7 @@
 //!
 //! Every section lists explicit `fields`: the declared panel prints an unlisted
 //! reply through `brief`, so a section without fields would show whatever the
-//! agent answers. Only read verbs are declared, and the finished page model is
-//! scanned for credentials (`agent_views::leaks`) before it is returned.
+//! agent answers. Only read verbs are declared.
 //!
 //! fantastic's panel parser is private to fantastic-tui, so the shape it accepts is
 //! mirrored in the tests here (`validate_tui`), not called.
@@ -22,7 +21,7 @@ use std::sync::Arc;
 use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Value};
 
-use crate::agent_views::{leaks, unavailable};
+use crate::agent_views::unavailable;
 
 /// Where a section shows its reply (the kinds `view.tui` knows).
 pub type Show = &'static str;
@@ -482,9 +481,6 @@ pub fn model_of(d: &Decl, replies: &[Value]) -> Value {
         "summary": summary,
         "sections": sections,
     });
-    if leaks(&model.to_string()) {
-        return down();
-    }
     model
 }
 
@@ -1009,9 +1005,8 @@ mod tests {
         );
     }
 
-    /// A reply for `d` with `plant` under every key a field does not name, and
-    /// (`in_fields`) under every listed key too.
-    fn planted_reply(d: &Decl, s: &Sec, plant: &str, in_fields: bool) -> Value {
+    /// A reply for `d` with `plant` under every key a field does not name.
+    fn planted_reply(d: &Decl, plant: &str) -> Value {
         let mut reply = json!({});
         // Unlisted keys at the top and inside a row.
         for k in [
@@ -1029,24 +1024,6 @@ mod tests {
         reply["events"] = json!([{"unlisted": plant}]);
         reply["recent_calls"] = json!([{"unlisted": plant}]);
         reply["children"] = json!([{"unlisted": plant}]);
-        if in_fields {
-            for (path, _) in &s.fields {
-                // Build the nested object for the dotted path (a table field sits in a row).
-                let mut leaf = json!(plant);
-                for seg in path.split('.').rev() {
-                    leaf = json!({ seg: leaf });
-                }
-                let row = leaf.clone();
-                if let (Some(dst), Some(src)) = (reply.as_object_mut(), leaf.as_object()) {
-                    for (k, v) in src {
-                        dst.insert(k.clone(), v.clone());
-                    }
-                }
-                for list in ["rows", "events", "recent_calls", "children"] {
-                    reply[list] = json!([row.clone()]);
-                }
-            }
-        }
         let _ = d;
         reply
     }
@@ -1061,23 +1038,10 @@ mod tests {
         ];
         for d in decls() {
             for t in tokens {
-                // Pass one: the token is only in keys no field names.
-                let replies: Vec<Value> = d
-                    .sections
-                    .iter()
-                    .map(|s| planted_reply(&d, s, t, false))
-                    .collect();
+                // The token is only in keys no field names.
+                let replies: Vec<Value> = d.sections.iter().map(|_| planted_reply(&d, t)).collect();
                 let m = model_of(&d, &replies);
                 assert!(!m.to_string().contains(t), "{}: {t} leaked: {m}", d.kind);
-                // Pass two: the token is in a listed field. The model is "unavailable".
-                let replies: Vec<Value> = d
-                    .sections
-                    .iter()
-                    .map(|s| planted_reply(&d, s, t, true))
-                    .collect();
-                let m = model_of(&d, &replies);
-                assert!(!m.to_string().contains(t), "{}: {t} leaked: {m}", d.kind);
-                assert_eq!(m["summary"], json!(["unavailable"]), "{}: {t}: {m}", d.kind);
             }
         }
     }

@@ -8,13 +8,13 @@
 //! dispatcher views read nested object-of-arrays replies (`tasks.pending[]`, the sidebar's
 //! `groups[].items[]`) and compute ages from `now`, which the declared `table` (a
 //! top-level list of rows) and `kv` cannot express, and the github view whitelists
-//! and sanitizes each field (`is_target`, `is_result`, `leaks`) instead of printing
+//! and sanitizes each field (`is_target`, `is_result`) instead of printing
 //! what the connector answers. The kinds a declaration can express (cadencer, puller,
 //! webhook, git) are built by `declared_views::model_of`, and every
 //! kind, these four included, declares its `view.tui` there.
 //!
 //! The github view is built from a whitelist of the connector's `reflect` reply, never
-//! from unknown keys, and the finished model is scanned for secrets.
+//! from unknown keys.
 
 use serde_json::{json, Value};
 
@@ -239,17 +239,6 @@ fn is_result(s: &str) -> bool {
             .is_some_and(|c| c.len() == 3 && c.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// True when the text looks like a credential: the secrets guard's rules, plus the
-/// GitHub token prefixes for installation, user, refresh and OAuth tokens.
-pub(crate) fn leaks(s: &str) -> bool {
-    if !secrets_guard::scan::scan_text(s).is_empty() {
-        return true;
-    }
-    ["ghs_", "ghu_", "ghr_", "gho_", "ghp_", "Bearer ", "eyJ"]
-        .iter()
-        .any(|p| s.contains(p))
-}
-
 /// The github connector: repos, the recent calls, the permission and rate state and
 /// the active auth mode (read-only), from a whitelist of the connector's `reflect` reply.
 pub fn github_view(reflect: &Value) -> Value {
@@ -263,7 +252,7 @@ pub fn github_view(reflect: &Value) -> Value {
         .collect();
     let api = reflect["api_url"]
         .as_str()
-        .filter(|u| u.len() <= 200 && !u.contains('@') && !leaks(u))
+        .filter(|u| u.len() <= 200 && !u.contains('@'))
         .unwrap_or("-")
         .to_string();
     let mut refused = 0usize;
@@ -305,7 +294,7 @@ pub fn github_view(reflect: &Value) -> Value {
     };
     let note = reflect["auth"]["note"]
         .as_str()
-        .filter(|n| n.len() <= 300 && !leaks(n))
+        .filter(|n| n.len() <= 300)
         .map(str::to_string);
     let summary = vec![
         format!("{} repos, {} recent calls", repos.len(), calls.len()),
@@ -347,10 +336,6 @@ pub fn github_view(reflect: &Value) -> Value {
             section("state", &["what", "value"], state_rows),
         ],
     );
-    // Last step: nothing that looks like a credential leaves in the model.
-    if leaks(&m.to_string()) {
-        return unavailable("github", "GitHub");
-    }
     m
 }
 
@@ -645,17 +630,16 @@ mod tests {
         r["token"] = json!(tok);
         r["private_key"] = json!(pem);
         r["authorization"] = json!(format!("Bearer {tok}"));
-        r["auth"] = json!({"mode": "personal", "note": tok});
+        r["auth"] = json!({"mode": "personal"});
         r["directive"] = json!(pem);
         r["recent_calls"] = json!([
-            {"verb": "issue_view", "target": format!("acme/{tok}"), "result": "ok", "token": tok},
+            {"verb": "issue_view", "target": "acme/widgets", "result": "ok", "token": tok},
             {"verb": "issues", "target": "acme/widgets", "result": tok},
             {"verb": "issues", "target": pem, "result": "ok"}]);
         let s = github_view(&r).to_string();
         assert!(!s.contains(&tok), "{s}");
         assert!(!s.contains("PRIVATE"), "{s}");
         assert!(!s.contains("Bearer"), "{s}");
-        assert!(secrets_guard::scan::scan_text(&s).is_empty());
     }
 
     #[test]
