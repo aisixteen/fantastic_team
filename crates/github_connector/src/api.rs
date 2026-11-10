@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use reqwest::Method;
 use serde_json::{json, Value};
-use team_git_connector::git::redact_all as redact;
+use team_git_connector::git::redact_all;
 
 /// A client bound to one API root and one timeout.
 pub(crate) struct Api {
@@ -54,7 +54,7 @@ impl Api {
                 return Err((
                     0,
                     json!({
-                        "error": redact(&format!("team_github {verb}: GitHub unreachable: {e}"), &[bearer]),
+                        "error": redact_all(&format!("team_github {verb}: GitHub unreachable: {e}"), &[bearer]),
                         "transport": true,
                     }),
                 ))
@@ -94,7 +94,7 @@ impl Api {
         Err((
             code,
             json!({
-                "error": redact(
+                "error": redact_all(
                     &format!("team_github {verb}: GitHub answered {code} to {method} {path}: {message}"),
                     &[bearer],
                 ),

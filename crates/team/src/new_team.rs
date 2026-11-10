@@ -62,23 +62,13 @@ mod tests {
         let reg = crate::registry();
         let rows = reg.folder_rows();
         for (name, _) in roles::ALL {
-            let row = rows
-                .iter()
-                .find(|r| r["name"] == name)
-                .unwrap_or_else(|| panic!("{name}: {rows:?}"));
+            let row = rows.iter().find(|r| r["name"] == name).unwrap_or_else(|| panic!("{name}: {rows:?}"));
             assert_eq!(row["source"], "embedded", "{row}");
-            assert_eq!(
-                row["base"],
-                fantastic_ai_core::chat_bundle::HANDLER_MODULE,
-                "{row}"
-            );
+            assert_eq!(row["base"], fantastic_ai_core::chat_bundle::HANDLER_MODULE, "{row}");
         }
         let dir = tempfile::TempDir::new().unwrap();
         crate::hydrate::seed(dir.path()).unwrap();
-        assert!(
-            !dir.path().join(".fantastic/bundles").exists(),
-            "the first run writes no role"
-        );
+        assert!(!dir.path().join(".fantastic/bundles").exists(), "the first run writes no role");
     }
 
     /// An agent that makes the call it is told to AS ITSELF, so the gate and `spawn`
@@ -233,11 +223,7 @@ mod tests {
         // itself (a real lead keeps them on the AI agent)
         if real_lead.is_none() {
             for (name, text) in roles::ALL {
-                reg.register_meta_yaml(
-                    name,
-                    &text.replace("base: ai_chat.tools", "base: caller.tools"),
-                )
-                .unwrap();
+                reg.register_meta_yaml(name, &text.replace("base: ai_chat.tools", "base: caller.tools")).unwrap();
             }
         }
         let mut booted =
@@ -330,9 +316,7 @@ mod tests {
         let seen = srv.received_requests().await.unwrap_or_default();
         assert_eq!(seen.len(), 1, "the model got no request: {r}");
         let _ = &dir;
-        let directive = crate::roles::parse_card(crate::roles::LEAD, "lead")
-            .unwrap()
-            .directive;
+        let directive = crate::roles::parse_card(crate::roles::LEAD, "lead").unwrap().directive;
         let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
         assert!(
             sent["system"]
@@ -380,18 +364,11 @@ mod tests {
         // a sub-lead that makes its calls as itself: the lead role on the stand-in
         kernel
             .bundles
-            .register_meta_yaml(
-                "lead_stand_in",
-                &crate::roles::LEAD.replace("base: ai_chat.tools", "base: caller.tools"),
-            )
+            .register_meta_yaml("lead_stand_in", &crate::roles::LEAD.replace("base: ai_chat.tools", "base: caller.tools"))
             .unwrap();
         let made = fantastic_kernel::send::as_agent(
             &lead,
-            ask(
-                &kernel,
-                ROLES,
-                json!({"type": "spawn", "role": "lead_stand_in"}),
-            ),
+            ask(&kernel, ROLES, json!({"type": "spawn", "role": "lead_stand_in"})),
         )
         .await;
         let sub = made["id"]
@@ -449,36 +426,17 @@ mod tests {
         }
         let lead = meta(&kernel, LEAD);
         assert_eq!(lead["memory_store_id"], "memory");
-        assert!(
-            lead.get("system_prompt_file").is_none(),
-            "the directive is the `lead` bundle's"
-        );
-        assert!(
-            lead.get("credentials").is_none() && lead.get("model").is_none(),
-            "the lead is a chat: {lead:?}"
-        );
+        assert!(lead.get("system_prompt_file").is_none(), "the directive is the `lead` bundle's");
+        assert!(lead.get("credentials").is_none() && lead.get("model").is_none(), "the lead is a chat: {lead:?}");
         // the compiled blueprint knows no provider: the lead names none and none is declared
-        let mut shipped: Value =
-            serde_yaml::from_str(&crate::hydrate::blueprint_text(Path::new("/team")).unwrap())
-                .unwrap();
+        let mut shipped: Value = serde_yaml::from_str(&crate::hydrate::blueprint_text(Path::new("/team")).unwrap()).unwrap();
         let shipped_lead = entry_mut(&mut shipped["agents"], LEAD).unwrap().clone();
-        assert!(
-            shipped_lead.get("provider_id").is_none(),
-            "the binary knows no provider: {shipped_lead}"
-        );
-        assert!(
-            !serde_yaml::to_string(&shipped)
-                .unwrap()
-                .contains("_backend.tools"),
-            "and ships none"
-        );
+        assert!(shipped_lead.get("provider_id").is_none(), "the binary knows no provider: {shipped_lead}");
+        assert!(!serde_yaml::to_string(&shipped).unwrap().contains("_backend.tools"), "and ships none");
         assert_eq!(lead["can_call"]["roles"], json!(LEAD_ROLES_VERBS));
         assert_eq!(lead["can_call"]["kernel_state"], json!(LEAD_ROOT_VERBS));
         let reg = meta(&kernel, ROLES);
-        assert!(
-            reg.get("tiers").is_none() && reg.get("role_dirs").is_none(),
-            "the roles are bundles; the spawner names the model"
-        );
+        assert!(reg.get("tiers").is_none() && reg.get("role_dirs").is_none(), "the roles are bundles; the spawner names the model");
         assert_eq!(reg["limits"]["total"], 3);
         assert_eq!(reg["callable_by"]["lead"], json!(LEAD_ROLES_VERBS));
         // the other ends on the home agents, merged with what they had
@@ -510,10 +468,7 @@ mod tests {
             .as_str()
             .unwrap_or_else(|| panic!("worker: {w}"))
             .to_string();
-        assert_eq!(
-            w["model"], "claude-haiku-5-5",
-            "the model the spawn named: {w}"
-        );
+        assert_eq!(w["model"], "claude-haiku-5-5", "the model the spawn named: {w}");
         let wm = meta(&kernel, &worker);
         assert_eq!(wm["model"], "claude-haiku-5-5");
         assert_eq!(wm["memory_store_id"], "memory");
@@ -652,8 +607,7 @@ mod tests {
         finish(dir.path(), kernel).await;
     }
 
-    /// The cadencer on the new path: made with `create_agent` (as the examples script
-    /// shows), its `group_settings` ride in its record, every edge it needs is written on
+    /// The cadencer on the new path: made with `create_agent`, its `group_settings` ride in its record, every edge it needs is written on
     /// both ends, and a beat reaches a spawned project_lead through the real gate.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_cadencer_made_with_create_agent_is_wired_and_delivers_a_digest() {

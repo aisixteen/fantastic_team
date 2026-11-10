@@ -151,9 +151,7 @@ const SUBLEAD: &str = "---\nname: sublead\npurpose: Runs a branch of the work.\n
 fn write_cards(kernel: &Kernel, cards: &[(&str, &str)]) {
     for (file, text) in cards {
         let stem = file.trim_end_matches(".md").to_string();
-        let parsed = text
-            .strip_prefix("---\n")
-            .and_then(|rest| rest.split_once("\n---\n"));
+        let parsed = text.strip_prefix("---\n").and_then(|rest| rest.split_once("\n---\n"));
         let Some((head, body)) = parsed else {
             kernel.bundles.refuse_folder(
                 &stem,
@@ -163,11 +161,7 @@ fn write_cards(kernel: &Kernel, cards: &[(&str, &str)]) {
         };
         let head = fantastic_kernel::yaml_io::load(head).unwrap();
         let name = head["name"].as_str().unwrap().to_string();
-        let mut can_call = head
-            .get("grants")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
+        let mut can_call = head.get("grants").and_then(Value::as_object).cloned().unwrap_or_default();
         can_call.insert("$self".into(), json!("*"));
         let mut record = json!({"post_system_prompt": body.trim_end(), "can_call": can_call});
         if let Some(cb) = head.get("callable_by") {
@@ -358,10 +352,7 @@ async fn role_returns_full_card_and_unknown_is_not_found() {
     let r = rig(&tmp, &[], &[("writer.md", WRITER)]).await;
     let c = r.op(json!({"type": "role", "name": "writer"})).await;
     assert_eq!(c["name"], "writer");
-    assert!(
-        c.get("tier").is_none(),
-        "a role names no model and no tier: {c}"
-    );
+    assert!(c.get("tier").is_none(), "a role names no model and no tier: {c}");
     assert_eq!(c["directive"], "You write clearly and briefly.");
     assert_eq!(c["grants"]["notes"], json!(["read"]));
     let n = r.op(json!({"type": "role", "name": "ghost"})).await;
@@ -379,10 +370,7 @@ async fn spawn_creates_child_with_directive_grants_on_the_spawners_backend() {
         .spawn_as(lead, json!({"role": "writer", "name": "scribe"}))
         .await;
     assert_eq!(out["role"], "writer", "{out}");
-    assert_eq!(
-        out["model"], "m1",
-        "the spawner's model when the spawn names none"
-    );
+    assert_eq!(out["model"], "m1", "the spawner's model when the spawn names none");
     let id = out["id"].as_str().unwrap();
     let a = r.kernel.agents.get(&AgentId::from(id)).unwrap();
     assert_eq!(
@@ -392,25 +380,12 @@ async fn spawn_creates_child_with_directive_grants_on_the_spawners_backend() {
     );
     let m = meta_of(&a);
     assert_eq!(m["post_system_prompt"], "You write clearly and briefly.");
-    assert!(
-        m.get("system_prompt").is_none_or(Value::is_null),
-        "the default system block stays in force: {m:?}"
-    );
+    assert!(m.get("system_prompt").is_none_or(Value::is_null), "the default system block stays in force: {m:?}");
     assert_eq!(m["model"], "m1", "the spawner's model; a role names none");
     assert_eq!(m["provider_id"], "prov", "the spawner's provider");
-    assert!(
-        m.get("endpoint").is_none(),
-        "no provider field on a chat: {m:?}"
-    );
-    assert_eq!(
-        a.handler_module.as_deref(),
-        Some("writer"),
-        "an instance of the role bundle (on caller.tools)"
-    );
-    assert!(
-        r.kernel.bundles.get("writer").is_some(),
-        "which runs its base's code"
-    );
+    assert!(m.get("endpoint").is_none(), "no provider field on a chat: {m:?}");
+    assert_eq!(a.handler_module.as_deref(), Some("writer"), "an instance of the role bundle (on caller.tools)");
+    assert!(r.kernel.bundles.get("writer").is_some(), "which runs its base's code");
     assert_eq!(m["spawned_by"], json!(r.reg));
     assert_eq!(m["role"], "writer");
     assert_eq!(m["name"], "scribe");
@@ -436,8 +411,7 @@ async fn spawn_opens_the_spawners_memory_store_to_the_child() {
     // the spawner's store is the child's too
     let mut patch = Map::new();
     patch.insert("memory_store_id".to_string(), json!(mem));
-    r.kernel
-        .update(&AgentId::from(r.callers[0].as_str()), patch);
+    r.kernel.update(&AgentId::from(r.callers[0].as_str()), patch);
     let id = r.spawn_as(&r.callers[0], json!({"role": "writer"})).await["id"]
         .as_str()
         .unwrap()
@@ -458,20 +432,12 @@ async fn spawn_opens_the_spawners_memory_store_to_the_child() {
 async fn spawn_runs_the_model_the_spawner_names() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let out = r
-        .spawn_as(&r.callers[0], json!({"role": "writer", "model": "m2"}))
-        .await;
+    let out = r.spawn_as(&r.callers[0], json!({"role": "writer", "model": "m2"})).await;
     assert_eq!(out["model"], "m2", "{out}");
     let id = id_of(&out);
     assert_eq!(r.meta(&id)["model"], "m2");
-    assert_eq!(
-        r.meta(&id)["provider_id"],
-        "prov",
-        "on the spawner's provider"
-    );
-    let bad = r
-        .spawn_as(&r.callers[0], json!({"role": "writer", "model": 5}))
-        .await;
+    assert_eq!(r.meta(&id)["provider_id"], "prov", "on the spawner's provider");
+    let bad = r.spawn_as(&r.callers[0], json!({"role": "writer", "model": 5})).await;
     assert_eq!(bad["reason"], "bad_arg", "{bad}");
 }
 
@@ -606,14 +572,7 @@ async fn get_count_after_spawn_delete_restart() {
     // a restart: a second kernel loaded from the persisted records
     let state = r.kernel.save();
     let k2 = Arc::new(new_kernel());
-    write_cards(
-        &k2,
-        &[
-            ("writer.md", WRITER),
-            ("reviewer.md", REVIEWER),
-            ("sublead.md", SUBLEAD),
-        ],
-    ); // the bundles load before the tree
+    write_cards(&k2, &[("writer.md", WRITER), ("reviewer.md", REVIEWER), ("sublead.md", SUBLEAD)]); // the bundles load before the tree
     k2.load(state).unwrap();
     let after = send(&k2, &r.reg, json!({"type": "get_count", "role": "writer"})).await;
     assert_eq!(
@@ -737,35 +696,25 @@ async fn spawn_task_string_is_first_message_and_object_refused() {
     // the string is the child's first message, delivered without holding the spawn
     let cid = c["id"].as_str().unwrap().to_string();
     for _ in 0..100 {
-        if SENT.lock().unwrap().iter().any(|(a, t)| {
-            *a == cid
-                && t.starts_with("do it\n\n[team] Your parent is `")
-                && t.contains(&format!("Your parent is `{}`", lead.as_str()))
-        }) {
+        if SENT
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(a, t)| *a == cid && t.starts_with("do it\n\n[team] Your parent is `") && t.contains(&format!("Your parent is `{}`", lead.as_str())))
+        {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(SENT.lock().unwrap().iter().any(|(a, t)| *a == cid
-        && t.starts_with("do it\n\n[team] Your parent is `")
-        && t.contains(&format!("Your parent is `{}`", lead.as_str()))));
-    // the note tells the child to answer its parent with a plain `send`, never a `report` (team#247)
-    let note = SENT
+    assert!(SENT
         .lock()
         .unwrap()
         .iter()
-        .find(|(a, _)| *a == cid)
-        .unwrap()
-        .1
-        .clone();
-    assert!(
-        note.contains("send it your result when you are done"),
-        "{note}"
-    );
-    assert!(
-        note.contains("<call name=\"send\">") && !note.contains("report to it"),
-        "{note}"
-    );
+        .any(|(a, t)| *a == cid && t.starts_with("do it\n\n[team] Your parent is `") && t.contains(&format!("Your parent is `{}`", lead.as_str()))));
+    // the note tells the child to answer its parent with a plain `send`, never a `report` (team#247)
+    let note = SENT.lock().unwrap().iter().find(|(a, _)| *a == cid).unwrap().1.clone();
+    assert!(note.contains("send it your result when you are done"), "{note}");
+    assert!(note.contains("<call name=\"send\">") && !note.contains("report to it"), "{note}");
 }
 
 /// Did `who` receive a `send` with `text`? A `send` is answered only once the
@@ -899,10 +848,7 @@ async fn child_to_parent_send_is_merged_never_overwritten() {
 async fn operator_spawn_opens_no_edge_to_a_parent() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &[], &[("reviewer.md", REVIEWER)]).await;
-    let id = id_of(
-        &r.op(json!({"type": "spawn", "role": "reviewer", "provider": "prov", "model": "m1"}))
-            .await,
-    );
+    let id = id_of(&r.op(json!({"type": "spawn", "role": "reviewer", "provider": "prov", "model": "m1"})).await);
     // no caller: the child's parent is the registry, which takes no message; it may
     // call only its provider
     assert_eq!(keys_of(&r, &id, "can_call"), ["$self", "prov"]);
@@ -982,8 +928,7 @@ async fn done_frees_nothing_only_the_spawners_delete_agent_does() {
     assert_eq!(r.count(None).await["running"], 2);
     // each worker sends `done`: the registry does not delete it, it still counts
     for id in &ids {
-        r.call(id, lead, json!({"type": "send", "text": "done"}))
-            .await;
+        r.call(id, lead, json!({"type": "send", "text": "done"})).await;
     }
     assert_eq!(r.count(None).await["running"], 2, "done frees nothing");
     // the spawner deletes each one: running drops to 0 and the records are as before
@@ -1180,15 +1125,9 @@ async fn spawn_from_forks_and_applies_the_role_card() {
     assert_eq!(forks_of(&r, &src), [id], "made by fork");
     let m = r.meta(id);
     assert_eq!(m["post_system_prompt"], "You write clearly and briefly.");
-    assert!(
-        m.get("system_prompt").is_none_or(Value::is_null),
-        "the default system block stays in force: {m:?}"
-    );
+    assert!(m.get("system_prompt").is_none_or(Value::is_null), "the default system block stays in force: {m:?}");
     assert_eq!(m["role"], "writer");
-    assert_eq!(
-        m["bundle"], "writer",
-        "the fork names the role bundle it took"
-    );
+    assert_eq!(m["bundle"], "writer", "the fork names the role bundle it took");
     assert_eq!(m["spawned_by"], json!(r.reg));
     assert_eq!(m["model"], "m1", "the spawner's model, not the source's");
     assert_eq!(m["lead"], json!(lead));
@@ -1293,11 +1232,12 @@ async fn spawn_from_task_string_is_sent_as_first_message() {
         .await;
     let id = out["id"].as_str().unwrap().to_string();
     for _ in 0..100 {
-        if SENT.lock().unwrap().iter().any(|(a, t)| {
-            *a == id
-                && t.starts_with(&text)
-                && t.contains(&format!("Your parent is `{}`", r.callers[0].as_str()))
-        }) {
+        if SENT
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(a, t)| *a == id && t.starts_with(&text) && t.contains(&format!("Your parent is `{}`", r.callers[0].as_str())))
+        {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1408,14 +1348,7 @@ async fn spawn_from_counts_in_fleet_and_get_count_and_survives_restart() {
     assert_eq!(r.count(Some("writer")).await["running"], 1);
     let state = r.kernel.save();
     let k2 = Arc::new(new_kernel());
-    write_cards(
-        &k2,
-        &[
-            ("writer.md", WRITER),
-            ("reviewer.md", REVIEWER),
-            ("sublead.md", SUBLEAD),
-        ],
-    ); // the bundles load before the tree
+    write_cards(&k2, &[("writer.md", WRITER), ("reviewer.md", REVIEWER), ("sublead.md", SUBLEAD)]); // the bundles load before the tree
     k2.load(state).unwrap();
     let after = send(&k2, &r.reg, json!({"type": "get_count", "role": "writer"})).await;
     assert_eq!(after["running"], 1, "rebuilt from the records");
@@ -1728,11 +1661,7 @@ async fn spawn_adds_the_bundles_callable_by_to_the_childs() {
     let id = id_of(&r.spawn_as(&r.callers[0], json!({"role": "wakeable"})).await);
     let cb = &r.meta(&id)["callable_by"];
     assert_eq!(cb["$subtree"], json!(["send"]), "{cb}");
-    assert_eq!(
-        cb[&r.callers[0]],
-        json!(["pause", "resume", "stop"]),
-        "the spawner keeps its edge: {cb}"
-    );
+    assert_eq!(cb[&r.callers[0]], json!(["pause", "resume", "stop"]), "the spawner keeps its edge: {cb}");
 }
 
 #[tokio::test]
@@ -1740,11 +1669,7 @@ async fn spawn_from_adds_the_bundles_callable_by_to_the_childs() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("wakeable.md", WAKEABLE)]).await;
     let id = id_of(
-        &r.spawn_as(
-            &r.callers[0],
-            json!({"role": "wakeable", "from": from(&src, 5)}),
-        )
-        .await,
+        &r.spawn_as(&r.callers[0], json!({"role": "wakeable", "from": from(&src, 5)})).await,
     );
     assert_eq!(r.meta(&id)["callable_by"]["$subtree"], json!(["send"]));
 }
@@ -1881,10 +1806,7 @@ async fn operator_spawn_has_no_escalation_check() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &[], &[("wide.md", WIDE)]).await;
     notes_tool(&r).await;
-    let id = id_of(
-        &r.op(json!({"type": "spawn", "role": "wide", "provider": "prov", "model": "m1"}))
-            .await,
-    );
+    let id = id_of(&r.op(json!({"type": "spawn", "role": "wide", "provider": "prov", "model": "m1"})).await);
     assert_eq!(r.meta(&id)["can_call"]["notes"], json!(["read", "write"]));
     assert_eq!(
         r.meta("notes")["callable_by"][&id],

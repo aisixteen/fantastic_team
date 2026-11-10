@@ -12,7 +12,7 @@
 //! In app mode a JWT and an installation token are minted per call. Neither they nor
 //! a personal token live anywhere but local variables of that call, and never appear
 //! in a reply, an error, a log line, a record, a payload sent to another agent, argv,
-//! a URL or a file. Every error string passes through `redact` before it is returned.
+//! a URL or a file. Every error string passes through `redact_all` before it is returned.
 #![deny(missing_docs)]
 
 mod api;

@@ -65,11 +65,7 @@ pub fn of(kernel: &Kernel) -> Vec<Card> {
                 .unwrap_or_default();
             Some(Card {
                 callable_by,
-                purpose: r
-                    .get("sentence")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
+                purpose: r.get("sentence").and_then(Value::as_str).unwrap_or("").to_string(),
                 name,
                 grants,
                 directive,

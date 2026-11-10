@@ -51,8 +51,8 @@ $FANTASTIC $AR role name=ghost | jq -e '.reason == "not_found"'
 
 ```bash
 $FANTASTIC $AR set_limit role=writer max=1 | jq -e '.ok'
-$FANTASTIC $AR spawn role=writer backend='{"handler_module":"scheduler.tools"}' | jq -e '.id'
-$FANTASTIC $AR spawn role=writer backend='{"handler_module":"scheduler.tools"}' | jq -e '.reason == "limit" and .scope == "role"'
+$FANTASTIC $AR spawn role=writer provider=prov | jq -e '.id'
+$FANTASTIC $AR spawn role=writer provider=prov | jq -e '.reason == "limit" and .scope == "role"'
 $FANTASTIC $AR get_count role=writer | jq -e '.running == 1 and .max == 1'
 ```
 

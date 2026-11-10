@@ -1539,6 +1539,7 @@ mod tests {
         assert!(HTML.contains("fantastic.send("));
         assert!(HTML.contains("type: 'open'"));
         assert!(!HTML.contains("getElementById('back')"));
+        assert!(HTML.contains("textContent"));
     }
 
     #[test]

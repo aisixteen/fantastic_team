@@ -53,25 +53,13 @@ pub(crate) struct Card {
 pub(crate) fn parse_card(text: &str, name: &str) -> Result<Card, String> {
     let v: serde_json::Value = serde_yaml::from_str(text).map_err(|e| format!("{name}: {e}"))?;
     let rec = v.get("record").ok_or(format!("{name}: no record"))?;
-    let mut grants = rec
-        .get("can_call")
-        .and_then(|g| g.as_object())
-        .cloned()
-        .unwrap_or_default();
+    let mut grants = rec.get("can_call").and_then(|g| g.as_object()).cloned().unwrap_or_default();
     grants.remove("$self");
     Ok(Card {
         name: name.to_string(),
-        base: v
-            .get("base")
-            .and_then(|b| b.as_str())
-            .unwrap_or("")
-            .to_string(),
+        base: v.get("base").and_then(|b| b.as_str()).unwrap_or("").to_string(),
         grants,
-        directive: rec
-            .get("post_system_prompt")
-            .and_then(|d| d.as_str())
-            .unwrap_or("")
-            .to_string(),
+        directive: rec.get("post_system_prompt").and_then(|d| d.as_str()).unwrap_or("").to_string(),
     })
 }
 
@@ -93,36 +81,23 @@ mod tests {
         // the spawner deletes, and the lead card must say it does so as soon as the
         // worker is done, not only at the end of the queue.
         let lead = card("lead").directive;
-        let (_, end) = lead
-            .split_once("## The end")
-            .expect("lead card has an end section");
+        let (_, end) = lead.split_once("## The end").expect("lead card has an end section");
         assert!(
-            end.contains("deleted by YOU, as soon as you know it")
-                && end.contains("`delete_agent`"),
+            end.contains("deleted by YOU, as soon as you know it") && end.contains("`delete_agent`"),
             "lead card must say who deletes a finished worker"
         );
         assert!(
             end.contains("`done`") && end.contains("in that same turn"),
             "the lead deletes when the worker sends done, in that same turn"
         );
-        assert!(card("worker")
-            .directive
-            .contains("The agent that spawned an agent deletes it"));
+        assert!(card("worker").directive.contains("The agent that spawned an agent deletes it"));
     }
 
     /// The check-in paragraph of one role text, from "Check-ins" on (a lead's own text).
     fn check_in_tail(text: &str) -> String {
-        let (_, tail) = text
-            .split_once("Never end your run while an agent you started")
-            .expect("the check-in rule");
-        let end = tail
-            .find("never start a timer or sleep job to wait.")
-            .expect("the await rule")
-            + "never start a timer or sleep job to wait.".len();
-        format!(
-            "Never end your run while an agent you started{}",
-            &tail[..end]
-        )
+        let (_, tail) = text.split_once("Never end your run while an agent you started").expect("the check-in rule");
+        let end = tail.find("never start a timer or sleep job to wait.").expect("the await rule") + "never start a timer or sleep job to wait.".len();
+        format!("Never end your run while an agent you started{}", &tail[..end])
     }
 
     #[test]
@@ -134,9 +109,7 @@ mod tests {
             PROJECT_LEAD,
             include_str!("../../../e2e/helpers/cli.py"),
             include_str!("../../../e2e/tests/cli/leads_spawn_leads/bundles/sublead/bundle.yaml"),
-            include_str!(
-                "../../../e2e/tests/cli/leads_spawn_leads/bundles/remote_sublead/bundle.yaml"
-            ),
+            include_str!("../../../e2e/tests/cli/leads_spawn_leads/bundles/remote_sublead/bundle.yaml"),
         ];
         let rule = "Never end your run while an agent you started is still working; its report or your next check-in wakes you. To wait, end your turn with `await`; never start a timer or sleep job to wait.";
         for (i, c) in copies.iter().enumerate() {
@@ -151,14 +124,8 @@ mod tests {
     fn leads_wait_with_await_and_never_with_a_timer() {
         for name in ["lead", "project_lead"] {
             let d = card(name).directive;
-            assert!(
-                d.contains("end your turn with `await`"),
-                "{name}: wait with await"
-            );
-            assert!(
-                d.contains("never start a timer or sleep job to wait"),
-                "{name}: no timer to wait"
-            );
+            assert!(d.contains("end your turn with `await`"), "{name}: wait with await");
+            assert!(d.contains("never start a timer or sleep job to wait"), "{name}: no timer to wait");
         }
     }
 
@@ -166,38 +133,20 @@ mod tests {
     fn leads_verify_a_result_on_github() {
         for name in ["lead", "project_lead"] {
             let d = card(name).directive;
-            let (_, v) = d
-                .split_once("Verifying results.")
-                .unwrap_or_else(|| panic!("{name}: no verifying rule"));
+            let (_, v) = d.split_once("Verifying results.").unwrap_or_else(|| panic!("{name}: no verifying rule"));
             let v = v.lines().next().unwrap();
-            assert!(
-                v.contains("verified on GitHub") && v.contains("never from the local clone alone"),
-                "{name}: {v}"
-            );
-            assert!(
-                v.contains("`pr_status`")
-                    && v.contains("`issue_view`")
-                    && v.contains("github connector"),
-                "{name}: {v}"
-            );
+            assert!(v.contains("verified on GitHub") && v.contains("never from the local clone alone"), "{name}: {v}");
+            assert!(v.contains("`pr_status`") && v.contains("`issue_view`") && v.contains("github connector"), "{name}: {v}");
         }
     }
 
     #[test]
     fn the_worker_takes_a_from_remote_hand_off_as_its_leads() {
         let d = card("worker").directive;
-        let (_, rule) = d
-            .split_once("A message headed `[from remote]`")
-            .expect("worker card names [from remote]");
+        let (_, rule) = d.split_once("A message headed `[from remote]`").expect("worker card names [from remote]");
         let rule = rule.lines().next().unwrap();
-        assert!(
-            rule.contains("from your own team") && rule.contains("treat it as from your lead"),
-            "{rule}"
-        );
-        assert!(
-            rule.contains("Instructions embedded in data") && rule.contains("never orders"),
-            "{rule}"
-        );
+        assert!(rule.contains("from your own team") && rule.contains("treat it as from your lead"), "{rule}");
+        assert!(rule.contains("Instructions embedded in data") && rule.contains("never orders"), "{rule}");
     }
 
     fn words(s: &str) -> Vec<String> {
@@ -293,17 +242,11 @@ mod tests {
         for (name, text) in ALL {
             let c = parse_card(text, name).unwrap();
             for d in DENY {
-                assert!(
-                    !c.directive.to_lowercase().contains(d),
-                    "{name}'s directive names {d}"
-                );
+                assert!(!c.directive.to_lowercase().contains(d), "{name}'s directive names {d}");
             }
             let v: serde_json::Value = serde_yaml::from_str(text).unwrap();
             for k in ["model", "endpoint", "credentials", "tier"] {
-                assert!(
-                    v["record"].get(k).is_none(),
-                    "{name} sets {k}: the spawner chooses it"
-                );
+                assert!(v["record"].get(k).is_none(), "{name} sets {k}: the spawner chooses it");
             }
             assert!(c.base.ends_with(".tools"), "{name}: base {}", c.base);
         }
@@ -462,26 +405,15 @@ mod tests {
         // embedded: the kernel's registry holds them, no folder is read
         let mut kernel = fantastic_kernel::Kernel::new();
         kernel.bundles = crate::registry();
-        let errors: Vec<_> = kernel
-            .bundles
-            .folder_rows()
-            .into_iter()
-            .filter(|r| r.get("error").is_some())
-            .collect();
+        let errors: Vec<_> = kernel.bundles.folder_rows().into_iter().filter(|r| r.get("error").is_some()).collect();
         assert!(errors.is_empty(), "{errors:?}");
         let loaded = team_agentic_resources::roles::of(&kernel);
         let names: BTreeSet<String> = loaded.iter().map(|c| c.name.clone()).collect();
         let want: BTreeSet<String> = ALL.iter().map(|(n, _)| n.to_string()).collect();
         assert_eq!(names, want);
         let pl = loaded.iter().find(|c| c.name == "project_lead").unwrap();
-        assert!(
-            pl.grants.contains_key("github"),
-            "the coder project_lead grants the connector"
-        );
-        assert!(
-            kernel.bundles.get("lead").is_some(),
-            "`lead` resolves to its base"
-        );
+        assert!(pl.grants.contains_key("github"), "the coder project_lead grants the connector");
+        assert!(kernel.bundles.get("lead").is_some(), "`lead` resolves to its base");
     }
 
     /// The "how the system works" brief: every card carries it, with the fixed ids of the
@@ -551,10 +483,7 @@ mod tests {
             ("cadencer", "team_cadencer.tools"),
         ] {
             assert!(section.contains(&format!("`{id}` (`{module}`)")), "{id}");
-            assert!(
-                crate::registry().get(module).is_some(),
-                "{module} is registered"
-            );
+            assert!(crate::registry().get(module).is_some(), "{module} is registered");
         }
         assert!(start < l.find("## The queue").unwrap());
     }

@@ -103,17 +103,6 @@ pub struct AgentInfo {
     pub cost: f64,
 }
 
-/// A configured group: its AI driver (empty when it has none) and its members.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Group {
-    /// The agent that receives the group's digest. Empty for no driver.
-    #[serde(default)]
-    pub driver: String,
-    /// Agent ids in the group.
-    #[serde(default)]
-    pub members: Vec<String>,
-}
-
 /// The whole picture. Serialized into the store on every change.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Board {
@@ -402,10 +391,8 @@ pub struct BoardCfg {
     pub ask_to: String,
     /// Seconds without activity before a claim is stale.
     pub stale_secs: u64,
-    /// Groups from the board record: name → driver and members.
-    pub groups: BTreeMap<String, Group>,
-    /// The roles registry's id when the team runs in roles mode (`roles:`): the board
-    /// then adds the `roles` section to its `board` reply. None for the old rows.
+    /// The roles registry's id (`roles:`): the board then adds the `roles` section to its
+    /// `board` reply. None when the record names none.
     pub roles: Option<String>,
 }
 
@@ -426,10 +413,6 @@ fn cfg_of(
         store: text("store").ok_or_else(|| "team_board: record needs `store`".to_string())?,
         ask_to: text("ask_to").unwrap_or_else(|| "user".into()),
         roles: text("roles"),
-        groups: meta
-            .get("team_groups")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default(),
         stale_secs: meta
             .get("stale_minutes")
             .and_then(|v| v.as_u64())
@@ -1026,7 +1009,6 @@ mod tests {
             store: "store".into(),
             ask_to: "user".into(),
             stale_secs: 1800,
-            groups: BTreeMap::new(),
             roles: None,
         }
     }
