@@ -71,7 +71,7 @@ fn record_block(text: &str, first_key: &str) -> serde_json::Value {
 #[test]
 fn every_record_field_the_readme_names_is_read_by_the_code() {
     let text = readme();
-    // the dispatcher's `groups`, the board's `team_groups`, `repos` and `github`
+    // the dispatcher's `groups`, `repos` and `github`
     let code = rust_sources(&root().join("crates/team/src"));
     let groups = record_block(&text, "groups:");
     for key in groups.as_object().unwrap().keys() {
@@ -288,7 +288,6 @@ fn readme_record_fields_are_the_ones_the_code_reads() {
     let sources = rust_sources(&root().join("crates/team/src"));
     for (field, needle) in [
         ("tiers", "\"tiers\""),
-        ("team_groups", "\"team_groups\""),
         ("group_settings", "\"group_settings\""),
         ("repo_config", "\"repo_config\""),
         ("groups", "\"groups\""),

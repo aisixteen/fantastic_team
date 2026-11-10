@@ -34,11 +34,11 @@
 pub mod roles;
 
 use async_trait::async_trait;
-use roles::{Card, REGISTRY_TOKEN};
 use fantastic_bundle::py_repr;
 use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
 use fantastic_kernel::refusal::{self, bad, missing};
 use fantastic_kernel::{current_origin, Agent, AgentId, Item, Kernel};
+use roles::{Card, REGISTRY_TOKEN};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -556,7 +556,12 @@ async fn spawn_reply(
 
 /// The chat fields a child takes from its spawner: where its conversation lives and how it
 /// is kept. Never a provider's (model kind, endpoint, key, prices): those are its provider's.
-const CHAT_FIELDS: [&str; 4] = ["memory_store_id", "context_window", "context_strategy", "caching"];
+const CHAT_FIELDS: [&str; 4] = [
+    "memory_store_id",
+    "context_window",
+    "context_strategy",
+    "caching",
+];
 
 /// The verbs a chat calls on its provider.
 const PROVIDER_VERBS: [&str; 2] = ["complete", "watch"];
@@ -566,11 +571,19 @@ const PROVIDER_VERBS: [&str; 2] = ["complete", "watch"];
 /// them; absent, the spawner's own (an AI spawner is a chat with a `provider_id`); no
 /// `model` anywhere, the provider's default. A caller that is no chat (the operator, a
 /// tool) names the `provider`.
-fn chat_of(kernel: &Kernel, role: &str, caller: &Option<AgentId>, payload: &Value) -> Result<Map<String, Value>, Value> {
+fn chat_of(
+    kernel: &Kernel,
+    role: &str,
+    caller: &Option<AgentId>,
+    payload: &Value,
+) -> Result<Map<String, Value>, Value> {
     let mut out = Map::new();
     // the child runs its role's base (the AI agent, `ai_chat.tools`, for every stock role)
     out.insert("handler_module".into(), json!(kernel.bundles.base_of(role)));
-    let spawner = caller.as_ref().and_then(|c| agent_of(kernel, c)).map(|a| meta_of(&a));
+    let spawner = caller
+        .as_ref()
+        .and_then(|c| agent_of(kernel, c))
+        .map(|a| meta_of(&a));
     if let Some(meta) = &spawner {
         for k in CHAT_FIELDS {
             if let Some(v) = meta.get(k) {
@@ -582,17 +595,37 @@ fn chat_of(kernel: &Kernel, role: &str, caller: &Option<AgentId>, payload: &Valu
         match payload.get(k) {
             None | Some(Value::Null) => Ok(None),
             Some(Value::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
-            Some(_) => Err(bad("spawn", k, if k == "model" { "a model name" } else { "a provider agent's id" })),
+            Some(_) => Err(bad(
+                "spawn",
+                k,
+                if k == "model" {
+                    "a model name"
+                } else {
+                    "a provider agent's id"
+                },
+            )),
         }
     };
-    let own = |k: &str| spawner.as_ref().and_then(|m| m.get(k)).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
-    let Some(provider) = named("provider")?.or_else(|| own(fantastic_ai_core::remote_provider::PROVIDER_FIELD)) else {
+    let own = |k: &str| {
+        spawner
+            .as_ref()
+            .and_then(|m| m.get(k))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    let Some(provider) =
+        named("provider")?.or_else(|| own(fantastic_ai_core::remote_provider::PROVIDER_FIELD))
+    else {
         return Err(missing(
             "spawn",
             "provider (the provider agent the child completes through; a chat spawner's is its own)",
         ));
     };
-    out.insert(fantastic_ai_core::remote_provider::PROVIDER_FIELD.into(), json!(provider));
+    out.insert(
+        fantastic_ai_core::remote_provider::PROVIDER_FIELD.into(),
+        json!(provider),
+    );
     if let Some(m) = named("model")?.or_else(|| own("model")) {
         out.insert("model".into(), json!(m));
     }
@@ -719,7 +752,9 @@ fn parent_of(kernel: &Kernel, child: &AgentId) -> Option<String> {
 /// without it a child cannot tell whom to report to. Its parent by id, and the agents
 /// this registry spawned for the same parent (its siblings) with their roles.
 fn team_note(kernel: &Kernel, reg: &AgentId, child: &AgentId) -> String {
-    let Some(parent) = parent_of(kernel, child) else { return String::new() };
+    let Some(parent) = parent_of(kernel, child) else {
+        return String::new();
+    };
     let siblings: Vec<String> = spawned(kernel, reg)
         .into_iter()
         .filter(|s| s.id != *child && parent_of(kernel, &s.id).as_deref() == Some(parent.as_str()))

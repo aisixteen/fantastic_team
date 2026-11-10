@@ -410,7 +410,7 @@ fn settings_json(s: &Settings) -> Value {
     })
 }
 
-/// The record keys the settings and board are kept under: the verb arg names.
+/// The record keys the settings are kept under: the verb arg names.
 /// Written into the cadencer's own agent record on `set` and `configure`, and
 /// read back at boot.
 fn record_patch(inner: &Inner) -> serde_json::Map<String, Value> {
@@ -418,9 +418,6 @@ fn record_patch(inner: &Inner) -> serde_json::Map<String, Value> {
         Value::Object(m) => m,
         _ => serde_json::Map::new(),
     };
-    if let Some(b) = &inner.board {
-        m.insert("board".to_string(), json!(b));
-    }
     m.insert(
         "group_settings".to_string(),
         group_settings_json(&inner.groups),
@@ -436,10 +433,6 @@ fn record_patch(inner: &Inner) -> serde_json::Map<String, Value> {
 /// of them was present.
 fn load_from_record(inner: &mut Inner, meta: &serde_json::Map<String, Value>) -> bool {
     let mut loaded = false;
-    if let Some(b) = meta.get("board").and_then(|v| v.as_str()) {
-        inner.board = Some(b.to_string());
-        loaded = true;
-    }
     if let Some(r) = meta.get("roles").and_then(|v| v.as_str()) {
         inner.roles = Some(r.to_string());
         loaded = true;
@@ -486,7 +479,6 @@ struct Inner {
     delivery_errors: u64,
     meter: CostMeter,
     peers: Option<Arc<dyn Peers>>,
-    board: Option<String>,
     /// The roles registry (roles mode): the digest tree is the spawned tree, read from it.
     roles: Option<String>,
     /// The kernel, for the grants to the spawned leads (set with the peers).
@@ -498,7 +490,7 @@ struct Inner {
     /// The clock second of each lead's last digest.
     last_digest_s: BTreeMap<String, u64>,
     timer_cfg: Option<(bool, u64)>,
-    /// The board's `load` object from the last read (`Null` when none came).
+    /// The roles registry's `load` object from the last read (`Null` when none came).
     load: Value,
     /// The cumulative token count at the last beat; the beat records the change.
     tokens_seen: u64,
@@ -557,7 +549,7 @@ fn beat(inner: &mut Inner) -> Vec<Digest> {
         inner.last_digest_s.insert(lead.clone(), now);
     }
     let mut digests: Vec<Digest> = got.into_iter().map(|(_, d)| d).collect();
-    // The driver's tokens: the change of the board's cumulative counter since
+    // The driver's tokens: the change of the registry's cumulative counter since
     // the last beat goes into the meter (the first beat counts from zero).
     if let Some(total) = inner.load["tokens_total"].as_u64() {
         // A lower total means the counter restarted: the new total is all new.
@@ -719,9 +711,6 @@ fn dispatch(shared: &Arc<Mutex<Inner>>, payload: &Value) -> Value {
     let mut inner = shared.lock().expect("cadencer state");
     match t {
         "configure" => {
-            if let Some(b) = payload.get("board").and_then(|v| v.as_str()) {
-                inner.board = Some(b.to_string());
-            }
             if let Some(p) = payload.get("parent").and_then(|v| v.as_str()) {
                 inner.parent = Some(p.to_string());
             }
@@ -759,7 +748,7 @@ fn dispatch(shared: &Arc<Mutex<Inner>>, payload: &Value) -> Value {
         "status" => {
             let now = inner.clock();
             let meter = inner.meter.status(now);
-            // The board's load counts, plus the cadencer's own per-hour figures.
+            // The registry's load counts, plus the cadencer's own per-hour figures.
             let mut load = inner.load.as_object().cloned().unwrap_or_default();
             load.insert(
                 "digest_bytes_per_hour".into(),
@@ -793,7 +782,7 @@ pub struct CadencerBundle {
 
 impl CadencerBundle {
     /// Boot: load the saved keys from the agent record, then restart the timer
-    /// when it is enabled and has a board.
+    /// when it is enabled and has roles.
     fn restore(&self, agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
         let meta = kernel
             .resolve_target(agent_id.as_str())
@@ -803,12 +792,12 @@ impl CadencerBundle {
     }
 }
 
-/// Load the saved keys and restart the timer when it is enabled with a board or roles.
+/// Load the saved keys and restart the timer when it is enabled with roles.
 /// Returns true when the record had any of them.
 fn boot_from_meta(shared: &Arc<Mutex<Inner>>, meta: &serde_json::Map<String, Value>) -> bool {
     let mut g = shared.lock().expect("cadencer state");
     let loaded = load_from_record(&mut g, meta);
-    if g.settings.enabled && (g.board.is_some() || g.roles.is_some()) {
+    if g.settings.enabled && g.roles.is_some() {
         restart_timer(shared, &mut g);
     }
     loaded
@@ -824,9 +813,9 @@ impl Bundle for CadencerBundle {
         json!({
             "tick": "tick {tree: [{id, parent?, has_ai?, state, task, inquiry?, idle_s, time_on_task_s, cost, cache_hit, new_results}]} → {digests: [{to, lines, text}], sent}",
             "set": "set {sender, enabled?, cadence?, stall_after?, quiet?, lead?, on?} → settings (sender must be the parent, maintainer, user, the CLI or the team page); persisted in the agent record and restored at boot",
-            "configure": "configure {board?, parent?} → {parent}; board and parent (kept as cadencer_parent) are persisted in the agent record and restored at boot, and the timer restarts",
-            "boot": "the kernel's lifecycle verb, boot {} → {loaded}: loads the settings and board from the agent record and restarts the timer when enabled with a board or roles",
-            "status": "status {} → {settings, ticks, last_beat_s, next_beat_s, digests_sent, digest_bytes_per_hour, driver_tokens_per_hour, load}; load is the board's counts (workers busy/idle/stalled per group, tasks held/in_review/done/blocked/queued, done_last_hour, tokens_total) and carries no mode",
+            "configure": "configure {parent?} → {parent}; parent (kept as cadencer_parent) is persisted in the agent record and restored at boot, and the timer restarts",
+            "boot": "the kernel's lifecycle verb, boot {} → {loaded}: loads the settings from the agent record and restarts the timer when enabled with roles",
+            "status": "status {} → {settings, ticks, last_beat_s, next_beat_s, digests_sent, digest_bytes_per_hour, driver_tokens_per_hour, load}; load is the roles registry's counts (workers busy/idle/stalled per group, tasks held/in_review/done/blocked/queued, done_last_hour, tokens_total) and carries no mode",
         })
     }
 
@@ -1281,7 +1270,6 @@ mod tests {
     #[test]
     fn record_patch_and_load_roundtrip() {
         let mut a = Inner {
-            board: Some("b".into()),
             parent: Some("lead".into()),
             ..Inner::default()
         };
@@ -1292,7 +1280,6 @@ mod tests {
         let patch = record_patch(&a);
         let mut b = Inner::default();
         assert!(load_from_record(&mut b, &patch));
-        assert_eq!(b.board.as_deref(), Some("b"));
         assert_eq!(b.parent.as_deref(), Some("lead"));
         assert_eq!(patch["cadencer_parent"], "lead");
         assert!(!patch.contains_key("parent"));
@@ -1308,7 +1295,6 @@ mod tests {
         let mut b = Inner::default();
         assert!(!load_from_record(&mut b, &serde_json::Map::new()));
         assert_eq!(b.settings, Settings::default());
-        assert!(b.board.is_none());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1317,7 +1303,7 @@ mod tests {
         let mut meta = serde_json::Map::new();
         meta.insert("enabled".into(), json!(true));
         meta.insert("cadence".into(), json!(5));
-        meta.insert("board".into(), json!("board"));
+        meta.insert("roles".into(), json!("roles"));
         assert!(boot_from_meta(&b, &meta));
         assert!(!status(&b)["next_beat_s"].is_null());
     }
@@ -1725,13 +1711,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn timer_starts_with_roles_and_no_board() {
+    async fn timer_starts_with_roles() {
         let b = shared();
         let mut meta = serde_json::Map::new();
         meta.insert("enabled".into(), json!(true));
         meta.insert("roles".into(), json!("roles"));
         assert!(boot_from_meta(&b, &meta));
-        assert!(b.lock().unwrap().board.is_none());
         assert!(!status(&b)["next_beat_s"].is_null());
         // Switched off at creation: no timer.
         let off = shared();

@@ -37,8 +37,6 @@ import os
 import threading
 from urllib.parse import urlsplit
 
-from . import usage_reports
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 #: One completion's output reserve, not the window: the server enforces `max_tokens + prompt <=
 #: context`, so a cap near the window leaves no room for the prompt (fantastic's THINK_BUDGET).
@@ -99,6 +97,27 @@ def runner_params() -> dict:
 def _price(name: str) -> float | None:
     v = os.environ.get(name)
     return float(v) if v else None
+
+
+def usage_reports(team, handler_module: str):
+    """`(agent id, its `usage` result)` for every agent of `handler_module` the team answers a `usage`
+    for now (the plugs poll with it); nothing when the team is gone or going down."""
+    if team is None or not team.proc or team.proc.poll() is not None:
+        return
+    try:
+        agents = team.agents()
+    except Exception:  # the team is going down
+        return
+    for aid, rec in agents.items():
+        if rec.get("handler_module") != handler_module:
+            continue
+        try:
+            r = team.send(aid, {"type": "usage"})
+        except Exception:
+            continue
+        u = r.get("result") if r.get("status") == "completed" else None
+        if isinstance(u, dict) and "requests" in u:
+            yield aid, u
 
 
 class VllmPlug:

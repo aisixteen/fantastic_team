@@ -5,12 +5,19 @@ cost.json) holds it, nor the app key or the minted token. Outcomes only."""
 import json
 import os
 import re
+import subprocess
 
 from helpers import app, run_flow
 from helpers.verdict import Verdict
 
 WAIT_S = 1200.0
 SKIP_NAMES = {"cost.json"}  # the relay's record: checked on its own below
+
+
+def pushed_branches(bare):
+    r = subprocess.run(["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+                       cwd=bare, capture_output=True, text=True)
+    return [b for b in r.stdout.split() if b != "main"]
 
 
 def run(ctx):

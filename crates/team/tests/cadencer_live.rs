@@ -26,8 +26,7 @@ async fn create_cadencer_and_board(kernel: &Arc<Kernel>) {
             "id": "board",
             "handler_module": "team_board.tools",
             "github": "gh_absent",
-            "store": "store",
-            "team_groups": {"rtx": {"driver": "rtx-driver", "members": ["rtx-w1", "rtx-w2"]}}
+            "store": "store"
         }),
     )
     .await;
@@ -81,16 +80,11 @@ async fn configure_survives_restart() {
     call(
         &kernel,
         "cad",
-        json!({"type": "configure", "board": "board", "parent": "lead"}),
+        json!({"type": "configure", "parent": "lead"}),
     )
     .await;
 
     let kernel = restart(dir.path(), kernel).await;
-    let st = call(&kernel, "cad", json!({"type": "status"})).await;
-    assert!(
-        !st["next_beat_s"].is_null(),
-        "timer not restored at boot: {st}"
-    );
 
     // The record holds the parent under `cadencer_parent`, never `parent`.
     let yaml =

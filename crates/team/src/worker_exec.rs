@@ -151,10 +151,7 @@ mod tests {
             &["sh", "-c", "gh auth token"],
             &["git", "status"],
         ] {
-            assert!(
-                !refused(&rec, a),
-                "the general build refuses nothing: {a:?}"
-            );
+            assert!(!refused(&rec, a), "the worker exec refuses nothing: {a:?}");
         }
     }
 }

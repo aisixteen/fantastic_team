@@ -44,7 +44,15 @@ mod tests {
 
     #[test]
     fn the_flag_is_cut_out_and_the_rest_kept() {
-        let (dir, rest) = split(&v(&["--headless", "--worktrees", "/w/wt", "webui", "--port", "8"])).unwrap();
+        let (dir, rest) = split(&v(&[
+            "--headless",
+            "--worktrees",
+            "/w/wt",
+            "webui",
+            "--port",
+            "8",
+        ]))
+        .unwrap();
         assert_eq!(dir.unwrap().to_str(), Some("/w/wt"));
         assert_eq!(rest, v(&["--headless", "webui", "--port", "8"]));
     }
@@ -58,9 +66,17 @@ mod tests {
 
     #[test]
     fn a_relative_missing_or_doubled_folder_is_refused() {
-        assert!(split(&v(&["--worktrees", "wt"])).unwrap_err().contains("absolute"));
-        assert!(split(&v(&["--worktrees"])).unwrap_err().contains("needs a folder"));
-        assert!(split(&v(&["--worktrees", "--headless"])).unwrap_err().contains("needs a folder"));
-        assert!(split(&v(&["--worktrees", "/a", "--worktrees", "/b"])).unwrap_err().contains("twice"));
+        assert!(split(&v(&["--worktrees", "wt"]))
+            .unwrap_err()
+            .contains("absolute"));
+        assert!(split(&v(&["--worktrees"]))
+            .unwrap_err()
+            .contains("needs a folder"));
+        assert!(split(&v(&["--worktrees", "--headless"]))
+            .unwrap_err()
+            .contains("needs a folder"));
+        assert!(split(&v(&["--worktrees", "/a", "--worktrees", "/b"]))
+            .unwrap_err()
+            .contains("twice"));
     }
 }

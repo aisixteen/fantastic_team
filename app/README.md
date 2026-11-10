@@ -54,8 +54,7 @@ sidebar reloads after each control. Subagents have no buttons.
 - `hand_task {node: worker, task}` sends the worker `task <task>`; an empty task is
   refused.
 - `add_worker {node: group, id, template}` makes the worker (its memory in the store the tier names)
-  from the tier `template` of the roles registry's record (`tiers`) and lists the worker in the group, in the dispatcher's `groups` and in
-  the board's `team_groups`. The new worker gets its chat grant at the next start.
+  from the tier `template` of the roles registry's record (`tiers`) and lists the worker in the group, in the dispatcher's `groups`. The new worker gets its chat grant at the next start.
 - `remove_worker {node: worker}` deletes the worker and its memory store and drops
   it from its group.
 

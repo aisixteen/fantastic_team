@@ -358,4 +358,6 @@ jobs:
           path: bin
       - name: scripted e2e tests
         if: runner.os != 'Windows'
-        run: python3 e2e/run.py --only-free --bin bin/fantastic_team
+        run: |
+          chmod +x bin/fantastic_team
+          python3 e2e/run.py --only-free --bin bin/fantastic_team

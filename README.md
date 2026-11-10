@@ -38,7 +38,7 @@ Where the old `team.yaml` keys went:
 | `first_agent`, `directive_file` | an ordinary AI record; its directive is its `system_prompt_file` (read through its `file_bridge_id`), or a message sent with `send` |
 | `roles` | the role bundles (`.fantastic/bundles/<name>/bundle.yaml`) and the `agentic_resources` record's `limits` |
 | `connectors`, `queue`, `store`, `credentials` | agent records with their own fields (`team_git.tools`, `team_github.tools`, `ram_store.tools`, `sqlite_store.tools`, `credential_store.tools`) |
-| `groups` | the `groups` field of the dispatcher, the `team_groups` field of the board and the `group_settings` field of the cadencer |
+| `groups` | the `groups` field of the dispatcher and the `group_settings` field of the cadencer |
 | `board` | the board's record (`repos`, `github`, `store`) |
 | `cadencer` | the cadencer's record (`enabled`) |
 | `canvases` | no switch: the canvas is fantastic's |
@@ -101,13 +101,11 @@ review:
 
 Every key is optional. A repo with no entry takes the defaults: the label `team-ready`, any path, and one approval from any reviewer.
 
-Two more sets of fields are optional. `groups` (a field of the dispatcher's record) names the worker groups the dispatcher shows, each with its members; the board's `team_groups` field adds each group's AI `driver` (an agent id; absent means the group has no AI), and the cadencer's `group_settings` its timing. The board's `repos` names the repos it caches, through the GitHub connector its `github` field names:
+Two more sets of fields are optional. `groups` (a field of the dispatcher's record) names the worker groups the dispatcher shows, each with its members, and the cadencer's `group_settings` its timing. The board's `repos` names the repos it caches, through the GitHub connector its `github` field names:
 
 ```yaml
 groups:
   build: [worker_1, worker_2]
-team_groups:
-  build: {driver: lead, members: [worker_1, worker_2]}
 repos: [aisixteen/fantastic_team]
 github: git
 ```

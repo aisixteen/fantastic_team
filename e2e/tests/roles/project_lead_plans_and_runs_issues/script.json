@@ -10,10 +10,6 @@
     }
    },
    {
-    "target": "board",
-    "type": "rows"
-   },
-   {
     "target": "roles",
     "type": "get_count"
    }

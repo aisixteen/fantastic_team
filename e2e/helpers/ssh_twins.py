@@ -1132,6 +1132,18 @@ def reconnect_phase(ctx, box: Box, v, backend: str = "w2", slow: str = "w3") -> 
             "(status and part_* before done)", ended and watcher.get("ok") and ok, f"{watcher} {why}")
 
 
+def remote_agents(reply) -> dict:
+    """The remote kernel's records out of a forwarded `list_agents` (the reply may be wrapped)."""
+    r = reply or {}
+    for _ in range(3):
+        if isinstance(r, dict) and isinstance(r.get("agents"), list):
+            # a record, or a bare id (a reply rendered short): either names an agent
+            return {(a.get("id") if isinstance(a, dict) else a): (a if isinstance(a, dict) else {})
+                    for a in r["agents"]}
+        r = r.get("result") if isinstance(r, dict) else None
+    return {}
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["--write"]:
         write_scripts()

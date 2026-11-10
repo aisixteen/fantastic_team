@@ -36,7 +36,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import usage_reports
+from .vllm import usage_reports
 
 DEFAULT_MODEL = "claude-haiku-5-5"  # the one place a model is named
 DEFAULT_UPSTREAM = "https://api.anthropic.com"

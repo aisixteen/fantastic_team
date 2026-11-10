@@ -310,7 +310,7 @@ async fn a_push_from_a_worker_sends_no_credentials() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn gh_version_is_not_refused_in_the_general_build() {
+async fn gh_version_is_not_refused() {
     let planted = plant();
     let _ = planted;
     let team = TempDir::new().unwrap();

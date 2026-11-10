@@ -3,7 +3,6 @@
 > scopes: kernel, roles
 > requires: `cargo build --release --bin fantastic_kernel`
 > out-of-scope: a live model — the roles and the limits are exercised against any bundle
-> a spawn's `backend` names
 
 > Moved from fantastic (team#245) as it was there: the steps use fantastic's one-shot
 > CLI. In team the bundle runs inside `fantastic_team` (registered by `register_team`,

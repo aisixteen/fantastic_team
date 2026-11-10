@@ -787,7 +787,7 @@ fn rows_of(
     ancestors.pop();
 }
 
-/// The `load` object of roles mode (what the board's `rows` gives for its own data):
+/// The `load` object of roles mode:
 /// the agents below the project_lead busy, idle and stalled, and the registry's tasks
 /// by status, with `queued` the waiting ones, so the quiet heartbeat can fire.
 pub fn roles_load(rows: &[Value], tasks: &Value, stall_after_s: u64) -> Value {

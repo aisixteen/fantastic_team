@@ -25,7 +25,7 @@ PAGE_VERBS = ["sidebar", "tree", "open", "control"]
 CHAT = T.CHAT_VERBS
 DISPATCHER_KERNEL_VERBS = ["create_agent", "update_agent", "delete_agent"]
 LEAD_ROLES_VERBS = ["roles", "role", "spawn", "get_count", "fleet"]
-LEAD_BOARD_VERBS = ["board", "rows"]
+LEAD_BOARD_VERBS = ["board"]
 AWAIT_VERBS = ["await_set", "await_cancel"]
 REPO = "acme/widgets"
 LEAD = "lead"
@@ -220,7 +220,7 @@ def make_board(ctx, team, groups: dict, store: str = "queue_files", roles: bool 
            github="github", store=store, team_groups=team_groups,
            can_call={"$self": "*", "github": "*", store: "*"},
            callable_by={"$self": "*", "$parent": "*", "dispatcher": "*",
-                        "cadencer": ["rows"], "mcp": "*"})
+                        "mcp": "*"})
     link(team, "board", "github")
     link(team, "board", store)
     link(team, ctx.lead, "board", LEAD_BOARD_VERBS)
@@ -266,8 +266,6 @@ def make_dispatcher(ctx, team, groups: dict, board: bool = True, roles: bool = F
         c["roles"] = "roles"
     create(team, **c)
     link(team, "dispatcher", "cadencer", ["status"])
-    if board:
-        link(team, "cadencer", "board", ["rows"])
     link(team, "cadencer", lead, ["send"])
     for g in gr.values():
         if g.get("driver"):

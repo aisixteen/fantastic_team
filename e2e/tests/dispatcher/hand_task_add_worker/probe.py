@@ -20,12 +20,6 @@ def tree_ids(team) -> list:
     return [c.get("row", {}).get("id") for c in tree.get("children", [])]
 
 
-def board_members(team) -> list:
-    """The workers the board's rows put under group g."""
-    rows = team.send("board", {"type": "rows"}).get("result", {}).get("rows", [])
-    return [r["id"] for r in rows if r.get("parent") == "g"]
-
-
 def run(ctx):
     v = Verdict("dispatcher/hand_task_add_worker")
     run_flow.boot(ctx, groups={"g": {"driver": "$lead", "members": ["w1"], "enabled": False}}, board=True,
@@ -40,7 +34,6 @@ def run(ctx):
     live = ids_of(team.send("kernel", {"type": "list_agents"}))
     v.check("the worker exists and the team's one store serves it, no memory of its own",
             "w2" in live and "memory" in live and "w2_memory" not in live, str(live))
-    v.check("the board's rows put w2 under g", "w2" in board_members(team), str(board_members(team)))
 
     handed = control(team, node="w2", action="hand_task", task="fix issue 1").get("result", {})
     v.check("hand_task is sent, with no error", handed.get("sent") is True and "error" not in handed,
@@ -60,7 +53,5 @@ def run(ctx):
     v.check("the worker is gone and the team's one store stays",
             "w2" not in live and "w2_memory" not in live and "memory" in live, str(live))
     v.check("the tree no longer lists w2", "w2" not in tree_ids(team), str(tree_ids(team)))
-    v.check("the board's rows no longer have w2", "w2" not in board_members(team)
-            and "w1" in board_members(team), str(board_members(team)))
     team.stop()
     return v.finish()

@@ -1,7 +1,7 @@
 """The cli group's shared steps (issues #219, #221): one fixture, fantastic's own start, agents.
 
 Every test in `tests/cli/` starts the team binary the way fantastic is started
-(`--headless`, or `canvas --port N`) in the run folder, makes its agents with `send` +
+(`--headless`, or `webui --port N`) in the run folder, makes its agents with `send` +
 `create_agent` under fixed ids (no blueprint, no import), hands the lead its task, and checks
 the result and the record set.
 
@@ -480,8 +480,6 @@ def wait_served(ctx, wait_s: float = 120.0, upto: int | None = None) -> bool:
         time.sleep(0.3)
     time.sleep(2.0)  # the last turn's reply is routed after the last request
     return ctx.model.served >= want
-
-
 
 
 def history_rows(team, agent: str) -> list[dict]:
