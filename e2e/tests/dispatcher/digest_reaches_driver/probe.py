@@ -23,7 +23,7 @@ def run(ctx):
     r = team.send("cadencer", {"type": "set", "cadence": 2})
     v.check("the operator sets the cadence to 2s", r.get("status") == "completed"
             and r["result"].get("cadence") == 2, str(r))
-    body = run_flow.wait_model_body(ctx, f"{workers[0]}: idle" if workers else "idle", 30)
+    body = run_flow.wait_model_body(ctx, f"{workers[0]}: idle" if workers else "idle", 30, notices=True)
     v.check("the lead's model got a request holding the digest", body is not None)
     body = body or ""
     v.check("the digest names both spawned workers as idle", all(f"{w}: idle" in body for w in workers))

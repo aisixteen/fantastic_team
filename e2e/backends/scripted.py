@@ -202,6 +202,7 @@ class ScriptedModel:
         self.keys: list[str | None] = []  # x-api-key of each POST /v1/messages
         self.served = 0
         self.notice_turns = 0  # team notices answered outside the script
+        self.notice_bodies: list[str] = []  # the bodies of those notices, in order
         self.rebuild_turns = 0  # the kernel's context rebuilds, answered outside the script
         self.check_in_turns = 0  # requests whose conversation holds a scheduler's check-in
         self.check_in_lanes: set[str] = set()  # the lanes those requests came from
@@ -362,6 +363,7 @@ class ScriptedModel:
         if self.notice_only(raw):
             with self.lock:
                 self.notice_turns += 1
+                self.notice_bodies.append(raw)
             return '<call name="await"></call>', None
         if self.rebuild(raw):
             with self.lock:

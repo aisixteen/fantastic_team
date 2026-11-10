@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import time
 
-from . import forge as forge_mod, run_flow, team as T
+from . import cli, forge as forge_mod, run_flow, team as T
 from .records import ROOT, create as _create, link, merge, update
 
 PAGE_VERBS = ["sidebar", "tree", "open", "control"]
@@ -200,14 +200,13 @@ def make_roles(ctx, team, tiers: dict, limits: dict | None = None) -> None:
 
 def spawn_project_lead(ctx, team) -> dict:
     """The registry's spawned tree is rooted at the `project_lead` (what the cadencer digests, in roles
-    mode): the operator spawns one on the scripted backend and names it on the credential store so
-    its model key can be read. A spawner grants only what it holds, so the operator holds what the
-    card grants first. Returns the spawn's result (`id`, ...)."""
+    mode): the team gets its provider (the scripted model, under the lead) and the operator spawns
+    one naming it. A spawner grants only what it holds, so the operator holds what the card grants
+    first. Returns the spawn's result (`id`, ...)."""
     operator_holds(team, {"github": "*", "roles": "*", "kernel_state": "*", "canvas_page": ["new_canvas"]})
-    made = team.send("roles", {"type": "spawn", "role": "project_lead", "backend": lead_tier(ctx)})["result"]
-    if made.get("id"):
-        merge(team, "credentials", "callable_by", {made["id"]: "*"})
-    return made
+    cli.add_provider(ctx, ctx.lead)
+    return team.send("roles", {"type": "spawn", "role": "project_lead", "provider": cli.PROVIDER,
+                               "model": ctx.vars["model_name"]})["result"]
 
 
 def lead_tier(ctx, **extra) -> dict:

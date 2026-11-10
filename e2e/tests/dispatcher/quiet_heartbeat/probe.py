@@ -25,17 +25,17 @@ def run(ctx):
     v.check("one task waits in the task registry", added.get("status") == "completed"
             and added["result"].get("status") == "waiting", str(added))
     v.check("no heartbeat was sent before the cadence was set",
-            not any("heartbeat:" in b for b in ctx.model.raw_bodies))
+            not any("heartbeat:" in b for b in ctx.model.raw_bodies + ctx.model.notice_bodies))
 
     r = team.send("cadencer", {"type": "set", "cadence": 1})
     v.check("the operator sets the cadence to 1s", r.get("status") == "completed", str(r))
-    first = run_flow.wait_model_body(ctx, f"{workers[0]}: idle" if workers else "idle", 30)
+    first = run_flow.wait_model_body(ctx, f"{workers[0]}: idle" if workers else "idle", 30, notices=True)
     v.check("the first beat sent a regular digest (both workers idle)",
             first is not None and all(f"{w}: idle" in first for w in workers))
     v.check("the regular digest is not a heartbeat",
-            not any("heartbeat:" in b for b in ctx.model.raw_bodies))
+            not any("heartbeat:" in b for b in ctx.model.raw_bodies + ctx.model.notice_bodies))
 
-    beat = run_flow.wait_model_body(ctx, HEARTBEAT, 30)
+    beat = run_flow.wait_model_body(ctx, HEARTBEAT, 30, notices=True)
     v.check("a heartbeat with the idle and queued counts reached the lead", beat is not None)
     st = team.send("cadencer", {"type": "status"}).get("result", {})
     v.check("it came only after three quiet beats: four ticks at least",
