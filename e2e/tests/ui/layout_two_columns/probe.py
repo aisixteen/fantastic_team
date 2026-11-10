@@ -25,7 +25,7 @@ def run(ctx):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        v.check("Playwright is installed (python3 -m pip install --user playwright==1.47.0 && "
+        v.check("Playwright is installed (python3 -m pip install --user playwright==1.55.0 && "
                 "python3 -m playwright install --with-deps chromium)", False, "import playwright failed")
         return v.finish()
 
