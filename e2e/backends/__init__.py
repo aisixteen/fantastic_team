@@ -16,6 +16,8 @@ Three plugs exist:
               hand, skipped without VLLM_ENDPOINT, FANTASTIC_AI_MODEL, VLLM_KV_SLOTS, VLLM_KV_OVERFLOW.
 """
 
+import json
+
 from . import anthropic, scripted, vllm
 
 
@@ -47,6 +49,18 @@ def available(name: str) -> bool:
     return why_not(name) is None
 
 
+SHAPES = {"anthropic_backend.tools": "anthropic", "vllm_backend.tools": "vllm"}
+
+
 def provides_vars(plug) -> dict:
-    """The variables a plug gives a test (`ctx.vars`)."""
-    return {"model_name": plug.model_name}
+    """The variables a plug gives a test (`ctx.vars`): its model name, the shape of its provider
+    (`anthropic`, `vllm`, `vllm_keyed`: the name of a fleet layer) and the provider's fields as text
+    ready for a record file (JSON; `null` when the plug has none), all read from `ai_record()`."""
+    rec = plug.ai_record()
+    shape = SHAPES[rec["handler_module"]]
+    if shape == "vllm" and plug.keyed:
+        shape = "vllm_keyed"
+    out = {"model_name": plug.model_name, "provider_shape": shape, "kv_overflow": rec.get("kv_overflow", "")}
+    for field in ("caching", "max_tokens", "kv_slots", "no_repeat_ngram_size", "repetition_penalty"):
+        out[field] = json.dumps(rec.get(field))
+    return out

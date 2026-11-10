@@ -3,7 +3,9 @@
 The binary is fantastic's command line, run in the run folder (fantastic has no `--dir`:
 it works in the directory it is started in): `--headless` by default, `webui --port N`
 for the web. Everything it is told goes through `fantastic_team send '<item>'` (attach-only, over
-`.fantastic/cli/mcp.sock`): `create_agent` and `update_agent` on the root. `helpers/stock.py` builds the stock team with them.
+`.fantastic/cli/mcp.sock`): `create_agent` and `update_agent` on the root. A test's agents are record files
+under `e2e/fleets/` (named by `fleet:` in its `test.yaml`), laid into `<run>/.fantastic/` before the first
+start (`lay_fleet`); `helpers/stock.py` builds the stock team with `send` + `create_agent`.
 """
 
 from __future__ import annotations
@@ -40,6 +42,37 @@ def http_get(port: int, path: str, timeout: float = 10.0) -> tuple[int, str]:
 
 def fill_text(text: str, variables: dict) -> str:
     return re.sub(r"\{\{(\w+)\}\}", lambda m: str(variables[m.group(1)]), text)
+
+
+def fleet_files(layers, variables: dict, own: str | None = None):
+    """`(path relative to .fantastic/, text with its `{{marks}}` filled)` for every file of the layer
+    folders, in order, the `own` folder last; a later layer's file of the same path replaces the
+    earlier one whole. Copy and fill only: no record is read. A missing folder raises."""
+    files: dict[str, str] = {}
+    for folder in [*layers, *([own] if own else [])]:
+        if not os.path.isdir(folder):
+            raise FileNotFoundError(f"fleet layer folder {folder} does not exist")
+        for dirpath, dirs, names in os.walk(folder):
+            dirs.sort()
+            for name in sorted(names):
+                path = os.path.join(dirpath, name)
+                with open(path) as f:
+                    files[os.path.relpath(path, folder)] = fill_text(f.read(), variables)
+    yield from files.items()
+
+
+def lay_fleet(dest: str, layers, variables: dict, own: str | None = None) -> list[str]:
+    """Write the fleet's files under `<dest>/.fantastic/`, before the first start, and return the ids
+    (the names of the folders that hold an `agent.yaml`, the root's own file excluded)."""
+    ids = []
+    for rel, text in fleet_files(layers, variables, own):
+        path = os.path.join(dest, ".fantastic", rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        if os.path.basename(rel) == "agent.yaml" and os.path.dirname(rel):
+            ids.append(os.path.basename(os.path.dirname(rel)))
+    return ids
 
 
 class Team:

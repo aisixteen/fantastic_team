@@ -1,9 +1,11 @@
 """The cli group's shared steps (issues #219, #221): one fixture, fantastic's own start, agents.
 
 Every test in `tests/cli/` starts the team binary the way fantastic is started
-(`--headless`, or `webui --port N`) in the run folder, makes its agents with `send` +
-`create_agent` under fixed ids (no blueprint, no import), hands the lead its task, and checks
-the result and the record set.
+(`--headless`, or `webui --port N`) in the run folder, on a fleet laid as record files, hands the
+lead its task, and checks the result and the record set. The fleet is `e2e/fleets/<layer>/` folders
+(files relative to `.fantastic/`) named by the `fleet:` key of the test's `test.yaml`, with `{{marks}}`
+filled and copied into `<run>/.fantastic/` before the first start (`start`): the kernel loads the
+records at boot, the seed does not run, and no `create_agent` sets the test up.
 
 THE FIXTURE is a local git repo with one failing test: `test_calc.py` checks `adder.add`
 and `muler.mul`, and both are wrong. SOLVED means the test passes AND the fix is committed
@@ -131,12 +133,37 @@ def create(team, payload: dict) -> dict:
     return records.create(team, payload)
 
 
+FLEETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fleets")
+
+
+def lay_bundles(ctx, srcs) -> list[str]:
+    """Copy the role bundles (folders of `<role>/bundle.yaml`) into the team's `.fantastic/bundles/`;
+    the kernel reads them at boot. Without check-ins (`check_ins_on`) a sub-lead bundle's check-ins
+    paragraph goes. Returns the bundle names."""
+    dst = os.path.join(ctx.work, ".fantastic", "bundles")
+    names = []
+    for src in srcs:
+        for name in sorted(os.listdir(src)):
+            shutil.copytree(os.path.join(src, name), os.path.join(dst, name), dirs_exist_ok=True)
+            if not check_ins_on(ctx):  # a sub-lead bundle carries the check-ins paragraph: off, it goes
+                y = os.path.join(dst, name, "bundle.yaml")
+                with open(y) as f:
+                    text = f.read()
+                with open(y, "w") as f:
+                    f.write(text.replace("\n\n    " + CHECK_INS, ""))
+            names.append(name)
+    return names
+
+
 def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | None = None,
-          env: dict | None = None):
+          env: dict | None = None, bundles: str | list[str] | None = None):
     """Start the team binary as fantastic's CLI, in the run folder (or its `sub` folder, for a
-    test that runs twice). `roles` turns on the `agentic_resources` bundle
-    (`FANTASTIC_AGENTIC_RESOURCES=1`). `env`: more variables for the kernel (a credential store's
-    `env` backend reads its values from them). Returns the Team; `ctx.repo` is the fixture."""
+    test that runs twice), on the fleet its `test.yaml` names (`fleet:`): the layers' record files
+    are laid in `.fantastic/` before the first start, and every agent laid must be loaded after it.
+    `roles` turns on the `agentic_resources` bundle (`FANTASTIC_AGENTIC_RESOURCES=1`); `bundles`: the
+    role bundle folders (or one) the scenario's roles registry offers, copied to `.fantastic/bundles/`.
+    `env`: more variables for the kernel (a credential store's `env` backend reads its values from
+    them). Returns the Team; `ctx.repo` is the fixture."""
     keys = run_flow.fake_keys(ctx)
     ctx.secrets = keys
     env = {"E2E_MODEL_KEY": keys["model_key"], **(env or {})}
@@ -149,11 +176,35 @@ def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | Non
     env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(os.path.abspath(ctx.work))
     ctx.repo = make_fixture(ctx.work)
     os.makedirs(os.path.join(ctx.work, "sandbox"), exist_ok=True)
+    if bundles:
+        lay_bundles(ctx, [bundles] if isinstance(bundles, str) else bundles)
+    laid = lay_test_fleet(ctx, "fleet")
     ctx.team = team_mod.Team(ctx.binary, ctx.work, env)
+    default = ctx.model.ai_record().get("model")
+    if PROVIDER in laid and default:  # a RAM store starts empty: every start plants the default again
+        ctx.team.on_start = [*getattr(ctx.team, "on_start", []), lambda t: plant_provider_default(t, default)]
     ctx.team.start(extra_args=extra_args)
+    missing = [i for i in laid if i not in ctx.team.agents()]
+    if missing:
+        raise RuntimeError(f"the kernel did not load these laid records: {missing}")
     if hasattr(ctx.model, "watch"):  # the vllm and anthropic plugs count the agents' usage through the team
         ctx.model.watch(ctx.team)
     return ctx.team
+
+
+def lay_test_fleet(ctx, key: str = "fleet") -> list[str]:
+    """Lay the fleet the test's `key` names into `ctx.work`'s `.fantastic/`: the layers of
+    `e2e/fleets/` (a `{{provider_shape}}` in a name filled), then the test's own folder `<key>/`
+    when it has one; the marks are `ctx.vars` and `work`, `check_ins` (the check-ins paragraph as a
+    quoted string on a model test, empty otherwise). Returns the ids laid; none when the test has no `key`."""
+    names = team_mod.fill_text(ctx.test.get(key, ""), ctx.vars).split()
+    if not names:
+        return []
+    variables = {**ctx.vars, "work": ctx.work,
+                 "check_ins": json.dumps(CHECK_INS) if check_ins_on(ctx) else '""'}
+    own = os.path.join(ctx.dir, key)
+    return team_mod.lay_fleet(ctx.work, [os.path.join(FLEETS, n) for n in names], variables,
+                              own if os.path.isdir(own) else None)
 
 
 def add_base(ctx) -> None:
@@ -438,18 +489,9 @@ def make_registry(ctx, total: int, parent: str = LEAD, roles: str | list[str] | 
     the model the spawn names. The lead may call the registry."""
     team = ctx.team
     srcs = [roles or os.path.join(ctx.dir, "bundles")] if not isinstance(roles, list) else roles
-    dst = os.path.join(ctx.work, ".fantastic", "bundles")
-    for src in srcs:
-        for name in sorted(os.listdir(src)):
-            shutil.copytree(os.path.join(src, name), os.path.join(dst, name), dirs_exist_ok=True)
-            if not check_ins_on(ctx):  # a sub-lead bundle carries the check-ins paragraph: off, it goes
-                y = os.path.join(dst, name, "bundle.yaml")
-                with open(y) as f:
-                    text = f.read()
-                with open(y, "w") as f:
-                    f.write(text.replace("\n\n    " + CHECK_INS, ""))
-            loaded = team.send("kernel", {"type": "reload_bundle", "name": name})
-            assert (loaded.get("result") or {}).get("reloaded") == name, f"bundle {name}: {loaded}"
+    for name in lay_bundles(ctx, srcs):
+        loaded = team.send("kernel", {"type": "reload_bundle", "name": name})
+        assert (loaded.get("result") or {}).get("reloaded") == name, f"bundle {name}: {loaded}"
     records.create(team, {"id": "roles", "parent_id": parent, "handler_module": "agentic_resources.tools",
                           "limits": {"total": total},
                           "can_call": {"$self": "*"}, "callable_by": {"$self": "*", "$parent": "*"}})

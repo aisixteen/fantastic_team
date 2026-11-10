@@ -1,3 +1,4 @@
 costs: gpu
 timeout: 1800
 plug: vllm
+fleet: stock cli_base lead_spawn roles_2 provider_{{provider_shape}} cadencer

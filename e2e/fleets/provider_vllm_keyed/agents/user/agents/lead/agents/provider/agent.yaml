@@ -1,0 +1,20 @@
+id: provider
+handler_module: vllm_backend.tools
+endpoint: "{{model_endpoint}}"
+max_tokens: {{max_tokens}}
+kv_slots: {{kv_slots}}
+kv_overflow: "{{kv_overflow}}"
+no_repeat_ngram_size: {{no_repeat_ngram_size}}
+repetition_penalty: {{repetition_penalty}}
+models: {{models}}
+memory_store_id: provider_store
+credentials:
+  store: credentials
+  ref: "model/{{model_host}}"
+can_call:
+  "$self": "*"
+  provider_store: "*"
+  credentials: [get]
+callable_by:
+  "$self": "*"
+  "$parent": [complete, watch, models, set_default_model]

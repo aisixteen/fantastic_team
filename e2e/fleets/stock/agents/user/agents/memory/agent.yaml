@@ -1,0 +1,6 @@
+id: memory
+handler_module: sqlite_store.tools
+path: "@state/memory.db"
+admins: [kernel]
+callable_by:
+  user: "*"
