@@ -20,7 +20,7 @@ impl Bundle for CallerBundle {
         &self,
         agent_id: &AgentId,
         payload: &Value,
-        kernel: &Arc<Kernel>,
+        _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         match verb {
@@ -28,17 +28,6 @@ impl Bundle for CallerBundle {
             "reflect" => Ok(Some(
                 json!({"id": agent_id.as_str(), "sentence": "a caller"}),
             )),
-            "call" => {
-                let target = payload["target"].as_str().unwrap_or("");
-                let out = kernel
-                    .send(vec![Item::new(
-                        AgentId::from(target),
-                        payload["payload"].clone(),
-                    )])
-                    .await
-                    .remove(0);
-                Ok(Some(out.result))
-            }
             other => Ok(Some(json!({"ok": true, "verb": other}))),
         }
     }
@@ -198,12 +187,7 @@ impl Rig {
     }
 
     async fn call_on(&self, who: &str, target: &str, payload: Value) -> Value {
-        send(
-            &self.kernel,
-            who,
-            json!({"type": "call", "target": target, "payload": payload}),
-        )
-        .await
+        fantastic_kernel::test_support::as_agent(who, send(&self.kernel, target, payload)).await
     }
 
     async fn dump_rows(&self) -> Vec<Value> {

@@ -24,7 +24,7 @@ impl Bundle for CallerBundle {
         &self,
         agent_id: &AgentId,
         payload: &Value,
-        kernel: &Arc<Kernel>,
+        _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         match verb {
@@ -32,17 +32,6 @@ impl Bundle for CallerBundle {
             "reflect" => Ok(Some(
                 json!({"id": agent_id.as_str(), "sentence": "a caller"}),
             )),
-            "call" => {
-                let target = payload["target"].as_str().unwrap_or("");
-                let out = kernel
-                    .send(vec![Item::new(
-                        AgentId::from(target),
-                        payload["payload"].clone(),
-                    )])
-                    .await
-                    .remove(0);
-                Ok(Some(out.result))
-            }
             "send" => {
                 let text = payload["text"].as_str().unwrap_or("").to_string();
                 SENT.lock()
@@ -62,8 +51,7 @@ impl Bundle for CallerBundle {
 
 /// Stands for ai_core without the dependency: `fork {at}` makes a SIBLING with the
 /// source's record minus `callable_by`/`delete_lock`, as ai_core's fork does. `at` 99
-/// is refused `cuts_turn`, 98 `no_such_row`. `call` makes a call as itself, like
-/// [`CallerBundle`].
+/// is refused `cuts_turn`, 98 `no_such_row`.
 struct ForkBundle;
 
 #[async_trait]
@@ -84,9 +72,6 @@ impl Bundle for ForkBundle {
                 .unwrap()
                 .push((agent_id.as_str().to_string(), text));
             return Ok(Some(json!({"ok": true, "verb": "send"})));
-        }
-        if verb == "call" {
-            return CallerBundle.handle(agent_id, payload, kernel).await;
         }
         if verb != "fork" {
             return Ok(None);
@@ -298,12 +283,7 @@ impl Rig {
     }
     /// `who` calls the registry (or any `target`) as itself.
     async fn call(&self, who: &str, target: &str, payload: Value) -> Value {
-        send(
-            &self.kernel,
-            who,
-            json!({"type": "call", "target": target, "payload": payload}),
-        )
-        .await
+        fantastic_kernel::test_support::as_agent(who, send(&self.kernel, target, payload)).await
     }
     async fn spawn_as(&self, who: &str, payload: Value) -> Value {
         let mut p = payload;
