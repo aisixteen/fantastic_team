@@ -148,8 +148,7 @@ stores an identity, team id, certificate, thumbprint or password.
 - Linux: packages are unsigned by default; the maintainer adds a detached
   signature when publishing.
 
-Never commit these values. The repository secret check (`scripts/check-secrets.sh`)
-and `crates/team/tests/app_packaging.rs` guard against committed signing data.
+Never commit these values. `crates/team/tests/app_packaging.rs` guards against committed signing data.
 
 ## Remaining
 

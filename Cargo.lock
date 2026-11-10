@@ -1459,7 +1459,6 @@ dependencies = [
  "fantastic-ram-store",
  "fantastic-scheduler",
  "fantastic-sqlite-store",
- "fantastic-team-secrets-guard",
  "fantastic-tui",
  "fantastic-user",
  "fantastic-user-home-store",
@@ -1491,18 +1490,6 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "fantastic-team-secrets-guard"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "fantastic-kernel",
- "serde_json",
  "tempfile",
  "tokio",
 ]

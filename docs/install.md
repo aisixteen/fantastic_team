@@ -115,7 +115,6 @@ Run it on a remote box with the scripts (each prints its usage with `--help`; al
 | `no ## SPEC comment by the maintainer or the app` | Add the `## SPEC` comment yourself, or let the app author it; comments by others are ignored. |
 | Issue is not picked up | The latest `team-ready` label event must be by the maintainer. Re-add the label as the maintainer. |
 | `gh --version` fails in the worker | Install `gh` and put it on PATH. |
-| Secrets check fails on commit | `scripts/check-secrets.sh .` found a key or token. Remove it and store it in the credential store. |
 | Remote start leaves no keys | Name the variables in `--keys` on `remote-add.sh`; `remote-start.sh` reads them on your laptop. |
 
 ## Tested on

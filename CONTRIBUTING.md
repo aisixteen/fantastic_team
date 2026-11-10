@@ -25,7 +25,6 @@ It is **AGPL-3.0-or-later**.
 cargo build --workspace
 cargo test --workspace
 cargo fmt --check && cargo clippy --workspace --all-targets
-sh scripts/check-secrets.sh .
 ```
 
 fantastic is a dependency: semver releases by default, a git branch or a local checkout as

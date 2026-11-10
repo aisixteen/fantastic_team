@@ -6,7 +6,7 @@ You are reading the text of the `fantastic_team` binary, the team's start-up. Us
 
 - Build: `cargo build --workspace`. The binary is `fantastic_team`.
 - Check: `fantastic_team ai-readme` prints this file. `fantastic_team readme` prints fantastic's readme (the command line is fantastic's).
-- Tests: `cargo test --workspace`. Secrets check: `scripts/check-secrets.sh .`
+- Tests: `cargo test --workspace`.
 - e2e: `python3 e2e/run.py --only-free` runs the binary on a scripted model and a fake forge (no network, no key). See `e2e/README.md`.
 
 ## 2. Start the team
@@ -60,7 +60,7 @@ Work comes from GitHub issues. A maintainer adds the label `team-ready` to an is
 
 ## 6. Rules
 
-- Never put a key, token or password in a file, an argument, a commit or a log. Keys come from the credential store. Run `scripts/check-secrets.sh .` before you commit.
+- Never put a key, token or password in a file, an argument, a commit or a log. Keys come from the credential store.
 - Never push to the default branch (`main`), and never force-push. Workers push work branches through the git connector only.
 - Merging is the maintainer's decision.
 - Ask before stopping a running team. `remote-stop.sh` asks unless `--yes` is given.

@@ -188,7 +188,7 @@ scripts/remote-stop.sh gpu       # asks first; drains (SIGTERM); --now kills
 
 ## Security model
 
-- Secrets live only in fantastic's credential store (your OS keychain, or an env / file backend in a container). An agent reads a secret when it uses it and never returns, logs or stores it. Tests check that no secret appears in any reply, error, event, store row, record or log file (`crates/secrets_guard`). `scripts/check-secrets.sh` fails when a tracked or new file holds a private key or a GitHub or Anthropic token; run it before you commit.
+- Secrets live only in fantastic's credential store (your OS keychain, or an env / file backend in a container). An agent reads a secret when it uses it and never returns, logs or stores it. The `git` and `github` agents have tests that check no secret appears in any reply, error, event, store row, record or log file (`tests_secrets.rs` in each crate).
 - Workers run commands through an exec agent the team configures (`crates/team/src/worker_exec.rs`): HOME is a sandbox folder in the team (no forge login, no git credential helper, no SSH keys), the environment is a fixed list of names (no token, no key, no SSH agent), and forge CLIs (`gh`, `glab`, `hub`, `git push`) are refused before they start. That refusal is an early, clear error, not a wall. It is not an OS sandbox: a worker runs as your user, so run the team as a separate user or in a container to keep it away from files your user can read (`~/.ssh`, the login keychain).
 - Workers hold no credentials. Delivering (pushing a branch, opening a pull request, posting a comment) goes through a connector that owns the credentials and the rules.
 - Delivery agents enforce the rules themselves: no pushes to the default branch, no force-pushes, pull requests as drafts, an allowlist of repositories.
@@ -252,7 +252,7 @@ A worker or the whole team is exported and imported with fantastic's own bluepri
 
 ## Tests and CI
 
-Unit tests: `cargo test --workspace`. Also `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, `sh scripts/check-secrets.sh .`, and the shell tests `sh tests/new_task.sh`, `sh tests/remote_scripts.sh`, `sh tests/build_github.sh`, `sh tests/repro_scripts.sh`. CI also runs `sh scripts/build-github.sh --check` (the GitHub patch applies) and `sh scripts/build-github.sh --test` (the GitHub build's tests). None of them needs a network or a key.
+Unit tests: `cargo test --workspace`. Also `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, and the shell tests `sh tests/new_task.sh`, `sh tests/remote_scripts.sh`, `sh tests/build_github.sh`, `sh tests/repro_scripts.sh`. CI also runs `sh scripts/build-github.sh --check` (the GitHub patch applies) and `sh scripts/build-github.sh --test` (the GitHub build's tests). None of them needs a network or a key.
 
 End to end (e2e/README.md) has three tiers:
 

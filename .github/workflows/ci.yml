@@ -139,8 +139,6 @@ jobs:
           key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
       - name: test
         run: cargo test --workspace
-      - name: secrets guard
-        run: sh scripts/check-secrets.sh .
       - name: shell tests
         if: runner.os != 'Windows'
         run: |

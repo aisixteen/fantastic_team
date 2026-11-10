@@ -83,5 +83,4 @@ Trust boundaries:
 ## Checks
 
 - Citations come from grep on the reviewed commit; `verbs.rs:770-836` was read directly. Five spot checks were taken from the grep output and cross-checked against the surrounding code reads above.
-- `scripts/check-secrets.sh .`: run by the cycle step 3.
 - `git diff --stat origin/main`: expected to show only `docs/security-review.md`.

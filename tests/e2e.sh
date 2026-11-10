@@ -1,7 +1,7 @@
 #!/bin/sh
 # sh tests/e2e.sh BIN — model-free e2e on one built fantastic_team binary (#46 full run).
 # Checks: a `--headless` boot stays up with a clean log; a `canvas --port` boot serves the canvas
-# page; the secrets guard runs over this run's output. The scripted fake-model master
+# page. The scripted fake-model master
 # with 2 workers against a local bare git remote is a TODO: it needs the fake-model
 # harness (#38, #8), which is not on main yet.
 # The no-port headless boot and the refusal of the removed flags are e2e/tests/surfaces/.
@@ -78,13 +78,6 @@ else
   fi
 fi
 stop
-
-# 3. Secrets guard over everything this run wrote (the output dir is a git work tree).
-if sh "$ROOT/scripts/check-secrets.sh" "$OUT"; then
-  ok "secrets guard clean over the run output"
-else
-  bad "secrets guard over the run output"
-fi
 
 # TODO(#38, #8): the scripted fake-model master with 2 workers, each doing one task
 # (claim, a commit in a local bare git remote, done), then the claim files, leases

@@ -30,7 +30,7 @@ The inventory is `gh issue list --state closed` on aisixteen/fantastic_team (59 
 | issue | behaviour | unit tests | e2e | status |
 | --- | --- | --- | --- | --- |
 | #2 | README is a guide a third party can follow | `crates/team/tests/readme_guide.rs::readme_has_the_guide_sections_in_order`, `crates/team/tests/readme_guide.rs::every_script_the_readme_names_exists`, `crates/team/tests/readme_guide.rs::readme_examples_hold_no_secret_values` | n/a (docs or design) | covered |
-| #3 | No secret ever leaves an agent (secrets guard) | `crates/secrets_guard/tests/guard.rs::a_secret_in_a_reply_is_caught`, `crates/secrets_guard/tests/guard.rs::a_base64_secret_in_a_reply_is_caught`, `crates/secrets_guard/tests/guard.rs::a_clean_agent_passes`, `crates/secrets_guard/tests/check_secrets_script.rs::every_planted_secret_is_caught` | `e2e/tests/secrets/worker_never_sees_tokens` | covered |
+| #3 | No secret ever leaves an agent (the connectors' own secret tests) | `crates/github_connector/src/tests_secrets.rs::the_key_the_jwt_and_the_token_never_leave_the_agent`, `crates/github_connector/src/tests_secrets.rs::a_personal_token_never_leaves_the_agent`, `crates/git_connector/src/tests_secrets.rs::the_https_token_never_leaves_the_agent` | `e2e/tests/secrets/worker_never_sees_tokens` | covered |
 | #4 | Headless fantastic host plus this repo's bundles | `crates/team/src/lib.rs::a_headless_host_boots_and_answers_reflect`, `crates/team/tests/cli_is_fantastics.rs::headless_starts_no_canvas_and_an_agent_can_create_one` | `e2e/tests/surfaces/headless_binds_no_port` | covered |
 | #5 | git connector: worktrees, branches, commits, push; credentials by ref | `crates/git_connector/src/tests.rs::worktree_add_makes_a_branch_from_base`, `crates/git_connector/src/tests.rs::push_never_forces`, `crates/git_connector/src/tests_secrets.rs::the_https_token_never_leaves_the_agent` | `e2e/tests/task/one_issue_to_draft_pr` | covered |
 | #6 | github connector is an agent record; token minted per call | `crates/github_connector/src/tests.rs::a_token_is_minted_per_call_for_the_repo`, `crates/github_connector/src/tests.rs::pr_create_is_a_draft_on_the_default_branch`, `crates/github_connector/src/tests.rs::repos_off_the_allowlist_are_refused_before_any_request` | `e2e/tests/task/github_pr_through_connector` | covered |
@@ -118,7 +118,6 @@ The issues the coverage check reopened (see #147), and the rows above that are `
 | team_app | not measured yet (cargo llvm-cov not available) | not measured yet |
 | git_connector | not measured yet (cargo llvm-cov not available) | not measured yet |
 | github_connector | not measured yet (cargo llvm-cov not available) | not measured yet |
-| secrets_guard | not measured yet (cargo llvm-cov not available) | not measured yet |
 | shell scripts (`tests/*.sh`) | not measured yet | not measured yet |
 
 The CI gate that fails when a crate's coverage drops below the recorded number is not built yet.

@@ -14,7 +14,6 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-fantastic-team-secrets-guard = { path = "../secrets_guard" }
 fantastic-tui.workspace = true
 fantastic-kernel.workspace = true
 fantastic-bundle.workspace = true

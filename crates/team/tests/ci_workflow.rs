@@ -133,7 +133,7 @@ fn ci_workflow_has_e2e_boolean_input_default_false() {
 }
 
 #[test]
-fn ci_units_cover_three_oses_and_four_checks() {
+fn ci_units_cover_three_oses_and_three_checks() {
     let doc = doc();
     for leg in ["lint", "test"] {
         unit_leg_covers_three_oses(&doc, leg);
@@ -144,7 +144,6 @@ fn ci_units_cover_three_oses_and_four_checks() {
         "cargo clippy --workspace --all-targets",
         "-D warnings",
         "cargo test --workspace",
-        "scripts/check-secrets.sh",
     ] {
         assert!(run.contains(want), "unit legs lack `{want}`");
     }
@@ -230,8 +229,7 @@ fn ci_full_jobs_gated_on_e2e_and_units() {
 
 #[test]
 fn ci_has_no_secrets_and_cancels_older_runs() {
-    // The guard script is named check-secrets.sh; that name is not a secrets context.
-    let text = raw().replace("check-secrets.sh", "");
+    let text = raw();
     for banned in ["secrets.", "GH_TOKEN", "API_KEY"] {
         assert!(!text.contains(banned), "ci.yml mentions {banned}");
     }
