@@ -2,6 +2,8 @@
 //! its sections are in order, the scripts it names exist, the record fields in
 //! its examples are read by the code, and its examples hold no secret values.
 
+mod common;
+
 use std::fs;
 use std::path::PathBuf;
 
@@ -68,10 +70,8 @@ fn record_block(text: &str, first_key: &str) -> serde_json::Value {
     serde_yaml::from_str(&block).unwrap_or_else(|e| panic!("`{first_key}` block is YAML: {e}"))
 }
 
-// A2: boots through boot_kernel; switch on again
-#[cfg(any())]
-#[test]
-fn every_record_field_the_readme_names_is_read_by_the_code() {
+#[tokio::test(flavor = "multi_thread")]
+async fn every_record_field_the_readme_names_is_read_by_the_code() {
     let text = readme();
     // the dispatcher's `groups`, `repos` and `github`
     let code = rust_sources(&root().join("crates/team/src"));
@@ -91,10 +91,9 @@ fn every_record_field_the_readme_names_is_read_by_the_code() {
     record.insert("id".into(), "roles".into());
     record.insert("parent_id".into(), "kernel".into());
     record.insert("handler_module".into(), "agentic_resources.tools".into());
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
+    {
         use fantastic_kernel::Item;
-        let kernel = fantastic_team::start(dir.path()).await.unwrap();
+        let kernel = common::boot::boot_at(dir.path(), common::boot::Seed::Stock, &[], None).await;
         let made = kernel
             .send(vec![Item::new("kernel", serde_json::Value::Object(record))])
             .await;
@@ -120,9 +119,8 @@ fn every_record_field_the_readme_names_is_read_by_the_code() {
             "the README's total limit is not read: {}",
             count[0].result
         );
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
-    });
+        kernel.stop().await;
+    }
 }
 
 #[test]
@@ -229,17 +227,7 @@ fn rust_sources(dir: &std::path::Path) -> String {
 #[test]
 fn readme_names_every_cli_subcommand_and_flag() {
     let text = readme();
-    let source = fs::read_to_string(root().join("crates/team/src/main.rs")).unwrap();
-    // the team's own first words are in the binary and in the README
-    assert!(
-        text.contains("ai-readme"),
-        "README must document `ai-readme` (it is in the binary)"
-    );
-    assert!(
-        source.contains("ai-readme"),
-        "`ai-readme` is not in the code"
-    );
-    // everything else is fantastic's command line, which the README says it is
+    // the command line is fantastic's, which the README says it is
     assert!(
         text.contains("The command line is fantastic's, unchanged"),
         "README must say the CLI is fantastic's"

@@ -2,6 +2,8 @@
 //! other test in the process was handed.
 #![allow(dead_code)]
 
+pub mod boot;
+
 use std::collections::BTreeSet;
 use std::net::TcpListener;
 use std::sync::{Mutex, MutexGuard};

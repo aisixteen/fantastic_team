@@ -218,10 +218,10 @@ pub fn start(kernel: &Arc<Kernel>) -> JoinHandle<()> {
     })
 }
 
-// A2: boots through boot_kernel; switch on again
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_boot::{boot_at, Booted, Seed};
     use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
 
     #[test]
@@ -298,9 +298,9 @@ mod tests {
     }
 
     /// Records: `L` (AI) → `a` (AI, worker), `t` (a tool) ; `a` → `c` (AI) ; and apart, `M` (AI) → `x` (AI).
-    async fn tree() -> (tempfile::TempDir, Arc<Kernel>) {
+    async fn tree() -> (tempfile::TempDir, Booted) {
         let dir = tempfile::tempdir().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
+        let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
         for (id, parent, ai, role) in [
             ("L", DEFAULT_ROOT_ID, true, ""),
             ("a", "L", true, "worker"),
@@ -343,6 +343,7 @@ mod tests {
         assert!(!text.contains("`x`") && !text.contains("`t`"), "{text}");
         let (to, _) = plan(&k, "gone", "changed");
         assert!(to.is_empty());
+        k.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -368,6 +369,7 @@ mod tests {
             told("L") && told("a") && told("b") && told("c"),
             "L's team, the new member included, is told"
         );
+        k.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -389,5 +391,6 @@ mod tests {
             "both AI-led teams are told at boot"
         );
         assert!(!told("t"), "a tool is told nothing");
+        k.stop().await;
     }
 }

@@ -495,10 +495,10 @@ pub fn grant_views(kernel: &Arc<Kernel>) -> usize {
     written
 }
 
-// A2: boots through boot_kernel; switch on again
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_boot::{boot_at, Seed};
     use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
     use fantastic_kernel::Item;
 
@@ -529,8 +529,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn declared_verbs_are_read_only() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn declared_verbs_are_read_only() {
         let writes = [
             "pull",
             "receive",
@@ -554,7 +554,9 @@ mod tests {
             "ask",
             "audit",
         ];
-        let reg = crate::registry();
+        let dir = tempfile::tempdir().unwrap();
+        let booted = boot_at(dir.path(), Seed::Stock, &[], None).await;
+        let reg = &booted.bundles;
         for d in decls() {
             let docs = reg
                 .get(d.handler_module)
@@ -576,6 +578,7 @@ mod tests {
                 );
             }
         }
+        booted.stop().await;
     }
 
     fn cadencer_status() -> Value {
@@ -630,25 +633,23 @@ mod tests {
         assert!(summary.contains("stalled 4"), "{summary}");
     }
 
-    #[test]
-    fn the_cadencers_real_status_reply_renders() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_cadencers_real_status_reply_renders() {
         // The reply a live cadencer gives, not a hand-written fixture.
         let dir = tempfile::tempdir().unwrap();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let status = rt.block_on(async {
-            let kernel = crate::start(dir.path()).await.unwrap();
-            kernel
-                .send(vec![Item::new(
-                    DEFAULT_ROOT_ID,
-                    json!({"type": "create_agent", "id": "cad", "parent_id": DEFAULT_ROOT_ID,
-                        "handler_module": crate::cadencer::HANDLER_MODULE}),
-                )])
-                .await;
-            let out = kernel
-                .send(vec![Item::new("cad", json!({"type": "status"}))])
-                .await;
-            out[0].result.clone()
-        });
+        let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
+        kernel
+            .send(vec![Item::new(
+                DEFAULT_ROOT_ID,
+                json!({"type": "create_agent", "id": "cad", "parent_id": DEFAULT_ROOT_ID,
+                    "handler_module": crate::cadencer::HANDLER_MODULE}),
+            )])
+            .await;
+        let out = kernel
+            .send(vec![Item::new("cad", json!({"type": "status"}))])
+            .await;
+        let status = out[0].result.clone();
+        kernel.stop().await;
         let m = model_of(
             &decl(crate::cadencer::HANDLER_MODULE),
             &[status.clone(), status],
@@ -855,7 +856,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn grant_views_names_read_verbs_not_star() {
         let dir = tempfile::tempdir().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
+        let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
         mk(
             &kernel,
             json!({"id": "dispatcher", "handler_module": crate::dispatcher::HANDLER_MODULE}),
@@ -886,12 +887,13 @@ mod tests {
         );
         // Idempotent.
         assert_eq!(grant_views(&kernel), 0);
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn grant_views_does_not_grant_the_removed_view() {
         let dir = tempfile::tempdir().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
+        let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
         mk(
             &kernel,
             json!({"id": "dispatcher_view", "handler_module": "ram_store.tools"}),
@@ -922,5 +924,6 @@ mod tests {
         assert!(field_of(&kernel, "dispatcher_view", "can_call")
             .get("cad")
             .is_none());
+        kernel.stop().await;
     }
 }

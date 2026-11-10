@@ -34,7 +34,6 @@ fantastic-ai-core = { git = "https://github.com/aisixteen/fantastic", branch = "
 fantastic-core = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-credential-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-ram-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-sqlite-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 async-trait = "0.1"
 tempfile = "3"
 base64 = "0.22"

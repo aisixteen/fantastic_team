@@ -76,11 +76,12 @@ pub const AI_README: &str = include_str!("../../../docs/ai-readme.md");
 
 pub mod roles;
 
-/// A `web` host's state is process-wide, keyed by its agent id, so two tests that boot or
-/// shut down a kernel holding a `web` agent undo each other. Every such test holds this
-/// for its whole run.
 #[cfg(test)]
-pub(crate) static WEB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+extern crate self as fantastic_team;
+
+#[cfg(test)]
+#[path = "../tests/common/boot.rs"]
+mod test_boot;
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,7 @@
-// A2: boots through boot_kernel; switch on again
-#![cfg(any())]
-use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
+mod common;
+
+use common::boot::{boot_at, Booted, Seed};
+use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
 use fantastic_kernel::{Item, Kernel};
 use fantastic_team::worker_exec::*;
 use serde_json::{json, Value};
@@ -77,10 +78,10 @@ fn blueprint_allowed(team: &Path) -> Value {
     find(&doc["agents"]).expect("the blueprint declares the worker exec")
 }
 
-async fn boot(team: &Path, id: &str) -> Arc<Kernel> {
+async fn boot(team: &Path, id: &str) -> Booted {
     std::fs::create_dir_all(sandbox_home(team)).unwrap();
     std::fs::create_dir_all(work_dir(team)).unwrap();
-    let kernel = fantastic_team::start(team).await.unwrap();
+    let kernel = boot_at(team, Seed::Stock, &[], None).await;
     let mut rec = worker_exec_record(team);
     rec["allowed"] = blueprint_allowed(team);
     let mut create = rec.as_object().unwrap().clone();
@@ -97,11 +98,6 @@ async fn boot(team: &Path, id: &str) -> Arc<Kernel> {
         "create_agent failed: {result}"
     );
     kernel
-}
-
-async fn down(kernel: Arc<Kernel>, team: &Path) {
-    kernel.shutdown().await;
-    bootstrap::shutdown(team).unwrap();
 }
 
 async fn run(kernel: &Arc<Kernel>, id: &str, command: &str, args: &[&str]) -> Value {
@@ -259,7 +255,7 @@ async fn a_worker_shell_sees_the_sandbox_home_and_no_credentials() {
         }
         assert!(!l.contains("planted"), "planted value leaked: {l}");
     }
-    down(kernel, team.path()).await;
+    kernel.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -308,7 +304,7 @@ async fn a_push_from_a_worker_sends_no_credentials() {
             || joined.contains("Authentication failed"),
         "{joined}"
     );
-    down(kernel, team.path()).await;
+    kernel.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -327,7 +323,7 @@ async fn gh_version_is_not_refused() {
             .contains("command not allowed"),
         "{reply}"
     );
-    down(kernel, team.path()).await;
+    kernel.stop().await;
 }
 
 #[test]

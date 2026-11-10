@@ -109,4 +109,22 @@ mod tests {
             v(&["--headless"])
         );
     }
+
+    #[test]
+    fn ai_readme_names_fantastic_s_command_line_and_the_removed_flags_only_as_removed() {
+        let text = fantastic_team::AI_README;
+        for word in ["readme", "webui", "--port", "--headless", "import", "send"] {
+            assert!(text.contains(word), "missing {word}");
+        }
+        for gone in ["--tui", "--instructions", "--resend-instructions", "--dir"] {
+            for line in text.lines().filter(|l| l.contains(gone)) {
+                assert!(
+                    ["gone", "refuse", "no `--dir`", "unknown"]
+                        .iter()
+                        .any(|w| line.contains(w)),
+                    "the AI readme names the removed {gone} other than as removed: {line}"
+                );
+            }
+        }
+    }
 }

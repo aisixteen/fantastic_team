@@ -79,13 +79,13 @@ pub fn seed(dir: &Path) -> Result<bool, String> {
     fantastic_tui::seed_dir_with(dir, &[&blueprint_text(dir)?])
 }
 
-// A2: boots through boot_kernel; switch on again
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::new_team::{GITHUB, LEAD, ROLES, WORKER_EXEC, WORKER_FILES};
     use crate::page::{PAGE_ID, WEB_ID, WS_ID};
-    use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
+    use crate::test_boot::{boot_at, Seed};
+    use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
     use serde_json::{json, Map};
     use std::collections::BTreeMap;
 
@@ -177,9 +177,11 @@ mod tests {
         assert!(!BLUEPRINT.contains("@read_stream"));
     }
 
-    #[test]
-    fn every_declared_module_is_registered() {
-        let reg = crate::registry();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn every_declared_module_is_registered() {
+        let folder = tempfile::TempDir::new().unwrap();
+        let booted = boot_at(folder.path(), Seed::Stock, &[], None).await;
+        let reg = &booted.bundles;
         let doc = declared(Path::new("/team"));
         let mut out = Vec::new();
         walk(&doc["agents"], DEFAULT_ROOT_ID, &mut out);
@@ -207,6 +209,7 @@ mod tests {
             rec_in(&doc, WS_ID)["handler_module"],
             fantastic_web_ws::HANDLER_MODULE
         );
+        booted.stop().await;
     }
 
     #[test]
@@ -274,13 +277,18 @@ mod tests {
         out
     }
 
-    /// A kernel that hydrates `dir`, writes records and serves nothing, as it is after a
-    /// boot, then stopped.
+    /// A kernel that hydrates `dir` and writes records, as it is after a boot, then stopped.
     async fn boot_and_stop(dir: &Path) -> BTreeMap<String, Value> {
-        let k = crate::start_offline(dir).await.unwrap();
+        let k = boot_at(dir, Seed::Team, &[], None).await;
         k.flush_records().await;
-        let live: BTreeMap<String, Value> = k
-            .agents
+        let live = live_metas(&k);
+        k.stop().await;
+        live
+    }
+
+    /// The live meta of every agent of `k`.
+    fn live_metas(k: &std::sync::Arc<fantastic_kernel::Kernel>) -> BTreeMap<String, Value> {
+        k.agents
             .iter()
             .map(|a| {
                 (
@@ -288,22 +296,12 @@ mod tests {
                     Value::Object(a.meta.read().unwrap().clone()),
                 )
             })
-            .collect();
-        k.shutdown().await;
-        fantastic_sqlite_store::close_all(&k);
-        bootstrap::shutdown(dir).unwrap();
-        live
+            .collect()
     }
 
-    /// `persist_web` (the team's `webui` word) blocks on a runtime of its own: run it off
-    /// the test's runtime.
-    fn webui(dir: &Path, port: u16) -> Result<(), String> {
-        let dir = dir.to_path_buf();
-        std::thread::spawn(move || {
-            crate::app_control::persist_web(&dir, Some(port), None).map(|_| ())
-        })
-        .join()
-        .unwrap()
+    /// Boot and stop `dir` once with the web port `port`.
+    async fn boot_and_stop_on(dir: &Path, port: u16) {
+        boot_at(dir, Seed::Team, &[], Some(port)).await.stop().await;
     }
 
     fn free_port() -> u16 {
@@ -319,7 +317,6 @@ mod tests {
     /// kernel is not seeded again.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_first_run_seeds_the_fixed_ids_with_their_grants_and_config_from_the_yaml() {
-        let _web = crate::WEB_LOCK.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         assert!(seed(dir.path()).unwrap());
         let doc = declared(dir.path());
@@ -375,13 +372,15 @@ mod tests {
         }
     }
 
-    /// A SECOND BOOT changes nothing: the records of the team and of fantastic's stock tree
-    /// are the same bytes after the first boot as after the second.
+    /// A LATER BOOT changes nothing: the records of the team and of fantastic's stock tree
+    /// are the same bytes after one boot as after the next. The first boot settles what
+    /// fantastic's own boot writes into a fresh folder (the free port of the `web` host, the
+    /// edges, the home stores' records), so the baseline is taken after it.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_second_boot_changes_nothing() {
-        let _web = crate::WEB_LOCK.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         seed(dir.path()).unwrap();
+        boot_and_stop(dir.path()).await;
         let first = boot_and_stop(dir.path()).await;
         let on_first = tree_of(dir.path());
         let second = boot_and_stop(dir.path()).await;
@@ -396,32 +395,31 @@ mod tests {
             m
         };
         assert_eq!(steady(second), steady(first), "the agents as they are live");
-        // and the `webui` word, run twice with the same port, adds nothing after the first
+        // and a boot with a port, run twice with the same port, adds nothing after the first
         let port = free_port();
-        webui(dir.path(), port).unwrap();
+        boot_and_stop_on(dir.path(), port).await;
         let after = tree_of(dir.path());
-        webui(dir.path(), port).unwrap();
+        boot_and_stop_on(dir.path(), port).await;
         assert_eq!(tree_of(dir.path()), after);
     }
 
     /// A fixed agent deleted from disk stays deleted at the next boot: the blueprint is not
     /// read again. This is what fantastic does for its own stock agents (`src/tui/src/boot/
     /// seed.rs:3-6`, `seed_dir_with` at :188 writes only into a folder that is fresh), and
-    /// is shown here on both, a team agent and a stock one, through the team's `webui` word
-    /// (the entry that used to `ensure`) and a plain boot.
+    /// is shown here on both, a team agent and a stock one, through a boot with a port
+    /// and a plain boot.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_deleted_fixed_agent_stays_deleted_like_fantastics_own_stock_agents() {
-        let _web = crate::WEB_LOCK.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         seed(dir.path()).unwrap();
         let port = free_port();
-        webui(dir.path(), port).unwrap();
+        boot_and_stop_on(dir.path(), port).await;
         let stock = dir.path().join(".fantastic/agents/user/agents/exec");
         assert!(stock.is_dir());
         std::fs::remove_dir_all(on_disk(dir.path(), WORKER_EXEC).parent().unwrap()).unwrap();
         std::fs::remove_dir_all(&stock).unwrap();
 
-        webui(dir.path(), port).unwrap();
+        boot_and_stop_on(dir.path(), port).await;
         let live = boot_and_stop(dir.path()).await;
         assert!(
             !live.contains_key(WORKER_EXEC),
@@ -440,11 +438,10 @@ mod tests {
     /// again): a team agent's declared field, the same as a stock agent's.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_drifted_field_stays_as_it_is_like_fantastics_own_stock_agents() {
-        let _web = crate::WEB_LOCK.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         seed(dir.path()).unwrap();
         let port = free_port();
-        webui(dir.path(), port).unwrap();
+        boot_and_stop_on(dir.path(), port).await;
         // a declared grant of worker_files, a declared field of the connector, and a stock
         // agent's declared field
         let edit = |id_path: std::path::PathBuf, f: &dyn Fn(&mut Value)| {
@@ -465,7 +462,7 @@ mod tests {
             .join(".fantastic/agents/user/agents/files/agent.yaml");
         edit(files, &|r| r["allow"] = json!(["docs"]));
 
-        webui(dir.path(), port).unwrap();
+        boot_and_stop_on(dir.path(), port).await;
         let live = boot_and_stop(dir.path()).await;
         let q = &live[WORKER_FILES];
         assert_eq!(q["display_name"], "changed", "{q}");
@@ -498,6 +495,14 @@ mod tests {
         .await
     }
 
+    /// The page leg's grant on `user` holds the two verbs the yaml gives it (fantastic's boot
+    /// adds `send` to it: every agent's way back).
+    fn page_verbs(g: &Value) -> bool {
+        ["inquiries", "answer_inquiry"]
+            .iter()
+            .all(|v| g.as_array().is_some_and(|a| a.contains(&json!(v))))
+    }
+
     /// The edge is admitted when the gate lets the call through (the verb may still refuse
     /// for its own reasons, such as a missing argument).
     fn admitted(r: &Value, what: &str) {
@@ -512,7 +517,6 @@ mod tests {
     /// mode, no helper).
     #[tokio::test(flavor = "multi_thread")]
     async fn the_yaml_grants_the_callee_end_of_the_edges_on_stock_agents() {
-        let _web = crate::WEB_LOCK.lock().await;
         let dir = tempfile::TempDir::new().unwrap();
         assert!(seed(dir.path()).unwrap());
 
@@ -543,7 +547,7 @@ mod tests {
         );
 
         // boot: both ends of each edge, and a real call over it
-        let k = crate::start_offline(dir.path()).await.unwrap();
+        let k = boot_at(dir.path(), Seed::Team, &[], None).await;
         let live = |id: &str| {
             Value::Object(
                 k.agents
@@ -572,20 +576,18 @@ mod tests {
                 &format!("{WS_ID} -> user {verb}"),
             );
         }
-        // the gate is real: an edge nobody granted, and a verb nobody granted
+        // the gate is real: an edge nobody granted, and a verb nobody granted (`send` on
+        // `user` is every agent's, by fantastic's boot: the way back)
         for (who, target, verb) in [
             (WORKER_EXEC, "memory", "read"),
             (WS_ID, "memory", "read"),
-            (WS_ID, "user", "send"),
+            (WS_ID, "user", "forward"),
         ] {
             let r = as_caller(&k, who, target, json!({"type": verb})).await;
             assert_eq!(r["reason"], "unauthorized", "{who} -> {target} {verb}: {r}");
         }
         assert_eq!(live("memory")["callable_by"]["roles"], "*");
-        assert_eq!(
-            live("user")["callable_by"]["team_ws"],
-            user["callable_by"]["team_ws"]
-        );
+        assert!(page_verbs(&live("user")["callable_by"]["team_ws"]));
         // a boot made nothing of its own
         assert!(!k
             .agents
@@ -594,19 +596,16 @@ mod tests {
             .agents
             .contains_key(&fantastic_kernel::AgentId::from("key_mode_setup")));
         k.flush_records().await;
-        k.shutdown().await;
-        fantastic_sqlite_store::close_all(&k);
-        bootstrap::shutdown(dir.path()).unwrap();
+        k.stop().await;
 
-        // a second boot keeps the grants and the declarations nobody consumed
+        // a later boot keeps the grants and the declarations nobody consumed (one boot
+        // settles what fantastic's own boot writes into the home stores' records first)
+        boot_and_stop(dir.path()).await;
         let before = tree_of(dir.path());
         let again = boot_and_stop(dir.path()).await;
         assert_eq!(tree_of(dir.path()), before);
         assert_eq!(again["memory"]["callable_by"]["roles"], "*");
-        assert_eq!(
-            again["user"]["callable_by"]["team_ws"],
-            user["callable_by"]["team_ws"]
-        );
+        assert!(page_verbs(&again["user"]["callable_by"]["team_ws"]));
         let pending2: Value = serde_yaml::from_str(
             &std::fs::read_to_string(dir.path().join(".fantastic/cli/grants.yaml")).unwrap(),
         )

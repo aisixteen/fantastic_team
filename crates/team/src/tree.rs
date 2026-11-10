@@ -305,12 +305,12 @@ pub async fn grant_fleet_digest_targets(kernel: &Arc<Kernel>, roles_id: &str) ->
     grant_digest_targets(kernel, &digest_leads(&fleet))
 }
 
-// A2: boots through boot_kernel; switch on again
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::dispatcher;
-    use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
+    use crate::test_boot::{boot_at, Booted, Seed};
+    use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
     use fantastic_kernel::Status;
     use std::path::Path;
 
@@ -326,7 +326,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn grant_digest_targets_grants_send_to_fleet_leads() {
         let dir = tempfile::tempdir().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
+        let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
         for id in [CADENCER_ID, "pl", "sub", "w1"] {
             let mk = json!({"type": "create_agent", "id": id, "parent_id": DEFAULT_ROOT_ID,
                 "handler_module": "ram_store.tools", "callable_by": {"$self": "*", "$parent": "*"}});
@@ -354,8 +354,7 @@ mod tests {
         assert!(field_of(&kernel, "w1", "callable_by")[CADENCER_ID].is_null());
         assert!(field_of(&kernel, CADENCER_ID, "can_call")["w1"].is_null());
         assert!(field_of(&kernel, CADENCER_ID, "can_call")["gone"].is_null());
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[test]
@@ -365,8 +364,8 @@ mod tests {
     }
 
     /// A kernel with a bare dispatcher and workers `w1` and `w2`, none of them granted.
-    async fn kernel_with_workers(dir: &Path) -> Arc<Kernel> {
-        let kernel = crate::start(dir).await.unwrap();
+    async fn kernel_with_workers(dir: &Path) -> Booted {
+        let kernel = boot_at(dir, Seed::Stock, &[], None).await;
         let mut items = vec![json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID,
             "id": "dispatcher", "handler_module": dispatcher::HANDLER_MODULE})];
         for w in ["w1", "w2"] {
@@ -423,8 +422,7 @@ mod tests {
         }
         assert!(grants(DISPATCHER_ID, "can_call")["w2"].is_null());
         assert!(grants("w2", "callable_by")[DISPATCHER_ID].is_null());
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -455,15 +453,14 @@ mod tests {
             )])
             .await;
         assert_eq!(grant_control(&kernel, &ids), 0);
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     // ---- the page leg and the card views ----
 
     /// A kernel with a live principal for the page's ws leg.
-    async fn started_with_leg(dir: &Path) -> Arc<Kernel> {
-        let kernel = crate::start(dir).await.unwrap();
+    async fn started_with_leg(dir: &Path) -> Booted {
+        let kernel = boot_at(dir, Seed::Stock, &[], None).await;
         let leg = json!({"type": "create_agent", "id": crate::page::WS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
         let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, leg)]).await;
         assert!(
@@ -503,8 +500,7 @@ mod tests {
                 "{worker}"
             );
         }
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     fn rows_of_cards(spec: &[(&str, &str)]) -> Vec<Value> {
@@ -560,8 +556,7 @@ mod tests {
         // a host that is not embedded is not granted
         assert!(field_of(&kernel, "other", "callable_by").get(leg).is_none());
         assert!(field_of(&kernel, leg, "can_call").get("other").is_none());
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -576,8 +571,7 @@ mod tests {
         assert!(field_of(&kernel, "h", "callable_by")
             .get(crate::page::WS_ID)
             .is_none());
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -593,8 +587,7 @@ mod tests {
         // a chat agent that does not answer history grants nothing and does not panic
         assert_eq!(grant_cards(&kernel, crate::page::WS_ID, "plain").await, 0);
         assert_eq!(grant_cards(&kernel, crate::page::WS_ID, "missing").await, 0);
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -614,7 +607,6 @@ mod tests {
             field_of(&kernel, crate::page::WS_ID, "can_call"),
         );
         assert_eq!(first, second);
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 }

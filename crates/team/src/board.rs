@@ -951,10 +951,10 @@ impl fantastic_kernel::bundle::Bundle for BoardBundle {
     }
 }
 
-// A2: boots through boot_kernel; switch on again
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_boot::{boot_at, Seed};
     use std::sync::Mutex;
 
     fn task(id: &str, status: Status, claimers: &[&str], pr: Option<&str>, updated: u64) -> Task {
@@ -1277,7 +1277,8 @@ mod tests {
 
     #[test]
     fn register_team_registers_board() {
-        let reg = crate::registry();
+        let mut reg = fantastic_kernel::BundleRegistry::new();
+        crate::register_team(&mut reg);
         assert!(reg.get(HANDLER_MODULE).is_some());
     }
 
@@ -1631,7 +1632,7 @@ mod tests {
     #[tokio::test]
     async fn cfg_of_reads_roles_from_the_board_record() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
+        let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
         let mut answers = Vec::new();
         for (id, roles) in [("board_r", Some("roles")), ("board_n", None)] {
             let mut rec = json!({
@@ -1659,7 +1660,6 @@ mod tests {
         }
         assert!(answers[0].get("roles").is_some(), "{}", answers[0]);
         assert!(answers[1].get("roles").is_none(), "{}", answers[1]);
-        kernel.shutdown().await;
-        crate::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 }

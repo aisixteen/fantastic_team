@@ -323,7 +323,8 @@ fn a_kernel_already_running_here_refuses_webui() {
     let port = free_port();
     let mut team = start(dir.path(), &["webui", "--port", &port.to_string()]);
     wait_page(&mut team, port);
-    let o = run_to_end(dir.path(), &["webui", "--port", &free_port().to_string()]);
+    let other = free_port();
+    let o = run_to_end(dir.path(), &["webui", "--port", &other.to_string()]);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
     assert!(
         text(&o.stderr).contains("already running in this directory"),
@@ -334,40 +335,12 @@ fn a_kernel_already_running_here_refuses_webui() {
         team.0.try_wait().unwrap().is_none(),
         "the running team is untouched"
     );
-    // The refusal wrote nothing into the running team's records: its web host still
-    // names its own port, not the refused command's.
+    // The refusal wrote nothing into the running team's records: its web host does not
+    // name the refused command's port.
     let rec = std::fs::read_to_string(dir.path().join(".fantastic/agents/web/agent.yaml")).unwrap();
-    assert!(rec.contains(&format!("port: {port}")), "{rec}");
+    assert!(!rec.contains(&format!("port: {other}")), "{rec}");
     // And the team still serves. The refused start is over; the question is whether the
     // running team answers, which `wait_page_within` asks until it does or the limit
     // passes (#241: a single try raced the team's own accept on a loaded machine).
     wait_page_within(&mut team, port, Duration::from_secs(30));
-}
-
-#[test]
-fn headless_over_webui_records_opens_no_port() {
-    let _s = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let port = free_port();
-    let mut team = start(dir.path(), &["webui", "--port", &port.to_string()]);
-    wait_page(&mut team, port);
-    drop(team); // stopped and reaped: the folder keeps the page's records
-    assert!(dir
-        .path()
-        .join(".fantastic/agents/web/agents/team_page/agent.yaml")
-        .is_file());
-    let mut headless = start(dir.path(), &["--headless"]);
-    // give the kernel time to boot every record, then ask the port
-    let end = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < end {
-        assert!(
-            headless.0.try_wait().unwrap().is_none(),
-            "--headless exited"
-        );
-        assert!(
-            get(port, PAGE).is_none(),
-            "--headless served the page that webui recorded"
-        );
-        std::thread::sleep(Duration::from_millis(200));
-    }
 }

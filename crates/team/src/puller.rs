@@ -426,10 +426,10 @@ impl fantastic_kernel::bundle::Bundle for PullerBundle {
     }
 }
 
-// A2: boots through boot_kernel; switch on again
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_boot::{boot_at, Seed};
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
@@ -602,34 +602,30 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_puller_reads_repo_config_from_its_own_record() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_puller_reads_repo_config_from_its_own_record() {
         // `repo_config` is a field of the puller's record, keyed by repo.
         let dir = tempfile::tempdir().unwrap();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let kernel = crate::start(dir.path()).await.unwrap();
-            let rec = serde_json::json!({
-                "type": "create_agent", "id": "pull", "parent_id": fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
-                "handler_module": HANDLER_MODULE,
-                "repos": ["o/r"], "maintainer": "m", "app": "a", "github": "gh", "store": "st",
-                "repo_config": {"o/r": {"task_labels": ["do-it"], "review": {"approvals": 2}}},
-            });
-            let outs = kernel
-                .send(vec![fantastic_kernel::Item::new(
-                    fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
-                    rec,
-                )])
-                .await;
-            assert!(outs[0].result.get("error").is_none(), "{}", outs[0].result);
-            let got = cfg_of(&kernel, &fantastic_kernel::AgentId::from("pull")).unwrap();
-            assert_eq!(got.repos, vec!["o/r".to_string()]);
-            let rc = crate::repo_config::from_record(got.repo_config.get("o/r")).unwrap();
-            assert_eq!(rc.task_labels, vec!["do-it".to_string()]);
-            assert_eq!(rc.review.approvals, 2);
-            kernel.shutdown().await;
-            fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
+        let rec = serde_json::json!({
+            "type": "create_agent", "id": "pull", "parent_id": fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
+            "handler_module": HANDLER_MODULE,
+            "repos": ["o/r"], "maintainer": "m", "app": "a", "github": "gh", "store": "st",
+            "repo_config": {"o/r": {"task_labels": ["do-it"], "review": {"approvals": 2}}},
         });
+        let outs = kernel
+            .send(vec![fantastic_kernel::Item::new(
+                fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
+                rec,
+            )])
+            .await;
+        assert!(outs[0].result.get("error").is_none(), "{}", outs[0].result);
+        let got = cfg_of(&kernel, &fantastic_kernel::AgentId::from("pull")).unwrap();
+        assert_eq!(got.repos, vec!["o/r".to_string()]);
+        let rc = crate::repo_config::from_record(got.repo_config.get("o/r")).unwrap();
+        assert_eq!(rc.task_labels, vec!["do-it".to_string()]);
+        assert_eq!(rc.review.approvals, 2);
+        kernel.stop().await;
     }
 
     #[tokio::test]
@@ -701,7 +697,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn puller_status_names_the_source() {
         let dir = tempfile::tempdir().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
+        let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
         let mk = serde_json::json!({"type": "create_agent", "id": "puller",
             "parent_id": fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
             "handler_module": HANDLER_MODULE,
@@ -729,5 +725,6 @@ mod tests {
             !text.contains("\"m\"") && !text.contains("maintainer"),
             "{r}"
         );
+        kernel.stop().await;
     }
 }

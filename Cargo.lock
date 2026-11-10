@@ -1451,7 +1451,6 @@ dependencies = [
  "fantastic-ai-core",
  "fantastic-exec-bridge",
  "fantastic-kernel",
- "fantastic-sqlite-store",
  "fantastic-tui",
  "fantastic-web",
  "fantastic-web-ws",

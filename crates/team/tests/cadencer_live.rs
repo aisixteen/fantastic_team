@@ -1,11 +1,12 @@
 //! Live test (#112): the cadencer's settings survive a restart of a real kernel. Boots the
 //! team registry the way the binary does, creates a board and a cadencer.
-// A2: boots through boot_kernel; switch on again
-#![cfg(any())]
+
+mod common;
 
 use std::sync::Arc;
 
-use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
+use common::boot::{boot_at, Seed};
+use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
 use fantastic_kernel::{AgentId, Item, Kernel};
 use serde_json::{json, Value};
 
@@ -45,17 +46,10 @@ async fn create_cadencer_and_board(kernel: &Arc<Kernel>) {
     .await;
 }
 
-async fn restart(dir: &std::path::Path, kernel: Arc<Kernel>) -> Arc<Kernel> {
-    kernel.flush_records().await;
-    kernel.shutdown().await;
-    bootstrap::shutdown(dir).unwrap();
-    fantastic_team::start(dir).await.unwrap()
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn set_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let kernel = fantastic_team::start(dir.path()).await.unwrap();
+    let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
     create_cadencer_and_board(&kernel).await;
     let set = call(
         &kernel,
@@ -65,19 +59,18 @@ async fn set_survives_restart() {
     .await;
     assert!(set.get("error").is_none(), "set refused: {set}");
 
-    let kernel = restart(dir.path(), kernel).await;
+    let kernel = kernel.restart().await;
     let st = call(&kernel, "cad", json!({"type": "status"})).await;
     assert_eq!(st["settings"]["quiet"], false, "quiet not restored: {st}");
     assert_eq!(st["settings"]["cadence"], 5, "cadence not restored: {st}");
 
-    kernel.shutdown().await;
-    bootstrap::shutdown(dir.path()).unwrap();
+    kernel.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn configure_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let kernel = fantastic_team::start(dir.path()).await.unwrap();
+    let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
     create_cadencer_and_board(&kernel).await;
     call(
         &kernel,
@@ -86,7 +79,7 @@ async fn configure_survives_restart() {
     )
     .await;
 
-    let kernel = restart(dir.path(), kernel).await;
+    let kernel = kernel.restart().await;
 
     // The record holds the parent under `cadencer_parent`, never `parent`.
     let yaml =
@@ -104,14 +97,13 @@ async fn configure_survives_restart() {
     .await;
     assert!(set.get("error").is_none(), "set from parent refused: {set}");
 
-    kernel.shutdown().await;
-    bootstrap::shutdown(dir.path()).unwrap();
+    kernel.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn off_list_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let kernel = fantastic_team::start(dir.path()).await.unwrap();
+    let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
     create_cadencer_and_board(&kernel).await;
     let set = call(
         &kernel,
@@ -121,7 +113,7 @@ async fn off_list_survives_restart() {
     .await;
     assert!(set.get("error").is_none(), "set refused: {set}");
 
-    let kernel = restart(dir.path(), kernel).await;
+    let kernel = kernel.restart().await;
     let st = call(&kernel, "cad", json!({"type": "status"})).await;
     assert_eq!(
         st["settings"]["off"],
@@ -129,6 +121,5 @@ async fn off_list_survives_restart() {
         "off not restored: {st}"
     );
 
-    kernel.shutdown().await;
-    bootstrap::shutdown(dir.path()).unwrap();
+    kernel.stop().await;
 }

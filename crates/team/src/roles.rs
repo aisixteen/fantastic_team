@@ -75,10 +75,10 @@ pub(crate) fn parse_card(text: &str, name: &str) -> Result<Card, String> {
     })
 }
 
-// A2: boots through boot_kernel; switch on again
-#[cfg(any())]
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_boot::{boot_at, Seed};
     use std::collections::BTreeSet;
 
     fn card(file: &str) -> Card {
@@ -458,11 +458,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_role_bundles_load_as_the_registrys_roles() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_role_bundles_load_as_the_registrys_roles() {
         // embedded: the kernel's registry holds them, no folder is read
-        let mut kernel = fantastic_kernel::Kernel::new();
-        kernel.bundles = crate::registry();
+        let folder = tempfile::TempDir::new().unwrap();
+        let kernel = boot_at(folder.path(), Seed::Stock, &[], None).await;
         let errors: Vec<_> = kernel
             .bundles
             .folder_rows()
@@ -483,6 +483,7 @@ mod tests {
             kernel.bundles.get("lead").is_some(),
             "`lead` resolves to its base"
         );
+        kernel.stop().await;
     }
 
     /// The "how the system works" brief: every card carries it, with the fixed ids of the
@@ -535,8 +536,10 @@ mod tests {
 
     /// The lead decides how to plan and track the work: its card names the agents it may
     /// make for it, under the ids and bundles the team's code names.
-    #[test]
-    fn the_lead_card_leaves_planning_and_tracking_to_the_lead() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_lead_card_leaves_planning_and_tracking_to_the_lead() {
+        let folder = tempfile::TempDir::new().unwrap();
+        let booted = boot_at(folder.path(), Seed::Stock, &[], None).await;
         let l = card("lead.md").directive;
         let start = l
             .find("## Planning and tracking the work")
@@ -553,11 +556,12 @@ mod tests {
         ] {
             assert!(section.contains(&format!("`{id}` (`{module}`)")), "{id}");
             assert!(
-                crate::registry().get(module).is_some(),
+                booted.bundles.get(module).is_some(),
                 "{module} is registered"
             );
         }
         assert!(start < l.find("## The queue").unwrap());
+        booted.stop().await;
     }
 
     #[test]
