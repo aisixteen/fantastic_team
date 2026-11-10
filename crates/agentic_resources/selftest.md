@@ -10,8 +10,7 @@
 > no env var needed); send the same verbs with
 > `fantastic_team send '{"target": "<id>", "payload": {"type": "<verb>", ...}}'`.
 
-A generic roles registry. **Off by default**: the host turns it on with
-`FANTASTIC_AGENTIC_RESOURCES=1`. A role is a meta bundle (`.fantastic/bundles/<name>/bundle.yaml`:
+A generic roles registry. A role is a meta bundle (`.fantastic/bundles/<name>/bundle.yaml`:
 a `base`, no program, `record.post_system_prompt` and `record.can_call`); the registry's
 record carries its `limits`. One-shot CLI: `fantastic <id> <verb> [k=v ...]`; JSON-valued
 args are coerced.
@@ -22,7 +21,6 @@ All test state lives under `/tmp/ar_test/`.
 
 ```bash
 rm -rf /tmp/ar_test && mkdir -p /tmp/ar_test/.fantastic/bundles/writer && cd /tmp/ar_test
-export FANTASTIC_AGENTIC_RESOURCES=1
 FANTASTIC=/path/to/rust/target/release/fantastic_kernel
 cat > .fantastic/bundles/writer/bundle.yaml <<'ROLE'
 base: scheduler.tools

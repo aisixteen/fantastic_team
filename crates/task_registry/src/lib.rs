@@ -2,9 +2,8 @@
 //!
 //! A generic extension between agents and task sources (gh, jira, ...): it makes NO
 //! outbound call. `source` and `update_to` are opaque strings; the LLM reads them and
-//! pushes updates itself. OFF BY DEFAULT: a host registers the bundle only when
-//! `FANTASTIC_TASK_REGISTRY` is truthy ([`register_if_enabled`]), and an instance
-//! whose record has no `task_store_id` refuses every verb `disabled`.
+//! pushes updates itself. An instance whose record has no `task_store_id` refuses
+//! every verb `disabled`.
 //!
 //! STORAGE IS ABSTRACT. The registry keeps its tables in the store agent named by its
 //! record's `task_store_id`, through the store interface the agent memory uses
@@ -35,7 +34,7 @@
 
 use async_trait::async_trait;
 use fantastic_bundle::py_repr;
-use fantastic_kernel::bundle::{Bundle, BundleError, BundleRegistry, Reply};
+use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
 use fantastic_kernel::refusal::{self, bad, missing};
 use fantastic_kernel::{current_origin, Agent, AgentId, Item, Kernel};
 use serde_json::{json, Map, Value};
@@ -45,9 +44,6 @@ use std::sync::Arc;
 /// `handler_module` key under which this bundle registers.
 pub const HANDLER_MODULE: &str = "task_registry.tools";
 
-/// The environment variable that turns the bundle on in a host.
-pub const ENABLE_ENV: &str = "FANTASTIC_TASK_REGISTRY";
-
 /// readme.md auto-seeded into the agent's dir on creation.
 pub const README: &str = include_str!("readme.md");
 
@@ -56,28 +52,6 @@ pub const STATES: [&str; 6] = ["waiting", "running", "blocked", "done", "failed"
 
 /// How many rows one store read asks for.
 const PAGE: u64 = 500;
-
-/// Is an env value on? `1`, `true`, `yes`, `on` (any case).
-#[must_use]
-pub fn enabled_value(v: Option<&str>) -> bool {
-    v.is_some_and(|s| {
-        matches!(
-            s.trim().to_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
-}
-
-/// Register the bundle only when `value` (the env var) turns it on. Returns
-/// whether it registered. Off: no handler, so nothing changes for the host.
-pub fn register_if_enabled(reg: &mut BundleRegistry, value: Option<&str>) -> bool {
-    if enabled_value(value) {
-        reg.register(HANDLER_MODULE, TaskRegistryBundle::default());
-        true
-    } else {
-        false
-    }
-}
 
 /// The task_registry bundle. It holds no tasks: only one lock per registry agent, so
 /// the read-modify-append of two leads cannot race.
@@ -349,7 +323,7 @@ async fn load(
                 row.get("task_id").and_then(Value::as_str),
                 row.get("content").filter(|c| c.is_object()),
             ) {
-                tasks.insert(id.to_string(), with_defaults(content));
+                tasks.insert(id.to_string(), content.clone());
             }
         }
         match res.get("next") {
@@ -357,22 +331,6 @@ async fn load(
             _ => return Ok(tasks),
         }
     }
-}
-
-/// An entry stored before the recorded facts existed gets their defaults.
-fn with_defaults(content: &Value) -> Value {
-    let mut e = content.clone();
-    for (k, d) in [
-        ("versions", json!([])),
-        ("source_version", Value::Null),
-        ("fork_from", Value::Null),
-        ("usage", Value::Null),
-    ] {
-        if e.get(k).is_none() {
-            e[k] = d;
-        }
-    }
-    e
 }
 
 /// Append the new snapshot of a task.

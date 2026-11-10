@@ -4,8 +4,7 @@
 //! `base`, its directive (`record.post_system_prompt`) and its grants
 //! (`record.can_call`), and no model. The registry lists them (`roles`, `role`),
 //! creates an agent from one (`spawn`), reports who it spawned (`fleet`) and caps how
-//! many run (`set_limit`, `get_count`). OFF BY DEFAULT: a host registers the bundle
-//! only when `FANTASTIC_AGENTIC_RESOURCES` is truthy ([`register_if_enabled`]).
+//! many run (`set_limit`, `get_count`).
 //!
 //! The child runs on its SPAWNER's backend (its handler and provider fields), with the
 //! `model` the spawner names in `spawn` (its own when it names none): the spawner says
@@ -35,20 +34,17 @@
 pub mod roles;
 
 use async_trait::async_trait;
-use roles::{Card, REGISTRY_TOKEN};
 use fantastic_bundle::py_repr;
-use fantastic_kernel::bundle::{Bundle, BundleError, BundleRegistry, Reply};
+use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
 use fantastic_kernel::refusal::{self, bad, missing};
 use fantastic_kernel::{current_origin, Agent, AgentId, Item, Kernel};
+use roles::{Card, REGISTRY_TOKEN};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// `handler_module` key under which this bundle registers.
 pub const HANDLER_MODULE: &str = "agentic_resources.tools";
-
-/// The environment variable that turns the bundle on in a host.
-pub const ENABLE_ENV: &str = "FANTASTIC_AGENTIC_RESOURCES";
 
 /// readme.md auto-seeded into the agent's dir on creation.
 pub const README: &str = include_str!("readme.md");
@@ -58,28 +54,6 @@ const PARENT_VERBS: [&str; 3] = ["pause", "resume", "stop"];
 
 /// What every spawned agent holds on its parent: it tells it with a message.
 const CHILD_VERBS: [&str; 1] = ["send"];
-
-/// Is an env value on? `1`, `true`, `yes`, `on` (any case).
-#[must_use]
-pub fn enabled_value(v: Option<&str>) -> bool {
-    v.is_some_and(|s| {
-        matches!(
-            s.trim().to_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
-}
-
-/// Register the bundle only when `value` (the env var) turns it on. Returns
-/// whether it registered. Off: no handler, so nothing changes for the host.
-pub fn register_if_enabled(reg: &mut BundleRegistry, value: Option<&str>) -> bool {
-    if enabled_value(value) {
-        reg.register(HANDLER_MODULE, AgenticResourcesBundle);
-        true
-    } else {
-        false
-    }
-}
 
 /// The agentic_resources bundle.
 pub struct AgenticResourcesBundle;
@@ -105,7 +79,6 @@ fn meta_of(a: &Agent) -> Map<String, Value> {
 fn agent_of(kernel: &Kernel, id: &AgentId) -> Option<Arc<Agent>> {
     kernel.agents.get(id).map(|e| Arc::clone(&e))
 }
-
 
 /// A refusal of the registry's own, in the kernel's shape:
 /// `{error:<sentence>, reason:<code>, ...}`.
@@ -591,7 +564,12 @@ async fn spawn_reply(
 
 /// The chat fields a child takes from its spawner: where its conversation lives and how it
 /// is kept. Never a provider's (model kind, endpoint, key, prices): those are its provider's.
-const CHAT_FIELDS: [&str; 4] = ["memory_store_id", "context_window", "context_strategy", "caching"];
+const CHAT_FIELDS: [&str; 4] = [
+    "memory_store_id",
+    "context_window",
+    "context_strategy",
+    "caching",
+];
 
 /// The verbs a chat calls on its provider.
 const PROVIDER_VERBS: [&str; 2] = ["complete", "watch"];
@@ -601,11 +579,19 @@ const PROVIDER_VERBS: [&str; 2] = ["complete", "watch"];
 /// them; absent, the spawner's own (an AI spawner is a chat with a `provider_id`); no
 /// `model` anywhere, the provider's default. A caller that is no chat (the operator, a
 /// tool) names the `provider`.
-fn chat_of(kernel: &Kernel, role: &str, caller: &Option<AgentId>, payload: &Value) -> Result<Map<String, Value>, Value> {
+fn chat_of(
+    kernel: &Kernel,
+    role: &str,
+    caller: &Option<AgentId>,
+    payload: &Value,
+) -> Result<Map<String, Value>, Value> {
     let mut out = Map::new();
     // the child runs its role's base (the AI agent, `ai_chat.tools`, for every stock role)
     out.insert("handler_module".into(), json!(kernel.bundles.base_of(role)));
-    let spawner = caller.as_ref().and_then(|c| agent_of(kernel, c)).map(|a| meta_of(&a));
+    let spawner = caller
+        .as_ref()
+        .and_then(|c| agent_of(kernel, c))
+        .map(|a| meta_of(&a));
     if let Some(meta) = &spawner {
         for k in CHAT_FIELDS {
             if let Some(v) = meta.get(k) {
@@ -617,17 +603,37 @@ fn chat_of(kernel: &Kernel, role: &str, caller: &Option<AgentId>, payload: &Valu
         match payload.get(k) {
             None | Some(Value::Null) => Ok(None),
             Some(Value::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
-            Some(_) => Err(bad("spawn", k, if k == "model" { "a model name" } else { "a provider agent's id" })),
+            Some(_) => Err(bad(
+                "spawn",
+                k,
+                if k == "model" {
+                    "a model name"
+                } else {
+                    "a provider agent's id"
+                },
+            )),
         }
     };
-    let own = |k: &str| spawner.as_ref().and_then(|m| m.get(k)).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
-    let Some(provider) = named("provider")?.or_else(|| own(fantastic_ai_core::remote_provider::PROVIDER_FIELD)) else {
+    let own = |k: &str| {
+        spawner
+            .as_ref()
+            .and_then(|m| m.get(k))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    let Some(provider) =
+        named("provider")?.or_else(|| own(fantastic_ai_core::remote_provider::PROVIDER_FIELD))
+    else {
         return Err(missing(
             "spawn",
             "provider (the provider agent the child completes through; a chat spawner's is its own)",
         ));
     };
-    out.insert(fantastic_ai_core::remote_provider::PROVIDER_FIELD.into(), json!(provider));
+    out.insert(
+        fantastic_ai_core::remote_provider::PROVIDER_FIELD.into(),
+        json!(provider),
+    );
     if let Some(m) = named("model")?.or_else(|| own("model")) {
         out.insert("model".into(), json!(m));
     }
@@ -754,7 +760,9 @@ fn parent_of(kernel: &Kernel, child: &AgentId) -> Option<String> {
 /// without it a child cannot tell whom to report to. Its parent by id, and the agents
 /// this registry spawned for the same parent (its siblings) with their roles.
 fn team_note(kernel: &Kernel, reg: &AgentId, child: &AgentId) -> String {
-    let Some(parent) = parent_of(kernel, child) else { return String::new() };
+    let Some(parent) = parent_of(kernel, child) else {
+        return String::new();
+    };
     let siblings: Vec<String> = spawned(kernel, reg)
         .into_iter()
         .filter(|s| s.id != *child && parent_of(kernel, &s.id).as_deref() == Some(parent.as_str()))

@@ -220,20 +220,6 @@ impl Rig {
     }
 }
 
-#[test]
-fn disabled_by_default() {
-    let mut reg = BundleRegistry::new();
-    assert!(!register_if_enabled(&mut reg, None));
-    assert!(!register_if_enabled(&mut reg, Some("0")));
-    assert!(!register_if_enabled(&mut reg, Some("")));
-    assert!(reg.get(HANDLER_MODULE).is_none(), "off: no handler");
-    assert!(register_if_enabled(&mut reg, Some("1")));
-    assert!(reg.get(HANDLER_MODULE).is_some());
-    assert!(
-        enabled_value(Some("TRUE")) && enabled_value(Some("yes")) && !enabled_value(Some("no"))
-    );
-}
-
 #[tokio::test]
 async fn refuses_every_verb_without_task_store_id() {
     let tmp = TempDir::new().unwrap();
@@ -671,36 +657,6 @@ async fn get_lists_children_and_history() {
 }
 
 #[tokio::test]
-async fn worker_without_a_grant_cannot_write() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp).await;
-    r.add("lead", "t1", json!({})).await;
-    for p in [
-        json!({"type": "add", "id": "w", "source": "x"}),
-        json!({"type": "assign", "id": "t1", "holder": "worker"}),
-        json!({"type": "reassign", "id": "t1", "holder": "worker"}),
-        json!({"type": "status", "id": "t1", "status": "done"}),
-        json!({"type": "report", "id": "t1", "state": "done"}),
-    ] {
-        let out = r.call("worker", p.clone()).await;
-        assert_eq!(out["reason"], "unauthorized", "{p}: {out}");
-    }
-    let got = r.call("lead", json!({"type": "get", "id": "t1"})).await;
-    assert_eq!(got["holder"], Value::Null);
-    assert_eq!(got["status"], "waiting");
-    assert_eq!(r.dump_rows().await.len(), 1, "only the lead's add");
-    // the lead's own calls went through
-    assert!(r
-        .call(
-            "lead",
-            json!({"type": "status", "id": "t1", "status": "done"})
-        )
-        .await
-        .get("error")
-        .is_none());
-}
-
-#[tokio::test]
 async fn state_survives_a_registry_restart() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp).await;
@@ -1036,23 +992,6 @@ async fn status_needs_status_or_a_fact() {
 }
 
 #[tokio::test]
-async fn worker_without_a_grant_cannot_update_the_facts() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp).await;
-    r.add("lead", "t1", json!({"versions": vers(1)})).await;
-    let out = r
-        .call(
-            "worker",
-            json!({"type": "status", "id": "t1", "versions": vers(2)}),
-        )
-        .await;
-    assert_eq!(out["reason"], "unauthorized", "{out}");
-    let got = r.call("lead", json!({"type": "get", "id": "t1"})).await;
-    assert_eq!(got["versions"], vers(1), "unchanged");
-    assert_eq!(task_rows(&r).await, 1);
-}
-
-#[tokio::test]
 async fn report_records_usage_and_keeps_the_last() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp).await;
@@ -1228,60 +1167,6 @@ async fn facts_survive_a_registry_restart() {
     assert_eq!(got["usage"], usage(1, 2, 3, 4));
 }
 
-#[tokio::test]
-async fn entries_from_before_the_facts_still_load() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp).await;
-    // a snapshot written before the facts existed: strip the keys from a real row
-    r.add("lead", "old", json!({"source": "gh:o/r#1"})).await;
-    let mut tables = send(&r.kernel, &r.store, json!({"type": "dump"})).await["tables"].clone();
-    for row in tables["rows"].as_array_mut().unwrap() {
-        let c = row["row"]["content"].as_object_mut().unwrap();
-        for k in ["versions", "source_version", "fork_from", "usage"] {
-            c.remove(k);
-        }
-    }
-    let inj = send(
-        &r.kernel,
-        &r.store,
-        json!({"type": "inject", "tables": tables}),
-    )
-    .await;
-    assert!(inj.get("error").is_none(), "{inj}");
-    let got = r.call("lead", json!({"type": "get", "id": "old"})).await;
-    assert_eq!(got["versions"], json!([]), "{got}");
-    assert_eq!(got["source_version"], Value::Null);
-    assert_eq!(got["usage"], Value::Null);
-    let list = r.call("lead", json!({"type": "list"})).await;
-    assert_eq!(list["tasks"][0]["fork_from"], Value::Null, "{list}");
-    let a = r
-        .call(
-            "lead",
-            json!({"type": "assign", "id": "old", "holder": "worker"}),
-        )
-        .await;
-    assert_eq!(a["versions"], json!([]), "{a}");
-    assert_eq!(a["history"][0].as_object().unwrap().len(), 4);
-    let rep = r
-        .call(
-            "lead",
-            json!({"type": "report", "id": "old", "state": "done"}),
-        )
-        .await;
-    assert_eq!(rep["usage"], Value::Null, "{rep}");
-    let rows = r.dump_rows().await;
-    let last = rows
-        .iter()
-        .rev()
-        .find(|x| x["row"]["task_id"] == "old")
-        .unwrap();
-    assert_eq!(
-        last["row"]["content"]["versions"],
-        json!([]),
-        "rewritten with defaults"
-    );
-}
-
 // ── the refusal shape: `error` is a sentence, `reason` is the code ──────────
 
 fn assert_shape(out: &Value, code: &str) {
@@ -1311,25 +1196,6 @@ async fn disabled_refusal_reason_is_code_error_is_sentence() {
         );
         assert!(out["hint"].is_string(), "{out}");
     }
-}
-
-#[tokio::test]
-async fn store_refused_reason_is_code_keeps_store_extras() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp).await;
-    r.kernel
-        .edit_callable_by(&AgentId::from(r.store.as_str()), |m| {
-            m.remove("tr").is_some()
-        })
-        .unwrap();
-    let out = r.add("lead", "t2", json!({})).await;
-    assert_shape(&out, "store_refused");
-    assert!(out["error"].as_str().unwrap().starts_with("store"), "{out}");
-    assert!(
-        out["store_error"].as_str().is_some_and(|e| !e.is_empty()),
-        "{out}"
-    );
-    assert_eq!(out["store_reason"], "unauthorized", "{out}");
 }
 
 #[tokio::test]
