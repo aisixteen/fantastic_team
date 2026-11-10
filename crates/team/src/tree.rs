@@ -34,15 +34,6 @@ pub const DISPATCHER_KERNEL_VERBS: [&str; 3] = ["create_agent", "update_agent", 
 /// `stop`, `status`, `watch`). Granted by [`grant_chat_to`]; never `*`.
 pub const CHAT_VERBS: [&str; 5] = ["history", "send", "stop", "status", "watch"];
 
-/// True when the agent `id` is live in the kernel. Read from the kernel's table,
-/// not by a `reflect`: a team bundle need not answer `reflect` (the dispatcher
-/// and worker view do not), so a reflect would call a live agent missing.
-fn exists(kernel: &Arc<Kernel>, id: &str) -> bool {
-    kernel
-        .agents
-        .contains_key(&fantastic_kernel::AgentId::from(id))
-}
-
 /// Grant the page's principal (the `web_ws` leg that serves the page) the chat verbs on
 /// each worker in `workers` and on every agent whose parent is one of them (its
 /// subagents), on both ends: the principal's `can_call` names the agent and the
@@ -51,12 +42,12 @@ fn exists(kernel: &Arc<Kernel>, id: &str) -> bool {
 /// fatal. Returns how many agents got the grant. An agent made after the start gets it
 /// at the next start.
 pub fn grant_chat_to(kernel: &Arc<Kernel>, workers: &[String], principal: &str) -> usize {
-    if !exists(kernel, principal) {
+    if !kernel.exists(principal) {
         return 0;
     }
     let live: Vec<String> = workers
         .iter()
-        .filter(|w| exists(kernel, w))
+        .filter(|w| kernel.exists(w))
         .cloned()
         .collect();
     let mut targets: BTreeSet<String> = live.iter().cloned().collect();
@@ -98,7 +89,7 @@ pub fn grant_chat_to(kernel: &Arc<Kernel>, workers: &[String], principal: &str) 
 /// verbs of its panel (`view.calls`) plus `get_html` and `watch`, never `*`. An id that is
 /// not live or has no `view` is skipped. Idempotent. Returns how many agents got the grant.
 pub fn grant_card_ids(kernel: &Arc<Kernel>, principal: &str, ids: &[String]) -> usize {
-    if !exists(kernel, principal) {
+    if !kernel.exists(principal) {
         return 0;
     }
     let leg = fantastic_kernel::AgentId::from(principal);
@@ -156,7 +147,7 @@ const CARD_HISTORY_PAGES: usize = 50;
 /// as the operator) and the embedded hosts that are on show get the grant. A chat that
 /// does not answer `history` grants nothing.
 pub async fn grant_cards(kernel: &Arc<Kernel>, principal: &str, chat_agent: &str) -> usize {
-    if !exists(kernel, principal) || !exists(kernel, chat_agent) {
+    if !kernel.exists(principal) || !kernel.exists(chat_agent) {
         return 0;
     }
     let mut rows: Vec<Value> = Vec::new();
@@ -189,13 +180,13 @@ pub const CONTROL_VERBS: [&str; 4] = ["send", "stop", "start", "pause"];
 /// Returns how many workers hold the grant. A worker made after the start is granted by
 /// `add_worker`.
 pub fn grant_control(kernel: &Arc<Kernel>, workers: &[String]) -> usize {
-    if !exists(kernel, DISPATCHER_ID) {
+    if !kernel.exists(DISPATCHER_ID) {
         return 0;
     }
     let verbs = json!(CONTROL_VERBS);
     let dispatcher = fantastic_kernel::AgentId::from(DISPATCHER_ID);
     let mut granted = 0;
-    for id in workers.iter().filter(|w| exists(kernel, w)) {
+    for id in workers.iter().filter(|w| kernel.exists(w)) {
         let agent = fantastic_kernel::AgentId::from(id.as_str());
         let by_agent = kernel.edit_callable_by(&agent, |cb| {
             if cb.get(DISPATCHER_ID) == Some(&verbs) {
@@ -224,7 +215,7 @@ pub fn grant_control(kernel: &Arc<Kernel>, workers: &[String]) -> usize {
 /// The worker's own `can_call` already names the store (`config::agent_record`). An
 /// operator write, idempotent. `Err` when the store is not live or refuses the edit.
 pub fn grant_store(kernel: &Arc<Kernel>, store: &str, agent: &str) -> Result<(), String> {
-    if !exists(kernel, store) {
+    if !kernel.exists(store) {
         return Err(format!("the store agent `{store}` does not exist"));
     }
     kernel
@@ -263,12 +254,12 @@ pub fn digest_leads(fleet: &Value) -> Vec<String> {
 /// An operator write; idempotent; a dead id is skipped. Returns how many agents got a
 /// new grant.
 pub fn grant_digest_targets(kernel: &Arc<Kernel>, ids: &[String]) -> usize {
-    if !exists(kernel, CADENCER_ID) {
+    if !kernel.exists(CADENCER_ID) {
         return 0;
     }
     let verbs = json!(["send"]);
     let mut granted = 0;
-    for id in ids.iter().filter(|i| exists(kernel, i)) {
+    for id in ids.iter().filter(|i| kernel.exists(i)) {
         let by_agent =
             kernel.edit_callable_by(&fantastic_kernel::AgentId::from(id.as_str()), |cb| {
                 if cb.get(CADENCER_ID) == Some(&verbs) {

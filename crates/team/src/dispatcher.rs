@@ -653,18 +653,6 @@ fn refused(node: &str, action: &str, error: String) -> Value {
     json!({"sent": false, "node": node, "action": action, "error": error})
 }
 
-/// The error text of a kernel reply, if it is a refusal.
-fn error_of(reply: &Value) -> Option<String> {
-    if reply.is_null() {
-        return Some("no reply".into());
-    }
-    reply.get("error").filter(|e| !e.is_null()).map(|e| {
-        e.as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| e.to_string())
-    })
-}
-
 /// Write the new membership to the dispatcher's own record, through the kernel's
 /// `update_agent`.
 /// Where the groups are kept: the dispatcher's own record (`me`), and the groups as they stand.
@@ -687,7 +675,7 @@ async fn save_groups(
             json!({"type": "update_agent", "id": me, "groups": groups}),
         )
         .await;
-    match error_of(&r) {
+    match fantastic_kernel::error_text(&r) {
         Some(e) => Err(format!("could not update the groups: {e}")),
         None => Ok(()),
     }
@@ -784,7 +772,7 @@ async fn add_worker(
         json!({"$self": "*", "$subtree": "*", (store.as_str()): "*"}),
     );
     rec.insert("callable_by".into(), json!({"$self": "*", "$parent": "*"}));
-    if let Some(e) = error_of(&peers.ask(root, Value::Object(rec)).await) {
+    if let Some(e) = fantastic_kernel::error_text(&peers.ask(root, Value::Object(rec)).await) {
         return refused(group, action, format!("could not create '{id}': {e}"));
     }
     if let Err(e) = crate::tree::grant_store(kernel, &store, &id) {
@@ -815,7 +803,7 @@ async fn remove_worker(
     let r = peers
         .ask(root, json!({"type": "delete_agent", "id": worker}))
         .await;
-    if let Some(e) = error_of(&r) {
+    if let Some(e) = fantastic_kernel::error_text(&r) {
         return refused(worker, action, format!("could not remove '{worker}': {e}"));
     }
     let left = groups_without(at.groups, worker);
