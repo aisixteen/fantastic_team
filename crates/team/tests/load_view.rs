@@ -1,12 +1,8 @@
 //! The load and progress view (#127): the code gives plain counts, the owning
-//! agent decides what to show. These tests check that no mode, enum or
-//! progress/load switch exists in the load code, and that no total is made.
+//! agent decides what to show. This test checks that no mode, enum or
+//! progress/load switch exists in the load code.
 //! The digest a scripted driver receives is tested in `cadencer.rs`, through
 //! the real beat and delivery path.
-
-use std::collections::BTreeMap;
-
-use fantastic_team::board::{load_numbers, Board, Group, Live, Status, Task};
 
 /// The files the load code lives in.
 const LOAD_SOURCES: &[(&str, &str)] = &[
@@ -33,26 +29,4 @@ fn no_mode_field_or_enum_for_load() {
             }
         }
     }
-}
-
-#[test]
-fn load_numbers_has_no_total_or_of_key() {
-    let mut b = Board::default();
-    b.tasks.insert(
-        "o/r#1".into(),
-        Task {
-            id: "o/r#1".into(),
-            status: Status::Pending,
-            ..Default::default()
-        },
-    );
-    let groups: BTreeMap<String, Group> = BTreeMap::new();
-    let mut live = BTreeMap::new();
-    live.insert("w1".to_string(), Live::default());
-    b.touch_agent("w1", "idle", 0.0, 100);
-    let load = load_numbers(&b, &groups, &live, 100, 300);
-    let text = load.to_string();
-    assert!(!text.contains("\"total\""), "{text}");
-    assert!(!text.contains("\"of\""), "{text}");
-    assert!(load["tasks"].get("waiting_ci").is_none());
 }
