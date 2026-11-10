@@ -97,7 +97,6 @@ The issues the coverage check reopened (see #147), and the rows above that are `
 - [x] #38: `e2e/tests/surfaces/headless_binds_no_port` and `e2e/tests/surfaces/bare_without_terminal_prints_readme` assert no port bound and, without a terminal, the readme and nothing started.
 - [x] #57: `e2e/tests/dispatcher/digest_reaches_driver` runs the cadencer in the built binary and sees a digest reach a driver.
 - [x] #122: `e2e/tests/ui/sidebar_opens_agent_full_screen` runs the page's own script against the live socket (no real browser; a stub DOM).
-- [x] #137: `tests/repro_scripts.sh::canvas_zip_is_byte_identical_across_two_packs` exists.
 - [ ] #7: the queue bundle is fantastic's; this repo has an e2e but no unit test of take, renew and done.
 - [ ] #56: no test that the old "shift" name is gone from the code.
 - [ ] #102: no test that a new task starts the worker with a clear context.

@@ -254,12 +254,8 @@ fn ci_e2e_runs_the_driver_on_built_binaries() {
     let doc = doc();
     let e2e = job(&doc, "e2e");
     assert!(
-        run_text(e2e).contains("tests/e2e.sh"),
-        "e2e job must run tests/e2e.sh"
-    );
-    assert!(
-        repo_root().join("tests").join("e2e.sh").is_file(),
-        "tests/e2e.sh missing"
+        run_text(e2e).contains("e2e/run.py"),
+        "e2e job must run e2e/run.py"
     );
 }
 
