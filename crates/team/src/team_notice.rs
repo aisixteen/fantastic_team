@@ -1,5 +1,5 @@
-//! TEAM NOTICE: when an AI agent is added under a lead, or removed from it, that lead
-//! and every AI agent in its subtree get the team's structure (who leads, every member
+//! TEAM NOTICE: when an AI agent (an AI chat, by its handler's base) is added under a
+//! lead, or removed from it, that lead and every AI agent in its subtree get the team's structure (who leads, every member
 //! with its parent and role). A spawned agent's task comes from the roles registry, so
 //! without it a member cannot tell whom it reports to. Only that lead's subtree is told:
 //! the structure of a team is its lead's business, nobody else's.
@@ -27,15 +27,20 @@ pub(crate) enum Change {
     Removed { id: String },
 }
 
-/// An AI agent: an AI chat, the agent that names its provider (`provider_id`). A provider
-/// keeps a memory store too, but holds no conversation and takes no message.
-fn is_ai(kernel: &Kernel, id: &str) -> bool {
-    kernel.agents.get(&AgentId::from(id)).is_some_and(|a| {
-        a.value()
-            .record()
-            .meta
-            .contains_key(fantastic_ai_core::remote_provider::PROVIDER_FIELD)
+/// Whether a handler is an AI chat: the handler, or the base its role resolves to, is
+/// `ai_chat.tools`. A provider is another bundle and takes no message.
+fn is_chat(kernel: &Kernel, handler: Option<&str>) -> bool {
+    handler.is_some_and(|h| {
+        kernel.bundles.base_of(h) == fantastic_ai_core::chat_bundle::HANDLER_MODULE
     })
+}
+
+/// An AI agent: an AI chat, by its handler's base.
+fn is_ai(kernel: &Kernel, id: &str) -> bool {
+    kernel
+        .agents
+        .get(&AgentId::from(id))
+        .is_some_and(|a| is_chat(kernel, a.value().handler_module.as_deref()))
 }
 
 /// The leads whose team changed in `batch`. `parents` remembers each AI member's lead,
@@ -182,12 +187,7 @@ pub fn start(kernel: &Arc<Kernel>) -> JoinHandle<()> {
             Some(k) => k
                 .agents
                 .iter()
-                .filter(|e| {
-                    e.value()
-                        .record()
-                        .meta
-                        .contains_key(fantastic_ai_core::remote_provider::PROVIDER_FIELD)
-                })
+                .filter(|e| is_chat(&k, e.value().handler_module.as_deref()))
                 .filter_map(|e| Some((e.key().0.clone(), e.value().parent_id.as_ref()?.0.clone())))
                 .collect(),
             None => return,
@@ -309,11 +309,13 @@ mod tests {
             ("M", DEFAULT_ROOT_ID, true, ""),
             ("x", "M", true, ""),
         ] {
-            let mut mk = json!({"type": "create_agent", "id": id, "parent_id": parent, "handler_module": "ram_store.tools",
+            let handler = if ai {
+                "ai_chat.tools"
+            } else {
+                "ram_store.tools"
+            };
+            let mut mk = json!({"type": "create_agent", "id": id, "parent_id": parent, "handler_module": handler,
                 "callable_by": {"$self": "*", "$parent": "*"}});
-            if ai {
-                mk["provider_id"] = json!("p");
-            }
             if !role.is_empty() {
                 mk["role"] = json!(role);
             }
@@ -353,8 +355,8 @@ mod tests {
             "handler_module": "ram_store.tools", "callable_by": {"$self": "*", "$parent": "*"}});
         k.send(vec![Item::new(DEFAULT_ROOT_ID, mk)]).await;
         let _tap = start(&k);
-        let mk = json!({"type": "create_agent", "id": "b", "parent_id": "L", "handler_module": "ram_store.tools",
-            "provider_id": "p", "callable_by": {"$self": "*", "$parent": "*"}});
+        let mk = json!({"type": "create_agent", "id": "b", "parent_id": "L", "handler_module": "ai_chat.tools",
+            "callable_by": {"$self": "*", "$parent": "*"}});
         k.send(vec![Item::new(DEFAULT_ROOT_ID, mk)]).await;
         // the notice grants the cadencer `send` on every member it tells, then sends
         let told = |id: &str| told(&k, id);
@@ -391,6 +393,41 @@ mod tests {
             "both AI-led teams are told at boot"
         );
         assert!(!told("t"), "a tool is told nothing");
+        k.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_agent_on_a_role_over_the_chat_is_a_member() {
+        let (_dir, k) = tree().await;
+        let mk = json!({"type": "create_agent", "id": "r", "parent_id": "L", "handler_module": "worker",
+            "callable_by": {"$self": "*", "$parent": "*"}});
+        let r = k
+            .send(vec![Item::new(DEFAULT_ROOT_ID, mk)])
+            .await
+            .remove(0)
+            .result;
+        assert!(r.get("error").is_none(), "{r}");
+        let (to, text) = plan(&k, "L", "changed");
+        assert!(to.contains(&"r".to_string()), "{to:?}");
+        assert!(text.contains("`r`"), "{text}");
+        assert!(members(&k, "L").iter().any(|m| m.0 == "r"));
+        k.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_agent_with_only_a_provider_id_and_no_chat_is_not_told() {
+        let (_dir, k) = tree().await;
+        let mk = json!({"type": "create_agent", "id": "p1", "parent_id": "L", "handler_module": "ram_store.tools",
+            "provider_id": "p", "callable_by": {"$self": "*", "$parent": "*"}});
+        let r = k
+            .send(vec![Item::new(DEFAULT_ROOT_ID, mk)])
+            .await
+            .remove(0)
+            .result;
+        assert!(r.get("error").is_none(), "{r}");
+        let (to, text) = plan(&k, "L", "changed");
+        assert!(!to.contains(&"p1".to_string()), "{to:?}");
+        assert!(!text.contains("`p1`"), "{text}");
         k.stop().await;
     }
 }
