@@ -1,5 +1,5 @@
 # CI, run by hand (#46): `gh workflow run ci.yml --ref <branch>`, or the Actions tab.
-# Units by default (lint, test and tauri run in parallel); `-f e2e=true` adds release
+# Units by default (lint, test and tauri run in parallel); `-f os=all|linux|macos|windows` picks the OS set of every job of the run (default all); `-f e2e=true` adds release
 # builds and the model-free e2e after every unit leg passed; `-f cleanup=true` also saves the
 # build caches; run that on main after a Cargo.lock or toolchain change so branch runs restore warm
 # caches from main. No automatic runs. No secrets: the tests use fake models and a fake forge.
@@ -18,12 +18,14 @@ on:
         description: "With e2e: fail the repro job when the two builds differ (on by default; -f strict=false only warns)"
         type: boolean
         default: true
-      units_os:
-        description: "Units OS set: all (ubuntu, macOS, Windows; the default) or linux (ubuntu only). A full run (e2e) always runs all three."
+      os:
+        description: "The OS set of every job of this run, units and (with e2e) builds, repro and e2e. all: Linux, macOS and Windows."
         type: choice
         options:
           - all
           - linux
+          - macos
+          - windows
         default: all
       cleanup:
         description: "Save the build caches at the end of each job (cleanup work; off by default, runners are thrown away). Run it on main to refresh the caches."
@@ -49,8 +51,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # units_os=all (default) and every full run: three OSes; units_os=linux: ubuntu only
-        os: ${{ fromJSON((inputs.units_os == 'all' || inputs.e2e == true) && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+        # the OS set of the whole run comes from the `os` input (a missing input counts as all)
+        os: ${{ fromJSON(inputs.os == 'linux' && '["ubuntu-latest"]' || inputs.os == 'macos' && '["macos-latest"]' || inputs.os == 'windows' && '["windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     env:
       RUSTC_WRAPPER: sccache
     steps:
@@ -103,8 +105,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # units_os=all (default) and every full run: three OSes; units_os=linux: ubuntu only
-        os: ${{ fromJSON((inputs.units_os == 'all' || inputs.e2e == true) && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+        # the OS set of the whole run comes from the `os` input (a missing input counts as all)
+        os: ${{ fromJSON(inputs.os == 'linux' && '["ubuntu-latest"]' || inputs.os == 'macos' && '["macos-latest"]' || inputs.os == 'windows' && '["windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     env:
       RUSTC_WRAPPER: sccache
     steps:
@@ -161,7 +163,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((inputs.units_os == 'all' || inputs.e2e == true) && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(inputs.os == 'linux' && '["ubuntu-latest"]' || inputs.os == 'macos' && '["macos-latest"]' || inputs.os == 'windows' && '["windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     env:
       RUSTC_WRAPPER: sccache
     steps:
@@ -217,7 +219,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.os == 'linux' && '["ubuntu-latest"]' || inputs.os == 'macos' && '["macos-latest"]' || inputs.os == 'windows' && '["windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     env:
       RUSTC_WRAPPER: sccache
     steps:
@@ -272,13 +274,14 @@ jobs:
   # (fantastic #409), so a difference fails the job unless strict=false.
   repro:
     name: repro (${{ matrix.os }})
-    if: inputs.e2e == true
+    if: inputs.e2e == true && inputs.os != 'windows'
     needs: [lint, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # repro has no Windows leg: os=windows skips the job (the matrix then only needs to be non-empty)
+        os: ${{ fromJSON(inputs.os == 'linux' && '["ubuntu-latest"]' || inputs.os == 'macos' && '["macos-latest"]' || inputs.os == 'windows' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest"]') }}
     env:
       STRICT: ${{ inputs.strict }}
     steps:
@@ -349,7 +352,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.os == 'linux' && '["ubuntu-latest"]' || inputs.os == 'macos' && '["macos-latest"]' || inputs.os == 'windows' && '["windows-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
