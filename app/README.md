@@ -157,9 +157,8 @@ Not in this slice:
   the rest of that part's stream is not drawn until the next part. Grants reach
   only the workers in the dispatcher's `groups` and their subagents, as of the start; an
   agent made later is granted at the next start. No real browser check of the
-  chat, and no live-canvas test. The stream, tool, reasoning, stats, inquiry,
-  attachment and replay handlers are run in CI by `cargo test -p fantastic-team`
-  against a stub DOM (needs node; `crates/team/tests/js/chat_harness.js`).
+  chat, and no live-canvas test. The page is two empty columns for now (#216); the
+  chat handlers went with the old page.
 - Row status: the row carries `minutes` and `pr` from the board snapshot (the
   claimed task, else the worker's newest done task with a link).
 - No window run in CI (it needs a display and webkit). CI builds the app with

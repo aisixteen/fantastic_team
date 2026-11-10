@@ -69,7 +69,7 @@ def run(ctx):
     tpage = tpage.decode(errors="replace")
     _, script = http_get(f"http://127.0.0.1:{port}/team_page/file/page.js")  # the page's script is its own file
     v.check("the web host serves the team page (/team_page) and its script",
-            status == 200 and "function renderSidebar(" in script.decode(errors="replace"), f"{status}")
+            status == 200 and bool(script) and "col-left" in tpage, f"{status}")
 
     ws = WsClient(port, WS)
     try:
@@ -117,9 +117,7 @@ def run(ctx):
     v.check("w1 handled the message", bool(mine), "no w1 line in the team log")
     v.check("w2 and the lead handled nothing", not other, str(other[:3]))
 
-    # not built: see README.md
-    print("  [skipped] no horizontal scroll at 360x740 and desktop: needs a headless browser, "
-          "and the stdlib-only harness has no CDP client")
+    # the layout in a browser: ui/layout_two_columns
 
     code = team.stop()
     v.check("the team stopped on SIGTERM and drained", code in (0, -15), f"exit {code}")
