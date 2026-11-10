@@ -43,32 +43,17 @@ There is no `team.yaml`. Every key it had is a field of an agent record, set wit
 
 Keys are never written in a record. Name the credential ref, set the environment variables the credential store reads in your shell, and tell the user which names to set.
 
-## 4. Run it on a remote box
-
-Remote scripts run from the laptop, in `scripts/`:
-
-- `remote-add.sh <name> <host>:<dir> [--bin PATH] [--port N] [--keys "NAME …"] [--dry-run]`: once, to save the remote.
-- `remote-start.sh <name> [--port N] [--dry-run]`: start it detached. The values of the `--keys` variables are read on the laptop and sent over SSH stdin. They never appear in an argument list or a file.
-- `remote-ls.sh [--dry-run]`: every remote and its state.
-- `remote-attach.sh <name> [--port N] [--dry-run]`: the web UI through a tunnel, at http://127.0.0.1:N. The terminal UI is not supported over the tunnel yet.
-- `remote-logs.sh <name> [-f] [-n LINES]`: the team's log.
-- `remote-stop.sh <name> [--now] [--yes] [--dry-run]`: drains the team (SIGTERM). `--now` kills it. It asks first unless `--yes`.
-
-## 5. Give it work
+## 4. Give it work
 
 Work comes from GitHub issues. A maintainer adds the label `team-ready` to an issue, and a `## SPEC` comment is written by the maintainer or the app. The puller (`crates/team/src/puller.rs`) takes only issues whose latest `team-ready` event is by the maintainer. It writes `queue/<repo>-<n>.md` and a pending `.state` file. It never overwrites a state file. Read `queue/` to see what was taken.
 
-## 6. Rules
+## 5. Rules
 
 - Never put a key, token or password in a file, an argument, a commit or a log. Keys come from the credential store.
 - Never push to the default branch (`main`), and never force-push. Workers push work branches through the git connector only.
 - Merging is the maintainer's decision.
-- Ask before stopping a running team. `remote-stop.sh` asks unless `--yes` is given.
 
-## 7. Troubleshooting
+## 6. Troubleshooting
 
 - `fantastic: the UI needs a terminal`: where there is none, run `fantastic_team webui` or `fantastic_team --headless`.
 - `fantastic: unknown \`--tui\``: the team's own surface flags are gone; use fantastic's words (`webui --port N`, `canvas --port N`, `--headless`).
-- `… is not set on this laptop`: export the variable named in the remote's keys, then run `remote-start.sh` again.
-- `no remote \`name\``: add it first with `remote-add.sh`.
-- `already running · pid …`: the team is up. Use `remote-stop.sh` before starting again.

@@ -153,25 +153,6 @@ A directive for the lead is its record's `system_prompt_file`, or a message sent
 
 The build packs fantastic's canvas page with a pinned esbuild. With no vendored binary it compiles esbuild itself, which needs Go on PATH. CI installs Go 1.23.4 (`setup-go` in `.github/workflows/ci.yml`).
 
-## Run it on another machine
-
-The team can run on a box with a GPU while you start and watch it from a laptop over SSH. It runs detached, like a tmux session: closing the laptop, the tunnel or a terminal never stops it. Until these become `fantastic_team remote …` subcommands, they are scripts:
-
-
-```
-scripts/remote-add.sh gpu box.example.com:/srv/team --port 8093 --keys "ANTHROPIC_API_KEY"   # once
-scripts/remote-start.sh gpu
-scripts/remote-ls.sh
-scripts/remote-attach.sh gpu     # Ctrl-C detaches; gpu keeps running
-scripts/remote-logs.sh gpu -f
-scripts/remote-stop.sh gpu       # asks first; drains (SIGTERM); --now kills
-```
-
-- **Keys only at start.** The laptop config names variables, never values. `remote-start.sh` reads their values from the laptop's environment and pipes them over SSH stdin. They are never in an argv, a file or shell history.
-- **127.0.0.1 only.** The team binds the box's loopback; `remote-attach.sh` reaches it through an SSH tunnel. No public port.
-- **After the box reboots** the team is down, because its keys were only in memory. `remote-ls.sh` says so.
-- Every script takes `--dry-run`, which prints the commands and no secret.
-
 ## Observe
 
 - **Cost and time per task.** Each task records its worker, model, time, tokens and cost, computed from the template's prices. Compare lanes on what a task really costs.
@@ -180,7 +161,6 @@ scripts/remote-stop.sh gpu       # asks first; drains (SIGTERM); --now kills
 - **The worker view** (`team_worker_view.tools`): one canvas per worker, with its task, files, output and chat.
 - **The dispatcher** (`team_dispatcher.tools`): the home screen of the web UI and the app. Workers by group, each with its state, current task, time and cost, and what is waiting for you.
 - **The web UI** with `webui --port`, or fantastic's terminal UI.
-- **Logs** through `scripts/remote-logs.sh` when the team runs remotely.
 
 ## The app
 
@@ -252,7 +232,7 @@ A worker or the whole team is exported and imported with fantastic's own bluepri
 
 ## Tests and CI
 
-Unit tests: `cargo test --workspace`. Also `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, and the shell tests `sh tests/new_task.sh`, `sh tests/remote_scripts.sh`, `sh tests/build_github.sh`, `sh tests/repro_scripts.sh`. CI also runs `sh scripts/build-github.sh --check` (the GitHub patch applies) and `sh scripts/build-github.sh --test` (the GitHub build's tests). None of them needs a network or a key.
+Unit tests: `cargo test --workspace`. Also `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`, and the shell tests `sh tests/new_task.sh`, `sh tests/build_github.sh`, `sh tests/repro_scripts.sh`. CI also runs `sh scripts/build-github.sh --check` (the GitHub patch applies) and `sh scripts/build-github.sh --test` (the GitHub build's tests). None of them needs a network or a key.
 
 End to end (e2e/README.md) has three tiers:
 

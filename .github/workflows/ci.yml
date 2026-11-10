@@ -143,7 +143,6 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           sh tests/new_task.sh
-          sh tests/remote_scripts.sh
           sh tests/build_github.sh
           sh tests/repro_scripts.sh
       # cleanup: save the finished cache (a restore-only run leaves it alone)

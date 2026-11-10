@@ -386,8 +386,8 @@ fn readme_lists_every_shell_test_ci_runs() {
     let text = readme();
     let tests = ci_shell_tests();
     assert!(
-        tests.len() >= 4,
-        "ci.yml should run at least 4 shell tests, found {}: {tests:?}",
+        tests.len() >= 2,
+        "ci.yml should run at least 2 shell tests, found {}: {tests:?}",
         tests.len()
     );
     for path in &tests {

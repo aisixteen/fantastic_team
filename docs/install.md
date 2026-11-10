@@ -65,8 +65,6 @@ Never write a value in a file, a config, or a doc.
 
 Keys go in the credential store, never in a file. This repo does not define provider environment variable names, so none are listed here. The GitHub credential comes from env refs as in step 3.
 
-For remote boxes, `scripts/remote-start.sh` reads the values of the variable names passed in `--keys` on your laptop and pipes them to the remote shell over SSH stdin. They are never in argv, a file, or shell history.
-
 ## 5. Minimal config and start
 
 The command line is fantastic's, unchanged: `fantastic_team` is `fantastic` with this repo's bundles added. It runs in the directory it is started in, so `cd` into the team's folder first. There is no config file: a team is agent records (a recipe, `send` with `create_agent`, or a directory that already holds `.fantastic/agents/`). The example is the script `examples/create_agent/worker_only.sh` (one AI worker); the app makes a lead with the roles registry and the GitHub connector the same way (`crates/team/src/new_team.rs`).
@@ -92,15 +90,6 @@ The first word the team adds to fantastic's (`ai-readme`):
 
 `--dir`, `--port` outside `canvas` and `webui`, `--tui`, `--instructions` and `--resend-instructions` are not flags any more; fantastic refuses them.
 
-Run it on a remote box with the scripts (each prints its usage with `--help`; all support `--dry-run`):
-
-- `scripts/remote-add.sh <name> <host>:<dir> [--bin PATH] [--port N] [--keys "NAME …"]`
-- `scripts/remote-start.sh <name> [--port N]` (starts detached; the binary binds 127.0.0.1 only)
-- `scripts/remote-attach.sh <name> [--port N]`
-- `scripts/remote-logs.sh <name> [-f] [-n LINES]`
-- `scripts/remote-ls.sh`
-- `scripts/remote-stop.sh <name> [--now] [--yes]`
-
 ## 6. Label a first issue, watch, review
 
 1. In the target repo, label an issue `team-ready`.
@@ -115,8 +104,7 @@ Run it on a remote box with the scripts (each prints its usage with `--help`; al
 | `no ## SPEC comment by the maintainer or the app` | Add the `## SPEC` comment yourself, or let the app author it; comments by others are ignored. |
 | Issue is not picked up | The latest `team-ready` label event must be by the maintainer. Re-add the label as the maintainer. |
 | `gh --version` fails in the worker | Install `gh` and put it on PATH. |
-| Remote start leaves no keys | Name the variables in `--keys` on `remote-add.sh`; `remote-start.sh` reads them on your laptop. |
 
 ## Tested on
 
-Linux, this box: built with `cargo build -p fantastic-team --bin fantastic_team` (exit 0), ran `readme` (above), and ran `--help` on each `scripts/remote-*.sh`. Not run: `canvas --port`, the terminal UI, a live GitHub app, real keys. macOS: not yet verified.
+Linux, this box: built with `cargo build -p fantastic-team --bin fantastic_team` (exit 0), and ran `readme` (above). Not run: `canvas --port`, the terminal UI, a live GitHub app, real keys. macOS: not yet verified.
