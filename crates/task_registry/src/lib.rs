@@ -83,17 +83,6 @@ fn agent_of(kernel: &Kernel, id: &AgentId) -> Option<Arc<Agent>> {
     kernel.agents.get(id).map(|e| Arc::clone(&e))
 }
 
-/// A refusal of the registry's own, in the kernel's shape:
-/// `{error:<sentence>, reason:<code>}`.
-fn fail(code: &str, error: String) -> Value {
-    refusal::refusal(code, error)
-}
-
-/// [`fail`] plus a `hint` — what to do instead.
-fn fail_hint(code: &str, error: String, hint: &str) -> Value {
-    refusal::refusal_hint(code, error, hint)
-}
-
 /// Every id above `id`, nearest first.
 fn ancestors(kernel: &Kernel, id: &AgentId) -> Vec<AgentId> {
     let mut out = Vec::new();
@@ -274,7 +263,7 @@ async fn store_call(kernel: &Arc<Kernel>, store: &str, payload: Value) -> Result
             Some(v) => v.to_string(),
             None => out.status.as_str().to_string(),
         };
-        let mut r = fail(
+        let mut r = refusal::refusal(
             refusal::STORE_REFUSED,
             format!("store {} refused: {text}", py_repr(store)),
         );
@@ -403,7 +392,7 @@ impl Bundle for TaskRegistryBundle {
                 "sentence": "A registry of tasks: who holds each one and where it came from.",
                 "enabled": store.is_some(),
             }),
-            _ if store.is_none() => fail_hint(
+            _ if store.is_none() => refusal::refusal_hint(
                 refusal::DISABLED,
                 "task_registry is disabled: the record has no task_store_id".to_string(),
                 "set task_store_id on the record",
@@ -534,7 +523,7 @@ async fn assign_inner(
     let from = entry["holder"].clone();
     match (re, from.is_null()) {
         (false, false) => {
-            return Err(fail(
+            return Err(refusal::refusal(
                 refusal::ALREADY_HELD,
                 format!(
                     "assign: task {} is held by {from}; use reassign",
@@ -543,7 +532,7 @@ async fn assign_inner(
             ))
         }
         (true, true) => {
-            return Err(fail(
+            return Err(refusal::refusal(
                 refusal::NOT_HELD,
                 format!("reassign: task {} has no holder; use assign", py_repr(id)),
             ))
@@ -625,7 +614,7 @@ async fn report_inner(
         }
         if let Some(c) = caller.as_ref() {
             if who != c && !ancestors(kernel, who).contains(c) {
-                return Err(fail(
+                return Err(refusal::refusal(
                     refusal::NOT_IN_SUBTREE,
                     format!(
                         "report: {} is not {c} or one of its descendants",

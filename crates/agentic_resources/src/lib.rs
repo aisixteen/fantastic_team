@@ -80,17 +80,6 @@ fn agent_of(kernel: &Kernel, id: &AgentId) -> Option<Arc<Agent>> {
     kernel.agents.get(id).map(|e| Arc::clone(&e))
 }
 
-/// A refusal of the registry's own, in the kernel's shape:
-/// `{error:<sentence>, reason:<code>, ...}`.
-fn fail(code: &str, error: String) -> Value {
-    refusal::refusal(code, error)
-}
-
-/// [`fail`] plus a `hint` — what to do instead.
-fn fail_hint(code: &str, error: String, hint: &str) -> Value {
-    refusal::refusal_hint(code, error, hint)
-}
-
 /// One agent this registry spawned.
 struct Spawned {
     id: AgentId,
@@ -518,7 +507,7 @@ async fn spawn_reply(
         create.insert("limits".to_string(), Value::Object(delegated));
     }
     let Some(root) = kernel.root() else {
-        return fail(refusal::NO_ROOT, "the kernel has no root".to_string());
+        return refusal::refusal(refusal::NO_ROOT, "the kernel has no root".to_string());
     };
     let made =
         fantastic_kernel::lifecycle::create_from_payload(kernel, &root, &Value::Object(create))
@@ -683,7 +672,7 @@ fn reg_verbs_of(can_call: &Map<String, Value>, reg: &AgentId) -> Option<Value> {
 
 /// A failed grant write, in the registry's refusal shape.
 fn grant_failed(e: String) -> Value {
-    fail_hint(
+    refusal::refusal_hint(
         refusal::GRANT_FAILED,
         format!("spawn: {e}"),
         "check that the agent records are writable, then spawn again",
@@ -855,7 +844,7 @@ fn escalation(kernel: &Kernel, caller: &Option<AgentId>, card: &Card) -> Option<
             )
             .allowed;
             if !held {
-                return Some(fail_hint(
+                return Some(refusal::refusal_hint(
                     refusal::NOT_ALLOWED,
                     format!(
                         "spawn: {who} may not grant {} on {} (role {})",
@@ -1013,7 +1002,7 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
     // the caller (the operator when there is none) must itself hold `fork` on the source
     if let (Some(who), Some(source)) = (c.caller.as_ref(), source.as_ref()) {
         if !holds_fork(kernel, who, source) {
-            return fail_hint(
+            return refusal::refusal_hint(
                 refusal::NOT_ALLOWED,
                 format!("spawn: {who} may not fork {}", py_repr(src)),
                 "grant the spawner `fork` on that agent, or spawn without `from`",
