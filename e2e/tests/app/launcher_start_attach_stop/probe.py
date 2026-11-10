@@ -38,7 +38,7 @@ def run(ctx):
     procs = []
     try:
         q = app.free_port()
-        run_flow.boot(ctx, forge=False, extra_args=["webui", "--port", q], seeded=True)
+        run_flow.boot(ctx, extra_args=["webui", "--port", q], seeded=True)
         page_url = f"http://127.0.0.1:{q}/team_page/file/index.html"
         v.check("the headless binary's web UI answers on its port", app.wait_http(page_url, 30), page_url)
 

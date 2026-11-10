@@ -156,10 +156,10 @@ def lay_bundles(ctx, srcs) -> list[str]:
 
 
 def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | None = None,
-          env: dict | None = None, bundles: str | list[str] | None = None):
+          env: dict | None = None, bundles: str | list[str] | None = None, fleet: str = "fleet"):
     """Start the team binary as fantastic's CLI, in the run folder (or its `sub` folder, for a
-    test that runs twice), on the fleet its `test.yaml` names (`fleet:`): the layers' record files
-    are laid in `.fantastic/` before the first start, and every agent laid must be loaded after it.
+    test that runs twice), on the fleet its `test.yaml` names (`fleet:`; `fleet_<name>` for a second team folder, named by
+    `fleet`): the layers' record files are laid in `.fantastic/` before the first start, and every agent laid must be loaded after it.
     `roles` turns on the `agentic_resources` bundle (`FANTASTIC_AGENTIC_RESOURCES=1`); `bundles`: the
     role bundle folders (or one) the scenario's roles registry offers, copied to `.fantastic/bundles/`.
     `env`: more variables for the kernel (a credential store's `env` backend reads its values from
@@ -178,7 +178,7 @@ def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | Non
     os.makedirs(os.path.join(ctx.work, "sandbox"), exist_ok=True)
     if bundles:
         lay_bundles(ctx, [bundles] if isinstance(bundles, str) else bundles)
-    laid = lay_test_fleet(ctx, "fleet")
+    laid = lay_test_fleet(ctx, fleet)
     ctx.team = team_mod.Team(ctx.binary, ctx.work, env)
     default = ctx.model.ai_record().get("model")
     if PROVIDER in laid and default:  # a RAM store starts empty: every start plants the default again
@@ -205,16 +205,6 @@ def lay_test_fleet(ctx, key: str = "fleet") -> list[str]:
     own = os.path.join(ctx.dir, key)
     return team_mod.lay_fleet(ctx.work, [os.path.join(FLEETS, n) for n in names], variables,
                               own if os.path.isdir(own) else None)
-
-
-def add_base(ctx) -> None:
-    """The two agents every test of this group's lead and workers use: the credential store
-    (the model's key from the environment, the way `backend: env` says) and the exec agent."""
-    create(ctx.team, {"id": "credentials", "parent_id": "user", "handler_module": "credential_store.tools",
-                      "backend": "env",
-                      "refs": {f"model/{ctx.model.host}": {"host": ctx.model.host,
-                                                            "env": {"api_key": "E2E_MODEL_KEY"}}}})
-    create(ctx.team, dict(tool_record(ctx.repo, ctx.work), id=EXEC, parent_id="user"))
 
 
 LEAD = "lead"
@@ -336,11 +326,6 @@ def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool 
         if callee in have and callee != "$self":
             records.merge(team, callee, "callable_by", {id: verbs}, have)
     return id
-
-
-def make_lead(ctx, grants: dict | None = None) -> str:
-    """The lead: `make_agent` under `user` with the model's key."""
-    return make_agent(ctx, LEAD, "user", dict(grants or {}), key=True)
 
 
 TESTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests")

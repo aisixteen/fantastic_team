@@ -6,7 +6,7 @@ else merged."""
 import json
 import os
 
-from helpers import cli, forge as F, run_flow, stock
+from helpers import cli, forge as F, run_flow
 from helpers.verdict import Verdict
 
 BRANCHES = {"green": "team/issue-1", "red": "team/issue-2", "pending": "team/issue-3"}
@@ -16,10 +16,7 @@ def run(ctx):
     v = Verdict("task/github_merge_through_connector")
     keys = run_flow.fake_keys(ctx)
     team = cli.start(ctx, env={"E2E_APP_ID": keys["app_id"], "E2E_APP_PEM": keys["pem"]})
-    stock.make_credentials(ctx, team, github=True)
     os.makedirs(os.path.join(ctx.work, "work", "wt"), exist_ok=True)
-    stock.make_forge(ctx, team, puller=False)
-    cli.make_lead(ctx, {"github": ["merge"]})
     forge = ctx.forge
     # setup, sent directly by the probe: a branch with a file, pushed
     for name, branch in BRANCHES.items():

@@ -1,0 +1,11 @@
+id: cadencer
+handler_module: team_cadencer.tools
+group_settings: {}
+can_call:
+  "$self": "*"
+  lead: [send]
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  dispatcher: [status]
+  team_ws: [status, set]

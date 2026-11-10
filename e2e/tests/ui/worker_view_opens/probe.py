@@ -4,7 +4,7 @@ import os
 import re
 import time
 
-from helpers import app, run_flow, stock as S, team as T
+from helpers import app, stock as S
 from helpers.verdict import Verdict
 from helpers.web import WsClient, http_get
 
@@ -15,43 +15,14 @@ TOP = ["task", "files", "output", "preview"]
 
 def run(ctx):
     v = Verdict("ui/worker_view_opens")
-    # the stock records (the dispatcher with its group `workers`), the lead, and the team
-    # page and its socket leg under a web host, as the app serves them
+    # the fleet is laid before the start (`fleet:` of test.yaml): the dispatcher with its group
+    # `workers`, the lead, the two workers, the team page and its socket leg under a web host
+    # that listens on the port, and every grant the page's leg needs
     port = app.free_port()
-    S.boot(ctx, forge=False, groups={"workers": {"members": ["w1", "w2"]}})
+    ctx.vars["web_port"] = port
+    S.boot(ctx)
     team = ctx.team
-    S.serve_team_page(team, port)
-
-    # two workers on the scripted model, and the operator's grants
-    for w in ("w1", "w2"):
-        r = team.send("kernel", {"type": "create_agent", "id": w, "parent_id": "kernel",
-                                 "handler_module": "anthropic_backend.tools",
-                                 "model": "scripted-model", "endpoint": ctx.model.endpoint,
-                                 "memory_store_id": "memory",
-                                 "credentials": {"store": "credentials",
-                                                 "ref": f"model/{ctx.vars['model_host']}"},
-                                 "can_call": {"$self": "*", "queue": "*"}})
-        v.check(f"{w} was created", r.get("status") == "completed", str(r))
-    S.merge(team, "credentials", "callable_by", {"w1": "*", "w2": "*"})
-    r = {"status": "completed"}
-    v.check("the credential store admits the workers", r.get("status") == "completed", str(r))
-    # the app grants the page's leg a group's workers at start; these two
-    # are made after boot, so the operator grants them as `tree::grant_chat_to` would
-    for w in ("w1", "w2"):
-        r = team.send("kernel", {"type": "update_agent", "id": w,
-                                 "callable_by": {"$self": "*", "$parent": "*", "team_ws": T.CHAT_VERBS}})
-        v.check(f"the page's leg may chat with {w}", r.get("status") == "completed", str(r))
-    r = team.send("kernel", {"type": "update_agent", "id": "team_ws",
-                             "can_call": {"$self": "*", "dispatcher": S.PAGE_VERBS,
-                                          "w1": T.CHAT_VERBS, "w2": T.CHAT_VERBS}})
-    v.check("the page's leg may call the dispatcher and the workers", r.get("status") == "completed", str(r))
-    for agent, leg_verbs in (("worker_view", None), ("dispatcher", S.PAGE_VERBS)):
-        # update_agent rewrites callable_by whole: keep the page's leg on the dispatcher
-        by = {"$self": "*", "$parent": "*", "mcp": "*"}
-        if leg_verbs:
-            by["team_ws"] = leg_verbs
-        r = team.send("kernel", {"type": "update_agent", "id": agent, "callable_by": by})
-        v.check(f"the operator may call {agent}", r.get("status") == "completed", str(r))
+    v.check("w1 and w2 are loaded", {"w1", "w2"} <= set(team.agents()), str(sorted(team.agents())))
 
     v.check("the page is served on --port", app.wait_http(f"http://127.0.0.1:{port}{TEAM_PAGE}", 30))
 

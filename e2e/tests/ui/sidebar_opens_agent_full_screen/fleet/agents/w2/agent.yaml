@@ -1,0 +1,18 @@
+id: w2
+handler_module: anthropic_backend.tools
+model: scripted-model
+endpoint: "{{model_endpoint}}"
+credentials:
+  store: credentials
+  ref: "model/{{model_host}}"
+memory_store_id: w2_memory
+can_call:
+  "$self": "*"
+  credentials: "*"
+  w2_memory: "*"
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  team_ws: [history, send, stop, status, watch]
+context_window: 100000
+max_tokens: 4000

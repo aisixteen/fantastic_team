@@ -1,0 +1,11 @@
+id: team_ws
+handler_module: web_ws.tools
+ingress_rule: allow_all_ingress
+can_call:
+  "$self": "*"
+  dispatcher: [sidebar, tree, open, control]
+  w1: [history, send, stop, status, watch]
+  w2: [history, send, stop, status, watch]
+callable_by:
+  "$self": "*"
+  web: [get_routes]

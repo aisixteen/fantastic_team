@@ -1,3 +1,5 @@
 costs: free
 timeout: 240
 plug: scripted
+fleet_personal: stock github_git github_personal
+fleet_local: stock github_git github_personal

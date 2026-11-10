@@ -160,35 +160,16 @@ Facts found while building them (fantastic at 5e74eb5):
 
 ## The stock team of the older tests (`helpers/stock.py`)
 
-The older groups (`task`, `secrets`, `dispatcher`, `roles`, `ui`, `app`, `turns`) build their team the way a person does (#219, #221): every agent is a `create_agent` payload sent with `fantastic_team send`, under an id the test chooses, and every edge is written on both ends (`records.link`):
+The older groups (`task`, `secrets`, `dispatcher`, `roles`, `ui`, `app`, `turns`) lay their team as record files before the first start (#312), the way the cli group does: the `fleet:` key of a test's `test.yaml` names layers of `e2e/fleets/` (`stock` first, then for example `team_tools`, `team_forge`, `team_puller`, `team_roles`, `team_dispatch`, `team_core`, `team_page`, `github_app`, `github_git`, `github_personal`) and the test's own `fleet/` folder last; `stock.boot` (through `run_flow.boot` or `ctx.boot_team`) copies them to `.fantastic/` with the `{{marks}}` filled, makes the folders `work/wt`, `work/tasks` and `sandbox/home`, and, with `cards=True`, copies the repo's role bundles to `.fantastic/bundles/`. The kernel loads them at boot and every id laid must be there after it. The agents, under the ids the product's code and the role cards name:
 
-- the lead is `lead` (`ctx.lead`), made by `stock.make_lead`: the plug's model and credential ref, the shared `memory` store, and the tools it may call (`worker_exec`, `worker_files`, `queue`, `git`, `github`, those that exist; `lead_tools=` narrows them);
-- the other agents, under the ids the product's code and the role cards name: the credential store, `worker_exec` and `worker_files`, `queue`, the `git` and `github` connectors against the fake forge, the queue folder and the puller; the roles registry (`agentic_resources`, with its tiers and limits) and the `tasks` registry; the board, the dispatcher with its `worker_view`, the cadencer. Every edge is written on both ends (`stock.link`);
-- the team page the UI tests drive comes from the binary: `stock.serve_webui(team, port)` stops the headless team and starts it again with `webui --port N` (#224), which makes the `web` host, `team_page` and `team_ws` and grants the leg what the page sends to, for the agents that exist at that start (make them first). `stock.serve_team_page(team, port)` is the older by-hand port of `app_control::prepare_web`, still used by `ui/worker_view_opens`;
-- a probe starts it with `run_flow.boot(ctx, ...)` / `stock.boot(ctx, ...)`: `forge=False` (no connectors), `git=False, puller=False`, `board=True`, `groups={name: {driver: "$lead", members: [...]}}` (the dispatcher and cadencer), `registry_tiers={...}` (a roles registry the dispatcher makes workers from), `roles_tiers={...}` plus `limits` (roles mode: the cards), `sub="a"` (a second team in a sub folder).
-
-## Tiers
-
-| costs | what answers | status |
-| --- | --- | --- |
-| `free` | a scripted model (`backends/scripted.py`) and a fake forge (`helpers/forge.py`) | built |
-| `turns` | a real model through the `anthropic` plug (aisixteen/fantastic#302), run by hand, needs `ANTHROPIC_API_KEY` or `E2E_ANTHROPIC_KEY` | built |
-| `gpu` | a vLLM server reached directly, through the `vllm` plug (`backends/vllm.py`, #237), run by hand, needs `VLLM_ENDPOINT` and its kin; or, with `BACKEND=anthropic`, the `anthropic` plug (#251) | built |
-
-## Layout
-
-- `run.py`: the launcher.
-- `backends/`: plugs. A test's `test.yaml` names one (`plug: scripted`, `plug: anthropic` or `plug: vllm`); a test never names a model, an endpoint or a key. A test takes the plug's model, endpoint and host from `ctx.vars` (`model_name`, `model_endpoint`, `model_host`).
-- `helpers/`: `cli.py` (the cli group: the fixture repo, fantastic's start on a laid fleet, `create_agent` helpers, the shared script turns), `records.py` (`create`, `update`, `merge`, `link`), `forge.py` (fake GitHub API plus git over smart HTTP from a bare repo), `team.py` (`fleet_files` and `lay_fleet`, start with fantastic's words such as `webui --port N`, stop, `send`, wiring, the page's chat grant), `run_flow.py` (fake keys, boot, hand the lead its message), `verdict.py` (named checks), `page.py` and `page_driver.js` (the team page's own script on a stub DOM over the live `/team_ws/ws`; needs `node` >= 22), `podman_remote.py` (the ssh remote in a Podman container, #242), `ssh_twins.py` (the ssh twins: the raw commands and scripts, the box, the shared checks) and `gpu_ssh.py` (their gpu tier: the wiring in plain words).
-- `helpers/web.py`, `helpers/app.py`: HTTP and websocket client; the app shell as a process.
-- `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`), `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code).
-- `ui/sidebar_opens_agent_full_screen` (free): drives the team page the binary serves with `webui`, with `helpers/page_driver.js` (the page's own script `page.js` on a stub DOM, over the live `/team_ws/ws`); needs node >= 22, else it prints `SKIP` and passes.
-- `tests/ui/`: the web UI (the team page on a web host, its websocket via `helpers/web.py`). The browser overflow check is not built.
-- `runs/`: one folder per run, gitignored (it holds model output).
+- the lead is `lead` (`ctx.lead`): the plug's model and credential ref, the shared `memory` store, and the tools it may call;
+- the credential store, `worker_exec` and `worker_files`, `queue`, the `git` and `github` connectors against the fake forge, the queue folder and the puller; the roles registry (`agentic_resources`, with its tiers and limits in its record) and the `tasks` registry; the board, the dispatcher with its `worker_view`, the cadencer, and the `web` host with `team_page` and `team_ws` (its port is the mark `{{web_port}}`, picked by the probe). Each record file holds its own `can_call` and `callable_by`, as a person would write them;
+- `stock.serve_webui(team, port)` stops the headless team and starts it again with `webui --port N` (#224); the page and its leg are already on disk;
+- the tests that run on the product's seed (`app/launcher_start_attach_stop`, `app/attach_remote`, `roles/app_team_spawn_trees`) name no fleet and call `stock.boot(ctx, seeded=True)` / keep their own setup steps; only the credential store of the first two is made with `send`.
 
 ## The app and the dispatcher's web UI (#37)
 
-The `app/` and `dispatcher/` tests drive the web UI of a live team: they serve the team page (`stock.serve_team_page`, or `webui --port N` through `stock.boot(ctx, extra_args=...)`), talk HTTP and a websocket with `helpers/web.py` (stdlib only), and run the app shell `fantastic_team_app` as a process (`helpers/app.py`). `run.py` builds both binaries; with `--bin`, build them yourself and keep them in the same folder:
+The `app/` and `dispatcher/` tests drive the web UI of a live team: they serve the team page (a `web` record of the fleet, or `webui --port N` through `stock.boot(ctx, extra_args=...)`), talk HTTP and a websocket with `helpers/web.py` (stdlib only), and run the app shell `fantastic_team_app` as a process (`helpers/app.py`). `run.py` builds both binaries; with `--bin`, build them yourself and keep them in the same folder:
 
 ```
 cargo build -p fantastic-team --bin fantastic_team
@@ -200,7 +181,7 @@ A probe that cannot run here raises `helpers.verdict.Skip(reason)`; the launcher
 
 Facts about the web UI at this commit, found while writing these tests:
 
-1. `fantastic_team webui --port P` serves the team page `/team_page/file/index.html` and its socket `/team_ws/ws` (#224). The tests that need the team page build it with `stock.serve_team_page`.
+1. `fantastic_team webui --port P` serves the team page `/team_page/file/index.html` and its socket `/team_ws/ws` (#224). The tests that need the team page lay its records (`team_page` layer).
 2. The launcher (`fantastic_team_app`) starts `webui --port N` in the team folder and waits for a 200 at `/team_page/file/index.html` (`READY_PATH`), the page that command serves. It writes the role cards under `roles/` and, once the page answers, makes the team with `create_agent` under fixed ids when the kernel has no `lead` (it needs the home's `credentials` agent); a folder whose kernel has its `lead` is started as it is, so `app/launcher_start_attach_stop` makes one first (and has a second leg for the folder with no team). `app/attach_remote` keeps a small proxy front for its tunnel leg.
 3. The Rust ai-core never emits the `tool_calling` status the page's tool blocks key on; a tool call is a `call` part sent to the watchers of its addressee.
 4. The scripted plug takes `"thinking": "..."` (a reasoning block before the text) and `"delay": seconds` (the plug waits before it answers) on a turn.
@@ -219,13 +200,13 @@ The anthropic backend sends no `tools` array: a model calls a tool by writing a 
 
 These are facts about the binary at the commit this was built on, not decisions of the suite. Each workaround is in `helpers/team.py` or `helpers/run_flow.py` and goes away when the cause is fixed.
 
-1. `worker_files` and the puller's queue folder are sealed by default (`edge sealed by policy`); `stock.py` makes them with `ingress_rule: allow_all_ingress`, and writes the callers on both ends.
-2. The binary never calls `prepare_sandbox`: `stock.make_tools` makes `work/`, `work/wt`, `work/tasks` and `sandbox/home` first. The worker's HOME is the relative `./sandbox/home`.
-3. Agents are made with `create_agent` under fixed ids, so a string field that names another agent (the board's `github`, the dispatcher's `team`) and a card's grant on `github` or `worker_exec` are true as written (fantastic's import would rename them `_1`).
-4. A spawner grants only what it holds, and the operator is the `mcp` leg: `stock.operator_holds` gives it the grants a card names before a probe spawns a role as the operator.
+1. `worker_files` and the puller's queue folder are sealed by default (`edge sealed by policy`); the fleet's record files carry `ingress_rule: allow_all_ingress` and the callers on both ends.
+2. The binary never calls `prepare_sandbox`: `stock.boot` makes `work/`, `work/wt`, `work/tasks` and `sandbox/home` before the first start. The worker's HOME is the relative `./sandbox/home`.
+3. Agents are record files under fixed ids, so a string field that names another agent (the board's `github`, the dispatcher's `team`) and a card's grant on `github` or `worker_exec` are true as written (fantastic's import would rename them `_1`).
+4. A spawner grants only what it holds, and the operator is the `mcp` leg, which base's boot grants every agent on disk.
 5. A model cannot pass `title` to `github pr_create`: `title` is a call-level field of the `<call>` grammar. The scripted model therefore stops after the push, and the probe sends `pr_create` itself, as the operator. The PR request is still what the github connector sends.
-6. The roles registry and the board are made by `stock.py`, not by a start-up step: nothing in the binary plans a tree now.
-7. The team page for the older UI tests is `stock.serve_team_page` (see above).
+6. The roles registry and the board are record files of the fleet, not a start-up step: nothing in the binary plans a tree now.
+7. The team page for the older UI tests is the `team_page` layer (see above).
 
 ## The roles group
 

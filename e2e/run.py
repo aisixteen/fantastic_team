@@ -151,12 +151,12 @@ class Ctx:
         self.vars: dict = {}
         self.team: team_mod.Team | None = None
         self.secrets: dict = {}
-        self.lead = "lead"  # the lead `stock.make_lead` creates, under a fixed id
+        self.lead = "lead"  # the lead the fleet lays, under a fixed id
         self.work = run_dir
 
     def boot_team(self, env_extra: dict[str, str] | None = None, **kw) -> team_mod.Team:
-        """Start the stock team (`helpers/stock.py`): fantastic's CLI in the run folder, the
-        the lead and the rest made with `send` + `create_agent`."""
+        """Start the stock team (`helpers/stock.py`): fantastic's CLI in the run folder on the fleet
+        the test's `test.yaml` names (`fleet:`); `cards=True` copies the repo's role bundles first."""
         return stock_mod.boot(self, env_extra, **kw)
 
 
