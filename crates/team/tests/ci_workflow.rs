@@ -158,7 +158,7 @@ fn unit_leg_covers_three_oses(doc: &Value, leg: &str) {
     .and_then(Value::as_str)
     .expect("units matrix os is a fromJSON expression");
     assert!(expr.contains("fromJSON"), "units matrix os: {expr}");
-    // the JSON array literals in the expression: first is the all-OS branch, second is linux only
+    // the JSON array literals in the expression: linux, macos, windows, then the all-OS default
     let mut lists: Vec<Vec<String>> = Vec::new();
     let mut rest = expr;
     while let Some(start) = rest.find("'[") {
@@ -172,26 +172,27 @@ fn unit_leg_covers_three_oses(doc: &Value, leg: &str) {
         );
         rest = &tail[end + 2..];
     }
-    assert_eq!(lists.len(), 2, "two array literals in {expr}");
-    // default inputs (units_os=all) select the first literal; units_os=linux (e2e off) the second
-    let os = &lists[0];
-    let linux = &lists[1];
+    assert_eq!(lists.len(), 4, "four array literals in {expr}");
+    // the default input (os=all) falls through to the last literal
+    let os = &lists[3];
+    assert_eq!(lists[0], vec!["ubuntu-latest".to_string()]);
+    assert_eq!(lists[1], vec!["macos-latest".to_string()]);
+    assert_eq!(lists[2], vec!["windows-latest".to_string()]);
     assert!(
-        expr.contains("inputs.units_os == 'all'"),
-        "default branch keys on units_os == 'all': {expr}"
+        expr.contains("inputs.os == 'linux'"),
+        "matrix keys on inputs.os: {expr}"
     );
-    assert_eq!(linux, &vec!["ubuntu-latest".to_string()]);
-    let units_os = key(
+    let os_input = key(
         key(
             key(triggers(doc), "workflow_dispatch").expect("workflow_dispatch"),
             "inputs",
         )
         .expect("workflow_dispatch has inputs"),
-        "units_os",
+        "os",
     )
-    .expect("input `units_os` exists");
+    .expect("input `os` exists");
     assert_eq!(
-        key(units_os, "default").and_then(Value::as_str),
+        key(os_input, "default").and_then(Value::as_str),
         Some("all")
     );
     for want in ["ubuntu-latest", "macos-latest", "windows-latest"] {
