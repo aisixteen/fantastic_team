@@ -1,0 +1,5 @@
+id: kernel_state
+handler_module: kernel_state.tools
+callable_by:
+  "$self": "*"
+  dispatcher: [create_agent, update_agent, delete_agent]

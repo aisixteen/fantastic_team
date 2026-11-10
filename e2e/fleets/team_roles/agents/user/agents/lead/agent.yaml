@@ -1,0 +1,28 @@
+id: lead
+handler_module: anthropic_backend.tools
+model: "{{model_name}}"
+endpoint: "{{model_endpoint}}"
+credentials:
+  store: credentials
+  ref: "model/{{model_host}}"
+memory_store_id: memory
+context_window: 100000
+max_tokens: 4000
+can_call:
+  "$self": "*"
+  "$subtree": "*"
+  memory: "*"
+  credentials: "*"
+  worker_exec: "*"
+  worker_files: "*"
+  queue: "*"
+  git: "*"
+  github: "*"
+  roles: [roles, role, spawn, get_count, fleet]
+  kernel_state: [await_set, await_cancel, create_agent, delete_agent]
+  canvas_page: [new_canvas]
+  board: [board]
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  cadencer: [send]

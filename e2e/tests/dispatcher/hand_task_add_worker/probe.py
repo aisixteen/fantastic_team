@@ -2,7 +2,7 @@
 
 import json
 
-from helpers import run_flow, stock as S, team as T
+from helpers import run_flow
 from helpers.verdict import Verdict
 
 
@@ -22,8 +22,7 @@ def tree_ids(team) -> list:
 
 def run(ctx):
     v = Verdict("dispatcher/hand_task_add_worker")
-    run_flow.boot(ctx, groups={"g": {"driver": "$lead", "members": ["w1"], "enabled": False}}, board=True,
-                  registry_tiers={"lead_t": S.lead_tier(ctx)})
+    run_flow.boot(ctx)
     team = ctx.team
 
     added = control(team, node="g", action="add_worker", id="w2", template="lead_t").get("result", {})

@@ -1,0 +1,11 @@
+id: tasks
+handler_module: task_registry.tools
+task_store_id: memory
+can_call:
+  "$self": "*"
+  memory: "*"
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  board: [list]
+  cadencer: [list]

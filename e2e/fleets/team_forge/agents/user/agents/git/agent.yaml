@@ -1,0 +1,14 @@
+id: git
+handler_module: team_git.tools
+repo_dir: "{{run_dir}}/clone"
+workspace_root: "{{work}}/work/wt"
+remote: "{{forge_url}}/acme/widgets.git"
+default_branch: main
+author_name: Team Bot
+author_email: team-bot@example.invalid
+directive: Workers may make a worktree and commit. Never the default branch, never a force.
+can_call:
+  "$self": "*"
+callable_by:
+  "$self": "*"
+  lead: "*"

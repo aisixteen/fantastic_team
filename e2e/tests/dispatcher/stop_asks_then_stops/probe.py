@@ -2,7 +2,7 @@
 
 import json
 
-from helpers import run_flow, stock as S, team as T
+from helpers import run_flow, team as T
 from helpers.verdict import Verdict
 
 
@@ -17,8 +17,7 @@ def control(team, **kw) -> dict:
 
 def run(ctx):
     v = Verdict("dispatcher/stop_asks_then_stops")
-    run_flow.boot(ctx, groups={"g": {"driver": "$lead", "members": ["w1"], "enabled": False}}, board=True,
-                  registry_tiers={"lead_t": S.lead_tier(ctx)})
+    run_flow.boot(ctx)
     team = ctx.team
 
     added = control(team, node="g", action="add_worker", id="w2", template="lead_t")

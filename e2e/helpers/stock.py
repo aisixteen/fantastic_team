@@ -40,16 +40,6 @@ def create(_team, **rec) -> dict:
     return _create(_team, rec)
 
 
-def operator_holds(team, targets: dict) -> None:
-    """The operator (the `send` leg, `mcp`) may call `targets` (agent -> verbs): both ends. A
-    spawner grants only what it holds, so the operator holds what a card grants before it spawns."""
-    have = team.agents()
-    for t, verbs in targets.items():
-        if t in have:
-            merge(team, t, "callable_by", {"mcp": verbs}, have)
-    merge(team, "mcp", "can_call", dict(targets))
-
-
 # ---- the base: credentials, the worker's tools, the forge's connectors -----------------
 
 def credential_refs(ctx, github: bool = True, github_mode: str = "app") -> dict:
@@ -146,16 +136,23 @@ def make_lead(ctx, team, tools=None, subtree: bool = True) -> str:
 REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-def load_role_bundles(team, src: str | None = None) -> list[str]:
-    """The repo's role bundles (`crates/team/bundles/<role>/bundle.yaml`), or those of `src`,
-    written under the team's `.fantastic/bundles/` and loaded into the running kernel
-    (`reload_bundle`), as a first run writes them. Returns the names."""
+def lay_role_bundles(work: str, src: str | None = None) -> list[str]:
+    """Copy the repo's role bundles (`crates/team/bundles/<role>/bundle.yaml`), or those of `src`,
+    into `<work>/.fantastic/bundles/` before the first start: the kernel reads them at boot, as a
+    first run writes them. Returns the names."""
     import shutil
     src = src or os.path.join(REPO_DIR, "crates", "team", "bundles")
     names = sorted(os.listdir(src))
     for name in names:
-        shutil.copytree(os.path.join(src, name), os.path.join(team.dir, ".fantastic", "bundles", name),
+        shutil.copytree(os.path.join(src, name), os.path.join(work, ".fantastic", "bundles", name),
                         dirs_exist_ok=True)
+    return names
+
+
+def load_role_bundles(team, src: str | None = None) -> list[str]:
+    """[`lay_role_bundles`] into a RUNNING team's folder, then `reload_bundle` for each."""
+    names = lay_role_bundles(team.dir, src)
+    for name in names:
         r = team.send("kernel", {"type": "reload_bundle", "name": name})
         if (r.get("result") or {}).get("reloaded") != name:
             raise RuntimeError(f"bundle {name}: {r}")
@@ -201,11 +198,9 @@ def make_roles(ctx, team, tiers: dict, limits: dict | None = None) -> None:
 def spawn_project_lead(ctx, team) -> dict:
     """The registry's spawned tree is rooted at the `project_lead` (what the cadencer digests, in roles
     mode): the team gets its provider (the scripted model, under the lead) and the operator spawns
-    one naming it. A spawner grants only what it holds, so the operator holds what the card grants
-    first. A child takes its memory store from its spawner and the operator has none, so the
+    one naming it. A child takes its memory store from its spawner and the operator has none, so the
     spawned lead gets the team's store here, before its first message (its workers copy it).
     Returns the spawn's result (`id`, ...)."""
-    operator_holds(team, {"github": "*", "roles": "*", "kernel_state": "*", "canvas_page": ["new_canvas"]})
     cli.add_provider(ctx, ctx.lead)
     made = team.send("roles", {"type": "spawn", "role": "project_lead", "provider": cli.PROVIDER,
                                "model": ctx.vars["model_name"]})["result"]
@@ -372,20 +367,39 @@ def boot(ctx, env: dict | None = None, *, forge: bool = True,
          board: bool = False, board_store: str = "queue_files", roles_tiers: dict | None = None,
          registry_tiers: dict | None = None, limits: dict | None = None, extra_args=None, lead_tools=None,
          credentials: bool = True, queue: bool = True, github_cred: bool | None = None,
-         sub: str | None = None, dispatcher: bool | None = None, seeded: bool = False):
-    """Start the team binary as fantastic's CLI in the run folder and make the stock records with
-    `send` + `create_agent`, the lead among them (`make_lead`; `lead_tools` names the tools it
-    may call, default `LEAD_TOOLS`). Sets `ctx.team`, `ctx.lead`, `ctx.work`; returns the Team."""
+         sub: str | None = None, dispatcher: bool | None = None, seeded: bool = False,
+         cards: bool = False):
+    """Start the team binary as fantastic's CLI in the run folder. A test whose `test.yaml` names a
+    `fleet:` has its agents as record files, laid in `.fantastic/` before the first start
+    (`cli.lay_test_fleet`; the folders `work/wt`, `work/tasks`, `sandbox/home` its tools use are made
+    first, and with `cards` the repo's role bundles are copied to `.fantastic/bundles/`): the kernel
+    loads them at boot and every agent laid must be there after it. A test with no `fleet:` still gets
+    its agents made with `send` + `create_agent` by the keywords (`make_lead`; `lead_tools` names the
+    tools the lead may call, default `LEAD_TOOLS`). Sets `ctx.team`, `ctx.lead`, `ctx.work`; returns the Team."""
     keys = run_flow.fake_keys(ctx)
     ctx.secrets = keys
     env = dict(env or {"E2E_MODEL_KEY": keys["model_key"], "E2E_APP_ID": keys["app_id"],
                        "E2E_APP_PEM": keys["pem"]})
-    if roles_tiers is not None or registry_tiers is not None:
+    fleet = bool(ctx.test.get("fleet"))
+    if cards or roles_tiers is not None or registry_tiers is not None:
         env["FANTASTIC_AGENTIC_RESOURCES"] = "1"
     ctx.work = os.path.join(ctx.run_dir, sub) if sub else ctx.run_dir
     os.makedirs(ctx.work, exist_ok=True)
+    laid = []
+    if fleet:
+        for d in ("work/wt", "work/tasks", "sandbox/home"):
+            os.makedirs(os.path.join(ctx.work, d), exist_ok=True)
+        if cards:
+            lay_role_bundles(ctx.work)
+        laid = cli.lay_test_fleet(ctx)
     ctx.team = team = T.Team(ctx.binary, ctx.work, env)
     team.start(extra_args=T.HEADLESS if extra_args is None else extra_args)
+    if fleet:
+        missing = [i for i in laid if i not in team.agents()]
+        if missing:
+            raise RuntimeError(f"the kernel did not load these laid records: {missing}")
+        ctx.lead = LEAD
+        return team
     if credentials:
         make_credentials(ctx, team, github=forge if github_cred is None else github_cred)
     if seeded:

@@ -1,3 +1,4 @@
 costs: free
 timeout: 300
 plug: scripted
+fleet: stock team_tools team_forge team_roles

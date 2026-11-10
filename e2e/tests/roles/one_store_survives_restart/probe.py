@@ -3,7 +3,7 @@
 import json
 import os
 
-from helpers import run_flow, stock as S
+from helpers import run_flow
 from helpers.verdict import Verdict
 
 
@@ -18,16 +18,14 @@ def task_rows(team):
 
 def run(ctx):
     v = Verdict("roles/one_store_survives_restart")
-    team = ctx.boot_team(puller=False, board=True, board_store="queue", groups={}, limits={"total": 3},
-                         roles_tiers={"strong": S.lead_tier(ctx), "small": S.inert_tier(ctx),
-                                      "issue_keeper": S.inert_tier(ctx)})
+    team = ctx.boot_team(cards=True)
 
     live = agents(team)
     stores = [i for i, a in live.items() if a.get("handler_module") == "sqlite_store.tools"]
     v.check("the agent list holds exactly one sqlite_store, named memory", stores == ["memory"], str(stores))
     extra = [i for i in live if i.endswith("_memory") and i != "kernel_memory"]
     v.check("no per-agent *_memory agent exists", extra == [], str(extra))
-    v.check("the store's file is .fantastic/memory.db", live["memory"].get("path") == ".fantastic/memory.db",
+    v.check("the store's record puts its file at @state/memory.db", live["memory"].get("path") == "@state/memory.db",
             str(live["memory"].get("path")))
     v.check("the lead's memory_store_id names it", live[ctx.lead].get("memory_store_id") == "memory",
             str(live[ctx.lead].get("memory_store_id")))

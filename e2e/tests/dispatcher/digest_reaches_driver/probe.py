@@ -6,9 +6,7 @@ from helpers.verdict import Verdict
 
 def run(ctx):
     v = Verdict("dispatcher/digest_reaches_driver")
-    team = ctx.boot_team(puller=False, board=True, board_store="queue", groups={}, limits={"total": 5},
-                         roles_tiers={"strong": S.lead_tier(ctx), "small": S.inert_tier(ctx),
-                                      "issue_keeper": S.inert_tier(ctx)})
+    team = ctx.boot_team(cards=True)
     made = S.spawn_project_lead(ctx, team)
     pl = made.get("id")
     v.check("the registry spawned the project_lead", bool(pl), str(made))

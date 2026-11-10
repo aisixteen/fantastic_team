@@ -1,0 +1,10 @@
+id: queue_files
+handler_module: file_bridge.tools
+root: "{{work}}/work/tasks"
+allow: ["."]
+ingress_rule: allow_all_ingress
+can_call:
+  "$self": "*"
+callable_by:
+  "$self": "*"
+  puller: "*"
