@@ -12,7 +12,7 @@ This guide installs `fantastic_team` from source. It covers what is in the repo 
 
 - Linux or macOS. CI unit-tests on Linux, macOS and Windows; the run was verified on Linux only.
 - `git` and a Rust toolchain with `cargo`.
-- `gh` (optional; the general build lets a worker run it, the GitHub build refuses it).
+- `gh` (optional; a worker may run it).
 
 ## 2. Build
 
@@ -20,9 +20,7 @@ This guide installs `fantastic_team` from source. It covers what is in the repo 
     cd fantastic_team
     sh scripts/build.sh
 
-The binary is `target/release/fantastic_team`. This is the **general** build (Team), the default: workers get stock exec. The github connector is in it.
-
-For the **GitHub** build (Team GitHub), run `sh scripts/build-github.sh`. It copies the tracked tree to a temporary folder, applies [patches/github-exec.patch](../patches/github-exec.patch) there, builds it and writes `target/github/release/fantastic_team-github`. In that build a worker cannot run forge CLIs, `git push` or credential commands; every GitHub action goes through the github connector. Your source tree is never changed.
+The binary is `target/release/fantastic_team`. The github connector is in it.
 
 Check it runs:
 
@@ -34,11 +32,11 @@ There is no `--version` flag.
 
 ## 2a. Reproducible builds
 
-Both builds are reproducible in intent (#137): the same commit gives the same bytes on two machines. Not yet proven end to end, because the canvas zip inside the binary is not deterministic (see the note below).
+The build is reproducible in intent (#137): the same commit gives the same bytes on two machines. Not yet proven end to end, because the canvas zip inside the binary is not deterministic (see the note below).
 
 - **Toolchain.** `rust-toolchain.toml` pins the exact Rust version. rustup installs it on first use; CI reads the same pin.
-- **Commands.** `sh scripts/build.sh` and `sh scripts/build-github.sh` build with `--locked` and the environment from `scripts/repro-env.sh`: `SOURCE_DATE_EPOCH` (the last commit's time), `TZ=UTC`, `LC_ALL=C`, and `--remap-path-prefix` for the source tree, cargo's home and rustup's home. The GitHub build remaps its temporary copy to `/src` too. The target directory (`CARGO_TARGET_DIR`, or the default `target/`) is remapped to `/target`, so two builds with different target dirs give the same bytes. Each prints `built: <path>` for its versioned copy, `fantastic_team-<version>-<target>` and `fantastic_team-github-<version>-<target>`.
-- **Checksums.** `sh scripts/checksums.sh <dir>` writes `SHA256SUMS`, `MD5SUMS` and `RELEASE-INFO.txt` (commit, patch name and sha256, toolchain, rustc and cargo, the fantastic commit from `Cargo.lock`).
+- **Commands.** `sh scripts/build.sh` builds with `--locked` and the environment from `scripts/repro-env.sh`: `SOURCE_DATE_EPOCH` (the last commit's time), `TZ=UTC`, `LC_ALL=C`, and `--remap-path-prefix` for the source tree, cargo's home and rustup's home. The target directory (`CARGO_TARGET_DIR`, or the default `target/`) is remapped to `/target`, so two builds with different target dirs give the same bytes. It prints `built: <path>` for its versioned copy, `fantastic_team-<version>-<target>`.
+- **Checksums.** `sh scripts/checksums.sh <dir>` writes `SHA256SUMS`, `MD5SUMS` and `RELEASE-INFO.txt` (commit, toolchain, rustc and cargo, the fantastic commit from `Cargo.lock`).
 - **Verify.** `sh scripts/verify.sh <binary>` checks the binary's SHA-256 against its `SHA256SUMS` line. Exit 0 means it matches; 1 means a mismatch or no entry for the name; 2 means a usage or file error. `sh scripts/verify.sh --rebuild <binary>` also rebuilds from this checkout (check out the tag first) and compares the hash.
 - **SHA-256 and MD5.** Use SHA-256; it is the checksum to compare. `MD5SUMS` is only there for corruption checks on a mirror. MD5 is not a security check.
 - **Signing is laptop-only.** No signing, notarization or key material runs in CI or sits in GitHub. A signature is made by the maintainer on a laptop, after the checksums.
@@ -65,18 +63,14 @@ Never write a value in a file, a config, or a doc.
 
 Keys go in the credential store, never in a file. This repo does not define provider environment variable names, so none are listed here. The GitHub credential comes from env refs as in step 3.
 
-For remote boxes, `scripts/remote-start.sh` reads the values of the variable names passed in `--keys` on your laptop and pipes them to the remote shell over SSH stdin. They are never in argv, a file, or shell history.
-
 ## 5. Minimal config and start
 
-The command line is fantastic's, unchanged: `fantastic_team` is `fantastic` with this repo's bundles added. It runs in the directory it is started in, so `cd` into the team's folder first. There is no config file: a team is agent records (a recipe, `send` with `create_agent`, or a directory that already holds `.fantastic/agents/`). The example is the script `examples/create_agent/worker_only.sh` (one AI worker); the app makes a lead with the roles registry and the GitHub connector the same way (`crates/team/src/new_team.rs`).
+The command line is fantastic's, unchanged: `fantastic_team` is `fantastic` with this repo's bundles added. It runs in the directory it is started in, so `cd` into the team's folder first. There is no config file: a team is agent records (a recipe, `send` with `create_agent`, or a directory that already holds `.fantastic/agents/`). The app makes a lead with the roles registry and the GitHub connector the same way (`crates/team/src/new_team.rs`).
 
     cd ./my-team
     ./target/release/fantastic_team --headless
 
-No screen and no port. Make the example worker in the running team, from a second shell in the same folder:
-
-    FANTASTIC_TEAM=./target/release/fantastic_team sh path/to/examples/create_agent/worker_only.sh
+No screen and no port.
 
 Serve the web UI on a port:
 
@@ -92,15 +86,6 @@ The first word the team adds to fantastic's (`ai-readme`):
 
 `--dir`, `--port` outside `canvas` and `webui`, `--tui`, `--instructions` and `--resend-instructions` are not flags any more; fantastic refuses them.
 
-Run it on a remote box with the scripts (each prints its usage with `--help`; all support `--dry-run`):
-
-- `scripts/remote-add.sh <name> <host>:<dir> [--bin PATH] [--port N] [--keys "NAME …"]`
-- `scripts/remote-start.sh <name> [--port N]` (starts detached; the binary binds 127.0.0.1 only)
-- `scripts/remote-attach.sh <name> [--port N]`
-- `scripts/remote-logs.sh <name> [-f] [-n LINES]`
-- `scripts/remote-ls.sh`
-- `scripts/remote-stop.sh <name> [--now] [--yes]`
-
 ## 6. Label a first issue, watch, review
 
 1. In the target repo, label an issue `team-ready`.
@@ -115,9 +100,7 @@ Run it on a remote box with the scripts (each prints its usage with `--help`; al
 | `no ## SPEC comment by the maintainer or the app` | Add the `## SPEC` comment yourself, or let the app author it; comments by others are ignored. |
 | Issue is not picked up | The latest `team-ready` label event must be by the maintainer. Re-add the label as the maintainer. |
 | `gh --version` fails in the worker | Install `gh` and put it on PATH. |
-| Secrets check fails on commit | `scripts/check-secrets.sh .` found a key or token. Remove it and store it in the credential store. |
-| Remote start leaves no keys | Name the variables in `--keys` on `remote-add.sh`; `remote-start.sh` reads them on your laptop. |
 
 ## Tested on
 
-Linux, this box: built with `cargo build -p fantastic-team --bin fantastic_team` (exit 0), ran `readme` (above), and ran `--help` on each `scripts/remote-*.sh`. Not run: `canvas --port`, the terminal UI, a live GitHub app, real keys. macOS: not yet verified.
+Linux, this box: built with `cargo build -p fantastic-team --bin fantastic_team` (exit 0), and ran `readme` (above). Not run: `canvas --port`, the terminal UI, a live GitHub app, real keys. macOS: not yet verified.

@@ -11,6 +11,7 @@ name = "team_git_connector"
 path = "src/lib.rs"
 
 [dependencies]
+fantastic-bundle.workspace = true
 fantastic-kernel.workspace = true
 fantastic-ai-core.workspace = true
 async-trait.workspace = true

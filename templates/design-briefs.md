@@ -46,14 +46,14 @@ _Task kind: design-briefs · written {{DATE}} by {{AUTHOR}}._ Carve the screens 
 
 **Screens to carve:** <!-- WRITE: the screens for this app and their sources. For the first run on this repo (APP=fantastic_team, SRC=crates/team/web), the list is below; replace it for another app. -->
 
-- `00-overview`: the shared rules every brief restates. Source: `crates/team/web/team.html`, `crates/team/web/worker_view.css`.
+- `00-overview`: the shared rules every brief restates. Source: `crates/team/web/team.html`.
 - `01-dispatcher` (#58): the team page with its tree, worker rows, connections and waiting list. Source: `crates/team/web/team.html`, `crates/team/src/dispatcher.rs`, `crates/team/src/tree.rs`.
 - `02-group-canvas`: one group as a canvas of its workers. Source: `crates/team/src/tree.rs`, `crates/team/src/board.rs`.
-- `03-worker-canvas` (#36): one worker's view. Source: `crates/team/web/worker_view.css`, `crates/team/src/worker_view.rs`.
+- `03-worker-canvas` (#36): one worker's view. Source: `crates/team/src/worker_view.rs`.
 - `04-escalations` (#95): the escalations list and its actions. Source: `crates/team/src/dispatcher.rs`, `crates/team/src/board.rs`.
 - `05-connections`: the connections panel. Source: `crates/team/web/team.html`, `crates/team/src/dispatcher.rs`.
 - `06-settings`: the settings dialog. Source: `crates/team/web/team.html`.
-- `07-phone`: the phone layout of the screens above. Source: `crates/team/web/worker_view.css`.
+- `07-phone`: the phone layout of the screens above. Source: `crates/team/web/team.html`.
 
 **Issues the briefs must agree with:** #58, #95, #36, #37. <!-- WRITE: add or remove issues. -->
 

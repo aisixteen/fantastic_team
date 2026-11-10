@@ -4,10 +4,6 @@
 macOS, Windows and Linux. The window loads the local web UI on
 `127.0.0.1` only; no frontend is bundled.
 
-This is the general build (Team). The GitHub build (Team GitHub) is the same app with
-`patches/github-exec.patch` applied: product name "AISixteen Fantastic Team GitHub",
-identifier `com.aisixteen.team.github`, and a launcher that starts `fantastic_team-github`.
-
 ## The home screen
 
 The dispatcher is the team's main view: a sidebar with the team's groups, and
@@ -58,8 +54,7 @@ sidebar reloads after each control. Subagents have no buttons.
 - `hand_task {node: worker, task}` sends the worker `task <task>`; an empty task is
   refused.
 - `add_worker {node: group, id, template}` makes the worker (its memory in the store the tier names)
-  from the tier `template` of the roles registry's record (`tiers`) and lists the worker in the group, in the dispatcher's `groups` and in
-  the board's `team_groups`. The new worker gets its chat grant at the next start.
+  from the tier `template` of the roles registry's record (`tiers`) and lists the worker in the group, in the dispatcher's `groups`. The new worker gets its chat grant at the next start.
 - `remove_worker {node: worker}` deletes the worker and its memory store and drops
   it from its group.
 
@@ -148,8 +143,7 @@ stores an identity, team id, certificate, thumbprint or password.
 - Linux: packages are unsigned by default; the maintainer adds a detached
   signature when publishing.
 
-Never commit these values. The repository secret check (`scripts/check-secrets.sh`)
-and `crates/team/tests/app_packaging.rs` guard against committed signing data.
+Never commit these values. `crates/team/tests/app_packaging.rs` guards against committed signing data.
 
 ## Remaining
 

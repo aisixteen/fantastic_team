@@ -364,7 +364,7 @@ pub fn is_wildcard(host: &str) -> bool {
 }
 
 /// A port free on `host` now (the OS picks it), for a first run that names none.
-fn free_port(host: &str) -> Result<u16, String> {
+pub fn free_port(host: &str) -> Result<u16, String> {
     std::net::TcpListener::bind((host, 0))
         .and_then(|l| l.local_addr())
         .map(|a| a.port())

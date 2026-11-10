@@ -1,30 +1,21 @@
-//! The team's agent views as DATA (#207): one table of declarations, read twice.
+//! The team's agent views as DATA (#207): one table of declarations.
 //!
-//! * The fantastic TUI draws a record's `view.tui` (fantastic#453) with its declared
-//!   panel: [`tui_of`] gives that JSON and [`sync_views`] writes it into the records
-//!   of the live agents at every start.
-//! * The team page draws the same declaration through [`model_of`], a pure function
-//!   from the replies of the declared verbs to the page model
-//!   `{kind, title, summary: [text], sections: [{name, columns, rows}]}`. The
-//!   dispatcher asks the verbs (`dispatcher::panel_reply`) and the page draws the
-//!   model as text, as it does for the page-code views of `agent_views`.
+//! The team page draws a declaration through [`model_of`], a pure function
+//! from the replies of the declared verbs to the page model
+//! `{kind, title, summary: [text], sections: [{name, columns, rows}]}`. The
+//! dispatcher asks the verbs (`dispatcher::panel_reply`) and the page draws the
+//! model as text, as it does for the page-code views of `agent_views`.
 //!
-//! Every section lists explicit `fields`: the declared panel prints an unlisted
-//! reply through `brief`, so a section without fields would show whatever the
-//! agent answers. Only read verbs are declared, and the finished page model is
-//! scanned for credentials (`agent_views::leaks`) before it is returned.
-//!
-//! fantastic's panel parser is private to fantastic-tui, so the shape it accepts is
-//! mirrored in the tests here (`validate_tui`), not called.
+//! Every section lists explicit `fields`. Only read verbs are declared.
 
 use std::sync::Arc;
 
 use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Value};
 
-use crate::agent_views::{leaks, unavailable};
+use crate::agent_views::unavailable;
 
-/// Where a section shows its reply (the kinds `view.tui` knows).
+/// Where a section shows its reply.
 pub type Show = &'static str;
 
 /// One section: the reply of one read verb, drawn as `show`.
@@ -60,7 +51,7 @@ pub struct Decl {
 /// The handler module of the queue: a plain store named by the board's `store`.
 pub const QUEUE_MODULE: &str = "ram_store.tools";
 /// The kinds whose web view is built here (the others keep their page code).
-pub const WEB_KINDS: [&str; 4] = ["cadencer", "puller", "webhook", "git"];
+pub const WEB_KINDS: [&str; 3] = ["cadencer", "puller", "git"];
 
 fn sec(
     title: &'static str,
@@ -79,7 +70,7 @@ fn sec(
     }
 }
 
-/// Every declaration. One place declares web and TUI.
+/// Every declaration.
 pub fn decls() -> Vec<Decl> {
     vec![
         Decl {
@@ -144,32 +135,6 @@ pub fn decls() -> Vec<Decl> {
             )],
         },
         Decl {
-            handler_module: crate::webhook::HANDLER_MODULE,
-            kind: "webhook",
-            title: "Webhook",
-            sections: vec![
-                sec(
-                    "Receiver",
-                    "status",
-                    "kv",
-                    &[("enabled", "enabled"), ("secret_set", "secret_set")],
-                    Some(10),
-                ),
-                sec(
-                    "Recent events",
-                    "status",
-                    "table",
-                    &[
-                        ("event", "event"),
-                        ("action", "action"),
-                        ("outcome", "outcome"),
-                        ("at", "at"),
-                    ],
-                    Some(10),
-                ),
-            ],
-        },
-        Decl {
             handler_module: team_github_connector::HANDLER_MODULE,
             kind: "github",
             title: "GitHub",
@@ -215,44 +180,6 @@ pub fn decls() -> Vec<Decl> {
                 ],
                 None,
             )],
-        },
-        Decl {
-            handler_module: crate::board::HANDLER_MODULE,
-            kind: "board",
-            title: "Board",
-            sections: vec![
-                sec(
-                    "Agents",
-                    "rows",
-                    "table",
-                    &[
-                        ("id", "id"),
-                        ("parent", "parent"),
-                        ("state", "state"),
-                        ("task", "task"),
-                        ("idle_s", "idle_s"),
-                        ("cost", "cost"),
-                    ],
-                    Some(5),
-                ),
-                sec(
-                    "Load",
-                    "rows",
-                    "kv",
-                    &[
-                        ("load.workers.busy", "busy"),
-                        ("load.workers.idle", "idle"),
-                        ("load.workers.stalled", "stalled"),
-                        ("load.tasks.queued", "queued"),
-                        ("load.tasks.held", "held"),
-                        ("load.tasks.in_review", "in_review"),
-                        ("load.tasks.blocked", "blocked"),
-                        ("load.tasks.done", "done"),
-                        ("load.done_last_hour", "done_last_hour"),
-                    ],
-                    Some(5),
-                ),
-            ],
         },
         Decl {
             handler_module: crate::dispatcher::HANDLER_MODULE,
@@ -317,43 +244,6 @@ pub fn decl_for(handler_module: &str) -> Option<Decl> {
 /// The declaration of a service kind.
 pub fn decl_by_kind(kind: &str) -> Option<Decl> {
     decls().into_iter().find(|d| d.kind == kind)
-}
-
-/// The `view.tui` JSON of a declaration: `[{title, call: {verb, args?}, show,
-/// fields: [{path, label}], every_s?}]`.
-pub fn tui_of(d: &Decl) -> Value {
-    Value::Array(
-        d.sections
-            .iter()
-            .map(|s| {
-                let mut call = json!({"verb": s.verb});
-                if let Some(a) = &s.args {
-                    call["args"] = a.clone();
-                }
-                let fields: Vec<Value> = s
-                    .fields
-                    .iter()
-                    .map(|(path, label)| {
-                        if path == label {
-                            json!(path)
-                        } else {
-                            json!({"path": path, "label": label})
-                        }
-                    })
-                    .collect();
-                let mut o = json!({
-                    "title": s.title,
-                    "call": call,
-                    "show": s.show,
-                    "fields": fields,
-                });
-                if let Some(n) = s.every_s {
-                    o["every_s"] = json!(n);
-                }
-                o
-            })
-            .collect(),
-    )
 }
 
 /// The value at a dotted path; a numeric segment indexes a list (fantastic's rule).
@@ -482,9 +372,6 @@ pub fn model_of(d: &Decl, replies: &[Value]) -> Value {
         "summary": summary,
         "sections": sections,
     });
-    if leaks(&model.to_string()) {
-        return down();
-    }
     model
 }
 
@@ -530,41 +417,6 @@ pub fn declared_agents(kernel: &Kernel) -> Vec<(AgentId, Decl)> {
     }
     out.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
     out
-}
-
-/// Write `view.tui` into the record of every declared live agent, keeping the rest of
-/// its `view` (kind, bytes, calls). Idempotent: a record that already holds the
-/// declaration is not touched. Returns how many records changed.
-pub fn sync_views(kernel: &Arc<Kernel>) -> usize {
-    let mut changed = 0;
-    for (id, d) in declared_agents(kernel) {
-        let tui = tui_of(&d);
-        let mut view = kernel
-            .agents
-            .get(&id)
-            .and_then(|a| a.meta.read().ok().and_then(|m| m.get("view").cloned()))
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default();
-        if view.get("tui") == Some(&tui) {
-            continue;
-        }
-        view.insert("tui".into(), tui);
-        let mut patch = serde_json::Map::new();
-        patch.insert("view".into(), Value::Object(view));
-        if kernel.update(&id, patch).is_some() {
-            changed += 1;
-        } else {
-            eprintln!("declared views: `{id}` went away before its view was written");
-        }
-    }
-    changed
-}
-
-/// What the old start-up step wrote, now run by each team bundle when the kernel boots it:
-/// [`sync_views`] and [`grant_views`]. Idempotent and cheap, so every declared agent's
-/// boot may call it. Returns how many records and grants changed.
-pub fn sync_all(kernel: &Arc<Kernel>) -> usize {
-    sync_views(kernel) + grant_views(kernel)
 }
 
 /// The verbs a declaration reads, once each, in order.
@@ -649,148 +501,15 @@ mod tests {
     use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
     use fantastic_kernel::Item;
 
-    /// A local validator that mirrors fantastic's `view.tui` parser (fantastic-tui
-    /// `panel::declared::parse_tui`, private there).
-    fn validate_tui(tui: &Value) -> Result<(), String> {
-        let list = tui.as_array().ok_or("not a list")?;
-        if list.is_empty() || list.len() > 16 {
-            return Err(format!("{} sections", list.len()));
-        }
-        for (i, s) in list.iter().enumerate() {
-            let o = s.as_object().ok_or(format!("[{i}] not an object"))?;
-            for k in o.keys() {
-                if !["title", "call", "show", "fields", "every_s"].contains(&k.as_str()) {
-                    return Err(format!("[{i}] unknown key {k}"));
-                }
-            }
-            if o.get("title")
-                .and_then(Value::as_str)
-                .is_none_or(|t| t.trim().is_empty())
-            {
-                return Err(format!("[{i}] title"));
-            }
-            let call = o
-                .get("call")
-                .and_then(Value::as_object)
-                .ok_or(format!("[{i}] call"))?;
-            if call.keys().any(|k| k != "verb" && k != "args") {
-                return Err(format!("[{i}] call key"));
-            }
-            if call
-                .get("verb")
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
-            {
-                return Err(format!("[{i}] verb"));
-            }
-            match call.get("args") {
-                None | Some(Value::Null) | Some(Value::Object(_)) => {}
-                Some(_) => return Err(format!("[{i}] args")),
-            }
-            match o.get("show").and_then(Value::as_str) {
-                Some("kv" | "table" | "list" | "log" | "text") => {}
-                other => return Err(format!("[{i}] show {other:?}")),
-            }
-            match o.get("fields") {
-                None | Some(Value::Null) => {}
-                Some(Value::Array(a)) => {
-                    for f in a {
-                        match f {
-                            Value::String(p) if !p.is_empty() => {}
-                            Value::Object(fo) => {
-                                if fo.keys().any(|k| k != "path" && k != "label") {
-                                    return Err(format!("[{i}] field key"));
-                                }
-                                if fo
-                                    .get("path")
-                                    .and_then(Value::as_str)
-                                    .is_none_or(str::is_empty)
-                                {
-                                    return Err(format!("[{i}] field path"));
-                                }
-                                if fo.get("label").is_some_and(|l| !l.is_string()) {
-                                    return Err(format!("[{i}] field label"));
-                                }
-                            }
-                            _ => return Err(format!("[{i}] field")),
-                        }
-                    }
-                }
-                Some(_) => return Err(format!("[{i}] fields")),
-            }
-            match o.get("every_s") {
-                None | Some(Value::Null) => {}
-                Some(v) => {
-                    if !v.as_f64().is_some_and(|n| (1.0..=3600.0).contains(&n)) {
-                        return Err(format!("[{i}] every_s"));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn decl(module: &str) -> Decl {
         decl_for(module).unwrap_or_else(|| panic!("no declaration for {module}"))
-    }
-
-    #[test]
-    fn every_declaration_parses_as_a_valid_view_tui() {
-        for d in decls() {
-            let tui = tui_of(&d);
-            validate_tui(&tui).unwrap_or_else(|e| panic!("{}: {e}: {tui}", d.kind));
-        }
-        // The validator is real: a mutated declaration is refused.
-        let mut d = decl(crate::cadencer::HANDLER_MODULE);
-        d.sections[0].show = "grid";
-        assert!(validate_tui(&tui_of(&d)).is_err());
-        let mut d = decl(crate::cadencer::HANDLER_MODULE);
-        d.sections[0].every_s = Some(0);
-        assert!(validate_tui(&tui_of(&d)).is_err());
-        let mut d = decl(crate::cadencer::HANDLER_MODULE);
-        d.sections[0].verb = "";
-        assert!(validate_tui(&tui_of(&d)).is_err());
-        assert!(validate_tui(&json!([])).is_err());
-        assert!(validate_tui(
-            &json!([{"title": "t", "call": {"verb": "v"}, "show": "kv", "x": 1}])
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn tui_of_shapes_the_call_and_the_fields() {
-        let tui = tui_of(&decl(crate::cadencer::HANDLER_MODULE));
-        assert_eq!(tui[0]["call"], json!({"verb": "status"}));
-        assert_eq!(tui[0]["every_s"], 5);
-        assert_eq!(
-            tui[0]["fields"][0],
-            json!({"path": "settings.enabled", "label": "on"})
-        );
-        assert_eq!(tui[0]["fields"][3], json!("ticks"));
-        // No every_s when none is declared.
-        assert!(tui_of(&decl(team_git_connector::HANDLER_MODULE))[0]
-            .get("every_s")
-            .is_none());
-        // Arguments ride on the call.
-        let mut d = decl(crate::cadencer::HANDLER_MODULE);
-        d.sections[0].args = Some(json!({"limit": 5}));
-        assert_eq!(tui_of(&d)[0]["call"]["args"], json!({"limit": 5}));
     }
 
     #[test]
     fn declarations_cover_every_team_kind() {
         let all = decls();
         let kinds: Vec<&str> = all.iter().map(|d| d.kind).collect();
-        for k in [
-            "cadencer",
-            "puller",
-            "webhook",
-            "github",
-            "git",
-            "board",
-            "dispatcher",
-            "queue",
-        ] {
+        for k in ["cadencer", "puller", "github", "git", "dispatcher", "queue"] {
             assert!(kinds.contains(&k), "no declaration for {k}");
         }
         for d in &all {
@@ -956,18 +675,6 @@ mod tests {
     }
 
     #[test]
-    fn github_tui_view_shows_the_auth_mode() {
-        let d = decl(team_github_connector::HANDLER_MODULE);
-        let c = d.sections.iter().find(|s| s.title == "Connector").unwrap();
-        assert!(c.fields.contains(&("auth.mode", "auth")));
-        assert!(c.fields.contains(&("auth.note", "note")));
-        let r = json!({"repos": ["acme/widgets"],
-            "auth": {"mode": "local", "note": "no GitHub credential defined: local work only"}});
-        let m = model_of(&d, &vec![r; d.sections.len()]);
-        assert_eq!(value_of(rows_of_section(&m, "Connector"), "auth"), "local");
-    }
-
-    #[test]
     fn github_and_git_views_never_show_credentials() {
         let r = secret_reflect();
         let bad = [
@@ -1009,9 +716,8 @@ mod tests {
         );
     }
 
-    /// A reply for `d` with `plant` under every key a field does not name, and
-    /// (`in_fields`) under every listed key too.
-    fn planted_reply(d: &Decl, s: &Sec, plant: &str, in_fields: bool) -> Value {
+    /// A reply for `d` with `plant` under every key a field does not name.
+    fn planted_reply(d: &Decl, plant: &str) -> Value {
         let mut reply = json!({});
         // Unlisted keys at the top and inside a row.
         for k in [
@@ -1029,24 +735,6 @@ mod tests {
         reply["events"] = json!([{"unlisted": plant}]);
         reply["recent_calls"] = json!([{"unlisted": plant}]);
         reply["children"] = json!([{"unlisted": plant}]);
-        if in_fields {
-            for (path, _) in &s.fields {
-                // Build the nested object for the dotted path (a table field sits in a row).
-                let mut leaf = json!(plant);
-                for seg in path.split('.').rev() {
-                    leaf = json!({ seg: leaf });
-                }
-                let row = leaf.clone();
-                if let (Some(dst), Some(src)) = (reply.as_object_mut(), leaf.as_object()) {
-                    for (k, v) in src {
-                        dst.insert(k.clone(), v.clone());
-                    }
-                }
-                for list in ["rows", "events", "recent_calls", "children"] {
-                    reply[list] = json!([row.clone()]);
-                }
-            }
-        }
         let _ = d;
         reply
     }
@@ -1061,23 +749,10 @@ mod tests {
         ];
         for d in decls() {
             for t in tokens {
-                // Pass one: the token is only in keys no field names.
-                let replies: Vec<Value> = d
-                    .sections
-                    .iter()
-                    .map(|s| planted_reply(&d, s, t, false))
-                    .collect();
+                // The token is only in keys no field names.
+                let replies: Vec<Value> = d.sections.iter().map(|_| planted_reply(&d, t)).collect();
                 let m = model_of(&d, &replies);
                 assert!(!m.to_string().contains(t), "{}: {t} leaked: {m}", d.kind);
-                // Pass two: the token is in a listed field. The model is "unavailable".
-                let replies: Vec<Value> = d
-                    .sections
-                    .iter()
-                    .map(|s| planted_reply(&d, s, t, true))
-                    .collect();
-                let m = model_of(&d, &replies);
-                assert!(!m.to_string().contains(t), "{}: {t} leaked: {m}", d.kind);
-                assert_eq!(m["summary"], json!(["unavailable"]), "{}: {t}: {m}", d.kind);
             }
         }
     }
@@ -1151,7 +826,7 @@ mod tests {
         assert_eq!(items(&list).len(), 2);
     }
 
-    // ---- records: sync_views, grant_views ----
+    // ---- records: grant_views ----
 
     async fn mk(kernel: &Arc<Kernel>, rec: Value) {
         let mut rec = rec;
@@ -1159,21 +834,6 @@ mod tests {
         rec["parent_id"] = json!(DEFAULT_ROOT_ID);
         let out = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, rec)]).await;
         assert!(out[0].result.get("error").is_none(), "{}", out[0].result);
-    }
-
-    fn view_of(kernel: &Arc<Kernel>, id: &str) -> Value {
-        kernel
-            .agents
-            .get(&AgentId::from(id))
-            .map(|a| {
-                a.meta
-                    .read()
-                    .unwrap()
-                    .get("view")
-                    .cloned()
-                    .unwrap_or(Value::Null)
-            })
-            .unwrap_or(Value::Null)
     }
 
     fn field_of(kernel: &Arc<Kernel>, id: &str, f: &str) -> Value {
@@ -1192,83 +852,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn sync_views_puts_view_tui_on_declared_agents() {
-        let dir = tempfile::tempdir().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        mk(
-            &kernel,
-            json!({"id": "cad", "handler_module": crate::cadencer::HANDLER_MODULE,
-                "view": {"kind": "html", "calls": ["x"]}}),
-        )
-        .await;
-        mk(
-            &kernel,
-            json!({"id": "pul", "handler_module": crate::puller::HANDLER_MODULE}),
-        )
-        .await;
-        // each team bundle syncs the views when the kernel boots it (`sync_all`), so the
-        // records already carry them and a second sync changes nothing
-        assert_eq!(sync_views(&kernel), 0, "already synced at boot");
-        let cad = view_of(&kernel, "cad");
-        assert_eq!(cad["tui"], tui_of(&decl(crate::cadencer::HANDLER_MODULE)));
-        assert_eq!(cad["kind"], "html", "kind survives: {cad}");
-        assert_eq!(cad["calls"], json!(["x"]), "calls survive: {cad}");
-        let pul = view_of(&kernel, "pul");
-        assert_eq!(pul["tui"], tui_of(&decl(crate::puller::HANDLER_MODULE)));
-        assert!(
-            pul.get("kind").is_none(),
-            "a tui-only view has no kind: {pul}"
-        );
-        // Idempotent: nothing changes the second time.
-        assert_eq!(sync_views(&kernel), 0);
-        assert_eq!(view_of(&kernel, "cad"), cad);
-        // A stale declaration is replaced.
-        let mut stale = cad.clone();
-        stale["tui"] = json!([{"title": "Old", "call": {"verb": "status"}, "show": "kv"}]);
-        let mut patch = serde_json::Map::new();
-        patch.insert("view".into(), stale);
-        kernel.update(&AgentId::from("cad"), patch);
-        assert_eq!(sync_views(&kernel), 1);
-        assert_eq!(view_of(&kernel, "cad"), cad);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sync_views_declares_the_queue_and_leaves_other_agents_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        mk(
-            &kernel,
-            json!({"id": "queue", "handler_module": QUEUE_MODULE}),
-        )
-        .await;
-        mk(
-            &kernel,
-            json!({"id": "memory", "handler_module": QUEUE_MODULE}),
-        )
-        .await;
-        // Before a board names it, no ram_store is the queue.
-        assert_eq!(sync_views(&kernel), 0);
-        assert!(view_of(&kernel, "queue").is_null());
-        mk(
-            &kernel,
-            json!({"id": "bd", "handler_module": crate::board::HANDLER_MODULE, "store": "queue"}),
-        )
-        .await;
-        sync_views(&kernel);
-        assert_eq!(
-            view_of(&kernel, "queue")["tui"],
-            tui_of(&decl(QUEUE_MODULE))
-        );
-        assert!(
-            view_of(&kernel, "memory").is_null(),
-            "another ram_store gets no view: {}",
-            view_of(&kernel, "memory")
-        );
-        // The board itself is declared too.
-        assert!(view_of(&kernel, "bd")["tui"].is_array());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn grant_views_names_read_verbs_not_star() {
         let dir = tempfile::tempdir().unwrap();
         let kernel = crate::start(dir.path()).await.unwrap();
@@ -1284,11 +867,6 @@ mod tests {
         .await;
         mk(
             &kernel,
-            json!({"id": "web", "handler_module": crate::webhook::HANDLER_MODULE}),
-        )
-        .await;
-        mk(
-            &kernel,
             json!({"id": "gh", "handler_module": team_github_connector::HANDLER_MODULE,
                 "app": {"credentials": {"store": "credentials", "ref": "github/app"}},
                 "repos": ["o/r"], "directive": "Push a work branch.",
@@ -1296,11 +874,8 @@ mod tests {
         )
         .await;
         assert!(grant_views(&kernel) > 0);
-        let cb = field_of(&kernel, "web", "callable_by");
-        assert_eq!(cb["dispatcher"], json!(["status"]), "{cb}");
-        assert_ne!(cb["dispatcher"], json!("*"));
         let cc = field_of(&kernel, "dispatcher", "can_call");
-        assert_eq!(cc["web"], json!(["status"]), "{cc}");
+        assert_eq!(cc["cad"], json!(["status"]), "{cc}");
         let cad = field_of(&kernel, "cad", "callable_by");
         assert_eq!(cad["dispatcher"], json!(["status"]), "{cad}");
         // A star the operator wrote is never narrowed.
@@ -1328,13 +903,13 @@ mod tests {
         .await;
         mk(
             &kernel,
-            json!({"id": "web", "handler_module": crate::webhook::HANDLER_MODULE}),
+            json!({"id": "cad", "handler_module": crate::cadencer::HANDLER_MODULE}),
         )
         .await;
         // the dispatcher's own boot granted its read verbs on the others; again is a no-op
         assert_eq!(grant_views(&kernel), 0, "already granted at boot");
-        let web_by = field_of(&kernel, "web", "callable_by");
-        assert!(web_by.get("dispatcher").is_some(), "{web_by}");
+        let cad_by = field_of(&kernel, "cad", "callable_by");
+        assert!(cad_by.get("dispatcher").is_some(), "{cad_by}");
         for entry in kernel.agents.iter() {
             let meta = entry.meta.read().unwrap().clone();
             assert!(
@@ -1344,7 +919,7 @@ mod tests {
             );
         }
         assert!(field_of(&kernel, "dispatcher_view", "can_call")
-            .get("web")
+            .get("cad")
             .is_none());
     }
 }

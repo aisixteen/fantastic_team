@@ -5,8 +5,9 @@
 //! team with no credentials in it, and its environment is a fixed list of names;
 //! no token, key or SSH agent is among them, so a push from a worker fails.
 //!
-//! This is the general build: its `allowed` pattern is any command line. The
-//! GitHub build (`patches/github-exec.patch`) narrows it to refuse forge CLIs.
+//! The `allowed` pattern is not here: it is a value of the worker exec record in
+//! `crates/team/blueprint.yaml`, any command line as in fantastic's own, and the user
+//! can change it.
 //!
 //! This is NOT an OS sandbox. The worker runs as the user, so files the user
 //! can read (`~/.ssh` keys, the login keychain) stay readable to a worker that
@@ -27,38 +28,9 @@ pub const INHERIT_ENV: &[&str] = &[
     "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TZ", "USER", "LOGNAME", "SHELL",
 ];
 
-/// Names a worker's environment must never hold, whatever their value.
-pub const FORBIDDEN_ENV: &[&str] = &[
-    "SSH_AUTH_SOCK",
-    "SSH_AGENT_PID",
-    "SSH_ASKPASS",
-    "GIT_ASKPASS",
-    "GH_TOKEN",
-    "GITHUB_TOKEN",
-    "GH_ENTERPRISE_TOKEN",
-    "GITHUB_ENTERPRISE_TOKEN",
-    "GITLAB_TOKEN",
-    "GLAB_TOKEN",
-];
-
-/// Files and folders that would give a HOME a credential; a sandbox home holds none.
-pub const CREDENTIAL_FILES: &[&str] = &[
-    ".gitconfig",
-    ".git-credentials",
-    ".netrc",
-    ".ssh",
-    ".config/gh",
-    ".config/git",
-    ".config/glab-cli",
-];
-
 /// ssh for git with no config, no agent and no key files, never asking.
 pub const NO_SSH: &str =
     "ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes";
-
-/// The one `allowed` pattern: any command line. The exec bridge refuses every
-/// command when `allowed` is empty, so the general build names the match-all.
-pub const WORKER_ALLOWED: &str = ".*";
 
 /// Join a `/`-separated relative constant one component at a time, so the
 /// result has the OS's separators (a single `join` of "a/b" keeps a mixed
@@ -77,34 +49,7 @@ pub fn work_dir(team_dir: &Path) -> PathBuf {
     join_parts(team_dir, WORK_DIR)
 }
 
-/// True for a name that must not reach a worker's environment: a listed forge
-/// or SSH name, or one that looks like a secret.
-pub fn forbidden_env_name(name: &str) -> bool {
-    FORBIDDEN_ENV.contains(&name)
-        || ["_TOKEN", "_KEY", "_SECRET", "_PASSWORD", "_PASS"]
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
-        || name.contains("CREDENTIAL")
-}
-
-/// Make the sandbox home and the work dir, and refuse a home that already holds
-/// a credential. It never deletes anything.
-pub fn prepare_sandbox(team_dir: &Path) -> std::io::Result<PathBuf> {
-    let home = sandbox_home(team_dir);
-    std::fs::create_dir_all(&home)?;
-    std::fs::create_dir_all(work_dir(team_dir))?;
-    for name in CREDENTIAL_FILES {
-        if home.join(name).exists() {
-            return Err(std::io::Error::other(format!(
-                "sandbox home {} holds {name} — a worker's HOME must hold no credentials; remove it",
-                home.display()
-            )));
-        }
-    }
-    Ok(home)
-}
-
-/// The exec record for a worker. Pure: touches no disk. Call [`prepare_sandbox`] first.
+/// The exec record for a worker. Pure: touches no disk.
 pub fn worker_exec_record(team_dir: &Path) -> Value {
     let home = sandbox_home(team_dir);
     let s = |p: &Path| p.to_string_lossy().into_owned();
@@ -119,7 +64,6 @@ pub fn worker_exec_record(team_dir: &Path) -> Value {
         "handler_module": EXEC_HANDLER,
         "ingress_rule": "allow_all_ingress",
         "cwd": s(&work_dir(team_dir)),
-        "allowed": [WORKER_ALLOWED],
         "inherit_env": INHERIT_ENV,
         "env": env,
     })
@@ -144,22 +88,6 @@ mod tests {
 
     fn argv_owned(v: &[&str]) -> Vec<String> {
         argv(v)
-    }
-
-    #[test]
-    fn the_record_names_no_credential_variable() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let rec = worker_exec_record(dir.path());
-        let inherit = rec["inherit_env"].as_array().unwrap();
-        assert!(!inherit.iter().any(|v| v.as_str() == Some("*")));
-        for name in inherit {
-            let name = name.as_str().unwrap();
-            assert!(!forbidden_env_name(name), "{name} must not be inherited");
-            assert!(!FORBIDDEN_ENV.contains(&name));
-        }
-        for key in rec["env"].as_object().unwrap().keys() {
-            assert!(!forbidden_env_name(key), "{key} must not be set");
-        }
     }
 
     #[test]
@@ -196,58 +124,22 @@ mod tests {
     }
 
     #[test]
-    fn forbidden_names_are_recognised() {
-        for name in [
-            "GH_TOKEN",
-            "SSH_AUTH_SOCK",
-            "ANTHROPIC_API_KEY",
-            "MY_SERVICE_TOKEN",
-            "DB_PASSWORD",
-            "AWS_SECRET",
-            "GIT_CREDENTIAL_X",
-        ] {
-            assert!(forbidden_env_name(name), "{name}");
-        }
-        for name in ["PATH", "HOME", "GIT_SSH_COMMAND", "KEYBOARD"] {
-            assert!(!forbidden_env_name(name), "{name}");
-        }
-    }
-
-    #[test]
-    fn prepare_sandbox_makes_an_empty_home_and_a_work_dir() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let home = prepare_sandbox(dir.path()).unwrap();
-        assert!(work_dir(dir.path()).is_dir());
-        assert_eq!(std::fs::read_dir(&home).unwrap().count(), 0);
-        for name in CREDENTIAL_FILES {
-            assert!(!home.join(name).exists(), "{name}");
-        }
-        assert!(prepare_sandbox(dir.path()).is_ok());
-    }
-
-    #[test]
-    fn prepare_sandbox_refuses_a_home_holding_credentials() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let home = sandbox_home(dir.path());
-        std::fs::create_dir_all(home.join(".ssh")).unwrap();
-        let err = prepare_sandbox(dir.path()).unwrap_err();
-        assert!(err.to_string().contains(".ssh"));
-        assert!(home.join(".ssh").is_dir());
-    }
-
-    #[test]
-    fn the_record_passes_exec_validation() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let rec = worker_exec_record(dir.path());
-        assert!(fantastic_exec_bridge::ExecBridgeBundle
-            .validate_meta(rec.as_object().unwrap(), &Map::new())
-            .is_none());
-    }
-
-    #[test]
     fn stock_record_passes_exec_validation_and_refuses_nothing() {
+        // the record as the first run writes it: `allowed` is the blueprint entry's own value
+        fn find(v: &Value) -> Option<Value> {
+            match v {
+                Value::Array(a) => a.iter().find_map(find),
+                Value::Object(o) if o.get("id") == Some(&json!(crate::new_team::WORKER_EXEC)) => {
+                    Some(v.clone())
+                }
+                Value::Object(o) => o.values().find_map(find),
+                _ => None,
+            }
+        }
         let dir = tempfile::TempDir::new().unwrap();
-        let rec = worker_exec_record(dir.path());
+        let doc: Value =
+            serde_yaml::from_str(&crate::hydrate::blueprint_text(dir.path()).unwrap()).unwrap();
+        let rec = find(&doc["agents"]).expect("the blueprint declares the worker exec");
         assert!(fantastic_exec_bridge::ExecBridgeBundle
             .validate_meta(rec.as_object().unwrap(), &Map::new())
             .is_none());
@@ -259,10 +151,7 @@ mod tests {
             &["sh", "-c", "gh auth token"],
             &["git", "status"],
         ] {
-            assert!(
-                !refused(&rec, a),
-                "the general build refuses nothing: {a:?}"
-            );
+            assert!(!refused(&rec, a), "the worker exec refuses nothing: {a:?}");
         }
     }
 }

@@ -1,11 +1,10 @@
 //! The team binary: fantastic's command line, unchanged, with this repo's
 //! bundles added to the registry (the `extras` of `fantastic_tui::main_with`).
-//! The way `canvas` sits on top of the kernel, the team's bundles sit on top of
-//! fantastic: no config file of its own, and one flag (below).
+//! The team's bundles sit on top of fantastic: no config file of its own, and one
+//! flag (below).
 //!
-//! The binary takes fantastic's words: `--headless`, `canvas [--port N]
-//! [--host ADDR]`, `ai <backend> …`, `run …`, `system`, `mcp`, `send`, `import`,
-//! `migrate-home` and `readme`. Fantastic runs in the directory it is started in.
+//! The binary takes fantastic's words: `--headless`, `ai <backend> …`, `run …`,
+//! `system`, `mcp`, `send`, `import`, `migrate-home` and `readme`. Fantastic runs in the directory it is started in.
 //! One first word is the team's own and handles its arguments itself: `ai-readme`. One recipe word is the team's own, `webui [--port N] [--host ADDR]`: the team page from the binary (`webui.rs`).
 //! One flag is the team's own, `--worktrees DIR`: where the git connectors'
 //! default worktree roots go (`worktrees_flag.rs`).
@@ -106,7 +105,6 @@ mod tests {
         for word in [
             "ai-readme",
             "readme",
-            "canvas",
             "webui",
             "--port",
             "--headless",

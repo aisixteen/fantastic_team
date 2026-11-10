@@ -10,10 +10,6 @@ FAIL=0
 ok() { PASS=$((PASS + 1)); echo "ok   $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "FAIL $1${2:+ — $2}"; }
 
-sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'
-}
-
 # 1. build_scripts_are_locked_and_remapped
 # The cargo command lines (not the # comments) must each carry --locked. A header comment
 # that mentions --locked does not count. $2 is the least number of cargo build/test lines.
@@ -24,10 +20,7 @@ cargo_lines_locked() {
 }
 ok_locked=1
 cargo_lines_locked "$ROOT/scripts/build.sh" 1 || ok_locked=0
-cargo_lines_locked "$ROOT/scripts/build-github.sh" 2 || ok_locked=0
-for s in build.sh build-github.sh; do
-  grep -q 'repro-env.sh' "$ROOT/scripts/$s" || ok_locked=0
-done
+grep -q 'repro-env.sh' "$ROOT/scripts/build.sh" || ok_locked=0
 env_out=$(cd "$ROOT" && sh -c '. scripts/repro-env.sh; echo $SOURCE_DATE_EPOCH $RUSTFLAGS' 2>"$T/env.err")
 epoch=${env_out%% *}
 case "$epoch" in
@@ -59,17 +52,14 @@ WANT
 2c1743a391305fbf367df8e4f069f9f9  a.bin
 987bcab01b929eb2c07877b224215c92  b.bin
 WANT
-  want_patch="patch sha256: $(sha256_of "$ROOT/patches/github-exec.patch")"
   sums_ok=0
   md5_ok=0
-  patch_ok=0
   cmp -s "$T/want.sha256" "$T/art/SHA256SUMS" && sums_ok=1
   cmp -s "$T/want.md5" "$T/art/MD5SUMS" && md5_ok=1
-  grep -qxF "$want_patch" "$T/art/RELEASE-INFO.txt" && patch_ok=1
-  if [ "$sums_ok" = 1 ] && [ "$md5_ok" = 1 ] && [ "$patch_ok" = 1 ]; then
+  if [ "$sums_ok" = 1 ] && [ "$md5_ok" = 1 ]; then
     ok checksums_lists_sha256_and_md5_sorted
   else
-    bad checksums_lists_sha256_and_md5_sorted "sums=$sums_ok md5=$md5_ok patch=$patch_ok: $(cat "$T/art/SHA256SUMS" 2>/dev/null)"
+    bad checksums_lists_sha256_and_md5_sorted "sums=$sums_ok md5=$md5_ok: $(cat "$T/art/SHA256SUMS" 2>/dev/null)"
   fi
 else
   bad checksums_lists_sha256_and_md5_sorted "checksums.sh failed: $(cat "$T/cs.out")"
@@ -93,35 +83,6 @@ if [ "$v1" -eq 0 ] && [ "$v2" -eq 1 ] && grep -qi 'mismatch' "$T/v2.out" \
   ok verify_accepts_matching_binary_and_rejects_one_changed_byte
 else
   bad verify_accepts_matching_binary_and_rejects_one_changed_byte "exit $v1/$v2/$v3: $(cat "$T/v1.out" "$T/v2.out" "$T/v3.out")"
-fi
-
-# 4. canvas_zip_is_byte_identical_across_two_packs
-# The pinned fantastic must pack its canvas page the same way twice: two folders, a different
-# clock and TZ, the same SOURCE_DATE_EPOCH (fantastic #409).
-# A fresh CI runner has no registry cache, so --offline cannot resolve; fall back to the network.
-meta_mf() {
-  grep -o '"manifest_path":"[^"]*fantastic-canvas-page/Cargo.toml"' | head -n 1 \
-    | sed 's/^"manifest_path":"//; s/"$//'
-}
-mf=$(cd "$ROOT" && cargo metadata --locked --offline --format-version 1 2>"$T/meta.err" | meta_mf)
-if [ -z "$mf" ]; then
-  mf=$(cd "$ROOT" && cargo metadata --locked --format-version 1 2>"$T/meta.err" | meta_mf)
-fi
-APP=""
-[ -n "$mf" ] && APP="$(dirname "$mf")/../../web/canvas"
-if [ -z "$mf" ] || [ ! -f "$APP/scripts/pack.sh" ]; then
-  bad canvas_zip_is_byte_identical_across_two_packs "no canvas app or scripts/pack.sh (manifest='$mf' app='$APP') $(cat "$T/meta.err" 2>/dev/null)"
-else
-  mkdir -p "$T/a" "$T/b"
-  (cd "$APP" && SOURCE_DATE_EPOCH=1700000000 TZ=UTC sh scripts/pack.sh "$T/a/canvas.zip") >"$T/pa.out" 2>&1
-  sleep 2
-  (cd "$APP" && SOURCE_DATE_EPOCH=1700000000 TZ=America/Los_Angeles sh scripts/pack.sh "$T/b/canvas.zip") >"$T/pb.out" 2>&1
-  if [ -s "$T/a/canvas.zip" ] && [ -s "$T/b/canvas.zip" ] \
-    && [ "$(sha256_of "$T/a/canvas.zip")" = "$(sha256_of "$T/b/canvas.zip")" ]; then
-    ok canvas_zip_is_byte_identical_across_two_packs
-  else
-    bad canvas_zip_is_byte_identical_across_two_packs "a=$(sha256_of "$T/a/canvas.zip" 2>/dev/null) b=$(sha256_of "$T/b/canvas.zip" 2>/dev/null) $(unzip -Z -T "$T/a/canvas.zip" 2>&1 | head -n 5) | $(unzip -Z -T "$T/b/canvas.zip" 2>&1 | head -n 5) $(cat "$T/pa.out" "$T/pb.out" | tail -n 5)"
-  fi
 fi
 
 echo "repro_scripts: $PASS passed, $FAIL failed"

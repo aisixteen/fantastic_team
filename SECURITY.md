@@ -20,8 +20,7 @@ with the reporter.
 
 ## What the team promises (and what counts as a vulnerability)
 
-- **Workers hold no secrets.** A worker's exec gets no forge credentials; in the GitHub
-  build (`patches/github-exec.patch`) it also gets no forge CLIs. Delivery goes through
+- **Workers hold no secrets.** A worker's exec gets no forge credentials. Delivery goes through
   connector agents. A way for a worker to read a key, a token or the
   GitHub App key is a vulnerability.
 - **Secrets never leave the credential store.** They are read at use and never returned,

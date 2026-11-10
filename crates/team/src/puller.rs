@@ -143,23 +143,16 @@ impl Peers for KernelPeers {
     }
 }
 
-/// Read the puller's config from the agent's own record.
-fn cfg_of(
+/// The agent's own record and its `repos` list (the strings of that array).
+pub(crate) fn record_and_repos(
     kernel: &Arc<fantastic_kernel::Kernel>,
     id: &fantastic_kernel::AgentId,
-) -> Result<PullerCfg, String> {
+) -> (serde_json::Map<String, serde_json::Value>, Vec<String>) {
     let meta = kernel
         .agents
         .get(id)
         .map(|e| e.meta.read().expect("meta").clone())
         .unwrap_or_default();
-    let s = |k: &str| {
-        meta.get(k)
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| format!("team_puller: record needs `{k}`"))
-    };
     let repos = meta
         .get("repos")
         .and_then(|v| v.as_array())
@@ -169,6 +162,22 @@ fn cfg_of(
                 .collect()
         })
         .unwrap_or_default();
+    (meta, repos)
+}
+
+/// Read the puller's config from the agent's own record.
+fn cfg_of(
+    kernel: &Arc<fantastic_kernel::Kernel>,
+    id: &fantastic_kernel::AgentId,
+) -> Result<PullerCfg, String> {
+    let (meta, repos) = record_and_repos(kernel, id);
+    let s = |k: &str| {
+        meta.get(k)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|v| !v.trim().is_empty())
+            .ok_or_else(|| format!("team_puller: record needs `{k}`"))
+    };
     Ok(PullerCfg {
         repos,
         maintainer: s("maintainer")?,
@@ -338,13 +347,6 @@ impl PullState {
     }
 }
 
-fn now_s() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// The `status` reply: the source (repos, connector, store) from the record and the
 /// figures from the state. Never the maintainer or app login.
 pub fn status_of(cfg: &PullerCfg, state: &PullState) -> serde_json::Value {
@@ -373,7 +375,7 @@ impl PullerBundle {
         self.state
             .lock()
             .expect("puller state")
-            .record(&report, now_s());
+            .record(&report, fantastic_ai_core::helpers::now_secs() as u64);
         report
     }
 
@@ -404,7 +406,7 @@ impl fantastic_kernel::bundle::Bundle for PullerBundle {
     ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if t == "boot" {
-            crate::declared_views::sync_all(kernel);
+            crate::declared_views::grant_views(kernel);
             return Ok(None);
         }
         let out = match (t, cfg_of(kernel, agent_id)) {

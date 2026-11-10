@@ -2,9 +2,8 @@
 //!
 //! A generic extension between agents and task sources (gh, jira, ...): it makes NO
 //! outbound call. `source` and `update_to` are opaque strings; the LLM reads them and
-//! pushes updates itself. OFF BY DEFAULT: a host registers the bundle only when
-//! `FANTASTIC_TASK_REGISTRY` is truthy ([`register_if_enabled`]), and an instance
-//! whose record has no `task_store_id` refuses every verb `disabled`.
+//! pushes updates itself. An instance whose record has no `task_store_id` refuses
+//! every verb `disabled`.
 //!
 //! STORAGE IS ABSTRACT. The registry keeps its tables in the store agent named by its
 //! record's `task_store_id`, through the store interface the agent memory uses
@@ -35,7 +34,7 @@
 
 use async_trait::async_trait;
 use fantastic_bundle::py_repr;
-use fantastic_kernel::bundle::{Bundle, BundleError, BundleRegistry, Reply};
+use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
 use fantastic_kernel::refusal::{self, bad, missing};
 use fantastic_kernel::{current_origin, Agent, AgentId, Item, Kernel};
 use serde_json::{json, Map, Value};
@@ -45,9 +44,6 @@ use std::sync::Arc;
 /// `handler_module` key under which this bundle registers.
 pub const HANDLER_MODULE: &str = "task_registry.tools";
 
-/// The environment variable that turns the bundle on in a host.
-pub const ENABLE_ENV: &str = "FANTASTIC_TASK_REGISTRY";
-
 /// readme.md auto-seeded into the agent's dir on creation.
 pub const README: &str = include_str!("readme.md");
 
@@ -56,28 +52,6 @@ pub const STATES: [&str; 6] = ["waiting", "running", "blocked", "done", "failed"
 
 /// How many rows one store read asks for.
 const PAGE: u64 = 500;
-
-/// Is an env value on? `1`, `true`, `yes`, `on` (any case).
-#[must_use]
-pub fn enabled_value(v: Option<&str>) -> bool {
-    v.is_some_and(|s| {
-        matches!(
-            s.trim().to_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
-}
-
-/// Register the bundle only when `value` (the env var) turns it on. Returns
-/// whether it registered. Off: no handler, so nothing changes for the host.
-pub fn register_if_enabled(reg: &mut BundleRegistry, value: Option<&str>) -> bool {
-    if enabled_value(value) {
-        reg.register(HANDLER_MODULE, TaskRegistryBundle::default());
-        true
-    } else {
-        false
-    }
-}
 
 /// The task_registry bundle. It holds no tasks: only one lock per registry agent, so
 /// the read-modify-append of two leads cannot race.
@@ -107,35 +81,6 @@ fn meta_of(a: &Agent) -> Map<String, Value> {
 
 fn agent_of(kernel: &Kernel, id: &AgentId) -> Option<Arc<Agent>> {
     kernel.agents.get(id).map(|e| Arc::clone(&e))
-}
-
-/// A refusal of the registry's own, in the kernel's shape:
-/// `{error:<sentence>, reason:<code>}`.
-fn fail(code: &str, error: String) -> Value {
-    refusal::refusal(code, error)
-}
-
-/// [`fail`] plus a `hint` — what to do instead.
-fn fail_hint(code: &str, error: String, hint: &str) -> Value {
-    refusal::refusal_hint(code, error, hint)
-}
-
-fn now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
-}
-
-/// Every id above `id`, nearest first.
-fn ancestors(kernel: &Kernel, id: &AgentId) -> Vec<AgentId> {
-    let mut out = Vec::new();
-    let mut cur = agent_of(kernel, id).and_then(|a| a.parent_id.clone());
-    while let Some(p) = cur {
-        cur = agent_of(kernel, &p).and_then(|a| a.parent_id.clone());
-        out.push(p);
-    }
-    out
 }
 
 /// A required non-empty string arg.
@@ -307,7 +252,7 @@ async fn store_call(kernel: &Arc<Kernel>, store: &str, payload: Value) -> Result
             Some(v) => v.to_string(),
             None => out.status.as_str().to_string(),
         };
-        let mut r = fail(
+        let mut r = refusal::refusal(
             refusal::STORE_REFUSED,
             format!("store {} refused: {text}", py_repr(store)),
         );
@@ -349,7 +294,7 @@ async fn load(
                 row.get("task_id").and_then(Value::as_str),
                 row.get("content").filter(|c| c.is_object()),
             ) {
-                tasks.insert(id.to_string(), with_defaults(content));
+                tasks.insert(id.to_string(), content.clone());
             }
         }
         match res.get("next") {
@@ -357,22 +302,6 @@ async fn load(
             _ => return Ok(tasks),
         }
     }
-}
-
-/// An entry stored before the recorded facts existed gets their defaults.
-fn with_defaults(content: &Value) -> Value {
-    let mut e = content.clone();
-    for (k, d) in [
-        ("versions", json!([])),
-        ("source_version", Value::Null),
-        ("fork_from", Value::Null),
-        ("usage", Value::Null),
-    ] {
-        if e.get(k).is_none() {
-            e[k] = d;
-        }
-    }
-    e
 }
 
 /// Append the new snapshot of a task.
@@ -384,8 +313,7 @@ async fn save(kernel: &Arc<Kernel>, store: &str, entry: &Value) -> Result<(), Va
 
 /// One history step; it carries the entry's recorded facts only when it has any.
 fn history_item(from: &Value, to: &Value, by: &Option<AgentId>, entry: &Value) -> Value {
-    let mut item =
-        json!({"from": from, "to": to, "by": by.as_ref().map(AgentId::as_str), "at": now()});
+    let mut item = json!({"from": from, "to": to, "by": by.as_ref().map(AgentId::as_str), "at": fantastic_ai_core::helpers::now_secs()});
     for k in ["versions", "source_version", "fork_from"] {
         let v = &entry[k];
         let empty = v.is_null() || v.as_array().is_some_and(Vec::is_empty);
@@ -453,7 +381,7 @@ impl Bundle for TaskRegistryBundle {
                 "sentence": "A registry of tasks: who holds each one and where it came from.",
                 "enabled": store.is_some(),
             }),
-            _ if store.is_none() => fail_hint(
+            _ if store.is_none() => refusal::refusal_hint(
                 refusal::DISABLED,
                 "task_registry is disabled: the record has no task_store_id".to_string(),
                 "set task_store_id on the record",
@@ -584,7 +512,7 @@ async fn assign_inner(
     let from = entry["holder"].clone();
     match (re, from.is_null()) {
         (false, false) => {
-            return Err(fail(
+            return Err(refusal::refusal(
                 refusal::ALREADY_HELD,
                 format!(
                     "assign: task {} is held by {from}; use reassign",
@@ -593,7 +521,7 @@ async fn assign_inner(
             ))
         }
         (true, true) => {
-            return Err(fail(
+            return Err(refusal::refusal(
                 refusal::NOT_HELD,
                 format!("reassign: task {} has no holder; use assign", py_repr(id)),
             ))
@@ -674,8 +602,12 @@ async fn report_inner(
             ));
         }
         if let Some(c) = caller.as_ref() {
-            if who != c && !ancestors(kernel, who).contains(c) {
-                return Err(fail(
+            if who != c
+                && !kernel
+                    .ancestor_ids(agent_of(kernel, who).as_deref())
+                    .contains(c.as_str())
+            {
+                return Err(refusal::refusal(
                     refusal::NOT_IN_SUBTREE,
                     format!(
                         "report: {} is not {c} or one of its descendants",
@@ -691,7 +623,7 @@ async fn report_inner(
         .ok_or_else(|| not_found_task("report", id))?;
     entry["report"] = json!({
         "from": from.as_ref().map(AgentId::as_str), "state": state,
-        "result": result, "at": now(), "usage": usage,
+        "result": result, "at": fantastic_ai_core::helpers::now_secs(), "usage": usage,
     });
     if usage.is_some() {
         entry["usage"] = entry["report"]["usage"].clone();

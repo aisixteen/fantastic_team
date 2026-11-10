@@ -14,7 +14,6 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-fantastic-team-secrets-guard = { path = "../secrets_guard" }
 fantastic-tui.workspace = true
 fantastic-kernel.workspace = true
 fantastic-bundle.workspace = true
@@ -26,7 +25,6 @@ fantastic-ram-store.workspace = true
 fantastic-sqlite-store.workspace = true
 team-agentic-resources = { path = "../agentic_resources" }
 team-task-registry = { path = "../task_registry" }
-team-cabinet = { path = "../cabinet" }
 fantastic-user.workspace = true
 fantastic-anthropic-backend.workspace = true
 fantastic-credential-store.workspace = true
@@ -43,8 +41,6 @@ serde_json.workspace = true
 serde.workspace = true
 serde_yaml = "0.9"
 regex = "1"
-hmac = "0.12"
-sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 getrandom = "0.2"
 

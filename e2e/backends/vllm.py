@@ -99,6 +99,27 @@ def _price(name: str) -> float | None:
     return float(v) if v else None
 
 
+def usage_reports(team, handler_module: str):
+    """`(agent id, its `usage` result)` for every agent of `handler_module` the team answers a `usage`
+    for now (the plugs poll with it); nothing when the team is gone or going down."""
+    if team is None or not team.proc or team.proc.poll() is not None:
+        return
+    try:
+        agents = team.agents()
+    except Exception:  # the team is going down
+        return
+    for aid, rec in agents.items():
+        if rec.get("handler_module") != handler_module:
+            continue
+        try:
+            r = team.send(aid, {"type": "usage"})
+        except Exception:
+            continue
+        u = r.get("result") if r.get("status") == "completed" else None
+        if isinstance(u, dict) and "requests" in u:
+            yield aid, u
+
+
 class VllmPlug:
     real = True  # a real model answers: the launcher reads the key for the team, if there is one
 
@@ -174,26 +195,11 @@ class VllmPlug:
 
     def poll(self) -> None:
         """Read the usage of every vllm agent now; a deleted agent keeps what was last seen."""
-        team = self._team
-        if team is None or not team.proc or team.proc.poll() is not None:
-            return
-        try:
-            agents = team.agents()
-        except Exception:  # the team is going down
-            return
-        for aid, rec in agents.items():
-            if rec.get("handler_module") != "vllm_backend.tools":
-                continue
-            try:
-                r = team.send(aid, {"type": "usage"})
-            except Exception:
-                continue
-            u = r.get("result") if r.get("status") == "completed" else None
-            if isinstance(u, dict) and "requests" in u:
-                with self.lock:
-                    old = self.counts.get(aid, {})
-                    self.counts[aid] = {k: max(int(u.get(k) or 0), int(old.get(k) or 0))
-                                        for k in ("requests", "prompt_tokens", "output_tokens")}
+        for aid, u in usage_reports(self._team, "vllm_backend.tools"):
+            with self.lock:
+                old = self.counts.get(aid, {})
+                self.counts[aid] = {k: max(int(u.get(k) or 0), int(old.get(k) or 0))
+                                    for k in ("requests", "prompt_tokens", "output_tokens")}
         self.polls += 1
 
     def finish(self, team) -> None:

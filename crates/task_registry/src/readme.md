@@ -1,6 +1,6 @@
 # task_registry — which agent or subtree holds which task
 
-Verbs: reflect, add, assign, reassign, status, report, list, get. **Off by default**: a host registers this bundle only when `FANTASTIC_TASK_REGISTRY` is truthy, and an agent of it with no `task_store_id` in its record refuses every verb (`disabled`).
+Verbs: reflect, add, assign, reassign, status, report, list, get. An agent of it with no `task_store_id` in its record refuses every verb (`disabled`).
 
 **What it is.** The task tree of a team of agents, and the audit of who holds each task and where it came from. It sits between agents and task sources (gh, jira, ...) as an extension, not an interface layer: it makes NO outbound call. `source` and `update_to` are opaque strings (`gh:owner/repo#12`, `jira:KEY-5`, anything); the LLM reads them to see where a task came from and where to push updates, then pushes them itself through that source's own agent. Nothing is synced automatically. `reflect` shows the agent tree; this registry is the task tree.
 

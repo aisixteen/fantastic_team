@@ -36,6 +36,8 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .vllm import usage_reports
+
 DEFAULT_MODEL = "claude-haiku-5-5"  # the one place a model is named
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 DEFAULT_CAP = 60
@@ -244,31 +246,16 @@ class AnthropicRelay:
 
     def poll(self) -> None:
         """Read every anthropic agent's `usage` now; a deleted agent keeps what was last seen."""
-        team = self._team
-        if team is None or not team.proc or team.proc.poll() is not None:
-            return
-        try:
-            agents = team.agents()
-        except Exception:  # the team is going down
-            return
-        for aid, rec in agents.items():
-            if rec.get("handler_module") != "anthropic_backend.tools":
-                continue
-            try:
-                r = team.send(aid, {"type": "usage"})
-            except Exception:
-                continue
-            u = r.get("result") if r.get("status") == "completed" else None
-            if isinstance(u, dict) and "requests" in u:
-                with self.lock:
-                    old = self.agent_usage.get(aid, {})
-                    new = {k: max(int(u.get(k) or 0), int(old.get(k) or 0)) for k in COUNT_KEYS}
-                    # saved = round(0.9 read - 0.25 write) goes down on a cache write and may be
-                    # negative: the latest reading, never the largest
-                    new["saved_tokens"] = int(u.get("saved_tokens") or 0)
-                    cost = u.get("cost_usd")  # absent when the record has no prices
-                    new["cost_usd"] = None if cost is None else max(float(cost), old.get("cost_usd") or 0.0)
-                    self.agent_usage[aid] = new
+        for aid, u in usage_reports(self._team, "anthropic_backend.tools"):
+            with self.lock:
+                old = self.agent_usage.get(aid, {})
+                new = {k: max(int(u.get(k) or 0), int(old.get(k) or 0)) for k in COUNT_KEYS}
+                # saved = round(0.9 read - 0.25 write) goes down on a cache write and may be
+                # negative: the latest reading, never the largest
+                new["saved_tokens"] = int(u.get("saved_tokens") or 0)
+                cost = u.get("cost_usd")  # absent when the record has no prices
+                new["cost_usd"] = None if cost is None else max(float(cost), old.get("cost_usd") or 0.0)
+                self.agent_usage[aid] = new
 
     def finish(self, team) -> None:
         """One last read, before the team stops."""

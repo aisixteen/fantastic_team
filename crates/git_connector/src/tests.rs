@@ -446,7 +446,6 @@ async fn the_record_is_validated() {
         ),
         (json!({"author_name": "A"}), "`author_name` and `author_email` go together"),
         (json!({"timeout_s": 0}), "`timeout_s` must be a positive int"),
-        (json!({"credentials": {"store": "creds"}}), "credentials"),
     ];
     for (over, expect) in cases {
         let mut meta = base.clone();
@@ -524,7 +523,9 @@ async fn no_workspace_root_means_the_default_folder_made_at_the_first_worktree()
     assert_eq!(r["created"], true, "{r}");
     let expect = crate::paths::simplify(root.canonicalize().unwrap()).join("w1");
     assert_eq!(r["path"], expect.to_str().unwrap());
-    let r = f.call(json!({"type": "worktree_remove", "path": "w1"})).await;
+    let r = f
+        .call(json!({"type": "worktree_remove", "path": "w1"}))
+        .await;
     assert_eq!(r["removed"], true, "{r}");
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -532,5 +533,7 @@ async fn no_workspace_root_means_the_default_folder_made_at_the_first_worktree()
 #[test]
 fn the_default_folder_is_the_temp_one_and_worktrees_dir_must_be_absolute() {
     assert!(crate::default_workspace_root("g").ends_with("fantastic_team/worktrees/g"));
-    assert!(crate::set_worktrees_dir(std::path::PathBuf::from("rel")).unwrap_err().contains("absolute"));
+    assert!(crate::set_worktrees_dir(std::path::PathBuf::from("rel"))
+        .unwrap_err()
+        .contains("absolute"));
 }

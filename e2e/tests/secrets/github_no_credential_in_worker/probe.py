@@ -1,12 +1,9 @@
-"""GitHub build: a worker's env and HOME hold no token, model key or PEM, and the
-forge CLI and credential helper it might use to get one are refused."""
+"""A worker's env and HOME hold no token, model key or PEM."""
 
 import re
 
 from helpers import run_flow
 from helpers.verdict import Verdict
-
-REFUSAL = "command not allowed"
 
 
 def run(ctx):
@@ -26,7 +23,5 @@ def run(ctx):
         v.check(f"no model request holds the {what}", not any(needle in b for b in bodies))
         v.check(f"the team's output holds no {what}", needle not in ctx.team.log())
     v.check("the worker's environment names no credential variable (E2E_*)", "E2E_" not in last)
-    v.check("gh auth token and a credential.helper setting are refused", last.count(REFUSAL) == 2,
-            f"{last.count(REFUSAL)} refusals")
     ctx.team.stop()
     return v.finish()

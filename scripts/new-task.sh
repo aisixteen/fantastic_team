@@ -9,7 +9,7 @@
 #   field NAME=default    (optional)
 #   -->
 # The task file is for whatever agents the caller made: the team creates no coding agent by
-# default. See the README ("Configure") and examples/create_agent for a worker made with
+# default. See the README ("Configure") for a worker made with
 # `create_agent`, and crates/team/src/new_team.rs for the app's lead and roles registry.
 # TITLE, KIND, DATE and SLUG are filled by the generator; AUTHOR is $USER unless --set AUTHOR=….
 set -eu

@@ -1,4 +1,4 @@
-# task/github_auth_by_env_ref (free, build: any)
+# task/github_auth_by_env_ref (free)
 
 Issue #303: GitHub auth is configuration. The ref of the `github` connector holds `token` (personal) or `app_id` + `private_key` (app); with no credential the team works local only. App mode is covered by `task/github_merge_through_connector` and `task/github_pr_through_connector`; this test covers the other two.
 

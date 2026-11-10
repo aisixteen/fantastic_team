@@ -3,40 +3,16 @@
 //! a connected websocket client. Unix only: the tests send real signals.
 #![cfg(unix)]
 
-use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 const LIMIT: Duration = Duration::from_secs(5);
 
-/// Every test holds this for its whole body, so two tests never race for a
-/// port, a child process or a stray listener.
-static SERIAL: Mutex<()> = Mutex::new(());
-
-fn serial() -> MutexGuard<'static, ()> {
-    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Ports already handed out in this test process; `free_port` never repeats one.
-static ISSUED: Mutex<BTreeSet<u16>> = Mutex::new(BTreeSet::new());
-
-fn free_port() -> u16 {
-    let mut issued = ISSUED.lock().unwrap_or_else(|e| e.into_inner());
-    loop {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        if issued.insert(port) {
-            return port;
-        }
-    }
-}
+mod common;
+use common::{free_port, serial};
 
 fn start(dir: &Path, port: u16) -> Child {
     Command::new(env!("CARGO_BIN_EXE_fantastic_team"))
@@ -223,52 +199,4 @@ fn forced_exit_releases_the_lock() {
     drop(wait_ready(&mut again, port));
     signal(&again, "-TERM");
     wait_exit(&mut again, LIMIT);
-}
-
-/// Regression for the parallel port race: no two `free_port` calls in one test
-/// process may hand out the same number, even when called concurrently.
-#[test]
-fn free_port_never_repeats_within_process() {
-    let handles: Vec<_> = (0..8)
-        .map(|_| std::thread::spawn(|| (0..25).map(|_| free_port()).collect::<Vec<u16>>()))
-        .collect();
-    let mut ports: Vec<u16> = handles
-        .into_iter()
-        .flat_map(|h| h.join().unwrap())
-        .collect();
-    let total = ports.len();
-    ports.sort_unstable();
-    ports.dedup();
-    assert_eq!(ports.len(), total, "free_port handed out a duplicate port");
-}
-
-/// Regression for the wrong-listener race: when the child has already exited,
-/// `wait_ready` must report the exit even though the port accepts (here a
-/// listener held by this test stands in for another test's binary).
-#[test]
-fn wait_ready_panics_when_child_exits_before_listening() {
-    let _serial = serial();
-    let held = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = held.local_addr().unwrap().port();
-    let mut child = Command::new("sh")
-        .args(["-c", "exit 3"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    child.wait().unwrap();
-    let start = Instant::now();
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = wait_ready(&mut child, port);
-    }));
-    assert!(start.elapsed() < Duration::from_secs(5));
-    let payload = res.expect_err("wait_ready returned Ok for an exited child");
-    let msg = payload
-        .downcast_ref::<String>()
-        .cloned()
-        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-        .unwrap_or_default();
-    assert!(msg.contains("exit status"), "panic message was: {msg}");
-    drop(held);
 }

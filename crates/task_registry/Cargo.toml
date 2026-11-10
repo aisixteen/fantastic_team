@@ -9,6 +9,7 @@ description = "A generic task registry: which agent or subtree holds which task,
 [dependencies]
 fantastic-bundle.workspace = true
 fantastic-kernel.workspace = true
+fantastic-ai-core.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

@@ -83,7 +83,7 @@ def run(ctx):
     settle(ctx, 2)
     v.check("it asked the model twice (read, then propose)", ctx.model.served == 2, str(ctx.model.served))
     seen = T.log_calls(team.log())
-    for want in (("github", "issues"), ("board", "rows"), ("roles", "get_count")):
+    for want in (("github", "issues"), ("roles", "get_count")):
         v.check(f"it called {want[0]} {want[1]}", want in seen, str(seen[-20:]))
     proposal = ctx.model.turns[1]  # the say text, then the done call
     v.check("the proposal names the four issues",

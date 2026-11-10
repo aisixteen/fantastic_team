@@ -931,7 +931,6 @@ dependencies = [
  "block-buffer",
  "const-oid",
  "crypto-common",
- "subtle",
 ]
 
 [[package]]
@@ -1459,7 +1458,6 @@ dependencies = [
  "fantastic-ram-store",
  "fantastic-scheduler",
  "fantastic-sqlite-store",
- "fantastic-team-secrets-guard",
  "fantastic-tui",
  "fantastic-user",
  "fantastic-user-home-store",
@@ -1467,15 +1465,12 @@ dependencies = [
  "fantastic-web-mcp",
  "fantastic-web-ws",
  "getrandom 0.2.17",
- "hmac",
  "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2",
  "team-agentic-resources",
- "team-cabinet",
  "team-git-connector",
  "team-github-connector",
  "team-task-registry",
@@ -1492,18 +1487,6 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "fantastic-team-secrets-guard"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "fantastic-kernel",
- "serde_json",
  "tempfile",
  "tokio",
 ]
@@ -2236,15 +2219,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
-name = "hmac"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
-dependencies = [
- "digest",
-]
 
 [[package]]
 name = "html5ever"
@@ -5472,26 +5446,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "team-cabinet"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "fantastic-bundle",
- "fantastic-core",
- "fantastic-kernel",
- "fantastic-ram-store",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "team-git-connector"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "fantastic-ai-core",
+ "fantastic-bundle",
  "fantastic-credential-store",
  "fantastic-kernel",
  "fantastic-ram-store",
@@ -5527,6 +5488,7 @@ name = "team-task-registry"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "fantastic-ai-core",
  "fantastic-bundle",
  "fantastic-core",
  "fantastic-kernel",

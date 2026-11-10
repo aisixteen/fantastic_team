@@ -1,6 +1,6 @@
 """The stock team of the older e2e tests, as fantastic records (issues #219, #221).
 
-The team binary is fantastic's command line (`--headless`, `canvas --port N`) and has no
+The team binary is fantastic's command line (`--headless`, `webui --port N`) and has no
 config file and no blueprint, so a test builds its team the way anyone does: every agent is a
 `create_agent` payload sent with `fantastic_team send`, under an id the test chooses, and every
 edge is written on both ends (`link`):
@@ -16,17 +16,16 @@ Nothing here is a team config: every step is a fantastic verb a person can type.
 from __future__ import annotations
 
 import os
-import re
 import time
 
-from . import forge as forge_mod, run_flow, team as T
+from . import cli, forge as forge_mod, run_flow, team as T
 from .records import ROOT, create as _create, link, merge, update
 
 PAGE_VERBS = ["sidebar", "tree", "open", "control"]
 CHAT = T.CHAT_VERBS
 DISPATCHER_KERNEL_VERBS = ["create_agent", "update_agent", "delete_agent"]
 LEAD_ROLES_VERBS = ["roles", "role", "spawn", "get_count", "fleet"]
-LEAD_BOARD_VERBS = ["board", "rows"]
+LEAD_BOARD_VERBS = ["board"]
 AWAIT_VERBS = ["await_set", "await_cancel"]
 REPO = "acme/widgets"
 LEAD = "lead"
@@ -63,25 +62,14 @@ def credential_refs(ctx, github: bool = True, github_mode: str = "app") -> dict:
     return refs
 
 
-def github_allowed() -> str:
-    """The `allowed` pattern of the GitHub build: the one `patches/github-exec.patch` gives
-    `worker_exec::WORKER_ALLOWED` (read from the patch, so the test follows the build)."""
-    patch = os.path.join(os.path.dirname(__file__), "..", "..", "patches", "github-exec.patch")
-    with open(patch) as f:
-        m = re.search(r'^\+pub const WORKER_ALLOWED: &str = r#"(.*)"#;$', f.read(), re.M)
-    if not m:
-        raise RuntimeError("patches/github-exec.patch no longer sets WORKER_ALLOWED")
-    return m.group(1)
-
-
-def worker_exec_record(build: str = "general") -> dict:
+def worker_exec_record() -> dict:
     """The restricted exec of a worker (`worker_exec::worker_exec_record`), relative to the
-    folder the team runs in: its HOME is `./sandbox/home` and no credential is inherited. The
-    general build allows any command line; the GitHub build refuses forge calls."""
+    folder the team runs in: its HOME is `./sandbox/home` and no credential is inherited. It
+    allows any command line."""
     ssh = ("ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes "
            "-o IdentityFile=/dev/null -o BatchMode=yes")
     return {"handler_module": "exec_bridge.tools", "ingress_rule": "allow_all_ingress",
-            "cwd": "./work", "allowed": [github_allowed() if build == "github" else ".*"],
+            "cwd": "./work", "allowed": [".*"],
             "inherit_env": ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TZ", "USER",
                             "LOGNAME", "SHELL"],
             "env": {"HOME": "./sandbox/home", "XDG_CONFIG_HOME": "./sandbox/home/.config",
@@ -93,7 +81,7 @@ def make_tools(ctx, team, queue: bool = True) -> None:
     """The worker's exec and files (under `user`, as the product's own are), the RAM queue."""
     for d in ("work/wt", "work/tasks", "sandbox/home"):
         os.makedirs(os.path.join(ctx.work, d), exist_ok=True)
-    create(team, id="worker_exec", parent_id="user", **worker_exec_record(getattr(ctx, "build", "general")))
+    create(team, id="worker_exec", parent_id="user", **worker_exec_record())
     create(team, id="worker_files", parent_id="user", handler_module="file_bridge.tools",
            root="./work", allow=["."], ingress_rule="allow_all_ingress")
     if queue:
@@ -210,6 +198,23 @@ def make_roles(ctx, team, tiers: dict, limits: dict | None = None) -> None:
     merge(team, lead, "can_call", {"canvas_page": ["new_canvas"]})
 
 
+def spawn_project_lead(ctx, team) -> dict:
+    """The registry's spawned tree is rooted at the `project_lead` (what the cadencer digests, in roles
+    mode): the team gets its provider (the scripted model, under the lead) and the operator spawns
+    one naming it. A spawner grants only what it holds, so the operator holds what the card grants
+    first. A child takes its memory store from its spawner and the operator has none, so the
+    spawned lead gets the team's store here, before its first message (its workers copy it).
+    Returns the spawn's result (`id`, ...)."""
+    operator_holds(team, {"github": "*", "roles": "*", "kernel_state": "*", "canvas_page": ["new_canvas"]})
+    cli.add_provider(ctx, ctx.lead)
+    made = team.send("roles", {"type": "spawn", "role": "project_lead", "provider": cli.PROVIDER,
+                               "model": ctx.vars["model_name"]})["result"]
+    if made.get("id"):
+        update(team, made["id"], memory_store_id="memory")
+        link(team, made["id"], "memory")
+    return made
+
+
 def lead_tier(ctx, **extra) -> dict:
     """A tier the scripted model answers: the lead's own backend fields."""
     t = {"handler_module": "anthropic_backend.tools", "model": "scripted-model",
@@ -232,7 +237,7 @@ def make_board(ctx, team, groups: dict, store: str = "queue_files", roles: bool 
            github="github", store=store, team_groups=team_groups,
            can_call={"$self": "*", "github": "*", store: "*"},
            callable_by={"$self": "*", "$parent": "*", "dispatcher": "*",
-                        "cadencer": ["rows"], "mcp": "*"})
+                        "mcp": "*"})
     link(team, "board", "github")
     link(team, "board", store)
     link(team, ctx.lead, "board", LEAD_BOARD_VERBS)
@@ -278,8 +283,6 @@ def make_dispatcher(ctx, team, groups: dict, board: bool = True, roles: bool = F
         c["roles"] = "roles"
     create(team, **c)
     link(team, "dispatcher", "cadencer", ["status"])
-    if board:
-        link(team, "cadencer", "board", ["rows"])
     link(team, "cadencer", lead, ["send"])
     for g in gr.values():
         if g.get("driver"):
@@ -368,13 +371,7 @@ def grant_chat(team, leg: str, workers, verbs=CHAT) -> None:
 
 # ---- the whole stock team ---------------------------------------------------------------
 
-def start_args(port: int | None, extra_args=None) -> list[str]:
-    if extra_args is not None:
-        return list(extra_args)
-    return ["canvas", "--port", str(port)] if port else list(T.HEADLESS)
-
-
-def boot(ctx, env: dict | None = None, *, port: int | None = None, forge: bool = True,
+def boot(ctx, env: dict | None = None, *, forge: bool = True,
          puller: bool = True, git: bool = True, groups: dict | None = None,
          board: bool = False, board_store: str = "queue_files", roles_tiers: dict | None = None,
          registry_tiers: dict | None = None, limits: dict | None = None, extra_args=None, lead_tools=None,
@@ -392,7 +389,7 @@ def boot(ctx, env: dict | None = None, *, port: int | None = None, forge: bool =
     ctx.work = os.path.join(ctx.run_dir, sub) if sub else ctx.run_dir
     os.makedirs(ctx.work, exist_ok=True)
     ctx.team = team = T.Team(ctx.binary, ctx.work, env)
-    team.start(extra_args=start_args(port, extra_args))
+    team.start(extra_args=T.HEADLESS if extra_args is None else extra_args)
     if credentials:
         make_credentials(ctx, team, github=forge if github_cred is None else github_cred)
     if seeded:

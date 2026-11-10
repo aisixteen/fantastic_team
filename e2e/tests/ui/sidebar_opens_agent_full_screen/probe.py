@@ -33,10 +33,6 @@ def worker_record(ctx, agent_id: str, parent: str, key_ref: str) -> dict:
             "context_window": 100000, "max_tokens": 4000}
 
 
-CHAT_VERBS = ["history", "send", "stop", "status", "watch"]  # tree::CHAT_VERBS
-PAGE_VERBS = ["sidebar", "tree", "open", "control"]          # app_control::PAGE_VERBS
-
-
 def operator(team, **fields) -> None:
     r = team.send("kernel", fields)
     if r.get("status") != "completed" or "error" in (r.get("result") or {}):
@@ -49,9 +45,9 @@ def grant_chat(team, chat_agents) -> None:
     the same grants. `update_agent` rewrites a field whole, so `team_ws` gets the union."""
     for aid in chat_agents:
         operator(team, type="update_agent", id=aid,
-                 callable_by={"$self": "*", "$parent": "*", "team_ws": CHAT_VERBS})
+                 callable_by={"$self": "*", "$parent": "*", "team_ws": team_mod.CHAT_VERBS})
     operator(team, type="update_agent", id="team_ws",
-             can_call={"$self": "*", "dispatcher": PAGE_VERBS, **{a: CHAT_VERBS for a in chat_agents}})
+             can_call={"$self": "*", "dispatcher": S.PAGE_VERBS, **{a: team_mod.CHAT_VERBS for a in chat_agents}})
 
 
 def holders(page: Page, token: str, nodes) -> dict:

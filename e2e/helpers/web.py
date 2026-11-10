@@ -168,19 +168,6 @@ class WsClient:
         return [f for f in self.seen if f.get("type") == "event"
                 and (src is None or f.get("src") == src)]
 
-    def wait_event(self, pred, timeout: float = 30.0) -> bool:
-        """Read frames until `pred(event_frame)` holds for one (already read ones count)."""
-        end = time.time() + timeout
-        while True:
-            if any(pred(f) for f in self.seen if f.get("type") == "event"):
-                return True
-            if time.time() >= end:
-                return False
-            try:
-                self._read(max(0.05, end - time.time()))
-            except TimeoutError:
-                return False
-
     def close(self) -> None:
         try:
             self.sock.close()
@@ -188,35 +175,22 @@ class WsClient:
             pass
 
 
-class StateTap:
-    """A subscriber of a kernel's state stream through a web_ws leg (`state_subscribe`): every frame it gets, as text,
-    in a list, read by a thread until `stop`. What a page that watches the kernel would be shown."""
-
-    def __init__(self, port: int, path: str, host_port: int | None = None) -> None:
-        import threading
-        self.ws = WsClient(port, path=path, host_port=host_port)
-        self.frames: list[str] = []
-        self.error: str | None = None
-        self.ws.send_json({"type": "state_subscribe"})
-        self.thread = threading.Thread(target=self._read, daemon=True)
-        self.thread.start()
-
-    def _read(self) -> None:
+# The source of the byte pipe both small TCP programs of the harness carry (the git relay in the box, the
+# fake ssh of app/attach_remote): the bytes of `a` to `b` until `a` closes, then both ends shut.
+PIPE = '''def pipe(a, b):
+    try:
         while True:
+            d = a.recv(65536)
+            if not d:
+                break
+            b.sendall(d)
+    except OSError:
+        pass
+    finally:
+        for s in (a, b):
             try:
-                self.frames.append(self.ws.recv_text(timeout=3600))
-            except (OSError, TimeoutError) as e:
-                self.error = str(e)
-                return
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
-    def text(self) -> bytes:
-        return "\n".join(self.frames).encode()
-
-    def stop(self) -> None:
-        try:
-            self.ws.sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        self.ws.close()
-        self.thread.join(5)
-
+'''

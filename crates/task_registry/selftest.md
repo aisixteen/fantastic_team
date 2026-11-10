@@ -11,8 +11,7 @@
 > no env var needed); send the same verbs with
 > `fantastic_team send '{"target": "<id>", "payload": {"type": "<verb>", ...}}'`.
 
-A generic task registry. **Off by default**: the host turns it on with
-`FANTASTIC_TASK_REGISTRY=1`, and the registry agent's record carries its config
+A generic task registry. The registry agent's record carries its config
 (`task_store_id`: the store agent that keeps the tables). One-shot CLI:
 `fantastic <id> <verb> [k=v ...]`; JSON-valued args are coerced.
 
@@ -22,7 +21,6 @@ All test state lives under `/tmp/tr_test/`.
 
 ```bash
 rm -rf /tmp/tr_test && mkdir -p /tmp/tr_test && cd /tmp/tr_test
-export FANTASTIC_TASK_REGISTRY=1
 FANTASTIC=/path/to/rust/target/release/fantastic_kernel
 TR=$($FANTASTIC kernel_state create_agent handler_module=task_registry.tools | jq -r .id)
 ```

@@ -196,8 +196,6 @@ fn served_css_and_js_have_no_csp_violations() {
     for lit in ["http://", "https://", "ws://", "wss://"] {
         assert!(!shim.contains(lit), "shim has a {lit} literal");
     }
-    let url = fantastic_team::dispatcher::canvas_url("a");
-    assert!(url.starts_with('/') || url.starts_with('?'), "{url}");
     let d = fantastic_team::page::HTML;
     assert!(d.contains("setAttribute('sandbox', 'allow-scripts')"));
     assert!(!d.contains("allow-same-origin"));

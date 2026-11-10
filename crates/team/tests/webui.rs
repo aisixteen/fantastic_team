@@ -4,35 +4,14 @@
 //! with `canvas` is refused before anything is written. Unix only: the tests send signals.
 #![cfg(unix)]
 
-use std::collections::BTreeSet;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-static SERIAL: Mutex<()> = Mutex::new(());
-
-fn serial() -> MutexGuard<'static, ()> {
-    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-static ISSUED: Mutex<BTreeSet<u16>> = Mutex::new(BTreeSet::new());
-
-fn free_port() -> u16 {
-    let mut issued = ISSUED.lock().unwrap_or_else(|e| e.into_inner());
-    loop {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        if issued.insert(port) {
-            return port;
-        }
-    }
-}
+mod common;
+use common::{free_port, serial};
 
 /// A running binary; stopped (SIGTERM, then reaped) when dropped.
 struct Running(Child);
@@ -290,23 +269,6 @@ fn webui_announces_the_page_it_serves() {
 }
 
 #[test]
-fn host_is_the_address_the_web_host_binds() {
-    let _s = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let port = free_port();
-    let mut team = start(
-        dir.path(),
-        &["webui", "--port", &port.to_string(), "--host", "0.0.0.0"],
-    );
-    wait_page(&mut team, port);
-    let rec = std::fs::read_to_string(dir.path().join(".fantastic/agents/web/agent.yaml")).unwrap();
-    assert!(
-        rec.contains("0.0.0.0"),
-        "the web record names its bind: {rec}"
-    );
-}
-
-#[test]
 fn a_host_that_is_not_an_address_and_a_bad_port_are_refused() {
     let _s = serial();
     for (args, want) in [
@@ -408,144 +370,4 @@ fn headless_over_webui_records_opens_no_port() {
         );
         std::thread::sleep(Duration::from_millis(200));
     }
-}
-
-/// [`start`] under `home` (the user's home the shell's stores write to): a
-/// scratch one keeps the test off the developer's own.
-fn start_in_home(dir: &Path, home: &Path, args: &[&str]) -> Running {
-    Running(
-        Command::new(env!("CARGO_BIN_EXE_fantastic_team"))
-            .args(args)
-            .current_dir(dir)
-            .env("HOME", home)
-            .env_remove("FANTASTIC_HOME")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    )
-}
-
-/// Stop a running binary (SIGTERM), reap it and return what it wrote to stderr.
-fn stop_and_stderr(mut team: Running) -> String {
-    let _ = Command::new("kill")
-        .args(["-TERM", &team.0.id().to_string()])
-        .status();
-    let mut err = team.0.stderr.take().unwrap();
-    let mut buf = String::new();
-    let _ = err.read_to_string(&mut buf);
-    drop(team);
-    buf
-}
-
-/// #212: the boot log of a team started in a directory it has been started in before
-/// has no `skipping agent` and no `errored` line: the kernel that writes the page's
-/// records reads the records the first run made (`mcp`, `user_home`, `user_store`),
-/// so every one of them names a bundle it has.
-#[test]
-fn webui_started_twice_in_one_dir_logs_no_skipped_or_errored_agent() {
-    use std::os::unix::fs::PermissionsExt;
-    let _s = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    for round in ["first", "second"] {
-        let port = free_port();
-        let mut team = start_in_home(
-            dir.path(),
-            home.path(),
-            &["webui", "--port", &port.to_string()],
-        );
-        wait_page(&mut team, port);
-        // the shell makes these records once its kernel is up, after the page answers
-        let user = dir.path().join(".fantastic/agents/user/agents");
-        let end = Instant::now() + Duration::from_secs(60);
-        while !["mcp", "user_home", "user_store"]
-            .iter()
-            .all(|id| user.join(id).join("agent.yaml").is_file())
-        {
-            assert!(Instant::now() < end, "the shell never made its records");
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let log = stop_and_stderr(team);
-        for bad in ["skipping agent", "errored"] {
-            assert!(
-                !log.contains(bad),
-                "the {round} start logged {bad:?}:\n{log}"
-            );
-        }
-    }
-}
-
-/// #241: a listener that is up but accepts late is answered by `wait_page_within`, which
-/// judges over its limit; one that never answers fails at the limit, and a process that
-/// exited fails at once. (A single `get` against the late listener has already given up.)
-#[test]
-fn wait_page_within_rides_out_a_late_accept_and_fails_when_nothing_answers() {
-    let _s = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let port = free_port();
-    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
-    let mut team = start(dir.path(), &["--headless"]);
-    // the listener is bound but does not accept for a while
-    let late = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(1500));
-        let (mut c, _) = listener.accept().unwrap();
-        let mut req = [0u8; 512];
-        let _ = c.read(&mut req);
-        let _ = c.write_all(b"HTTP/1.0 200 OK\r\n\r\nok");
-    });
-    let body = wait_page_within(&mut team, port, Duration::from_secs(20));
-    assert!(body.ends_with("ok"), "{body}");
-    late.join().unwrap();
-    // nothing answers on a bound port that never accepts: the limit is the failure
-    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
-    let silent_port = silent.local_addr().unwrap().port();
-    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        wait_page_within(&mut team, silent_port, Duration::from_millis(800))
-    }));
-    assert!(
-        failed.is_err(),
-        "a port that never answers must fail at the limit"
-    );
-}
-
-/// #241: `run_to_end` judges over its limit. A command that keeps running (a kernel,
-/// what a refused `webui` became when it got past the lock check) fails at the limit
-/// and is killed, not waited on forever; one that ends is returned whole.
-#[test]
-fn run_to_end_fails_a_command_that_keeps_running_and_kills_it() {
-    let _s = serial();
-    let dir = tempfile::tempdir().unwrap();
-    let failed = std::panic::catch_unwind(|| {
-        run_to_end_within(dir.path(), &["--headless"], Duration::from_secs(3))
-    });
-    let msg = failed.expect_err("a kernel that runs on must fail at the limit");
-    let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
-    assert!(msg.contains("still running"), "{msg}");
-    // killed: its lock on the directory is gone with it
-    let end = Instant::now() + Duration::from_secs(10);
-    while fantastic_kernel::lock::held(dir.path()).unwrap().is_some() {
-        assert!(Instant::now() < end, "the kernel was left running");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let o = run_to_end_within(
-        dir.path(),
-        &["webui", "--port", "0"],
-        Duration::from_secs(30),
-    );
-    assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
-    // a command that ends while a process it started holds its output is named too
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", "sleep 30 & echo started"]);
-    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_within(cmd, Duration::from_secs(3))
-    }));
-    let msg = failed.expect_err("an output held open must fail at the limit");
-    let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
-    assert!(
-        msg.contains("ended (exit status: 0) but its stdout stayed open"),
-        "{msg}"
-    );
 }

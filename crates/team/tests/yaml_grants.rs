@@ -4,7 +4,6 @@
 //! in a folder with its own home, and the person (this test) acts through `send`.
 #![cfg(unix)]
 
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -17,13 +16,8 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_fantastic_team")
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
+mod common;
+use common::free_port;
 
 /// One folder with its own home, as the app has: fantastic keeps the key mode in the home.
 struct Site {
@@ -175,27 +169,6 @@ impl Site {
         v.sort();
         v
     }
-
-    /// The person's own choice of the key mode, through fantastic's set-up agent (the
-    /// call its set-up page makes). The team never does this.
-    async fn person_chooses(&self, mode: &str) {
-        let id = "person_setup";
-        self.send(
-            ROOT_ID,
-            json!({"type": "create_agent", "parent_id": "user", "id": id,
-                   "handler_module": "setup.tools"}),
-        )
-        .await
-        .unwrap();
-        let set = self
-            .send(id, json!({"type": "set_key_mode", "mode": mode}))
-            .await
-            .unwrap();
-        assert_eq!(set["mode"], mode, "{set}");
-        self.send(ROOT_ID, json!({"type": "delete_agent", "id": id}))
-            .await
-            .unwrap();
-    }
 }
 
 fn has_grant(rec: &Value, field: &str, who: &str, want: Value) {
@@ -249,37 +222,5 @@ async fn the_yaml_grants_hold_on_both_ends_over_a_real_call_and_a_second_boot_ke
     assert_the_declared_grants(&site).await;
     assert_eq!(Site::ids_of(&site.agents().await), ids);
     assert_eq!(site.mode().await, None);
-    again.stop().await;
-}
-
-/// The credential store does not exist until the person chooses a key mode. The team's
-/// declared grant for it (`github`) waits in fantastic's shell corner and is carried by
-/// fantastic's own creation of the store, then stays across boots.
-#[tokio::test]
-async fn the_declared_credentials_grant_is_applied_when_fantastic_creates_the_store() {
-    let site = Site::new();
-    let kernel = site.start().await;
-    assert!(!Site::ids_of(&site.agents().await).contains(&"credentials".to_string()));
-    let pending = std::fs::read_to_string(site.dir.join(".fantastic/cli/grants.yaml")).unwrap();
-    let pending: Value = serde_yaml::from_str(&pending).unwrap();
-    assert_eq!(pending["credentials"]["callable_by"]["github"], "*");
-
-    // the person chooses; fantastic makes the store with the declared grant on it
-    site.person_chooses("plain").await;
-    let store = site.record("credentials").await;
-    has_grant(&store, "callable_by", "github", json!("*"));
-    has_grant(&store, "callable_by", "lead", json!(["*"]));
-    kernel.stop().await;
-
-    // the declaration is spent; the grant stays on the record at the next boot
-    let again = site.start().await;
-    has_grant(
-        &site.record("credentials").await,
-        "callable_by",
-        "github",
-        json!("*"),
-    );
-    assert_the_declared_grants(&site).await;
-    assert_eq!(site.mode().await.as_deref(), Some("plain"));
     again.stop().await;
 }

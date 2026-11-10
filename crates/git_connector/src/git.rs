@@ -59,32 +59,50 @@ fn s(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
+/// Replace every occurrence of each non-empty secret with the shown marker.
+pub fn redact_all(text: &str, secrets: &[&str]) -> String {
+    let mut out = text.to_string();
+    for secret in secrets {
+        if !secret.is_empty() {
+            out = out.replace(secret, SHOWN);
+        }
+    }
+    out
+}
+
+/// Redact every string inside a JSON value of each secret.
+pub fn scrub_all(v: &mut Value, secrets: &[&str]) {
+    match v {
+        Value::String(text) => {
+            let clean = redact_all(text, secrets);
+            *text = clean;
+        }
+        Value::Array(items) => {
+            for x in items.iter_mut() {
+                scrub_all(x, secrets);
+            }
+        }
+        Value::Object(map) => {
+            for (_, x) in map.iter_mut() {
+                scrub_all(x, secrets);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Replace every occurrence of the token with the shown marker.
 pub fn redact(text: &str, auth: Option<&Auth>) -> String {
     match auth {
-        Some(a) if !a.token.is_empty() => text.replace(a.token.as_str(), SHOWN),
-        _ => text.to_string(),
+        Some(a) => redact_all(text, &[a.token.as_str()]),
+        None => text.to_string(),
     }
 }
 
 /// Redact every string inside a JSON value.
 pub fn scrub(v: &mut Value, auth: Option<&Auth>) {
-    match v {
-        Value::String(text) => {
-            let clean = redact(text, auth);
-            *text = clean;
-        }
-        Value::Array(items) => {
-            for x in items.iter_mut() {
-                scrub(x, auth);
-            }
-        }
-        Value::Object(map) => {
-            for (_, x) in map.iter_mut() {
-                scrub(x, auth);
-            }
-        }
-        _ => {}
+    if let Some(a) = auth {
+        scrub_all(v, &[a.token.as_str()]);
     }
 }
 
@@ -101,18 +119,8 @@ fn finish(r: Result<Value, Value>, auth: Option<&Auth>) -> Result<Value, Value> 
     }
 }
 
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Bool(b) => *b,
-        Value::Null => false,
-        Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
-        Value::String(t) => !t.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(m) => !m.is_empty(),
-    }
-}
-
-fn arg<'a>(p: &'a Value, verb: &str, name: &str) -> Result<&'a str, Value> {
+/// A non-empty string argument of the payload, or the `missing` refusal.
+pub fn str_arg<'a>(p: &'a Value, verb: &str, name: &str) -> Result<&'a str, Value> {
     match p.get(name).and_then(|v| v.as_str()) {
         Some(t) if !t.is_empty() => Ok(t),
         _ => Err(missing_arg(verb, name)),
@@ -353,9 +361,9 @@ async fn check_branch(cfg: &Cfg, verb: &str, branch: &str) -> Result<(), Value> 
 /// Make a worktree `path` on `branch` from `base`.
 pub(crate) async fn worktree_add(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
     const V: &str = "worktree_add";
-    let raw = arg(p, V, "path")?;
-    let branch = arg(p, V, "branch")?;
-    let base = arg(p, V, "base")?;
+    let raw = str_arg(p, V, "path")?;
+    let branch = str_arg(p, V, "branch")?;
+    let base = str_arg(p, V, "base")?;
     dash(V, "branch", branch)?;
     dash(V, "base", base)?;
     if cfg.default_root {
@@ -388,7 +396,7 @@ pub(crate) async fn worktree_add(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
 /// Remove a worktree, never forcing.
 pub(crate) async fn worktree_remove(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
     const V: &str = "worktree_remove";
-    let raw = arg(p, V, "path")?;
+    let raw = str_arg(p, V, "path")?;
     let path = gate(cfg, V, raw).await?;
     let target = s(&path);
     run(
@@ -420,8 +428,8 @@ fn valid_trailer(t: &str) -> bool {
 /// Stage everything and commit with sign-off, the author, and any trailers.
 pub(crate) async fn commit(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
     const V: &str = "commit";
-    let raw = arg(p, V, "path")?;
-    let message = arg(p, V, "message")?;
+    let raw = str_arg(p, V, "path")?;
+    let message = str_arg(p, V, "message")?;
     let path = gate(cfg, V, raw).await?;
     let trailers: Vec<String> = match p.get("trailers") {
         None | Some(Value::Null) => Vec::new(),
@@ -471,10 +479,13 @@ pub(crate) async fn commit(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
 /// inside the root and a real worktree. Returns the branch and the worktree.
 pub async fn check_push(cfg: &Cfg, p: &Value) -> Result<(String, PathBuf), Value> {
     const V: &str = "push";
-    if p.get("force").map(truthy).unwrap_or(false) {
+    if p.get("force")
+        .map(fantastic_bundle::py_truthy)
+        .unwrap_or(false)
+    {
         return Err(bad(FORCE.to_string(), "force", json!(true)));
     }
-    let branch = arg(p, V, "branch")?;
+    let branch = str_arg(p, V, "branch")?;
     if branch.starts_with('+') {
         return Err(bad(FORCE.to_string(), "force", json!(true)));
     }
@@ -494,7 +505,7 @@ pub async fn check_push(cfg: &Cfg, p: &Value) -> Result<(String, PathBuf), Value
     }
     dash(V, "branch", branch)?;
     check_branch(cfg, V, branch).await?;
-    let raw = arg(p, V, "path")?;
+    let raw = str_arg(p, V, "path")?;
     let path = gate(cfg, V, raw).await?;
     Ok((branch.to_string(), path))
 }
@@ -591,7 +602,7 @@ pub(crate) async fn fetch(cfg: &Cfg, id: &AgentId, kernel: &Arc<Kernel>) -> Resu
 /// Show the diffstat of a worktree against `base`, or against HEAD.
 pub(crate) async fn diff_stat(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
     const V: &str = "diff_stat";
-    let raw = arg(p, V, "path")?;
+    let raw = str_arg(p, V, "path")?;
     let path = gate(cfg, V, raw).await?;
     let (against, args): (String, Vec<String>) = match p.get("base").and_then(|v| v.as_str()) {
         Some(b) if !b.is_empty() => {
@@ -614,7 +625,7 @@ pub(crate) async fn diff_stat(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
 /// The worktree's branch, whether it is clean, and its changed entries.
 pub(crate) async fn status(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
     const V: &str = "status";
-    let raw = arg(p, V, "path")?;
+    let raw = str_arg(p, V, "path")?;
     let path = gate(cfg, V, raw).await?;
     let out = run(
         cfg,

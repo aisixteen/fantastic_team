@@ -3,7 +3,7 @@
 # Writes, in <dir>, sorted by name (LC_ALL=C), for every regular file except these three:
 #   SHA256SUMS        `<sha256>  <name>`, the checksum that verify.sh reads
 #   MD5SUMS           `<md5>  <name>`, for accidental corruption only, not a security check
-#   RELEASE-INFO.txt  commit, patch name and sha256, toolchain, the fantastic commit
+#   RELEASE-INFO.txt  commit, toolchain, the fantastic commit
 # Nothing is signed here. Signing is laptop-only (see docs/install.md, Reproducible builds).
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -43,8 +43,6 @@ FANTASTIC=$(grep -o 'fantastic?branch=main#[0-9a-f]*' "$ROOT/Cargo.lock" 2>/dev/
 PIN=$(sed -n 's/^channel = "\(.*\)"/\1/p' "$ROOT/rust-toolchain.toml" 2>/dev/null | head -1 || true)
 {
   echo "commit: ${COMMIT:-unknown}"
-  echo "patch: patches/github-exec.patch"
-  echo "patch sha256: $(sha "$ROOT/patches/github-exec.patch")"
   echo "toolchain pin: ${PIN:-unknown}"
   echo "rustc: $(rustc -V 2>/dev/null || echo unknown)"
   echo "cargo: $(cargo -V 2>/dev/null || echo unknown)"

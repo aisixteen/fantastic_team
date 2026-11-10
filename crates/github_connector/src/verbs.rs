@@ -9,7 +9,9 @@ use fantastic_kernel::{AgentId, Kernel};
 use reqwest::Method;
 use serde_json::{json, Value};
 
-use crate::api::{redact, Api};
+use team_git_connector::git::{scrub_all, str_arg};
+
+use crate::api::Api;
 use crate::{app, bad, push, Cfg, SENTENCE, UNHANDLED};
 
 const STATE_TEXT: &str = "team_github issues: `state` must be open, closed or all";
@@ -174,13 +176,6 @@ fn ge(r: Result<Value, (u16, Value)>) -> Result<Value, Value> {
     r.map_err(|(_, v)| v)
 }
 
-fn str_arg<'a>(p: &'a Value, verb: &str, name: &str) -> Result<&'a str, Value> {
-    match p.get(name).and_then(|v| v.as_str()) {
-        Some(t) if !t.is_empty() => Ok(t),
-        _ => Err(missing(verb, name)),
-    }
-}
-
 fn repo_arg(p: &Value, verb: &str, cfg: &Cfg) -> Result<String, Value> {
     let raw = str_arg(p, verb, "repo")?;
     match cfg.repos.iter().find(|r| r.eq_ignore_ascii_case(raw)) {
@@ -241,20 +236,11 @@ fn pct(s: &str) -> String {
         .collect()
 }
 
-fn scrub(v: &mut Value, token: &str) {
-    match v {
-        Value::String(s) => *s = redact(s.as_str(), &[token]),
-        Value::Array(a) => a.iter_mut().for_each(|x| scrub(x, token)),
-        Value::Object(m) => m.values_mut().for_each(|x| scrub(x, token)),
-        _ => {}
-    }
-}
-
 fn finish(r: Result<Value, Value>, token: &str) -> Value {
     let mut v = match r {
         Ok(v) | Err(v) => v,
     };
-    scrub(&mut v, token);
+    scrub_all(&mut v, &[token]);
     v
 }
 
@@ -1129,7 +1115,7 @@ async fn staleness(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, p: &Value) -> 
         Ok(v) | Err(v) => v,
     };
     for (_, t) in &tokens {
-        scrub(&mut v, t);
+        scrub_all(&mut v, &[t.as_str()]);
     }
     v
 }

@@ -244,10 +244,8 @@ fn worker_items(
 
 /// The sidebar: per group one flat ordered list, and the workers under no group
 /// in one more. Subagents start collapsed; `expanded` names the open workers.
-/// `load` is the board's `load` object (`Null` when none came). A group with no
-/// AI driver gets its raw counts as `load` {busy, idle, stalled}; a group with
-/// a driver gets none, since its AI shows the summary. The team gets `load`
-/// {tasks, done_last_hour} when the board gave one, plus the cadencer's
+/// `load` is the roles registry's `load` object (`Null` when none came). The team gets `load`
+/// {tasks, done_last_hour} when one came, plus the cadencer's
 /// `digest_bytes_per_hour` and `driver_tokens_per_hour` when `load` carries them,
 /// and `waiting` {prs, stalled}: the PRs waiting for approval and the stalled
 /// workers, the figures that need the person. (The bundle adds `fleet` after this.)
@@ -269,15 +267,7 @@ pub fn sidebar(
                 items.extend(worker_items(r, subs, expanded));
             }
         }
-        let mut group = json!({"id": gid, "items": items});
-        let lg = &load["groups"][gid.as_str()];
-        if lg.is_object() && lg["driver"].as_str().unwrap_or("").is_empty() {
-            group["load"] = json!({
-                "busy": lg["busy"],
-                "idle": lg["idle"],
-                "stalled": lg["stalled"],
-            });
-        }
+        let group = json!({"id": gid, "items": items});
         gs.push(group);
     }
     let mut loose = Vec::new();
@@ -403,18 +393,6 @@ pub fn groups_without(
         .iter()
         .map(|(g, m)| (g.clone(), m.iter().filter(|x| *x != id).cloned().collect()))
         .collect()
-}
-
-/// The board's `team_groups` value with the members of each group replaced by
-/// `groups`; each group's driver is kept.
-fn team_groups_with(current: &Value, groups: &BTreeMap<String, Vec<String>>) -> Value {
-    let mut out = current.as_object().cloned().unwrap_or_default();
-    for (g, members) in groups {
-        let mut entry = out.get(g).cloned().unwrap_or_else(|| json!({"driver": ""}));
-        entry["members"] = json!(members);
-        out.insert(g.clone(), entry);
-    }
-    Value::Object(out)
 }
 
 /// What a node is: the team itself, one of its groups, or otherwise a worker.
@@ -564,70 +542,6 @@ pub fn agent_list(roles: &Value) -> Vec<Value> {
     out
 }
 
-/// The node id fantastic gives a canvas named `name` (`new_canvas {name}`): `canvas_<slug>`,
-/// the slug the lower-cased letters and digits (other characters `_`, the ends trimmed).
-/// None for a name with no letter or digit.
-pub fn canvas_slug(name: &str) -> Option<String> {
-    let slug: String = name
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let slug = slug.trim_matches('_');
-    (!slug.is_empty()).then(|| format!("canvas_{slug}"))
-}
-
-/// The handler module of a fantastic canvas.
-pub const CANVAS_MODULE: &str = "canvas.tools";
-
-/// The canvas that belongs to `node`, by name only (no record field, no verb): the agent
-/// `canvas_<node slug>` when it exists and is a canvas.
-pub fn canvas_of(node: &str, agents: &BTreeMap<String, Member>) -> Option<String> {
-    let id = canvas_slug(node)?;
-    agents
-        .get(&id)
-        .filter(|m| m.kind == CANVAS_MODULE)
-        .map(|_| id)
-}
-
-/// Where the canvas page of the team's web host serves a canvas: the same origin and
-/// port, relative, with `?canvas=<id>` (the id percent-encoded).
-pub fn canvas_url(id: &str) -> String {
-    let mut q = String::new();
-    for b in id.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            q.push(b as char);
-        } else {
-            q.push_str(&format!("%{b:02X}"));
-        }
-    }
-    format!("/{}/file/index.html?canvas={q}", crate::tree::CANVAS_ID)
-}
-
-/// Team-owned agent ids: never a sidecar, whatever their record holds.
-pub const TEAM_AGENT_IDS: [&str; 7] = [
-    crate::tree::DISPATCHER_ID,
-    crate::tree::WORKER_VIEW_ID,
-    crate::tree::BOARD_ID,
-    crate::tree::CADENCER_ID,
-    crate::tree::ROLES_ID,
-    crate::tree::TASKS_ID,
-    crate::page::PAGE_ID,
-];
-
-/// May this record be put on a canvas? A sidecar is a plain panel an agent made for the
-/// person to look at: a record with an html `view` that is not one of the team's own
-/// agents (the dispatcher, its views, the board, the cadencer, the roles, the task
-/// store: by id, and anything on a `team_*` module). A worker, a lead or a service has
-/// no panel record of its own kind and is refused here as well.
-pub fn is_sidecar(record: &Value) -> bool {
-    let id = record["id"].as_str().unwrap_or("");
-    let module = record["handler_module"].as_str().unwrap_or("");
-    let html_view = record["view"]["kind"].as_str() == Some("html");
-    html_view && !id.is_empty() && !TEAM_AGENT_IDS.contains(&id) && !module.starts_with("team_")
-}
-
 /// The plan the lead's pane draws, from the board's `roles` section: {lead, fleet,
 /// tasks}; each task is {id, source, holder, status} with the holder as text (an agent id,
 /// or "subtree:<id>").
@@ -751,16 +665,12 @@ fn error_of(reply: &Value) -> Option<String> {
     })
 }
 
-/// Write the new membership to the dispatcher's own record and to the board's
-/// `team_groups`, through the kernel's `update_agent`. The board is skipped when
-/// it is not there.
-/// Where the groups are kept: the dispatcher's own record (`me`), the board's
-/// `team_groups` (when the board is live), and the groups as they stand.
+/// Write the new membership to the dispatcher's own record, through the kernel's
+/// `update_agent`.
+/// Where the groups are kept: the dispatcher's own record (`me`), and the groups as they stand.
 struct Membership<'a> {
     me: &'a str,
     roles: Option<&'a str>,
-    board: &'a str,
-    board_groups: Option<&'a Value>,
     groups: &'a BTreeMap<String, Vec<String>>,
 }
 
@@ -769,7 +679,7 @@ async fn save_groups(
     at: &Membership<'_>,
     groups: &BTreeMap<String, Vec<String>>,
 ) -> Result<(), String> {
-    let (me, board, board_groups) = (at.me, at.board, at.board_groups);
+    let me = at.me;
     let root = fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
     let r = peers
         .ask(
@@ -777,21 +687,8 @@ async fn save_groups(
             json!({"type": "update_agent", "id": me, "groups": groups}),
         )
         .await;
-    if let Some(e) = error_of(&r) {
-        return Err(format!("could not update the groups: {e}"));
-    }
-    let Some(current) = board_groups else {
-        return Ok(());
-    };
-    let tg = team_groups_with(current, groups);
-    let r = peers
-        .ask(
-            root,
-            json!({"type": "update_agent", "id": board, "team_groups": tg}),
-        )
-        .await;
     match error_of(&r) {
-        Some(e) => Err(format!("could not update the board's groups: {e}")),
+        Some(e) => Err(format!("could not update the groups: {e}")),
         None => Ok(()),
     }
 }
@@ -949,9 +846,8 @@ async fn sidebar_reply(
         .iter()
         .map(|r| (r.id.clone(), subagents_of(&agents, &r.id)))
         .collect();
-    let reply = peers.ask(board, json!({"type": "rows"})).await;
-    let mut load = reply.get("load").cloned().unwrap_or(Value::Null);
-    // The cadencer's load holds the board's counts plus the cost per hour.
+    let mut load = Value::Null;
+    // The cadencer's load holds the task counts plus the cost per hour.
     let cad = peers
         .ask(crate::tree::CADENCER_ID, json!({"type": "status"}))
         .await;
@@ -1018,7 +914,7 @@ pub fn services_of(kernel: &fantastic_kernel::Kernel, me: &str, board: &str) -> 
     for id in gh {
         out.push(json!({"id": id, "kind": "github", "label": format!("GitHub ({id})")}));
     }
-    // The kinds a declaration draws (`declared_views`): cadencer, puller, webhook
+    // The kinds a declaration draws (`declared_views`): cadencer, puller
     // and git, in that order, each by id.
     let declared = crate::declared_views::declared_agents(kernel);
     for kind in crate::declared_views::WEB_KINDS {
@@ -1110,7 +1006,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
-            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; a group with no AI driver also gets its raw load counts; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher|cadencer|puller|webhook|git, label}], the team's own agents that exist",
+            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher|cadencer|puller|git, label}], the team's own agents that exist",
             "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
             "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher; a node in the sidebar's services → {view: panel, kind, target, model: {kind, title, summary, sections}} drawn as text in the right pane)",
             "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker from the tier named `template` in the roles registry's record (`tiers`), its memory in the store that tier names, and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start). remove_worker {node: worker, confirm} deletes the worker (its rows stay in the store) and drops it from its group",
@@ -1125,7 +1021,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
     ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if t == "boot" {
-            crate::declared_views::sync_all(kernel);
+            crate::declared_views::grant_views(kernel);
             return Ok(None);
         }
         let meta = kernel
@@ -1148,18 +1044,6 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
             .and_then(Value::as_u64)
             .unwrap_or(30);
         let groups = groups_of(&meta);
-        // The board's own `team_groups`, kept in step when a worker is added or removed.
-        let board_groups = kernel
-            .agents
-            .get(&fantastic_kernel::AgentId::from(board.as_str()))
-            .map(|e| {
-                e.meta
-                    .read()
-                    .expect("meta")
-                    .get("team_groups")
-                    .cloned()
-                    .unwrap_or(Value::Null)
-            });
         let peers = KernelPeers(kernel.clone());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1204,9 +1088,6 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                 if kind == "worker" {
                     // Cards the chat shows are callable by the page's leg, and only those.
                     crate::tree::grant_cards(kernel, crate::page::WS_ID, &node).await;
-                    if let Some(id) = canvas_of(&node, &agent_table(kernel)) {
-                        out["canvas"] = json!({"url": canvas_url(&id), "id": id});
-                    }
                 }
                 out
             }
@@ -1239,8 +1120,6 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                         let at = Membership {
                             me: agent_id.as_str(),
                             roles: meta.get("roles").and_then(Value::as_str),
-                            board: &board,
-                            board_groups: board_groups.as_ref(),
                             groups: &groups,
                         };
                         let out = add_worker(kernel, &peers, &at, &node, payload, reply).await;
@@ -1257,8 +1136,6 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                         let at = Membership {
                             me: agent_id.as_str(),
                             roles: meta.get("roles").and_then(Value::as_str),
-                            board: &board,
-                            board_groups: board_groups.as_ref(),
                             groups: &groups,
                         };
                         remove_worker(&peers, &at, &node, reply).await
@@ -1366,38 +1243,6 @@ mod tests {
         let items = worker_items(&idle, &BTreeMap::new(), &BTreeSet::new());
         assert!(items[0]["minutes"].is_null());
         assert!(items[0]["pr"].is_null());
-    }
-
-    #[test]
-    fn row_of_exposes_pr_number_from_claimed_task_link() {
-        let b = json!({
-            "tasks": {
-                "in_work": [{"id": "r#1", "claimers": ["w1"], "updated": 5, "pr": "https://github.com/o/r/pull/12"}],
-                "done": [
-                    {"id": "r#2", "claimers": ["w2"], "updated": 1, "pr": "https://github.com/o/r/pull/3"},
-                    {"id": "r#3", "claimers": ["w2"], "updated": 9, "pr": "https://github.com/o/r/pull/8"},
-                    {"id": "r#4", "claimers": ["w2"], "updated": 4, "pr": "https://github.com/o/r/pull/5"},
-                    {"id": "r#5", "claimers": ["w4"], "updated": 20, "pr": "https://github.com/o/r/pull/99"},
-                    {"id": "r#6", "claimers": ["w3"], "updated": 20}
-                ]
-            },
-            "agents": {}
-        });
-        assert_eq!(row_of("w1", &b, 100, 30).pr, Some(12));
-        assert_eq!(row_of("w2", &b, 100, 30).pr, Some(8));
-        assert_eq!(row_of("w3", &b, 100, 30).pr, None);
-        let nolink = json!({"tasks": {"in_work": [{"id": "r#1", "claimers": ["w1"], "updated": 5}], "done": []}});
-        assert_eq!(row_of("w1", &nolink, 100, 30).pr, None);
-    }
-
-    #[test]
-    fn pr_number_parses_links_and_refs() {
-        assert_eq!(pr_number("https://github.com/o/r/pull/9"), Some(9));
-        assert_eq!(pr_number("https://github.com/o/r/pull/9/"), Some(9));
-        assert_eq!(pr_number("o/r#7"), Some(7));
-        assert_eq!(pr_number("junk"), None);
-        assert_eq!(pr_number(""), None);
-        assert_eq!(pr_number("o/r#"), None);
     }
 
     #[test]
@@ -1635,11 +1480,10 @@ mod tests {
     }
 
     #[test]
-    fn html_loads_tree_calls_open_and_has_no_back_flow() {
+    fn html_loads_tree_calls_open() {
         assert!(HTML.contains("fantastic.send("));
         assert!(HTML.contains("type: 'open'"));
         assert!(!HTML.contains("getElementById('back')"));
-        assert!(!HTML.contains("id=\"back\""));
         assert!(HTML.contains("textContent"));
     }
 
@@ -1647,8 +1491,6 @@ mod tests {
     fn html_sidebar_has_expander_and_remembers_state() {
         // The sidebar request, the subagent style, the expander label.
         assert!(HTML.contains("type: 'sidebar'"));
-        // A group with no AI shows its raw load under its title.
-        assert!(HTML.contains("g.load.busy"));
         assert!(HTML.contains(".sub {"));
         assert!(HTML.contains("subagents ("));
         assert!(HTML.contains("expanded"));
@@ -1683,52 +1525,6 @@ mod tests {
         assert!(HTML.contains("if (reply && reply.load"));
         // The footer is text only, like the rest of the page.
         assert!(!HTML.contains("innerHTML"));
-    }
-
-    #[test]
-    fn sidebar_shows_raw_load_for_groups_without_ai_only() {
-        let mut groups = BTreeMap::new();
-        groups.insert("a".to_string(), vec!["w1".to_string()]);
-        groups.insert("b".to_string(), vec!["w2".to_string()]);
-        let rows = rows_w();
-        let subs = subs_of(&rows);
-        let load = json!({
-            "groups": {
-                "a": {"busy": 1, "idle": 2, "stalled": 3, "driver": ""},
-                "b": {"busy": 4, "idle": 5, "stalled": 6, "driver": "drv"},
-            },
-            "tasks": {"held": 1, "in_review": 0, "done": 2, "blocked": 0, "queued": 3},
-            "done_last_hour": 2,
-        });
-        let sb = sidebar("team", &groups, &rows, &subs, &BTreeSet::new(), &load);
-        let group = |id: &str| {
-            sb["groups"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|g| g["id"] == id)
-                .unwrap()
-                .clone()
-        };
-        let a = group("a");
-        assert_eq!(a["load"]["busy"], 1);
-        assert_eq!(a["load"]["idle"], 2);
-        assert_eq!(a["load"]["stalled"], 3);
-        assert!(group("b").get("load").is_none(), "{}", group("b"));
-        assert_eq!(sb["load"]["tasks"]["queued"], 3);
-        assert_eq!(sb["load"]["done_last_hour"], 2);
-        assert!(!sb.to_string().contains("\"mode\""), "{sb}");
-        // With no load from the board, the sidebar has no load keys at all.
-        let bare = sidebar(
-            "team",
-            &groups,
-            &rows,
-            &subs,
-            &BTreeSet::new(),
-            &Value::Null,
-        );
-        assert!(bare.get("load").is_none());
-        assert!(!group_items(&bare, "a").is_empty());
     }
 
     #[test]
@@ -2104,11 +1900,6 @@ mod tests {
         let r = control_reply("w1", "remove_worker", true);
         assert_eq!(r["sent"], json!(true), "{r}");
         assert_eq!(r["action"], "remove_worker");
-        for action in ["delete_agent", "reflect"] {
-            let r = control_reply("w1", action, true);
-            assert_eq!(r["sent"], json!(false), "{r}");
-            assert!(r["error"].as_str().is_some(), "{r}");
-        }
     }
 
     #[test]
@@ -2137,15 +1928,6 @@ mod tests {
         let out = groups_without(&g, "w1");
         assert!(out["A"].is_empty());
         assert_eq!(out["B"], vec!["w2".to_string()]);
-    }
-
-    #[test]
-    fn team_groups_with_keeps_the_driver_and_replaces_members() {
-        let cur = json!({"A": {"driver": "lead", "members": ["w1"]}});
-        let mut g = BTreeMap::new();
-        g.insert("A".to_string(), vec!["w1".to_string(), "w9".to_string()]);
-        let out = team_groups_with(&cur, &g);
-        assert_eq!(out["A"], json!({"driver": "lead", "members": ["w1", "w9"]}));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2192,8 +1974,8 @@ mod tests {
     }
 
     /// A kernel with a dispatcher (the agent verbs on the root, `roles` naming the
-    /// registry), a roles registry whose `tiers` field holds the tier `t`, a board record
-    /// holding `team_groups`, the store `memory`, and one group `g` with `w1`.
+    /// registry), a roles registry whose `tiers` field holds the tier `t`, a board record,
+    /// the store `memory`, and one group `g` with `w1`.
     async fn kernel_with_groups(dir: &std::path::Path) -> Arc<fantastic_kernel::Kernel> {
         use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
@@ -2204,8 +1986,7 @@ mod tests {
                 "handler_module": HANDLER_MODULE, "can_call": can_call,
                 "roles": "roles", "groups": {"g": ["w1"]}}),
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
-                "handler_module": "ram_store.tools",
-                "team_groups": {"g": {"driver": "lead", "members": ["w1"]}}}),
+                "handler_module": "ram_store.tools"}),
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "roles",
                 "handler_module": "agentic_resources.tools",
                 "tiers": {"t": {"handler_module": "ram_store.tools", "model": "m",
@@ -2278,10 +2059,6 @@ mod tests {
         assert_eq!(
             meta_of(&kernel, "dispatcher")["groups"],
             json!({"g": ["w1", "w2"]})
-        );
-        assert_eq!(
-            meta_of(&kernel, "board")["team_groups"],
-            json!({"g": {"driver": "lead", "members": ["w1", "w2"]}})
         );
         let tree = ask_kernel(&kernel, "dispatcher", json!({"type": "tree"})).await;
         let ids: Vec<&str> = tree["children"][0]["children"]
@@ -2460,10 +2237,6 @@ mod tests {
             .agents
             .contains_key(&fantastic_kernel::AgentId::from("w1")));
         assert_eq!(meta_of(&kernel, "dispatcher")["groups"], json!({"g": []}));
-        assert_eq!(
-            meta_of(&kernel, "board")["team_groups"],
-            json!({"g": {"driver": "lead", "members": []}})
-        );
         kernel.shutdown().await;
         bootstrap::shutdown(dir.path()).unwrap();
     }
@@ -2506,7 +2279,6 @@ mod tests {
                 Some("status") => Some(json!({"load": {
                     "tasks": {"in_review": 2}, "workers": {"stalled": 1},
                     "digest_bytes_per_hour": 99, "driver_tokens_per_hour": 7}})),
-                Some("rows") => Some(json!({"rows": [], "load": {"tasks": {"in_review": 2}}})),
                 _ => None,
             })
         }
@@ -3180,19 +2952,6 @@ mod tests {
     }
 
     #[test]
-    fn html_has_no_back_button_flow() {
-        for gone in [
-            "function back(",
-            "function hideChat(",
-            "function updateBack(",
-            "const stack",
-            "id=\"back\"",
-        ] {
-            assert!(!HTML.contains(gone), "still has {gone}");
-        }
-    }
-
-    #[test]
     fn chat_two_columns_open_keeps_the_sidebar() {
         let Some(v) = run_node("two_columns") else {
             return;
@@ -3700,15 +3459,7 @@ mod tests {
         assert_eq!(v["timers"], 0);
     }
 
-    // ---- the right pane, cards, canvas, tree and phone ----
-
-    fn tests_member(kind: &str) -> Member {
-        Member {
-            parent: "kernel".into(),
-            kind: kind.into(),
-            status: "ok".into(),
-        }
-    }
+    // ---- the right pane, cards, tree and phone ----
 
     #[test]
     fn html_chat_cell_has_no_locked_height() {
@@ -3766,23 +3517,10 @@ mod tests {
     }
 
     #[test]
-    fn html_phone_has_no_swipe_to_next_agent() {
-        for gone in ["touchstart", "touchend", "touchmove", "swipe("] {
-            assert!(!HTML.contains(gone), "{gone}");
-        }
-    }
-
-    #[test]
     fn html_card_text_goes_through_textcontent() {
         assert!(!HTML.contains("innerHTML"));
         assert!(!HTML.contains("insertAdjacentHTML"));
-        for f in [
-            "cardEl",
-            "fillCard",
-            "syncCards",
-            "toggleCanvas",
-            "agentRow",
-        ] {
+        for f in ["cardEl", "fillCard", "syncCards", "agentRow"] {
             let body = js_fn(f);
             assert!(!body.contains("innerHTML"), "{f}");
         }
@@ -3894,39 +3632,6 @@ mod tests {
     }
 
     #[test]
-    fn page_shows_a_canvas_button_only_when_the_open_reply_has_a_canvas() {
-        let Some(v) = run_node("canvas_button") else {
-            return;
-        };
-        assert_eq!(v["noneButtons"], 0);
-        assert_eq!(v["buttons"], json!(["Canvas"]));
-    }
-
-    #[test]
-    fn page_canvas_click_mounts_an_iframe_at_the_reply_url_in_the_pane() {
-        let Some(v) = run_node("canvas_button") else {
-            return;
-        };
-        assert_eq!(v["framesBefore"], 0);
-        let frames = v["frames"].as_array().unwrap();
-        assert_eq!(frames.len(), 1);
-        assert_eq!(
-            frames[0]["src"],
-            "/canvas_page/file/index.html?canvas=canvas_w1"
-        );
-        assert_eq!(frames[0]["title"], "Canvas");
-        assert_eq!(frames[0]["sandbox"], true, "no sandbox attribute is set");
-        assert_eq!(frames[0]["width"], "100%");
-        assert_eq!(frames[0]["height"], "100%");
-        assert_eq!(v["chatHiddenOnCanvas"], true);
-        assert_eq!(v["label"], "Chat");
-        // the second click is back to the chat
-        assert_eq!(v["framesAfter"], 0);
-        assert_eq!(v["chatHiddenAfter"], false);
-        assert_eq!(v["labelAfter"], "Canvas");
-    }
-
-    #[test]
     fn page_tree_collapse_hides_the_subtree_rows() {
         let Some(v) = run_node("tree_collapse") else {
             return;
@@ -4032,149 +3737,6 @@ mod tests {
         assert_eq!(flags, [true, true, true, false]);
         let alone = agent_list(&json!({"lead": "pl"}));
         assert_eq!(alone[0]["has_children"], false);
-    }
-
-    #[test]
-    fn canvas_of_finds_the_canvas_named_after_the_node() {
-        let mut agents = BTreeMap::new();
-        agents.insert("canvas_w1".to_string(), tests_member(CANVAS_MODULE));
-        agents.insert("canvas_w2".to_string(), tests_member("ram_store.tools"));
-        assert_eq!(canvas_of("w1", &agents), Some("canvas_w1".to_string()));
-        assert_eq!(canvas_of("w3", &agents), None);
-        // an agent of that id that is not a canvas is not one
-        assert_eq!(canvas_of("w2", &agents), None);
-        assert_eq!(canvas_of("  ", &agents), None);
-    }
-
-    #[test]
-    fn canvas_of_slugs_odd_ids_like_new_canvas() {
-        let mut agents = BTreeMap::new();
-        agents.insert("canvas_lead_1".to_string(), tests_member(CANVAS_MODULE));
-        agents.insert("canvas_a_b".to_string(), tests_member(CANVAS_MODULE));
-        assert_eq!(canvas_of("Lead-1", &agents), Some("canvas_lead_1".into()));
-        assert_eq!(canvas_of("a b", &agents), Some("canvas_a_b".into()));
-        assert_eq!(canvas_of("-a.b-", &agents), Some("canvas_a_b".into()));
-        assert_eq!(
-            canvas_slug("Research Team!"),
-            Some("canvas_research_team".into())
-        );
-        assert_eq!(canvas_slug("--"), None);
-    }
-
-    #[test]
-    fn canvas_url_is_relative_with_the_canvas_query() {
-        assert_eq!(
-            canvas_url("canvas_w1"),
-            "/canvas_page/file/index.html?canvas=canvas_w1"
-        );
-        assert_eq!(
-            canvas_url("canvas_a&b"),
-            "/canvas_page/file/index.html?canvas=canvas_a%26b"
-        );
-    }
-
-    async fn open_with_canvas(canvas: Option<&str>) -> Value {
-        use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
-        use fantastic_kernel::Item;
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        let mut recs = vec![
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
-            "handler_module": HANDLER_MODULE, "can_call": {"worker_view": "*"}}),
-        ];
-        if let Some(id) = canvas {
-            recs.push(
-                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": id,
-                "handler_module": "canvas.tools"}),
-            );
-        }
-        for r in recs {
-            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, r)]).await;
-        }
-        let out = kernel
-            .send(vec![Item::new(
-                "dispatcher",
-                json!({"type": "open", "node": "w1"}),
-            )])
-            .await
-            .remove(0)
-            .result;
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-        out
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn open_reply_carries_the_canvas_url_with_the_canvas_query() {
-        let out = open_with_canvas(Some("canvas_w1")).await;
-        assert_eq!(out["view"], "chat");
-        assert_eq!(out["canvas"]["id"], "canvas_w1");
-        let url = out["canvas"]["url"].as_str().unwrap();
-        assert!(url.starts_with("/canvas_page/file/index.html"), "{url}");
-        assert!(url.ends_with("?canvas=canvas_w1"), "{url}");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn open_reply_has_no_canvas_when_none_exists() {
-        let out = open_with_canvas(None).await;
-        assert_eq!(out["view"], "chat");
-        assert!(out.get("canvas").is_none(), "{out}");
-    }
-
-    #[test]
-    fn team_agent_ids_do_not_name_the_removed_views() {
-        assert!(!TEAM_AGENT_IDS.contains(&"dispatcher_view"));
-        assert_eq!(TEAM_AGENT_IDS.len(), 7);
-    }
-
-    #[test]
-    fn is_sidecar_refuses_workers_leads_and_services() {
-        let rec = |id: &str, module: &str, view: Value| json!({"id": id, "handler_module": module, "view": view});
-        let html = json!({"kind": "html", "bytes_file": "p.html", "calls": ["get_html"]});
-        for id in TEAM_AGENT_IDS {
-            assert!(!is_sidecar(&rec(id, "html.tools", html.clone())), "{id}");
-        }
-        for module in [
-            HANDLER_MODULE,
-            crate::worker_view::HANDLER_MODULE,
-            crate::board::HANDLER_MODULE,
-            crate::cadencer::HANDLER_MODULE,
-            crate::page::HANDLER_MODULE,
-            "team_github.tools",
-        ] {
-            assert!(!is_sidecar(&rec("x", module, html.clone())), "{module}");
-        }
-        // a worker or lead: a chat view, or no view at all
-        assert!(!is_sidecar(&rec(
-            "w1",
-            "ram_store.tools",
-            json!({"kind": "chat"})
-        )));
-        assert!(!is_sidecar(&rec("pl", "ram_store.tools", Value::Null)));
-        assert!(!is_sidecar(
-            &json!({"handler_module": "html.tools", "view": html})
-        ));
-    }
-
-    #[test]
-    fn is_sidecar_accepts_a_plain_html_view() {
-        let rec = json!({"id": "preview", "handler_module": "html.tools",
-            "view": {"kind": "html", "bytes_file": "p.html", "calls": ["get_html", "watch"]}});
-        assert!(is_sidecar(&rec));
-    }
-
-    #[test]
-    fn a_sidecar_check_ignores_tui_only_views() {
-        let tui = crate::declared_views::tui_of(
-            &crate::declared_views::decl_for(crate::cadencer::HANDLER_MODULE).unwrap(),
-        );
-        // A tui-only view has no kind: never a sidecar, even on a non-team module.
-        let rec = json!({"id": "preview", "handler_module": "html.tools", "view": {"tui": tui}});
-        assert!(!is_sidecar(&rec));
-        // A html view that also declares a tui is still a sidecar.
-        let both = json!({"id": "preview", "handler_module": "html.tools",
-            "view": {"kind": "html", "tui": tui}});
-        assert!(is_sidecar(&both));
     }
 
     /// A stand-in for a team module: answers every verb with the `reply` its meta holds,
@@ -4321,7 +3883,7 @@ mod tests {
     async fn panel_reply_for_a_refusing_declared_kind_is_unavailable_without_the_error() {
         let dir = tempfile::TempDir::new().unwrap();
         let kernel =
-            kernel_with_declared(dir.path(), &[("wh", "team_webhook.tools", json!({}))]).await;
+            kernel_with_declared(dir.path(), &[("wh", "team_puller.tools", json!({}))]).await;
         kernel.update(&fantastic_kernel::AgentId::from("wh"), {
             let mut m = serde_json::Map::new();
             m.insert("fail".into(), json!(true));

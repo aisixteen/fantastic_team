@@ -1,9 +1,8 @@
 #!/bin/sh
-# sh scripts/build.sh [cargo args] — the general build of Fantastic Team (Team): stock exec.
+# sh scripts/build.sh [cargo args] — the build of Fantastic Team.
 # Reproducible (#137): the toolchain comes from rust-toolchain.toml, --locked, and the
 # environment from scripts/repro-env.sh. Prints the versioned copy's path last
 # (`built: <path>`) and its SHA-256. Extra arguments go to cargo build.
-# The GitHub build is scripts/build-github.sh (patches/github-exec.patch).
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"

@@ -1,8 +1,8 @@
 #!/bin/sh
 # sh scripts/verify.sh [--sums FILE] [--rebuild] <binary> — checks a Fantastic Team binary (#137).
 #   (a) the binary's SHA-256 against its line in SHA256SUMS (next to it, or --sums FILE)
-#   --rebuild  also rebuilds from this checkout and compares the hash: scripts/build-github.sh
-#              for a fantastic_team-github* name, else scripts/build.sh. Check out the tag first.
+#   --rebuild  also rebuilds from this checkout (scripts/build.sh) and compares the hash.
+#              Check out the tag first.
 # Exit 0: the hash matches. Exit 1: mismatch, no entry for the name, or the rebuild differs.
 # Exit 2: usage, an unreadable file, or a failed rebuild.
 set -u
@@ -48,10 +48,7 @@ fi
 echo "verify: ok $NAME $GOT"
 
 if [ "$REBUILD" = 1 ]; then
-  case "$NAME" in
-    fantastic_team-github*) BUILD="$ROOT/scripts/build-github.sh" ;;
-    *) BUILD="$ROOT/scripts/build.sh" ;;
-  esac
+  BUILD="$ROOT/scripts/build.sh"
   LOG=$(mktemp "${TMPDIR:-/tmp}/verify.XXXXXX") || exit 2
   if ! sh "$BUILD" >"$LOG" 2>&1; then
     cat "$LOG" >&2

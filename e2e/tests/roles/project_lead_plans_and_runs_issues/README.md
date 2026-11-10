@@ -1,4 +1,4 @@
-# roles/project_lead_plans_and_runs_issues (free, build: any)
+# roles/project_lead_plans_and_runs_issues (free)
 
 The coder `project_lead` (#185, extended) over 4 fake issues, on the scripted model and the fake forge: "do your best choice", a proposed tree, then "yes", two workers are started through the registry, a PR is opened for each, and the tree stays.
 
@@ -8,7 +8,7 @@ How it runs: the team has a lead (unused). The probe copies the repo's `roles/` 
 
 Only one agent has a model request open at a time, so the script's order is the run's order:
 
-1. The project_lead reads (`github issues`, `board rows`, `roles get_count`, in one turn: tool calls, not model requests), then answers with the proposal and a `done` call, which ends its run. A plain text turn would not: an agent answers its own reply once more, a request that would take the next script turn. No worker exists yet.
+1. The project_lead reads (`github issues`, `roles get_count`, in one turn: tool calls, not model requests), then answers with the proposal and a `done` call, which ends its run. A plain text turn would not: an agent answers its own reply once more, a request that would take the next script turn. No worker exists yet.
 2. After the probe says "yes" it spawns worker 1 and ends its run again. The worker's first message is refused on its key (the `small` tier names a ref the store does not hold), so it asks the model nothing. This makes the order certain: a key read that is refused only by `callable_by` was seen to succeed now and then, and a worker that asked the model at once would take the project_lead's next script turn.
 3. The probe then plays the lead's admit step: it gives the worker the real ref and names it in the credential store, connector and queue `callable_by`, and sends it its task again. The worker sends its parent a message (`send` to the project_lead, which `spawn` lets it make, team#247; the script names the project_lead as `{{pl}}`, bound once it is spawned). That message starts the project_lead's turn while the worker waits for the reply (one request open at a time), then the worker plays its closing line.
 4. The probe sends the project_lead "continue"; it spawns worker 2 the same way; a last "continue" gets the plan updated in place.

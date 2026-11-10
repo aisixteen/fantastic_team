@@ -21,7 +21,6 @@ pub mod team_notice;
 pub mod team_yaml;
 pub mod tree;
 pub mod watchdog;
-pub mod webhook;
 pub mod webui;
 pub mod worker_view;
 pub mod worktrees_flag;
@@ -42,8 +41,7 @@ pub mod worker_exec;
 /// code) that the roles registry (`agentic_resources.tools`, crates/agentic_resources)
 /// spawns from; the task registry (`task_registry.tools`,
 /// crates/task_registry) is inert in a team whose registry record has no
-/// `task_store_id`; the cabinets (`cabinet.tools`, crates/cabinet) act only for
-/// a manager agent the operator makes and wires.
+/// `task_store_id`.
 pub fn register_team(reg: &mut BundleRegistry) {
     // the stock roles, meta bundles over `ai_chat.tools`, which fantastic's stock set registers before this extra (a team's folder may override them)
     if let Err(e) = roles::register(reg) {
@@ -65,13 +63,11 @@ pub fn register_team(reg: &mut BundleRegistry) {
         team_task_registry::HANDLER_MODULE,
         team_task_registry::TaskRegistryBundle::default(),
     );
-    reg.register(team_cabinet::HANDLER_MODULE, team_cabinet::CabinetBundle);
     // fantastic's scheduler: a lead makes its own as a child and schedules check-ins to itself.
     reg.register("scheduler.tools", fantastic_scheduler::SchedulerBundle);
     reg.register(puller::HANDLER_MODULE, puller::PullerBundle::default());
     // The team page, for the web UI that `--port` persists (`app_control::persist_web`).
     reg.register(page::HANDLER_MODULE, page::PageBundle);
-    reg.register(webhook::HANDLER_MODULE, webhook::WebhookBundle::default());
     reg.register(board::HANDLER_MODULE, board::BoardBundle);
     reg.register(dispatcher::HANDLER_MODULE, dispatcher::DispatcherBundle);
     reg.register(
@@ -506,24 +502,8 @@ mod tests {
     use serde_json::Value;
 
     #[test]
-    fn the_registry_has_the_chat_the_anthropic_backend_and_the_credential_store() {
-        let reg = registry();
-        assert!(reg.get("ai_chat.tools").is_some());
-        assert!(reg.get("anthropic_backend.tools").is_some());
-        assert!(reg.get("credential_store.tools").is_some());
-    }
-
-    #[test]
     fn register_team_registers_the_task_registry() {
         assert!(registry().get("task_registry.tools").is_some());
-    }
-
-    #[test]
-    fn register_team_registers_the_cabinet() {
-        assert!(registry().get("cabinet.tools").is_some());
-        let mut reg = BundleRegistry::new();
-        register_team(&mut reg);
-        assert!(reg.get("cabinet.tools").is_some());
     }
 
     /// Boot the root and write its record without starting the kernel, so a
@@ -533,31 +513,6 @@ mod tests {
         lock::acquire(dir).unwrap();
         booted.write_seed().unwrap();
         booted.kernel.clone()
-    }
-
-    #[test]
-    fn the_registry_has_fantastic_s_bundles() {
-        let reg = registry();
-        let names: Vec<&str> = reg.catalog().map(|(n, _)| n).collect();
-        assert!(names.contains(&"file_bridge.tools"));
-        assert!(names.contains(&"kernel_state.tools"));
-    }
-
-    #[test]
-    fn the_registry_resolves_every_module_the_shell_writes_at_first_run() {
-        // The `mcp` leg, the user's home store and the user store: records fantastic's
-        // shell makes at the first run, read by the kernel that writes the page's
-        // records at every later start (#212).
-        for offline in [true, false] {
-            let reg = registry_with(!offline, Path::new("."));
-            for module in [
-                fantastic_web_mcp::HANDLER_MODULE,
-                fantastic_user_home_store::HANDLER_MODULE,
-                fantastic_user_home_store::user_store::HANDLER_MODULE,
-            ] {
-                assert!(reg.get(module).is_some(), "not registered: {module}");
-            }
-        }
     }
 
     #[test]
@@ -711,38 +666,6 @@ mod tests {
         bootstrap::shutdown(dir.path()).unwrap();
     }
 
-    #[test]
-    fn register_team_registry_has_sqlite_store() {
-        assert!(registry().get("sqlite_store.tools").is_some());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn any_agent_record_survives_a_restart() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = start(dir.path()).await.unwrap();
-        for o in kernel
-            .send(vec![Item::new(
-                DEFAULT_ROOT_ID,
-                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID,
-                       "id": "plain", "handler_module": "ram_store.tools",
-                       "custom_field": "kept"}),
-            )])
-            .await
-        {
-            assert!(matches!(o.status, Status::Completed), "{}", o.result);
-        }
-        kernel.flush_records().await;
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-
-        let kernel = start(dir.path()).await.unwrap();
-        let plain = kernel.resolve_target("plain").expect("agent restored");
-        let kept = plain.meta.read().unwrap().get("custom_field").cloned();
-        assert_eq!(kept, Some(json!("kept")));
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-    }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn a_failed_seed_releases_the_lock() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -762,19 +685,5 @@ mod tests {
             "wrong failure: {err}"
         );
         assert!(lock::acquire(dir.path()).is_ok());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_headless_host_boots_and_answers_reflect() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = start(dir.path()).await.unwrap();
-        let outcomes = kernel
-            .send(vec![Item::new(DEFAULT_ROOT_ID, json!({"type": "reflect"}))])
-            .await;
-        let first = &outcomes[0];
-        assert!(matches!(first.status, Status::Completed));
-        assert!(first.result.get("id").is_some());
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
     }
 }

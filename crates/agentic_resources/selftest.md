@@ -3,15 +3,13 @@
 > scopes: kernel, roles
 > requires: `cargo build --release --bin fantastic_kernel`
 > out-of-scope: a live model — the roles and the limits are exercised against any bundle
-> a spawn's `backend` names
 
 > Moved from fantastic (team#245) as it was there: the steps use fantastic's one-shot
 > CLI. In team the bundle runs inside `fantastic_team` (registered by `register_team`,
 > no env var needed); send the same verbs with
 > `fantastic_team send '{"target": "<id>", "payload": {"type": "<verb>", ...}}'`.
 
-A generic roles registry. **Off by default**: the host turns it on with
-`FANTASTIC_AGENTIC_RESOURCES=1`. A role is a meta bundle (`.fantastic/bundles/<name>/bundle.yaml`:
+A generic roles registry. A role is a meta bundle (`.fantastic/bundles/<name>/bundle.yaml`:
 a `base`, no program, `record.post_system_prompt` and `record.can_call`); the registry's
 record carries its `limits`. One-shot CLI: `fantastic <id> <verb> [k=v ...]`; JSON-valued
 args are coerced.
@@ -22,7 +20,6 @@ All test state lives under `/tmp/ar_test/`.
 
 ```bash
 rm -rf /tmp/ar_test && mkdir -p /tmp/ar_test/.fantastic/bundles/writer && cd /tmp/ar_test
-export FANTASTIC_AGENTIC_RESOURCES=1
 FANTASTIC=/path/to/rust/target/release/fantastic_kernel
 cat > .fantastic/bundles/writer/bundle.yaml <<'ROLE'
 base: scheduler.tools
@@ -53,8 +50,8 @@ $FANTASTIC $AR role name=ghost | jq -e '.reason == "not_found"'
 
 ```bash
 $FANTASTIC $AR set_limit role=writer max=1 | jq -e '.ok'
-$FANTASTIC $AR spawn role=writer backend='{"handler_module":"scheduler.tools"}' | jq -e '.id'
-$FANTASTIC $AR spawn role=writer backend='{"handler_module":"scheduler.tools"}' | jq -e '.reason == "limit" and .scope == "role"'
+$FANTASTIC $AR spawn role=writer provider=prov | jq -e '.id'
+$FANTASTIC $AR spawn role=writer provider=prov | jq -e '.reason == "limit" and .scope == "role"'
 $FANTASTIC $AR get_count role=writer | jq -e '.running == 1 and .max == 1'
 ```
 

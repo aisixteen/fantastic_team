@@ -1,4 +1,3 @@
 costs: gpu
 timeout: 2400
 plug: vllm
-build: any

@@ -1,5 +1,5 @@
-//! Worker view (`team_worker_view.tools`): one vertical canvas per worker in
-//! fantastic's `mobile` layout. The top part holds generated cells (task card,
+//! Worker view (`team_worker_view.tools`): one vertical list of cells per worker. The
+//! top part holds generated cells (task card,
 //! files, output, preview) and takes the rest of the height; the worker's chat
 //! is the last cell, locked at the bottom. The view stores only the worker id,
 //! and its chat targets that id only.
@@ -17,8 +17,6 @@ pub const HANDLER_MODULE: &str = "team_worker_view.tools";
 const NAME: &str = "team_worker_view";
 /// The layout of fantastic's canvas this view uses (canvas | mobile).
 pub const LAYOUT: &str = "mobile";
-/// The fit rules on top of the mobile theme.
-pub const CSS: &str = include_str!("../web/worker_view.css");
 /// The group a view joins when `open` names none.
 const DEFAULT_GROUP: &str = "workers";
 
@@ -303,12 +301,6 @@ mod tests {
         assert_eq!(cycle(&views, "a", -1).as_deref(), Some("c"));
         assert_eq!(cycle(&views, "x", 1).as_deref(), Some("x"));
         assert_eq!(cycle(&views, "missing", 1), None);
-    }
-
-    #[test]
-    fn css_has_no_horizontal_overflow_rules() {
-        assert!(CSS.contains("overflow-x: hidden"));
-        assert_eq!(CSS.matches("overflow-y: auto").count(), 1);
     }
 
     #[test]
