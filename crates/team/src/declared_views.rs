@@ -59,7 +59,7 @@ pub struct Decl {
 /// The handler module of the queue: a plain store named by the board's `store`.
 pub const QUEUE_MODULE: &str = "ram_store.tools";
 /// The kinds whose web view is built here (the others keep their page code).
-pub const WEB_KINDS: [&str; 4] = ["cadencer", "puller", "webhook", "git"];
+pub const WEB_KINDS: [&str; 3] = ["cadencer", "puller", "git"];
 
 fn sec(
     title: &'static str,
@@ -141,32 +141,6 @@ pub fn decls() -> Vec<Decl> {
                 ],
                 Some(10),
             )],
-        },
-        Decl {
-            handler_module: crate::webhook::HANDLER_MODULE,
-            kind: "webhook",
-            title: "Webhook",
-            sections: vec![
-                sec(
-                    "Receiver",
-                    "status",
-                    "kv",
-                    &[("enabled", "enabled"), ("secret_set", "secret_set")],
-                    Some(10),
-                ),
-                sec(
-                    "Recent events",
-                    "status",
-                    "table",
-                    &[
-                        ("event", "event"),
-                        ("action", "action"),
-                        ("outcome", "outcome"),
-                        ("at", "at"),
-                    ],
-                    Some(10),
-                ),
-            ],
         },
         Decl {
             handler_module: team_github_connector::HANDLER_MODULE,
@@ -780,7 +754,6 @@ mod tests {
         for k in [
             "cadencer",
             "puller",
-            "webhook",
             "github",
             "git",
             "board",
@@ -1248,11 +1221,6 @@ mod tests {
         .await;
         mk(
             &kernel,
-            json!({"id": "web", "handler_module": crate::webhook::HANDLER_MODULE}),
-        )
-        .await;
-        mk(
-            &kernel,
             json!({"id": "gh", "handler_module": team_github_connector::HANDLER_MODULE,
                 "app": {"credentials": {"store": "credentials", "ref": "github/app"}},
                 "repos": ["o/r"], "directive": "Push a work branch.",
@@ -1260,11 +1228,8 @@ mod tests {
         )
         .await;
         assert!(grant_views(&kernel) > 0);
-        let cb = field_of(&kernel, "web", "callable_by");
-        assert_eq!(cb["dispatcher"], json!(["status"]), "{cb}");
-        assert_ne!(cb["dispatcher"], json!("*"));
         let cc = field_of(&kernel, "dispatcher", "can_call");
-        assert_eq!(cc["web"], json!(["status"]), "{cc}");
+        assert_eq!(cc["cad"], json!(["status"]), "{cc}");
         let cad = field_of(&kernel, "cad", "callable_by");
         assert_eq!(cad["dispatcher"], json!(["status"]), "{cad}");
         // A star the operator wrote is never narrowed.
@@ -1292,13 +1257,13 @@ mod tests {
         .await;
         mk(
             &kernel,
-            json!({"id": "web", "handler_module": crate::webhook::HANDLER_MODULE}),
+            json!({"id": "cad", "handler_module": crate::cadencer::HANDLER_MODULE}),
         )
         .await;
         // the dispatcher's own boot granted its read verbs on the others; again is a no-op
         assert_eq!(grant_views(&kernel), 0, "already granted at boot");
-        let web_by = field_of(&kernel, "web", "callable_by");
-        assert!(web_by.get("dispatcher").is_some(), "{web_by}");
+        let cad_by = field_of(&kernel, "cad", "callable_by");
+        assert!(cad_by.get("dispatcher").is_some(), "{cad_by}");
         for entry in kernel.agents.iter() {
             let meta = entry.meta.read().unwrap().clone();
             assert!(
@@ -1308,7 +1273,7 @@ mod tests {
             );
         }
         assert!(field_of(&kernel, "dispatcher_view", "can_call")
-            .get("web")
+            .get("cad")
             .is_none());
     }
 }

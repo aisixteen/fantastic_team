@@ -281,10 +281,9 @@ CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh w
 | connectors | `git` (`team_git.tools`) and `github` (optional, `team_github.tools`). Each is a record, with its directive. |
 | `team_board.tools` | Board: the shared picture of the work. Verbs `pull`, `board`, `task`, `report`, `agent`, `ask`, `audit`. It never assigns. |
 | `team_worker_view.tools` | Worker view: one vertical canvas per worker. |
-| `team_webhook.tools` | Optional webhook receiver (off unless enabled). `status` lists the last 20 events (event, action, accepted or refused, time) and whether a secret is set, never the secret, a header or a body. |
 | `team_dispatcher.tools` | The dispatcher: the home screen. It reads and asks; Start, Pause and Stop are its only controls. |
 | cadencer | Sends each group's AI driver a digest of its workers, and reports the load counts in `status`. |
-| declared views | Each kind above (cadencer, puller, webhook, git, github, board, dispatcher, queue) declares its read-only views as data in `declared_views.rs`: the fantastic TUI draws them from `view.tui`, written into the records at every start, and the team page draws the same declaration for cadencer, puller, webhook and git. The queue, board, github and team pages stay page code (`agent_views.rs`, with the reason). No view shows a secret. |
+| declared views | Each kind above (cadencer, puller, git, github, board, dispatcher, queue) declares its read-only views as data in `declared_views.rs`: the fantastic TUI draws them from `view.tui`, written into the records at every start, and the team page draws the same declaration for cadencer, puller and git. The queue, board, github and team pages stay page code (`agent_views.rs`, with the reason). No view shows a secret. |
 | `team_app` | The launcher `fantastic_team_app` for the desktop app. See The app. |
 | `crates/team/src/new_team.rs` | The team's fixed ids (the lead, the roles registry, the GitHub connector, the worker's tools; the blueprint `crates/team/blueprint.yaml` declares them) and the writer of the role bundles (`crates/team/bundles/`, embedded in `crates/team/src/roles.rs`). |
 | `examples/create_agent/` | A script of `fantastic_team send` `create_agent` payloads. |

@@ -21,7 +21,6 @@ pub mod team_notice;
 pub mod team_yaml;
 pub mod tree;
 pub mod watchdog;
-pub mod webhook;
 pub mod webui;
 pub mod worker_view;
 pub mod worktrees_flag;
@@ -69,7 +68,6 @@ pub fn register_team(reg: &mut BundleRegistry) {
     reg.register(puller::HANDLER_MODULE, puller::PullerBundle::default());
     // The team page, for the web UI that `--port` persists (`app_control::persist_web`).
     reg.register(page::HANDLER_MODULE, page::PageBundle);
-    reg.register(webhook::HANDLER_MODULE, webhook::WebhookBundle::default());
     reg.register(board::HANDLER_MODULE, board::BoardBundle);
     reg.register(dispatcher::HANDLER_MODULE, dispatcher::DispatcherBundle);
     reg.register(
