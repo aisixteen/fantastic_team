@@ -1,25 +1,15 @@
-"""One store agent: every AI agent's memory and the task registry use it, and its rows survive a restart."""
+"""One store agent: every AI agent's memory and the task registry use it, and the task rows survive a restart."""
 
 import json
 import os
-import shutil
 
 from helpers import run_flow, stock as S
 from helpers.verdict import Verdict
-
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 
 
 def agents(team):
     r = team.send("kernel", {"type": "list_agents"})["result"]
     return {a["id"]: a for a in r["agents"]}
-
-
-def history(team, lead):
-    """The lead's chat rows as (role, content) pairs, ids dropped."""
-    r = team.send(lead, {"type": "history"})["result"]
-    return r, [json.dumps({k: v for k, v in row.items() if k != "id"}, sort_keys=True)
-               for row in r.get("rows", [])]
 
 
 def task_rows(team):
@@ -66,22 +56,17 @@ def run(ctx):
     db = os.path.join(ctx.run_dir, ".fantastic", "memory.db")
     v.check(".fantastic/memory.db exists in the team directory", os.path.isfile(db), db)
 
-    # the operator may read what the lead keeps: the chat verbs on the lead, and `list` on tasks
+    # the operator may read what the lead keeps: `list` on tasks
     cb = dict(live["tasks"].get("callable_by") or {})
     cb["mcp"] = ["list"]
     granted = team.send("kernel", {"type": "update_agent", "id": "tasks", "callable_by": cb})
     v.check("the operator is granted `list` on tasks", granted.get("status") == "completed", str(granted))
-    h1, rows1 = history(team, ctx.lead)
     t1 = task_rows(team)
-    v.check("the lead has history rows", len(rows1) >= 3 and "error" not in h1, str(h1)[:300])
     v.check("tasks lists the recorded issue", "acme/widgets#1" in json.dumps(t1), str(t1))
 
     team.stop()
     team.start()
-    h2, rows2 = history(team, ctx.lead)
     t2 = task_rows(team)
-    v.check("after a restart the lead's history rows are back, unchanged", rows2 == rows1 and rows1,
-            f"{len(rows1)} before, {len(rows2)} after")
     v.check("after a restart tasks lists the same rows", t2 == t1, f"{t1} vs {t2}")
     v.check("the one store is still the only sqlite_store",
             [i for i, a in agents(team).items() if a.get("handler_module") == "sqlite_store.tools"] == ["memory"])

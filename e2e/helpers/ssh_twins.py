@@ -97,10 +97,7 @@ def ssh_args(command: str, tunnel: bool = False) -> list[str]:
 
 
 def run_call(argv: list[str], wait_s: int = 60, verb: str = "run") -> dict:
-    args = {"command": argv[0], "args": list(argv[1:])}
-    if verb == "run":
-        args["wait_s"] = wait_s
-    return {"target": cli.EXEC, "type": verb, "args": args}
+    return cli.run_call(argv[0], *argv[1:], wait_s=wait_s, verb=verb)
 
 
 def ssh_call(command: str, wait_s: int = 60) -> dict:
@@ -280,8 +277,7 @@ def clone_command() -> str:
 
 def stop_command() -> str:
     """SIGTERM to the remote kernel and a bounded wait (no stop word)."""
-    return (f"cd {DIR} && p=$(cat team.pid) && kill -TERM $p && "
-            f"for i in $(seq {STOP_WAIT_S * 5}); do kill -0 $p 2>/dev/null || exit 0; sleep 0.2; done; exit 1")
+    return pr.stop_line(DIR, "team.pid", STOP_WAIT_S)
 
 
 # ---- the bridge's calls ----------------------------------------------------------------
@@ -620,26 +616,7 @@ AUTHOR = ("Remote Worker", "remote@example.invalid")
 # over http to loopback, and the box dials the server through Podman's gateway (not loopback). This relay
 # (a job of the box, `nohup`) listens on 127.0.0.1:PORT in the box and carries the bytes to the gateway; it is the
 # stand-in for the TLS a real forge has, and it sees the wire as any hop would.
-RELAY = """
-import socket, sys, threading
-
-def pipe(a, b):
-    try:
-        while True:
-            d = a.recv(65536)
-            if not d:
-                break
-            b.sendall(d)
-    except OSError:
-        pass
-    finally:
-        for s in (a, b):
-            try:
-                s.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-
-lport, host, port = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+RELAY = "\nimport socket, sys, threading\n\n" + web.PIPE + """lport, host, port = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
 srv = socket.socket()
 srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 srv.bind(("127.0.0.1", lport))
@@ -921,9 +898,7 @@ class Box:
         try:
             out = self.remote.ssh(start, timeout=120).stdout
         finally:
-            self.remote.ssh(f"cd {folder} && p=$(cat check.pid) && kill -TERM $p && "
-                            f"for i in $(seq {STOP_WAIT_S * 5}); do kill -0 $p 2>/dev/null || exit 0; sleep 0.2; done; exit 1",
-                            check=False)
+            self.remote.ssh(pr.stop_line(folder, "check.pid", STOP_WAIT_S), check=False)
         return {a["id"]: a for a in json.loads(out)["result"]["agents"]}
 
     def remote_log(self) -> str:
@@ -1033,12 +1008,6 @@ class Box:
         v.check(f"{label}remote: the master backend's stream reached the box, `status` and `part_*` before "
                 f"`done` ({work_label}: {len(rows)} events)", ok, why)
 
-    def listening(self) -> set[int]:
-        """The TCP ports the box listens on (its /proc/net/tcp and tcp6, LISTEN rows)."""
-        rows = self.remote.ssh("cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4==\"0A\"{print $2}'",
-                               check=False).stdout.split()
-        return {int(a.rsplit(":", 1)[1], 16) for a in rows}
-
     def removed(self, v, label: str = "") -> None:
         v.check(f"{label}the container is removed", not self.remote.exists())
 
@@ -1055,22 +1024,23 @@ def hand(ctx, lead: str, text: str, upto: int | None = None, wait_s: float = 240
     return r.get("status") == "completed" and ctx.model.served >= want
 
 
+def last_messages(ctx):
+    """`(lane, text)` of the last message of each request the plug saw (the reply of the call the model made last)."""
+    for at, raw in zip(ctx.model.request_lanes, ctx.model.raw_bodies):
+        try:
+            last = json.loads(raw)["messages"][-1]["content"]
+        except (ValueError, KeyError, IndexError, TypeError):
+            continue
+        yield at, last if isinstance(last, str) else json.dumps(last)
+
+
 def came_back(ctx, lane: str | None, evidence: str, via: str | None = None) -> bool:
     """True when a request of the lead (the main lane) ends with the reply of a call (`via`: the
     bridge's `forward` by default, else e.g. `w2 history`) that holds `evidence` and, when `lane` is
     given, the work of that lane (`[lane:L]`: a conversation)."""
     head = f"· {via or BRIDGE + ' forward'} ·"
-    for at, raw in zip(ctx.model.request_lanes, ctx.model.raw_bodies):
-        if at != "main":
-            continue
-        try:
-            last = json.loads(raw)["messages"][-1]["content"]
-        except (ValueError, KeyError, IndexError, TypeError):
-            continue
-        text = last if isinstance(last, str) else json.dumps(last)
-        if head in text and (lane is None or f"[lane:{lane}]" in text) and evidence in text:
-            return True
-    return False
+    return any(at == "main" and head in text and (lane is None or f"[lane:{lane}]" in text) and evidence in text
+               for at, text in last_messages(ctx))
 
 
 def dump_requests(ctx) -> None:
@@ -1081,16 +1051,7 @@ def dump_requests(ctx) -> None:
 
 def forward_replies(ctx) -> list[str]:
     """The lead's requests that answer a `forward` of the bridge (their last message)."""
-    out = []
-    for at, raw in zip(ctx.model.request_lanes, ctx.model.raw_bodies):
-        try:
-            last = json.loads(raw)["messages"][-1]["content"]
-        except (ValueError, KeyError, IndexError, TypeError):
-            continue
-        text = last if isinstance(last, str) else json.dumps(last)
-        if at == "main" and f"· {BRIDGE} forward ·" in text:
-            out.append(text)
-    return out
+    return [text for at, text in last_messages(ctx) if at == "main" and f"· {BRIDGE} forward ·" in text]
 
 
 # ---- the reconnect twin: the operator's phase between the lead's two messages ---------------

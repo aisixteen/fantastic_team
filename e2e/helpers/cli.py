@@ -84,8 +84,12 @@ def solved(repo: str) -> tuple[bool, str]:
 EXEC = "worker_exec"
 
 
-def run_call(command: str, *args: str, target: str = EXEC) -> dict:
-    return {"target": target, "type": "run", "args": {"command": command, "args": list(args), "wait_s": 30}}
+def run_call(command: str, *args: str, target: str = EXEC, wait_s: int = 30, verb: str = "run") -> dict:
+    """A scripted call to an exec agent: `run` waits `wait_s`, `start` (a job) does not."""
+    call_args = {"command": command, "args": list(args)}
+    if verb == "run":
+        call_args["wait_s"] = wait_s
+    return {"target": target, "type": verb, "args": call_args}
 
 
 def replace_call(path: str, old: str, new: str) -> dict:

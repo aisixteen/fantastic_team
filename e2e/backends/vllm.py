@@ -37,6 +37,8 @@ import os
 import threading
 from urllib.parse import urlsplit
 
+from . import usage_reports
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 #: One completion's output reserve, not the window: the server enforces `max_tokens + prompt <=
 #: context`, so a cap near the window leaves no room for the prompt (fantastic's THINK_BUDGET).
@@ -174,26 +176,11 @@ class VllmPlug:
 
     def poll(self) -> None:
         """Read the usage of every vllm agent now; a deleted agent keeps what was last seen."""
-        team = self._team
-        if team is None or not team.proc or team.proc.poll() is not None:
-            return
-        try:
-            agents = team.agents()
-        except Exception:  # the team is going down
-            return
-        for aid, rec in agents.items():
-            if rec.get("handler_module") != "vllm_backend.tools":
-                continue
-            try:
-                r = team.send(aid, {"type": "usage"})
-            except Exception:
-                continue
-            u = r.get("result") if r.get("status") == "completed" else None
-            if isinstance(u, dict) and "requests" in u:
-                with self.lock:
-                    old = self.counts.get(aid, {})
-                    self.counts[aid] = {k: max(int(u.get(k) or 0), int(old.get(k) or 0))
-                                        for k in ("requests", "prompt_tokens", "output_tokens")}
+        for aid, u in usage_reports(self._team, "vllm_backend.tools"):
+            with self.lock:
+                old = self.counts.get(aid, {})
+                self.counts[aid] = {k: max(int(u.get(k) or 0), int(old.get(k) or 0))
+                                    for k in ("requests", "prompt_tokens", "output_tokens")}
         self.polls += 1
 
     def finish(self, team) -> None:

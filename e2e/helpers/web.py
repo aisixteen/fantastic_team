@@ -186,3 +186,24 @@ class WsClient:
             self.sock.close()
         except OSError:
             pass
+
+
+# The source of the byte pipe both small TCP programs of the harness carry (the git relay in the box, the
+# fake ssh of app/attach_remote): the bytes of `a` to `b` until `a` closes, then both ends shut.
+PIPE = '''def pipe(a, b):
+    try:
+        while True:
+            d = a.recv(65536)
+            if not d:
+                break
+            b.sendall(d)
+    except OSError:
+        pass
+    finally:
+        for s in (a, b):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+'''

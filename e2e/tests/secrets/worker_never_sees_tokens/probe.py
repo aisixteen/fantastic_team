@@ -7,26 +7,9 @@ import os
 import re
 import subprocess
 
-from helpers import forge as F
+from helpers import app, forge as F
 from helpers import run_flow
 from helpers.verdict import Verdict
-
-
-def files_holding(root, needles, skip=()):
-    """Paths under `root` whose bytes hold any needle (binary files too)."""
-    hits = []
-    for base, dirs, names in os.walk(root):
-        dirs[:] = [d for d in dirs if os.path.join(base, d) not in skip]
-        for n in names:
-            p = os.path.join(base, n)
-            try:
-                data = open(p, "rb").read()
-            except OSError:
-                continue
-            for what, needle in needles.items():
-                if needle.encode() in data:
-                    hits.append(f"{os.path.relpath(p, root)} ({what})")
-    return hits
 
 
 def run(ctx):
@@ -62,8 +45,7 @@ def run(ctx):
     log = team.log()
     for what, needle in needles.items():
         v.check(f"the team's stdout and stderr hold no {what}", needle not in log)
-    skip = {os.path.join(ctx.run_dir, "secrets")}
-    hits = files_holding(ctx.run_dir, needles, skip)
+    hits = [f"{p} ({what})" for what, needle in needles.items() for p in app.files_holding(ctx.run_dir, needle)]
     v.check("no file of the run holds a key or token (rows, records, repos, worktree)", not hits, "; ".join(hits))
     cfg = os.path.join(ctx.run_dir, "clone", ".git", "config")
     wt_cfg = subprocess.run(["git", "-C", os.path.join(ctx.run_dir, "work", "wt", "greeting"),

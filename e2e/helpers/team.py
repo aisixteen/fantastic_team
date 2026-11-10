@@ -133,27 +133,6 @@ class Team:
 CHAT_VERBS = ["history", "send", "stop", "status", "watch"]  # tree.rs CHAT_VERBS
 
 
-def grant_chat(team: "Team", leg: str, workers, verbs=CHAT_VERBS) -> None:
-    """Give a ws leg the page's chat grant on `workers`, on both ends (`leg`'s `can_call`
-    names the worker, the worker's `callable_by` names `leg`): what `tree::grant_chat_to`
-    writes for the page's leg. An operator write through the `send` leg, merged into what
-    the records hold."""
-    r = team.send("kernel", {"type": "list_agents"})
-    agents = {a["id"]: a for a in r["result"]["agents"]}
-    for w in workers:
-        cb = dict(agents[w].get("callable_by") or {})
-        cb[leg] = list(verbs)
-        out = team.send("kernel", {"type": "update_agent", "id": w, "callable_by": cb})
-        if out.get("status") != "completed":
-            raise RuntimeError(f"cannot grant {leg} on {w}: {out}")
-    cc = dict((agents.get(leg) or {}).get("can_call") or {})
-    for w in workers:
-        cc[w] = list(verbs)
-    out = team.send("kernel", {"type": "update_agent", "id": leg, "can_call": cc})
-    if out.get("status") != "completed":
-        raise RuntimeError(f"cannot grant {leg}: {out}")
-
-
 def log_calls(log_text: str) -> list[tuple[str, str]]:
     """`(agent, verb)` of every `[n] <agent> call <verb>` line the team printed."""
     return re.findall(r"\[\d+\] (\w+) call (\w+)", log_text)

@@ -10,8 +10,6 @@ from helpers.web import WsClient, http_get
 
 TEAM_PAGE = "/team_page/file/index.html"
 WS = "/team_ws/ws"
-CHAT_VERBS = ["history", "send", "stop", "status", "watch"]  # tree::CHAT_VERBS
-PAGE_VERBS = ["sidebar", "tree", "open", "control"]  # app_control::PAGE_VERBS
 TOP = ["task", "files", "output", "preview"]
 
 
@@ -41,13 +39,13 @@ def run(ctx):
     # are made after boot, so the operator grants them as `tree::grant_chat_to` would
     for w in ("w1", "w2"):
         r = team.send("kernel", {"type": "update_agent", "id": w,
-                                 "callable_by": {"$self": "*", "$parent": "*", "team_ws": CHAT_VERBS}})
+                                 "callable_by": {"$self": "*", "$parent": "*", "team_ws": T.CHAT_VERBS}})
         v.check(f"the page's leg may chat with {w}", r.get("status") == "completed", str(r))
     r = team.send("kernel", {"type": "update_agent", "id": "team_ws",
-                             "can_call": {"$self": "*", "dispatcher": PAGE_VERBS,
-                                          "w1": CHAT_VERBS, "w2": CHAT_VERBS}})
+                             "can_call": {"$self": "*", "dispatcher": S.PAGE_VERBS,
+                                          "w1": T.CHAT_VERBS, "w2": T.CHAT_VERBS}})
     v.check("the page's leg may call the dispatcher and the workers", r.get("status") == "completed", str(r))
-    for agent, leg_verbs in (("worker_view", None), ("dispatcher", PAGE_VERBS)):
+    for agent, leg_verbs in (("worker_view", None), ("dispatcher", S.PAGE_VERBS)):
         # update_agent rewrites callable_by whole: keep the page's leg on the dispatcher
         by = {"$self": "*", "$parent": "*", "mcp": "*"}
         if leg_verbs:

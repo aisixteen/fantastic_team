@@ -248,20 +248,6 @@ def dry_run(tests: list[dict]) -> int:
     return 1 if bad else 0
 
 
-def holding(root: str, needle: str) -> list[str]:
-    """Paths under `root` whose bytes hold `needle`."""
-    hits = []
-    for base, _, names in os.walk(root):
-        for n in names:
-            p = os.path.join(base, n)
-            try:
-                if needle.encode() in open(p, "rb").read():
-                    hits.append(os.path.relpath(p, root))
-            except OSError:
-                pass
-    return hits
-
-
 def post_to(url: str, key: str) -> tuple[int, bytes]:
     body = json.dumps({"model": "selftest", "max_tokens": 8, "messages": []}).encode()
     req = urllib.request.Request(url, data=body, method="POST", headers={
@@ -410,7 +396,7 @@ def selftest_relay(v: Verdict) -> None:
         v.check("cost.json prices the usage when both prices are set",
                 abs(cost["usd_estimate"] - 0.00005) < 1e-9, raw)
         v.check("the forwarded key is never stored: cost.json and the run hold none",
-                key not in raw and holding(run_a, key) == [], str(holding(run_a, key)))
+                key not in raw and app_mod.files_holding(run_a, key, skip=()) == [], str(app_mod.files_holding(run_a, key, skip=())))
         v.check("with no team watched, cost.json's `agents` is null", cost["agents"] is None, raw)
         relay_records(v, a, key)
         relay_usage(v, tmp, key)
@@ -776,7 +762,7 @@ def selftest_vllm_plug(v: Verdict) -> None:
                     cost["model"] == "m-1" and cost["requests"] == 7 and cost["input_tokens"] == 200
                     and cost["output_tokens"] == 40 and abs(cost["usd_estimate"] - 0.00028) < 1e-9, raw)
             v.check("the key is never in cost.json or on a file of the run", key not in raw
-                    and holding(tmp, key) == [], str(holding(tmp, key)))
+                    and app_mod.files_holding(tmp, key, skip=()) == [], str(app_mod.files_holding(tmp, key, skip=())))
         with vllm_env(**base):
             keyless = vllm_mod.make(tmp, {"run_dir": tmp})
             v.check("without VLLM_API_KEY the plug is keyless: no key variable, no credentials on the records",
@@ -1254,25 +1240,10 @@ def selftest_new_tests_collect(v: Verdict) -> None:
     v.check("each collects, has its files, and is free / scripted", not bad, "; ".join(bad))
 
 
-class podman_env:
-    """The Podman remote helper's variables for a block (`E2E_PODMAN`, the build dirs), restored after."""
-    NAMES = ("E2E_PODMAN", "E2E_PODMAN_BUILD_DIR", "CARGO_TARGET_DIR", "FAKE_PODMAN_LOG", "FAKE_PODMAN_MODE")
-
-    def __init__(self, **given: str) -> None:
-        self.given = given
-
-    def __enter__(self):
-        self.saved = {k: os.environ.get(k) for k in self.NAMES}
-        for k in self.NAMES:
-            os.environ.pop(k, None)
-        os.environ.update(self.given)
-
-    def __exit__(self, *_):
-        for k, val in self.saved.items():
-            if val is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = val
+class podman_env(vllm_env):
+    """The Podman remote helper's variables for a block (`E2E_PODMAN`, the build dirs): set the given
+    ones, clear the rest, restore after."""
+    names = ("E2E_PODMAN", "E2E_PODMAN_BUILD_DIR", "CARGO_TARGET_DIR", "FAKE_PODMAN_LOG", "FAKE_PODMAN_MODE")
 
 
 # A fake `podman`: logs each argv (and whether AUTHORIZED_KEY came in its environment) and answers

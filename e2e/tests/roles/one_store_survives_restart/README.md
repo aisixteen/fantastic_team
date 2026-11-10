@@ -4,7 +4,7 @@ Every AI agent's memory and the task registry point at ONE store agent (#185): a
 
 The lead, on the scripted model, spawns one worker through the roles registry, then adds one row to `tasks`, then `done`.
 
-Asserts: the agent list holds exactly one `sqlite_store.tools` agent, `memory`, and no `*_memory` agent besides the kernel's own `kernel_memory`; the lead's `memory_store_id`, every tier's `memory_store_id` and `tasks`' `task_store_id` name it; the spawned worker names it too and the store admits the worker; `.fantastic/memory.db` exists in the run dir; after the team is stopped and started again on the same directory, the lead's history rows (`history`) and the `tasks` row (`list`) are back, unchanged.
+Asserts: the agent list holds exactly one `sqlite_store.tools` agent, `memory`, and no `*_memory` agent besides the kernel's own `kernel_memory`; the lead's `memory_store_id`, every tier's `memory_store_id` and `tasks`' `task_store_id` name it; the spawned worker names it too and the store admits the worker; `.fantastic/memory.db` exists in the run dir; after the team is stopped and started again on the same directory, the `tasks` row (`list`) is back, unchanged (that an agent's history rows survive a restart is base's, `E136_sqlite_history_restart`).
 
 The scripted model serves the lead only: the worker tier is inert (a RAM store handler), so no worker calls the model.
 
