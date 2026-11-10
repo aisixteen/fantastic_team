@@ -104,7 +104,15 @@ def run(ctx):
         started = before + (4 if n == 1 else 2)
         v.check(f"worker {n} asked the model nothing before it was admitted",
                 ctx.model.served == started, str(ctx.model.served))
+        gated = agents(team)
+        v.check(f"worker {n} is named on neither the connector nor the queue before the lead admits it",
+                all(wid not in (gated[t].get("callable_by") or {}) for t in ("github", "queue")),
+                str({t: gated[t].get("callable_by") for t in ("github", "queue")}))
         admit(team, wid, ["github", "queue"])
+        opened_to = agents(team)
+        v.check(f"worker {n} is named on both after the admit",
+                all((opened_to[t].get("callable_by") or {}).get(wid) in ("*", ["*"]) for t in ("github", "queue")),
+                str({t: opened_to[t].get("callable_by") for t in ("github", "queue")}))
         task = f"The queue is queue. Your id is the id in your own reflect. Work on issue {n}."
         team.send(wid, {"type": "send", "text": task})
         settle(ctx, started + 3)  # the worker's send, the project_lead's turn it starts, the worker's close

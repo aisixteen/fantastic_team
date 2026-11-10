@@ -13,8 +13,8 @@ BODY = "Adds greeting.txt, checked with cat."
 
 
 def git(*args, cwd=None):
-    if cwd and not os.path.isdir(cwd):  # nothing ran, so there is no worktree: the check fails, the probe goes on
-        return ""
+    if cwd and not os.path.isdir(cwd):  # nothing ran, so there is no repo: None, which no check accepts
+        return None
     r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
                        env={"PATH": os.environ.get("PATH", ""), "HOME": "/nonexistent",
                             "GIT_CONFIG_NOSYSTEM": "1"})
@@ -56,11 +56,13 @@ def run(ctx):
     author = git("log", "-1", "--format=%an <%ae>", BRANCH, cwd=wt)
     v.check("the commit on the work branch is by the team bot", author == "Team Bot <team-bot@example.invalid>", author)
     v.check("the commit message is the model's, signed off",
-            git("log", "-1", "--format=%B", BRANCH, cwd=wt).startswith("Add greeting.txt (#1)")
-            and "Signed-off-by: Team Bot" in git("log", "-1", "--format=%B", BRANCH, cwd=wt))
-    v.check("the forge's main is untouched", git("rev-parse", "main", cwd=bare) == main_before)
+            (git("log", "-1", "--format=%B", BRANCH, cwd=wt) or "").startswith("Add greeting.txt (#1)")
+            and "Signed-off-by: Team Bot" in (git("log", "-1", "--format=%B", BRANCH, cwd=wt) or ""))
+    v.check("the forge's main is untouched", main_before is not None
+            and git("rev-parse", "main", cwd=bare) == main_before)
     v.check("the work branch reached the forge at that commit",
-            git("rev-parse", BRANCH, cwd=bare) == git("rev-parse", BRANCH, cwd=wt) != "")
+            bool(git("rev-parse", BRANCH, cwd=bare))
+            and git("rev-parse", BRANCH, cwd=bare) == git("rev-parse", BRANCH, cwd=wt))
     gitreqs = [r for r in ctx.forge.requests if r["path"].startswith(f"/{F.REPO}.git/")]
     v.check("every git request that got through carried the minted token",
             any(r.get("authorized") for r in gitreqs)

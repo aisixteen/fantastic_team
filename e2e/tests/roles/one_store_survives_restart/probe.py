@@ -40,6 +40,10 @@ def run(ctx):
             played and ctx.model.consumed, f"served {ctx.model.served} of {len(ctx.model.turns)}")
 
     live = agents(team)
+    chats = {i: a for i, a in live.items() if a.get("provider_id")}
+    v.check("every AI chat (the lead and the spawned worker) names the one store",
+            ctx.lead in chats and len(chats) >= 2 and all(a.get("memory_store_id") == "memory" for a in chats.values()),
+            str({i: a.get("memory_store_id") for i, a in chats.items()}))
     workers = [a for a in live.values() if a.get("role") == "worker"]
     v.check("one worker was spawned and it names the one store",
             len(workers) == 1 and workers[0].get("memory_store_id") == "memory", str(workers))
