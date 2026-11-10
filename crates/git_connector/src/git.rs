@@ -119,17 +119,6 @@ fn finish(r: Result<Value, Value>, auth: Option<&Auth>) -> Result<Value, Value> 
     }
 }
 
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Bool(b) => *b,
-        Value::Null => false,
-        Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
-        Value::String(t) => !t.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(m) => !m.is_empty(),
-    }
-}
-
 /// A non-empty string argument of the payload, or the `missing` refusal.
 pub fn str_arg<'a>(p: &'a Value, verb: &str, name: &str) -> Result<&'a str, Value> {
     match p.get(name).and_then(|v| v.as_str()) {
@@ -490,7 +479,10 @@ pub(crate) async fn commit(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
 /// inside the root and a real worktree. Returns the branch and the worktree.
 pub async fn check_push(cfg: &Cfg, p: &Value) -> Result<(String, PathBuf), Value> {
     const V: &str = "push";
-    if p.get("force").map(truthy).unwrap_or(false) {
+    if p.get("force")
+        .map(fantastic_bundle::py_truthy)
+        .unwrap_or(false)
+    {
         return Err(bad(FORCE.to_string(), "force", json!(true)));
     }
     let branch = str_arg(p, V, "branch")?;

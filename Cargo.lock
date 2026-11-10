@@ -5452,6 +5452,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "fantastic-ai-core",
+ "fantastic-bundle",
  "fantastic-credential-store",
  "fantastic-kernel",
  "fantastic-ram-store",
