@@ -191,14 +191,10 @@
   #sidebar > :not(.team-waiting):has(+ .team-waiting), #sidebar > :not(.team-waiting):has(+ .team-load) { margin-bottom: var(--s5); }
 
   /* ---- The pane: the agent's view (the plan for the lead) above its chat. */
-  .pane-head { display: flex; gap: var(--s3); align-items: center; flex: none; margin: 0 0 var(--s4); }
-  .pane-head:not(:has(.canvas-btn)) { display: none; }
+  .pane-head { display: none; gap: var(--s3); align-items: center; flex: none; margin: 0 0 var(--s4); }
   .pane-head button { font: inherit; font-size: var(--fs-sm); height: 28px; padding: 0 10px; }
-  .pane-head .canvas-btn { margin-left: auto; }
-  .pane-head .canvas-btn::before { content: ""; width: 12px; height: 10px; border: 1.5px solid currentColor; border-radius: 2px; box-shadow: inset 0 2px 0 -0.5px currentColor; }
   .pane-back { display: none; }
   .pane-back::before { content: "\2039"; font-size: 16px; line-height: 0; margin-top: -2px; }
-  #pane iframe.canvas-frame { flex: 1; width: 100%; height: 100%; min-height: 0; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--shadow-1); animation: fade-in var(--t-med) var(--ease); }
 
   .agent-view { flex: none; max-height: 40%; overflow: auto; margin: 0 0 var(--s4); padding: 0 0 var(--s2); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-1); font-size: var(--fs-sm); }
   .agent-view[hidden] { display: none; }
@@ -336,7 +332,7 @@
     #pane { padding: var(--s4); box-shadow: -1px 0 0 var(--line); }
     #layout.collapsed #sidebar { display: flex; }
     #collapse-tree { display: none; }
-    .pane-head, .pane-head:not(:has(.canvas-btn)) { display: flex; margin-bottom: var(--s4); }
+    .pane-head { display: flex; margin-bottom: var(--s4); }
     .pane-back { display: inline-flex; }
     .sub { padding-left: 16px; }
     .item { min-height: 32px; }
@@ -414,10 +410,8 @@
 // The pane fills the height beside the tree: the chat is a flex column whose transcript
 // scrolls inside. An `embed` row of the chat's history is a card, drawn where the row sits:
 // a sandboxed iframe of the host agent's `get_html`, which may call that agent only (the
-// team grants the page's leg that agent's panel verbs). An `unembed` row removes it. When
-// the `open` reply carries `canvas` {id, url}, a Canvas button swaps the chat for that
-// canvas page in an iframe. Each agent row with children folds its subtree (remembered);
-// the tree column folds as a whole; on a phone the list and the pane are two snap panels.
+// team grants the page's leg that agent's panel verbs). An `unembed` row removes it. Each agent row with children folds its subtree
+// (remembered); the tree column folds as a whole; on a phone the list and the pane are two snap panels.
 const expanded = new Set();   // workers whose subagents are shown
 const seen = new Set();       // workers already checked against the remembered state
 let lastReply = null;        // the newest sidebar reply: the agents and the plan are drawn from it
@@ -965,30 +959,6 @@ function showList() {
   if (list && typeof list.scrollIntoView === 'function') list.scrollIntoView({ inline: 'start', block: 'nearest' });
 }
 
-// The Canvas button swaps the chat for the agent's canvas page in an iframe, and back.
-function toggleCanvas(c) {
-  if (chat !== c || !c.canvas) return;
-  const pane = document.getElementById('pane');
-  if (c.frame) {
-    c.frame.remove();
-    c.frame = null;
-    c.box.hidden = false;
-    c.canvasBtn.textContent = 'Canvas';
-    drawAgentView(c);
-    return;
-  }
-  const f = el('iframe', 'canvas-frame');
-  f.src = c.canvas.url;
-  f.setAttribute('title', 'Canvas');
-  f.setAttribute('width', '100%');
-  f.setAttribute('height', '100%');
-  c.box.hidden = true;
-  c.view.hidden = true;
-  pane.appendChild(f);
-  c.frame = f;
-  c.canvasBtn.textContent = 'Chat';
-}
-
 // The chat for one agent: the pane is the second column beside the sidebar. A top
 // region holds the agent's view (the plan for the lead), then the chat box holds the
 // agent's chat cell label, the transcript and the composer. A new
@@ -998,13 +968,6 @@ function showChat(reply, node) {
   const pane = document.getElementById('pane');
   pane.textContent = '';
   const head = paneHead();
-  const canvas = reply.canvas && typeof reply.canvas.url === 'string' ? reply.canvas : null;
-  let canvasBtn = null;
-  if (canvas) {
-    canvasBtn = el('button', 'canvas-btn', 'Canvas');
-    canvasBtn.type = 'button';
-    head.appendChild(canvasBtn);
-  }
   pane.appendChild(head);
   const view = el('div', 'agent-view');
   view.id = 'agent-view';
@@ -1055,10 +1018,9 @@ function showChat(reply, node) {
     drafts: new Map(), tools: new Map(), inquiries: new Set(), attached: null,
     stats: stats, chip: chip, file: file, timer: null, live: false,
     off: null, busy: false,
-    box: box, cards: new Map(), canvas: canvas, canvasBtn: canvasBtn, frame: null
+    box: box, cards: new Map()
   };
   chat = c;
-  if (canvasBtn) canvasBtn.addEventListener('click', function () { toggleCanvas(c); });
   revealPane();
   drawAgentView(c);
   markSelected();

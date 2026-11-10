@@ -40,11 +40,6 @@ pub const LEAD_ROOT_VERBS: [&str; 4] =
 /// What the lead may call on the roles registry.
 pub const LEAD_ROLES_VERBS: [&str; 5] = ["roles", "role", "spawn", "get_count", "fleet"];
 
-/// The canvas agent of the app (fantastic's `canvas --port`): a sidecar's canvas.
-pub const CANVAS: &str = crate::tree::CANVAS_ID;
-/// What the lead may call on the canvas: the cards of the workers and leads grant it too,
-/// and a spawn grants only what the spawner holds.
-pub const LEAD_CANVAS_VERBS: [&str; 1] = ["new_canvas"];
 /// What the lead may call on the home's `files`, and what `files` admits from the lead: `read`,
 /// and the verbs its `system_prompt_file` is read and followed with through its
 /// `file_bridge_id` (fantastic's ai_core `prompt_file.rs`: `read_stream` at :290, `watch_path`
@@ -67,13 +62,23 @@ mod tests {
         let reg = crate::registry();
         let rows = reg.folder_rows();
         for (name, _) in roles::ALL {
-            let row = rows.iter().find(|r| r["name"] == name).unwrap_or_else(|| panic!("{name}: {rows:?}"));
+            let row = rows
+                .iter()
+                .find(|r| r["name"] == name)
+                .unwrap_or_else(|| panic!("{name}: {rows:?}"));
             assert_eq!(row["source"], "embedded", "{row}");
-            assert_eq!(row["base"], fantastic_ai_core::chat_bundle::HANDLER_MODULE, "{row}");
+            assert_eq!(
+                row["base"],
+                fantastic_ai_core::chat_bundle::HANDLER_MODULE,
+                "{row}"
+            );
         }
         let dir = tempfile::TempDir::new().unwrap();
         crate::hydrate::seed(dir.path()).unwrap();
-        assert!(!dir.path().join(".fantastic/bundles").exists(), "the first run writes no role");
+        assert!(
+            !dir.path().join(".fantastic/bundles").exists(),
+            "the first run writes no role"
+        );
     }
 
     /// An agent that makes the call it is told to AS ITSELF, so the gate and `spawn`
@@ -228,7 +233,11 @@ mod tests {
         // itself (a real lead keeps them on the AI agent)
         if real_lead.is_none() {
             for (name, text) in roles::ALL {
-                reg.register_meta_yaml(name, &text.replace("base: ai_chat.tools", "base: caller.tools")).unwrap();
+                reg.register_meta_yaml(
+                    name,
+                    &text.replace("base: ai_chat.tools", "base: caller.tools"),
+                )
+                .unwrap();
             }
         }
         let mut booted =
@@ -321,7 +330,9 @@ mod tests {
         let seen = srv.received_requests().await.unwrap_or_default();
         assert_eq!(seen.len(), 1, "the model got no request: {r}");
         let _ = &dir;
-        let directive = crate::roles::parse_card(crate::roles::LEAD, "lead").unwrap().directive;
+        let directive = crate::roles::parse_card(crate::roles::LEAD, "lead")
+            .unwrap()
+            .directive;
         let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
         assert!(
             sent["system"]
@@ -369,11 +380,18 @@ mod tests {
         // a sub-lead that makes its calls as itself: the lead role on the stand-in
         kernel
             .bundles
-            .register_meta_yaml("lead_stand_in", &crate::roles::LEAD.replace("base: ai_chat.tools", "base: caller.tools"))
+            .register_meta_yaml(
+                "lead_stand_in",
+                &crate::roles::LEAD.replace("base: ai_chat.tools", "base: caller.tools"),
+            )
             .unwrap();
         let made = fantastic_kernel::send::as_agent(
             &lead,
-            ask(&kernel, ROLES, json!({"type": "spawn", "role": "lead_stand_in"})),
+            ask(
+                &kernel,
+                ROLES,
+                json!({"type": "spawn", "role": "lead_stand_in"}),
+            ),
         )
         .await;
         let sub = made["id"]
@@ -431,17 +449,36 @@ mod tests {
         }
         let lead = meta(&kernel, LEAD);
         assert_eq!(lead["memory_store_id"], "memory");
-        assert!(lead.get("system_prompt_file").is_none(), "the directive is the `lead` bundle's");
-        assert!(lead.get("credentials").is_none() && lead.get("model").is_none(), "the lead is a chat: {lead:?}");
+        assert!(
+            lead.get("system_prompt_file").is_none(),
+            "the directive is the `lead` bundle's"
+        );
+        assert!(
+            lead.get("credentials").is_none() && lead.get("model").is_none(),
+            "the lead is a chat: {lead:?}"
+        );
         // the compiled blueprint knows no provider: the lead names none and none is declared
-        let mut shipped: Value = serde_yaml::from_str(&crate::hydrate::blueprint_text(Path::new("/team")).unwrap()).unwrap();
+        let mut shipped: Value =
+            serde_yaml::from_str(&crate::hydrate::blueprint_text(Path::new("/team")).unwrap())
+                .unwrap();
         let shipped_lead = entry_mut(&mut shipped["agents"], LEAD).unwrap().clone();
-        assert!(shipped_lead.get("provider_id").is_none(), "the binary knows no provider: {shipped_lead}");
-        assert!(!serde_yaml::to_string(&shipped).unwrap().contains("_backend.tools"), "and ships none");
+        assert!(
+            shipped_lead.get("provider_id").is_none(),
+            "the binary knows no provider: {shipped_lead}"
+        );
+        assert!(
+            !serde_yaml::to_string(&shipped)
+                .unwrap()
+                .contains("_backend.tools"),
+            "and ships none"
+        );
         assert_eq!(lead["can_call"]["roles"], json!(LEAD_ROLES_VERBS));
         assert_eq!(lead["can_call"]["kernel_state"], json!(LEAD_ROOT_VERBS));
         let reg = meta(&kernel, ROLES);
-        assert!(reg.get("tiers").is_none() && reg.get("role_dirs").is_none(), "the roles are bundles; the spawner names the model");
+        assert!(
+            reg.get("tiers").is_none() && reg.get("role_dirs").is_none(),
+            "the roles are bundles; the spawner names the model"
+        );
         assert_eq!(reg["limits"]["total"], 3);
         assert_eq!(reg["callable_by"]["lead"], json!(LEAD_ROLES_VERBS));
         // the other ends on the home agents, merged with what they had
@@ -454,7 +491,7 @@ mod tests {
         assert_eq!(meta(&kernel, ROOT_ID)["callable_by"]["lead"], "*");
         // the registry reads the cards, all six
         let all = call_as(&kernel, LEAD, ROLES, json!({"type": "roles"})).await;
-        for name in roles::CODER_ROLES {
+        for (name, _) in roles::ALL {
             assert!(all.to_string().contains(name), "{name}: {all}");
         }
         finish(dir.path(), kernel).await;
@@ -473,7 +510,10 @@ mod tests {
             .as_str()
             .unwrap_or_else(|| panic!("worker: {w}"))
             .to_string();
-        assert_eq!(w["model"], "claude-haiku-5-5", "the model the spawn named: {w}");
+        assert_eq!(
+            w["model"], "claude-haiku-5-5",
+            "the model the spawn named: {w}"
+        );
         let wm = meta(&kernel, &worker);
         assert_eq!(wm["model"], "claude-haiku-5-5");
         assert_eq!(wm["memory_store_id"], "memory");
@@ -562,7 +602,7 @@ mod tests {
     async fn the_main_lead_can_spawn_every_card() {
         let (dir, kernel) = team().await;
         raise_total(&kernel, 12).await;
-        for name in roles::CODER_ROLES {
+        for (name, _) in roles::ALL {
             let r = call_as(&kernel, LEAD, ROLES, json!({"type": "spawn", "role": name})).await;
             assert!(r["id"].is_string(), "{name}: {r}");
             assert_ne!(r["reason"], "not_allowed", "{name}: {r}");

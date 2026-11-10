@@ -23,8 +23,7 @@ the team's groups. In each group, every worker is followed by a `subagents (N)`
 expander, and its subagents (kernel agents whose parent is that worker) show
 under it only when expanded. A click on a worker or a subagent opens that agent
 as a full-screen chat, and Back returns to the sidebar with its scroll and
-expansion kept. The dispatcher's view is made at the first start and is not put on
-the canvas (a canvas lists sidecars only). It reads no secrets and sends no work. The `sidebar` verb answers the
+expansion kept. The dispatcher's view is made at the first start. It reads no secrets and sends no work. The `sidebar` verb answers the
 list; `open` answers the chat for one agent (`view: chat`, `target`, `fullscreen`).
 `control {node, action, confirm?}` sends start, pause or stop to a worker (any other action is refused); stop needs `confirm: true`, and the answer is `{sent, error?}`.
 
@@ -38,7 +37,7 @@ There is no `team.yaml`. Every key it had is a field of an agent record, set wit
 - The first agent is an ordinary AI record. Its directive is its `system_prompt_file` (read through its `file_bridge_id`), or a message sent with `send`. The caller defines the agents: nothing is created behind the records.
 - Connectors, the queue, the memory store and the credential store are agent records with their own fields (`team_git.tools` with `repo_dir`, `workspace_root`, `remote`, `default_branch` and a `directive`; `team_github.tools`; `ram_store.tools`; `sqlite_store.tools`; `credential_store.tools`).
 - `groups` is a field of the dispatcher (name → worker ids); the board's `team_groups` adds each group's `driver`; the cadencer's `group_settings` its `cadence`, `stall_after`, `quiet` and `enabled`. The board's `repos` (`owner/name`) and `github` name what it caches and through which connector.
-- The roles: meta bundles, `.fantastic/bundles/<name>/bundle.yaml` (`base`, `sentence`, `record: {post_system_prompt, can_call}`; no model), written at the first run and listed by `reflect` with `bundles: all`. The roles registry record holds `limits` (`total`, `per_role: {role: n}`); `spawn {role, model?, backend?, task}` runs the child on its spawner's backend with the model the spawner names. It is on with `FANTASTIC_AGENTIC_RESOURCES=1`.
+- The roles: meta bundles, `.fantastic/bundles/<name>/bundle.yaml` (`base`, `sentence`, `record: {post_system_prompt, can_call}`; no model), written at the first run and listed by `reflect` with `bundles: all`. The roles registry record holds `limits` (`total`, `per_role: {role: n}`); `spawn {role, model?, backend?, task}` runs the child on its spawner's backend with the model the spawner names.
 - A repo the puller serves is in its record's `repos`; its settings are the `repo_config` field, keyed by `owner/name`.
 
 Keys are never written in a record. Name the credential ref, set the environment variables the credential store reads in your shell, and tell the user which names to set.

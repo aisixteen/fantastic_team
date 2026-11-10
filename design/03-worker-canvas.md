@@ -7,7 +7,7 @@ Opening a worker shows its own vertical canvas, like a phone screen: what it is 
 - `open {worker}` (worker view) answers the worker's view: its layout `mobile` and its cells.
 - `cells {worker}` (worker view) answers the generated cells, top to bottom:
   - `task`: the current task, e.g. `aisixteen/fantastic_team#131`, with its state `busy` and its time.
-  - `files`: the files the worker touches, sorted, e.g. `crates/team/src/worker_view.rs`, `crates/team/web/worker_view.css`.
+  - `files`: the files the worker touches, sorted, e.g. `crates/team/src/worker_view.rs`, `crates/team/web/team.html`.
   - `output`: the last lines of the worker's build or test output, e.g. `test result: ok. 42 passed`.
   - `preview`: a preview of the result when the worker has one.
   - `note`: a short note the worker or the board placed there.

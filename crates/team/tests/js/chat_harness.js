@@ -683,35 +683,6 @@ const scenarios = {
     return out;
   },
 
-  async canvas_button() {
-    const mk = (canvas) => makeRuntime(base((id, p) => (p.type === 'open'
-      ? Object.assign({ view: 'chat', target: p.node, cell: { label: 'x', kind: 'chat', target: p.node } }, canvas ? { canvas } : {})
-      : null)));
-    const out = {};
-    const none = mk(null);
-    await none.flush();
-    await none.js("openNode('w1')");
-    await none.flush();
-    out.noneButtons = none.byId.pane.all('.canvas-btn').length;
-    const rt = mk({ id: 'canvas_w1', url: '/canvas_page/file/index.html?canvas=canvas_w1' });
-    await rt.flush();
-    await rt.js("openNode('w1')");
-    await rt.flush();
-    const pane = rt.byId.pane;
-    out.buttons = pane.all('.canvas-btn').map((b) => b.textContent);
-    out.framesBefore = pane.all('iframe').length;
-    pane.all('.canvas-btn')[0].click();
-    const frames = pane.all('iframe');
-    out.frames = frames.map((f) => ({ src: f.src, title: f.attrs.title, sandbox: f.attrs.sandbox === undefined, width: f.attrs.width, height: f.attrs.height }));
-    out.chatHiddenOnCanvas = pane.all('.cell').filter((x) => x.classList.contains('chat'))[0].hidden;
-    out.label = pane.all('.canvas-btn')[0].textContent;
-    pane.all('.canvas-btn')[0].click();
-    out.framesAfter = pane.all('iframe').length;
-    out.chatHiddenAfter = pane.all('.cell').filter((x) => x.classList.contains('chat'))[0].hidden;
-    out.labelAfter = pane.all('.canvas-btn')[0].textContent;
-    return out;
-  },
-
   async tree_collapse() {
     const rt = makeRuntime(base());
     await rt.flush();

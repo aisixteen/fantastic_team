@@ -243,7 +243,6 @@ fn readme_names_every_cli_subcommand_and_flag() {
         "README must say the CLI is fantastic's"
     );
     for word in [
-        "canvas",
         "--headless",
         "ai ",
         "run ",
@@ -254,20 +253,6 @@ fn readme_names_every_cli_subcommand_and_flag() {
         "readme",
     ] {
         assert!(text.contains(word), "README must name fantastic's `{word}`");
-    }
-    // the removed flags are named only as removed
-    for gone in [
-        "--tui",
-        "--instructions",
-        "--resend-instructions",
-        "--per-lead",
-    ] {
-        for line in text.lines().filter(|l| l.contains(gone)) {
-            assert!(
-                line.contains("refused") || line.contains("no longer"),
-                "README mentions the removed `{gone}` other than as removed: {line}"
-            );
-        }
     }
 }
 

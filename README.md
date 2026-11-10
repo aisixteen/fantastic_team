@@ -53,7 +53,7 @@ The `fantastic_team` binary creates no coding agent of its own: no lead or worke
 
 ### Roles and limits
 
-A role is a META BUNDLE, fantastic's `bundles/<name>/bundle.yaml` with a `base` and no program: its directive (`record.post_system_prompt`) and its grants (`record.can_call`), over an AI backend, and no model. The coder roles are compiled into the binary (`crates/team/bundles/`: `worker`, `lead`, `issue_keeper`, `issue_writer`, `spec_reviewer`, `project_lead`) and written under `.fantastic/bundles/` at the first run; the kernel loads them before the tree, `reflect` (`bundles: all`) lists them, and a role you add is a folder you drop there. The main `lead` is an instance of the `lead` bundle (`handler_module: lead` in the blueprint). The roles registry is `agentic_resources` (this repo's `crates/agentic_resources`, moved from fantastic in #245), switched on by `FANTASTIC_AGENTIC_RESOURCES=1`; it reads the roles from the kernel's bundles and keeps the limits:
+A role is a META BUNDLE, fantastic's `bundles/<name>/bundle.yaml` with a `base` and no program: its directive (`record.post_system_prompt`) and its grants (`record.can_call`), over an AI backend, and no model. The coder roles are compiled into the binary (`crates/team/bundles/`: `worker`, `lead`, `issue_keeper`, `issue_writer`, `spec_reviewer`, `project_lead`) and written under `.fantastic/bundles/` at the first run; the kernel loads them before the tree, `reflect` (`bundles: all`) lists them, and a role you add is a folder you drop there. The main `lead` is an instance of the `lead` bundle (`handler_module: lead` in the blueprint). The roles registry is `agentic_resources` (this repo's `crates/agentic_resources`, moved from fantastic in #245); it reads the roles from the kernel's bundles and keeps the limits:
 
 ```yaml
 # .fantastic/bundles/worker/bundle.yaml
@@ -254,7 +254,7 @@ CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh w
 | `team_worker_view.tools` | Worker view: one vertical canvas per worker. |
 | `team_dispatcher.tools` | The dispatcher: the home screen. It reads and asks; Start, Pause and Stop are its only controls. |
 | cadencer | Sends each group's AI driver a digest of its workers, and reports the load counts in `status`. |
-| declared views | Each kind above (cadencer, puller, git, github, board, dispatcher, queue) declares its read-only views as data in `declared_views.rs`: the fantastic TUI draws them from `view.tui`, written into the records at every start, and the team page draws the same declaration for cadencer, puller and git. The queue, board, github and team pages stay page code (`agent_views.rs`, with the reason). No view shows a secret. |
+| declared views | Cadencer, puller, git, github, dispatcher and queue declare their read-only views as data in `declared_views.rs`, and the team page draws the declaration for cadencer, puller and git. The queue, board, github and team pages stay page code (`agent_views.rs`, with the reason). No view shows a secret. |
 | `team_app` | The launcher `fantastic_team_app` for the desktop app. See The app. |
 | `crates/team/src/new_team.rs` | The team's fixed ids (the lead, the roles registry, the GitHub connector, the worker's tools; the blueprint `crates/team/blueprint.yaml` declares them) and the writer of the role bundles (`crates/team/bundles/`, embedded in `crates/team/src/roles.rs`). |
 | `examples/team.yaml` | A team's setup as one preset yaml ([docs/team-yaml.md](docs/team-yaml.md)). |

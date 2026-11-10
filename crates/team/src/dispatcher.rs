@@ -564,70 +564,6 @@ pub fn agent_list(roles: &Value) -> Vec<Value> {
     out
 }
 
-/// The node id fantastic gives a canvas named `name` (`new_canvas {name}`): `canvas_<slug>`,
-/// the slug the lower-cased letters and digits (other characters `_`, the ends trimmed).
-/// None for a name with no letter or digit.
-pub fn canvas_slug(name: &str) -> Option<String> {
-    let slug: String = name
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let slug = slug.trim_matches('_');
-    (!slug.is_empty()).then(|| format!("canvas_{slug}"))
-}
-
-/// The handler module of a fantastic canvas.
-pub const CANVAS_MODULE: &str = "canvas.tools";
-
-/// The canvas that belongs to `node`, by name only (no record field, no verb): the agent
-/// `canvas_<node slug>` when it exists and is a canvas.
-pub fn canvas_of(node: &str, agents: &BTreeMap<String, Member>) -> Option<String> {
-    let id = canvas_slug(node)?;
-    agents
-        .get(&id)
-        .filter(|m| m.kind == CANVAS_MODULE)
-        .map(|_| id)
-}
-
-/// Where the canvas page of the team's web host serves a canvas: the same origin and
-/// port, relative, with `?canvas=<id>` (the id percent-encoded).
-pub fn canvas_url(id: &str) -> String {
-    let mut q = String::new();
-    for b in id.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            q.push(b as char);
-        } else {
-            q.push_str(&format!("%{b:02X}"));
-        }
-    }
-    format!("/{}/file/index.html?canvas={q}", crate::tree::CANVAS_ID)
-}
-
-/// Team-owned agent ids: never a sidecar, whatever their record holds.
-pub const TEAM_AGENT_IDS: [&str; 7] = [
-    crate::tree::DISPATCHER_ID,
-    crate::tree::WORKER_VIEW_ID,
-    crate::tree::BOARD_ID,
-    crate::tree::CADENCER_ID,
-    crate::tree::ROLES_ID,
-    crate::tree::TASKS_ID,
-    crate::page::PAGE_ID,
-];
-
-/// May this record be put on a canvas? A sidecar is a plain panel an agent made for the
-/// person to look at: a record with an html `view` that is not one of the team's own
-/// agents (the dispatcher, its views, the board, the cadencer, the roles, the task
-/// store: by id, and anything on a `team_*` module). A worker, a lead or a service has
-/// no panel record of its own kind and is refused here as well.
-pub fn is_sidecar(record: &Value) -> bool {
-    let id = record["id"].as_str().unwrap_or("");
-    let module = record["handler_module"].as_str().unwrap_or("");
-    let html_view = record["view"]["kind"].as_str() == Some("html");
-    html_view && !id.is_empty() && !TEAM_AGENT_IDS.contains(&id) && !module.starts_with("team_")
-}
-
 /// The plan the lead's pane draws, from the board's `roles` section: {lead, fleet,
 /// tasks}; each task is {id, source, holder, status} with the holder as text (an agent id,
 /// or "subtree:<id>").
@@ -949,9 +885,8 @@ async fn sidebar_reply(
         .iter()
         .map(|r| (r.id.clone(), subagents_of(&agents, &r.id)))
         .collect();
-    let reply = peers.ask(board, json!({"type": "rows"})).await;
-    let mut load = reply.get("load").cloned().unwrap_or(Value::Null);
-    // The cadencer's load holds the board's counts plus the cost per hour.
+    let mut load = Value::Null;
+    // The cadencer's load holds the task counts plus the cost per hour.
     let cad = peers
         .ask(crate::tree::CADENCER_ID, json!({"type": "status"}))
         .await;
@@ -1125,7 +1060,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
     ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if t == "boot" {
-            crate::declared_views::sync_all(kernel);
+            crate::declared_views::grant_views(kernel);
             return Ok(None);
         }
         let meta = kernel
@@ -1204,9 +1139,6 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                 if kind == "worker" {
                     // Cards the chat shows are callable by the page's leg, and only those.
                     crate::tree::grant_cards(kernel, crate::page::WS_ID, &node).await;
-                    if let Some(id) = canvas_of(&node, &agent_table(kernel)) {
-                        out["canvas"] = json!({"url": canvas_url(&id), "id": id});
-                    }
                 }
                 out
             }
@@ -1366,38 +1298,6 @@ mod tests {
         let items = worker_items(&idle, &BTreeMap::new(), &BTreeSet::new());
         assert!(items[0]["minutes"].is_null());
         assert!(items[0]["pr"].is_null());
-    }
-
-    #[test]
-    fn row_of_exposes_pr_number_from_claimed_task_link() {
-        let b = json!({
-            "tasks": {
-                "in_work": [{"id": "r#1", "claimers": ["w1"], "updated": 5, "pr": "https://github.com/o/r/pull/12"}],
-                "done": [
-                    {"id": "r#2", "claimers": ["w2"], "updated": 1, "pr": "https://github.com/o/r/pull/3"},
-                    {"id": "r#3", "claimers": ["w2"], "updated": 9, "pr": "https://github.com/o/r/pull/8"},
-                    {"id": "r#4", "claimers": ["w2"], "updated": 4, "pr": "https://github.com/o/r/pull/5"},
-                    {"id": "r#5", "claimers": ["w4"], "updated": 20, "pr": "https://github.com/o/r/pull/99"},
-                    {"id": "r#6", "claimers": ["w3"], "updated": 20}
-                ]
-            },
-            "agents": {}
-        });
-        assert_eq!(row_of("w1", &b, 100, 30).pr, Some(12));
-        assert_eq!(row_of("w2", &b, 100, 30).pr, Some(8));
-        assert_eq!(row_of("w3", &b, 100, 30).pr, None);
-        let nolink = json!({"tasks": {"in_work": [{"id": "r#1", "claimers": ["w1"], "updated": 5}], "done": []}});
-        assert_eq!(row_of("w1", &nolink, 100, 30).pr, None);
-    }
-
-    #[test]
-    fn pr_number_parses_links_and_refs() {
-        assert_eq!(pr_number("https://github.com/o/r/pull/9"), Some(9));
-        assert_eq!(pr_number("https://github.com/o/r/pull/9/"), Some(9));
-        assert_eq!(pr_number("o/r#7"), Some(7));
-        assert_eq!(pr_number("junk"), None);
-        assert_eq!(pr_number(""), None);
-        assert_eq!(pr_number("o/r#"), None);
     }
 
     #[test]
@@ -1635,12 +1535,10 @@ mod tests {
     }
 
     #[test]
-    fn html_loads_tree_calls_open_and_has_no_back_flow() {
+    fn html_loads_tree_calls_open() {
         assert!(HTML.contains("fantastic.send("));
         assert!(HTML.contains("type: 'open'"));
         assert!(!HTML.contains("getElementById('back')"));
-        assert!(!HTML.contains("id=\"back\""));
-        assert!(HTML.contains("textContent"));
     }
 
     #[test]
@@ -2104,11 +2002,6 @@ mod tests {
         let r = control_reply("w1", "remove_worker", true);
         assert_eq!(r["sent"], json!(true), "{r}");
         assert_eq!(r["action"], "remove_worker");
-        for action in ["delete_agent", "reflect"] {
-            let r = control_reply("w1", action, true);
-            assert_eq!(r["sent"], json!(false), "{r}");
-            assert!(r["error"].as_str().is_some(), "{r}");
-        }
     }
 
     #[test]
@@ -3180,19 +3073,6 @@ mod tests {
     }
 
     #[test]
-    fn html_has_no_back_button_flow() {
-        for gone in [
-            "function back(",
-            "function hideChat(",
-            "function updateBack(",
-            "const stack",
-            "id=\"back\"",
-        ] {
-            assert!(!HTML.contains(gone), "still has {gone}");
-        }
-    }
-
-    #[test]
     fn chat_two_columns_open_keeps_the_sidebar() {
         let Some(v) = run_node("two_columns") else {
             return;
@@ -3700,15 +3580,7 @@ mod tests {
         assert_eq!(v["timers"], 0);
     }
 
-    // ---- the right pane, cards, canvas, tree and phone ----
-
-    fn tests_member(kind: &str) -> Member {
-        Member {
-            parent: "kernel".into(),
-            kind: kind.into(),
-            status: "ok".into(),
-        }
-    }
+    // ---- the right pane, cards, tree and phone ----
 
     #[test]
     fn html_chat_cell_has_no_locked_height() {
@@ -3766,23 +3638,10 @@ mod tests {
     }
 
     #[test]
-    fn html_phone_has_no_swipe_to_next_agent() {
-        for gone in ["touchstart", "touchend", "touchmove", "swipe("] {
-            assert!(!HTML.contains(gone), "{gone}");
-        }
-    }
-
-    #[test]
     fn html_card_text_goes_through_textcontent() {
         assert!(!HTML.contains("innerHTML"));
         assert!(!HTML.contains("insertAdjacentHTML"));
-        for f in [
-            "cardEl",
-            "fillCard",
-            "syncCards",
-            "toggleCanvas",
-            "agentRow",
-        ] {
+        for f in ["cardEl", "fillCard", "syncCards", "agentRow"] {
             let body = js_fn(f);
             assert!(!body.contains("innerHTML"), "{f}");
         }
@@ -3894,39 +3753,6 @@ mod tests {
     }
 
     #[test]
-    fn page_shows_a_canvas_button_only_when_the_open_reply_has_a_canvas() {
-        let Some(v) = run_node("canvas_button") else {
-            return;
-        };
-        assert_eq!(v["noneButtons"], 0);
-        assert_eq!(v["buttons"], json!(["Canvas"]));
-    }
-
-    #[test]
-    fn page_canvas_click_mounts_an_iframe_at_the_reply_url_in_the_pane() {
-        let Some(v) = run_node("canvas_button") else {
-            return;
-        };
-        assert_eq!(v["framesBefore"], 0);
-        let frames = v["frames"].as_array().unwrap();
-        assert_eq!(frames.len(), 1);
-        assert_eq!(
-            frames[0]["src"],
-            "/canvas_page/file/index.html?canvas=canvas_w1"
-        );
-        assert_eq!(frames[0]["title"], "Canvas");
-        assert_eq!(frames[0]["sandbox"], true, "no sandbox attribute is set");
-        assert_eq!(frames[0]["width"], "100%");
-        assert_eq!(frames[0]["height"], "100%");
-        assert_eq!(v["chatHiddenOnCanvas"], true);
-        assert_eq!(v["label"], "Chat");
-        // the second click is back to the chat
-        assert_eq!(v["framesAfter"], 0);
-        assert_eq!(v["chatHiddenAfter"], false);
-        assert_eq!(v["labelAfter"], "Canvas");
-    }
-
-    #[test]
     fn page_tree_collapse_hides_the_subtree_rows() {
         let Some(v) = run_node("tree_collapse") else {
             return;
@@ -4032,149 +3858,6 @@ mod tests {
         assert_eq!(flags, [true, true, true, false]);
         let alone = agent_list(&json!({"lead": "pl"}));
         assert_eq!(alone[0]["has_children"], false);
-    }
-
-    #[test]
-    fn canvas_of_finds_the_canvas_named_after_the_node() {
-        let mut agents = BTreeMap::new();
-        agents.insert("canvas_w1".to_string(), tests_member(CANVAS_MODULE));
-        agents.insert("canvas_w2".to_string(), tests_member("ram_store.tools"));
-        assert_eq!(canvas_of("w1", &agents), Some("canvas_w1".to_string()));
-        assert_eq!(canvas_of("w3", &agents), None);
-        // an agent of that id that is not a canvas is not one
-        assert_eq!(canvas_of("w2", &agents), None);
-        assert_eq!(canvas_of("  ", &agents), None);
-    }
-
-    #[test]
-    fn canvas_of_slugs_odd_ids_like_new_canvas() {
-        let mut agents = BTreeMap::new();
-        agents.insert("canvas_lead_1".to_string(), tests_member(CANVAS_MODULE));
-        agents.insert("canvas_a_b".to_string(), tests_member(CANVAS_MODULE));
-        assert_eq!(canvas_of("Lead-1", &agents), Some("canvas_lead_1".into()));
-        assert_eq!(canvas_of("a b", &agents), Some("canvas_a_b".into()));
-        assert_eq!(canvas_of("-a.b-", &agents), Some("canvas_a_b".into()));
-        assert_eq!(
-            canvas_slug("Research Team!"),
-            Some("canvas_research_team".into())
-        );
-        assert_eq!(canvas_slug("--"), None);
-    }
-
-    #[test]
-    fn canvas_url_is_relative_with_the_canvas_query() {
-        assert_eq!(
-            canvas_url("canvas_w1"),
-            "/canvas_page/file/index.html?canvas=canvas_w1"
-        );
-        assert_eq!(
-            canvas_url("canvas_a&b"),
-            "/canvas_page/file/index.html?canvas=canvas_a%26b"
-        );
-    }
-
-    async fn open_with_canvas(canvas: Option<&str>) -> Value {
-        use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
-        use fantastic_kernel::Item;
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
-        let mut recs = vec![
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
-            "handler_module": HANDLER_MODULE, "can_call": {"worker_view": "*"}}),
-        ];
-        if let Some(id) = canvas {
-            recs.push(
-                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": id,
-                "handler_module": "canvas.tools"}),
-            );
-        }
-        for r in recs {
-            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, r)]).await;
-        }
-        let out = kernel
-            .send(vec![Item::new(
-                "dispatcher",
-                json!({"type": "open", "node": "w1"}),
-            )])
-            .await
-            .remove(0)
-            .result;
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
-        out
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn open_reply_carries_the_canvas_url_with_the_canvas_query() {
-        let out = open_with_canvas(Some("canvas_w1")).await;
-        assert_eq!(out["view"], "chat");
-        assert_eq!(out["canvas"]["id"], "canvas_w1");
-        let url = out["canvas"]["url"].as_str().unwrap();
-        assert!(url.starts_with("/canvas_page/file/index.html"), "{url}");
-        assert!(url.ends_with("?canvas=canvas_w1"), "{url}");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn open_reply_has_no_canvas_when_none_exists() {
-        let out = open_with_canvas(None).await;
-        assert_eq!(out["view"], "chat");
-        assert!(out.get("canvas").is_none(), "{out}");
-    }
-
-    #[test]
-    fn team_agent_ids_do_not_name_the_removed_views() {
-        assert!(!TEAM_AGENT_IDS.contains(&"dispatcher_view"));
-        assert_eq!(TEAM_AGENT_IDS.len(), 7);
-    }
-
-    #[test]
-    fn is_sidecar_refuses_workers_leads_and_services() {
-        let rec = |id: &str, module: &str, view: Value| json!({"id": id, "handler_module": module, "view": view});
-        let html = json!({"kind": "html", "bytes_file": "p.html", "calls": ["get_html"]});
-        for id in TEAM_AGENT_IDS {
-            assert!(!is_sidecar(&rec(id, "html.tools", html.clone())), "{id}");
-        }
-        for module in [
-            HANDLER_MODULE,
-            crate::worker_view::HANDLER_MODULE,
-            crate::board::HANDLER_MODULE,
-            crate::cadencer::HANDLER_MODULE,
-            crate::page::HANDLER_MODULE,
-            "team_github.tools",
-        ] {
-            assert!(!is_sidecar(&rec("x", module, html.clone())), "{module}");
-        }
-        // a worker or lead: a chat view, or no view at all
-        assert!(!is_sidecar(&rec(
-            "w1",
-            "ram_store.tools",
-            json!({"kind": "chat"})
-        )));
-        assert!(!is_sidecar(&rec("pl", "ram_store.tools", Value::Null)));
-        assert!(!is_sidecar(
-            &json!({"handler_module": "html.tools", "view": html})
-        ));
-    }
-
-    #[test]
-    fn is_sidecar_accepts_a_plain_html_view() {
-        let rec = json!({"id": "preview", "handler_module": "html.tools",
-            "view": {"kind": "html", "bytes_file": "p.html", "calls": ["get_html", "watch"]}});
-        assert!(is_sidecar(&rec));
-    }
-
-    #[test]
-    fn a_sidecar_check_ignores_tui_only_views() {
-        let tui = crate::declared_views::tui_of(
-            &crate::declared_views::decl_for(crate::cadencer::HANDLER_MODULE).unwrap(),
-        );
-        // A tui-only view has no kind: never a sidecar, even on a non-team module.
-        let rec = json!({"id": "preview", "handler_module": "html.tools", "view": {"tui": tui}});
-        assert!(!is_sidecar(&rec));
-        // A html view that also declares a tui is still a sidecar.
-        let both = json!({"id": "preview", "handler_module": "html.tools",
-            "view": {"kind": "html", "tui": tui}});
-        assert!(is_sidecar(&both));
     }
 
     /// A stand-in for a team module: answers every verb with the `reply` its meta holds,

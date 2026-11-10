@@ -17,8 +17,6 @@ use serde_json::{json, Value};
 pub const ROOT_ID: &str = DEFAULT_ROOT_ID;
 /// The dispatcher's agent id: the team's main view.
 pub const DISPATCHER_ID: &str = "dispatcher";
-/// The canvas the dispatcher is placed on.
-pub const CANVAS_ID: &str = "canvas_page";
 /// The worker view agent, under the dispatcher; it opens a worker's view.
 pub const WORKER_VIEW_ID: &str = "worker_view";
 /// The board agent, when a team has one.

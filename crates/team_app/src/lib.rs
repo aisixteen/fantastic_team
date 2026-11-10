@@ -222,15 +222,6 @@ pub fn web_url(target: &Target) -> String {
 /// the launcher waits for; the window URL ([`web_url`]) is the same page.
 pub const READY_PATH: &str = fantastic_team::page::PAGE_PATH;
 
-/// The URL the launcher polls for a 200. `Attach` is the URL the user named.
-pub fn ready_url(target: &Target) -> String {
-    match target {
-        Target::Start { port, .. } => format!("http://127.0.0.1:{port}{READY_PATH}"),
-        Target::Attach { url } => url.clone(),
-        Target::Tunnel { local_port, .. } => format!("http://127.0.0.1:{local_port}{READY_PATH}"),
-    }
-}
-
 async fn http_status(addr: &str, host: &str, path: &str) -> std::io::Result<u16> {
     let mut s = TcpStream::connect(addr).await?;
     let req = format!("GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n");
@@ -281,14 +272,6 @@ pub struct Launched {
     pub url: String,
 }
 
-/// The app prepares nothing in a team directory: the binary's first run there seeds the
-/// records and the role bundles (`fantastic_team::hydrate::seed`), and a file written
-/// before it would stop that seed (it writes only into a folder with no `.fantastic`).
-/// Returns how many files it wrote: none.
-pub fn prepare_team_dir(_target: &Target, _dir: Option<&Path>) -> Result<usize, String> {
-    Ok(0)
-}
-
 /// Start the binary (or attach to a URL) and wait until its web UI
 /// answers 200. If the child exits first, the error carries its exit status.
 pub async fn launch(
@@ -297,7 +280,7 @@ pub async fn launch(
     ready_timeout: Duration,
 ) -> Result<Launched, String> {
     let url = web_url(target);
-    let ready = ready_url(target);
+    let ready = url.clone();
     let (program, args, with_dir) = match target {
         Target::Start { binary, port } => (binary, start_args(*port), true),
         Target::Tunnel {
@@ -311,7 +294,6 @@ pub async fn launch(
             return Ok(Launched { child: None, url });
         }
     };
-    prepare_team_dir(target, dir)?;
     let binary = program;
     let mut cmd = Command::new(binary);
     cmd.args(args)
@@ -457,17 +439,6 @@ mod tests {
             Target::Start { port, .. } => assert_eq!(port, DEFAULT_PORT),
             other => panic!("expected Start, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn start_with_dir_writes_nothing_before_the_first_run() {
-        let dir = tempfile::tempdir().unwrap();
-        let start = Target::Start {
-            binary: "x".into(),
-            port: 1,
-        };
-        assert_eq!(prepare_team_dir(&start, Some(dir.path())), Ok(0));
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "the first run seeds it all");
     }
 
     #[test]
@@ -716,33 +687,6 @@ mod tests {
     }
 
     #[test]
-    fn ready_url_is_the_served_page_for_start_and_tunnel_and_the_given_url_for_attach() {
-        let start = Target::Start {
-            binary: "b".into(),
-            port: 9123,
-        };
-        assert_eq!(
-            ready_url(&start),
-            "http://127.0.0.1:9123/team_page/file/index.html"
-        );
-        assert_eq!(web_url(&start), ready_url(&start));
-        let tunnel = Target::Tunnel {
-            ssh: "ssh".into(),
-            host: "h".into(),
-            remote_port: 1,
-            local_port: 9100,
-        };
-        assert_eq!(
-            ready_url(&tunnel),
-            "http://127.0.0.1:9100/team_page/file/index.html"
-        );
-        let attach = Target::Attach {
-            url: "http://127.0.0.1:1/x".into(),
-        };
-        assert_eq!(ready_url(&attach), "http://127.0.0.1:1/x");
-    }
-
-    #[test]
     fn web_url_for_start_and_tunnel_is_the_served_page() {
         let start = Target::Start {
             binary: "b".into(),
@@ -769,27 +713,6 @@ mod tests {
             url: "http://127.0.0.1:1/x".into(),
         };
         assert_eq!(web_url(&attach), "http://127.0.0.1:1/x");
-    }
-
-    #[test]
-    fn web_url_is_ready_url_for_start_and_tunnel() {
-        let start = Target::Start {
-            binary: "b".into(),
-            port: 9123,
-        };
-        assert_eq!(web_url(&start), ready_url(&start));
-        let tunnel = Target::Tunnel {
-            ssh: "ssh".into(),
-            host: "h".into(),
-            remote_port: 1,
-            local_port: 9100,
-        };
-        assert_eq!(web_url(&tunnel), ready_url(&tunnel));
-    }
-
-    #[test]
-    fn ready_path_is_the_team_page() {
-        assert_eq!(READY_PATH, "/team_page/file/index.html");
     }
 
     #[tokio::test]
