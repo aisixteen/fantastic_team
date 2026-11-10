@@ -1,4 +1,4 @@
-"""The six scenarios of the cli group, defined once (issues #219, #237, #242).
+"""The five scenarios of the cli group, defined once (issues #219, #237, #242).
 
 A `cli/` test plays one on the scripted model; its `gpu_cli/` twin plays the same on a real model
 (the vllm plug, no script). Both build the same team through the same `create_agent` calls, under
@@ -16,15 +16,11 @@ from __future__ import annotations
 from collections import Counter
 
 import json
-import os
 import re
-import subprocess
-import time
 
 from backends.scripted import ScriptedModel
 
-from . import cli, stock, team as team_mod, web
-from .verdict import Skip
+from . import cli, team as team_mod
 
 # The trees the precreated scenarios make: id -> parent, parents first.
 ONE_TWO = {"lead": "user", "w1": "lead", "w2": "lead"}
@@ -202,121 +198,6 @@ def spawn_leads_end(ctx, v, before: dict) -> None:
             f"before {sorted(before)} after {sorted(after)}")
     count = team.send("roles", {"type": "get_count"})["result"]
     v.check("the registry counts nothing running", count["running"] == 0, str(count))
-
-
-# ---- headless_and_canvas ---------------------------------------------------------------
-
-CANVAS = {"id": "sketch", "parent_id": "lead", "handler_module": "canvas_page.tools"}
-
-
-def canvas_start(ctx, v):
-    """`--headless`: no port, no screen; a lead that may `create_agent` on the root. Returns the team.
-    Raises Skip when this host cannot list listening sockets."""
-    if cli.listeners(os.getpid()) is None:
-        raise Skip("neither lsof nor /proc/net/tcp is available to list listening sockets")
-    team = cli.start(ctx)  # stdin is /dev/null and there is no tty: the UI could not open
-    cli.add_base(ctx)
-    base = set(cli.ids(team))
-    cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent"]})
-    new = set(cli.ids(team)) - base
-    v.check("the lead was made with create_agent (and its provider with its store)", new == {"lead"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
-    cli.add_cadencer(ctx)
-    v.check("the team runs headless", team.proc.poll() is None)
-    agents = team.agents()
-    v.check("the canvas is registered but not started: no web host, no canvas page",
-            not {"web", "canvas_page", "canvas_ws"} & set(agents), str(sorted(agents)))
-    return team
-
-
-def wait_page(port, path: str, wait_s: float = 30.0) -> int:
-    end = time.time() + wait_s
-    status = 0
-    while time.time() < end and status != 200:
-        status, _ = team_mod.http_get(port, path)
-        time.sleep(0.3)
-    return status
-
-
-def canvas_end(ctx, v) -> None:
-    """After the lead's turn: its canvas, still headless; then `canvas --port N`, `webui --port N`,
-    the two refused together, and `--headless` again with no port."""
-    team = ctx.team
-    agents = team.agents()
-    sk = agents.get(CANVAS["id"], {})
-    v.check("the lead's create_agent made a canvas with no `canvas` word",
-            sk.get("handler_module") == CANVAS["handler_module"] and sk.get("parent_id") == CANVAS["parent_id"],
-            str(sk)[:300])
-    v.check("still no web host", "web" not in agents, str(sorted(agents)))
-    ports = cli.listeners(team.proc.pid)
-    v.check("--headless binds no TCP port", ports == set(), str(ports))
-    log = team.log()
-    v.check("it draws no terminal UI", not any(s in log for s in cli.ALT_SCREEN))
-    v.check("it serves no canvas page", "the canvas: http" not in log)
-    code = team.stop()
-    v.check("it stops cleanly on SIGTERM", code in (0, -15), str(code))
-
-    # canvas --port N, in the same folder: the same records, and now a web host
-    port = team_mod.free_port()
-    sock = os.path.join(ctx.work, team_mod.SOCK)
-    if os.path.exists(sock):  # the stopped team's socket file must not pass for the next start
-        os.remove(sock)
-    team.start(extra_args=["canvas", "--port", port])
-    status = wait_page(port, "/canvas_page/file/index.html")
-    v.check("canvas --port N serves the canvas page", status == 200, str(status))
-    ports = cli.listeners(team.proc.pid)
-    v.check("the listener check sees port N", str(port) in ports, f"{ports}, want {port}")
-    v.check("the web host and the canvas page are there now",
-            {"web", "canvas_page"} <= set(team.agents()), str(sorted(team.agents())))
-    v.check("the lead's canvas and the lead are still there", {"lead", "sketch"} <= set(team.agents()))
-    team.stop()
-
-    # webui --port N, in the same folder: the team page and its socket, from the binary. A folder
-    # fantastic's own `canvas` seeded has none of the team's records (the team's first run seeds them,
-    # #261, and `webui` makes none): they are made here, as a person with a team of their own would.
-    wport = team_mod.free_port()
-    if os.path.exists(sock):
-        os.remove(sock)
-    team.start()
-    stock.make_web(team)
-    team.stop()
-    if os.path.exists(sock):
-        os.remove(sock)
-    team.start(extra_args=["webui", "--port", wport])
-    page = "/team_page/file/index.html"
-    status = wait_page(wport, page)
-    v.check("webui --port N serves the team page", status == 200, str(status))
-    ports = cli.listeners(team.proc.pid)
-    v.check("the listener check sees the webui port", str(wport) in ports, f"{ports}, want {wport}")
-    v.check("the page agent and its socket leg are there",
-            {"team_page", "team_ws"} <= set(team.agents()), str(sorted(team.agents())))
-    try:
-        web.WsClient(int(wport)).sock.close()
-        socket_ok = True
-    except OSError as e:
-        socket_ok = False
-        print(f"socket: {e}")
-    v.check("the team page's socket (/team_ws/ws) accepts a websocket", socket_ok)
-    v.check("it announces the page", f"the team page: http://127.0.0.1:{wport}{page}" in team.log(),
-            team.log()[-300:])
-    v.check("the lead's canvas and the lead are still there", {"lead", "sketch"} <= set(team.agents()))
-    team.stop()
-
-    # webui and canvas together: refused with a message, no process left, no port
-    if os.path.exists(sock):
-        os.remove(sock)
-    both = subprocess.run(team.argv(["webui", "canvas", "--port", team_mod.free_port()]), env=team.env,
-                          cwd=team.dir, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-    v.check("webui with canvas is refused (exit 2) and says why",
-            both.returncode == 2 and "`webui` and `canvas` cannot run together" in both.stderr,
-            f"{both.returncode} {both.stderr[-300:]}")
-
-    # --headless over the folder webui served: still no port
-    team.start()
-    time.sleep(2)
-    ports = cli.listeners(team.proc.pid)
-    v.check("--headless opens no port in a folder webui has run in", ports == set(), str(ports))
-    v.check("the old webui port refuses connections", web.refuses(int(wport)))
-    team.stop()
 
 
 # ---- checkins_busy_stuck (#284) ---------------------------------------------------------

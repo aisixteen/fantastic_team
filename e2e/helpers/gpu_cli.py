@@ -59,10 +59,6 @@ TASKS = {
         "for its file. " + COMMIT + "Tell them that the worker commits this way, and tell each one: \"send your parent a "
         "message when you are done\"." + TELL + DELETE +
         " Check that the test passes at the end." + END),
-    "headless_and_canvas": (
-        "Make a canvas for your notes: call `create_agent` on `kernel` with the id `sketch`, `parent_id` "
-        "`lead` (yourself) and `handler_module` `canvas_page.tools`. Make nothing else and change no file. "
-        "Then end your run with the `done` call."),
 }
 
 

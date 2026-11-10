@@ -64,9 +64,8 @@ from helpers.verdict import Skip, Verdict  # noqa: E402
 KEY_SHAPE = re.compile("sk-" "ant-" r"[A-Za-z0-9_\-]{20,}")
 BUILD = "general"  # set by --build; the worker's exec record follows it (helpers/stock.py)
 TURNS_TESTS = ["turns/task/worker_finishes_small_spec", "turns/secrets/real_key_stays_in_x_api_key"]
-CLI_SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tree", "leads_spawn_leads",
-                 "headless_and_canvas")
-# the gpu tier: the six cli scenarios (#237) and their ssh twins (#242)
+CLI_SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tree", "leads_spawn_leads")
+# the gpu tier: the five cli scenarios (#237) and their ssh twins (#242)
 GPU_TESTS = [f"{g}/{n}" for g in ("gpu_cli", "gpu_cli_ssh") for n in CLI_SCENARIOS]
 SSH_TESTS = [f"cli_ssh/{n}" for n in CLI_SCENARIOS]
 GIT_TWIN = f"cli_ssh/{ssh_twins.GIT_TWIN}"  # #253: the box's git credentials come through the bridge
@@ -852,7 +851,7 @@ def selftest_gpu(v: Verdict) -> None:
 
 
 def selftest_backend(v: Verdict) -> None:
-    """BACKEND picks the plug of the gpu tests only; `--only-gpu --dry-run` collects all twelve with either."""
+    """BACKEND picks the plug of the gpu tests only; `--only-gpu --dry-run` collects all ten with either."""
     gpu, free = {"costs": "gpu", "plug": "vllm"}, {"costs": "free"}
     turns = {"costs": "turns", "plug": "anthropic"}
     with model_env():
@@ -863,7 +862,7 @@ def selftest_backend(v: Verdict) -> None:
                 (plug_of(gpu), plug_of(free), plug_of(turns)) == ("anthropic", "scripted", "anthropic"))
         by = {t["name"]: t for t in discover()}
         moved = sorted(n for n, t in by.items() if t["plug"] != t["declared_plug"])
-        v.check("discover: the twelve gpu tests (and only they) are on the anthropic plug, declared on vllm",
+        v.check("discover: the ten gpu tests (and only they) are on the anthropic plug, declared on vllm",
                 moved == sorted(GPU_TESTS) and all(by[n]["plug"] == "anthropic" and by[n]["declared_plug"] == "vllm"
                                                    for n in GPU_TESTS), str(moved))
     with model_env(BACKEND="vllm"):
@@ -883,7 +882,7 @@ def selftest_backend(v: Verdict) -> None:
         r = subprocess.run([sys.executable, me, "--only-gpu", "--dry-run"], env=env, capture_output=True,
                            text=True, timeout=120)
         ok = all(f"COLLECT {n}  (costs: gpu, plug: {backend})  (would SKIP: {why}" in r.stdout for n in GPU_TESTS)
-        v.check(f"BACKEND={backend}: --only-gpu --dry-run collects the twelve on that plug, each would SKIP here",
+        v.check(f"BACKEND={backend}: --only-gpu --dry-run collects the ten on that plug, each would SKIP here",
                 r.returncode == 0 and ok and f"{len(GPU_TESTS)}/{len(GPU_TESTS)} probes collect" in r.stdout,
                 (r.stdout + r.stderr)[-800:])
 
@@ -1129,9 +1128,9 @@ def selftest_team_args(v: Verdict) -> None:
                     ": > .fantastic/cli/mcp.sock\nexec sleep 20\n")
         os.chmod(stub, 0o755)
         t = team_mod.Team(stub, tmp, {})
-        t.start(wait_s=10, extra_args=["canvas", "--port", 18080])
+        t.start(wait_s=10, extra_args=["webui", "--port", 18080])
         argv = open(os.path.join(tmp, "argv.txt")).read().split("\n")[:-1]
-        v.check("Team.start passes fantastic's words as they are", argv == ["canvas", "--port", "18080"], str(argv))
+        v.check("Team.start passes fantastic's words as they are", argv == ["webui", "--port", "18080"], str(argv))
         v.check("Team.port is the port of the start", t.port == 18080)
         v.check("it runs in the run folder (fantastic has no --dir)",
                 os.path.realpath(open(os.path.join(tmp, "cwd.txt")).read().strip()) == os.path.realpath(tmp))
@@ -1142,7 +1141,7 @@ def selftest_team_args(v: Verdict) -> None:
         v.check("Team.start with no extra_args is [--headless] only, and clears the port",
                 argv == ["--headless"] and t.port is None, str(argv))
         v.check("Team.argv builds the same command line",
-                t.argv(["canvas", "--port", 7]) == [stub, "canvas", "--port", "7"] and "--dir" not in t.argv())
+                t.argv(["webui", "--port", 7]) == [stub, "webui", "--port", "7"] and "--dir" not in t.argv())
     finally:
         if t:
             t.stop()
@@ -1480,7 +1479,7 @@ def selftest_ssh_twins(v: Verdict) -> None:
             os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py"))
         if not ok:
             bad.append(n)
-    v.check("the six cli_ssh twins exist, collect, and are free on the scripted plug", not bad, str(bad))
+    v.check("the five cli_ssh twins exist, collect, and are free on the scripted plug", not bad, str(bad))
     values = {"ssh_port": "2200", "ssh_key": "/k/id", "tunnel_port": "4100",
               "master_guid": "0123456789abcdef", "remote_git_url": "http://host.containers.internal:8/acme/widgets.git"}
     left = []
@@ -1490,7 +1489,7 @@ def selftest_ssh_twins(v: Verdict) -> None:
             m.bind(**values)
         except ValueError as e:
             left.append(f"{n}: {e}")
-    v.check("every placeholder of the six scripts is one the box binds", not left, str(left))
+    v.check("every placeholder of the five scripts is one the box binds", not left, str(left))
     m = scripted.ScriptedModel([{"text": "{{a}} {{b}}"}], {"a": "1"})
     try:
         m.bind()
@@ -1610,7 +1609,7 @@ def selftest_remote_work(v: Verdict) -> None:
                 if p.get("type") == "create_agent":
                     made.append(p.get("handler_module"))
     v.check("the box is given no backend: no script or setup command makes an AI agent or names a model endpoint there",
-            not bad_setup and set(made) == {"canvas_page.tools"}, f"{bad_setup} {sorted(set(made))}")
+            not bad_setup and not made, f"{bad_setup} {sorted(set(made))}")
     v.check("the remote exec agent may call the master's agents send/watch/status/stop only",
             T.REMOTE_EXEC["can_call"] == {"$self": "*", "{{master_guid}}|*": ["send", "watch", "status", "stop"]})
     v.check("the bridge record grants its leg exactly those verbs on the backends named, and nothing without",

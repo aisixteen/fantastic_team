@@ -76,8 +76,7 @@ REPO = "repo"  # the clone, in DIR
 REMOTE_REPO = f"{HOME}/{DIR}/{REPO}"
 STOP_WAIT_S = 30  # the bounded wait after SIGTERM
 
-SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tree", "leads_spawn_leads",
-             "headless_and_canvas")
+SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tree", "leads_spawn_leads")
 # The twin of #253 (git credentials through the bridge) has a script of its own and no gpu twin.
 GIT_TWIN = "git_credentials"
 # The twin of #284 (a lead's check-ins: a generating sub-lead is left alone, an idle one is stopped) has no gpu twin either.
@@ -438,7 +437,7 @@ def remote_log_call() -> dict:
     return forward(cli.EXEC, {"type": "run", "command": "git", "args": ["log", "-1", "--format=%s"], "wait_s": 30})
 
 
-# ---- the six scripts -------------------------------------------------------------------
+# ---- the five scripts -------------------------------------------------------------------
 
 def script_single_lead() -> list[dict]:
     """The lead alone, twice (A: made with create_agent; B: fantastic's recipe). Locally it fixes
@@ -729,76 +728,9 @@ def phases_git() -> dict:
     return {"setup": setup, "work": 7, "close": len(script_git_credentials()) - setup - 7}
 
 
-def notes_call(line: str) -> dict:
-    if "'" in line:
-        raise ValueError("a note rides in a single-quoted Python string")
-    code = f"open('NOTES.md', 'a').write('{line}\\n')"
-    return cli.run_call("python3", "-c", code)
-
-
-def commit_push(msg: str) -> list[dict]:
-    return [cli.run_call("git", "add", "NOTES.md"),
-            cli.run_call("git", "-c", "user.name=Worker", "-c", "user.email=worker@example.invalid",
-                         "commit", "-q", "-m", msg),
-            cli.run_call("git", "push", "-q", "origin", "HEAD:main")]
-
-
-CANVAS = {"type": "create_agent", "id": "sketch", "parent_id": "user", "handler_module": "canvas_page.tools"}
-
-
-def wait_up_command() -> str:
-    """The restarted remote kernel is up: its socket file, `web` booted (it listens on the tunnel's
-    port again; a record is not booted by the load)."""
-    return (f"for i in $(seq 150); do [ -S {DIR}/.fantastic/cli/mcp.sock ] && break; sleep 0.2; done && "
-            f"cd {DIR} && " + quiet(remote_send({"target": WEB, "payload": {"type": "boot"}})) + " && "
-            "for i in $(seq 150); do (echo > /dev/tcp/127.0.0.1/{{tunnel_port}}) 2>/dev/null && exit 0; sleep 0.2; done; exit 1")
-
-
-def script_headless_and_canvas() -> list[dict]:
-    """Three messages to the lead. 1 (the local kernel runs `canvas --port P`): the remote; the lead's
-    note committed and pushed; the remote agent sends `rlead` (a backend on the master, made before the
-    task) its work and watches it: `rlead` makes a canvas on the remote kernel (`create_agent` of a
-    `canvas_page`, through the bridge) and adds its note in the box's clone. 1b: the bridge deleted and
-    the remote kernel stopped. 2 (the local kernel restarted as `webui --port P2`): the tunnel and the
-    remote kernel again, the bridge reconnected. 3: `sketch` deleted through the bridge, the bridge
-    deleted, the remote stopped (its tunnel closes with it)."""
-    one = open_turns(backends=("rlead",)) + [
-        t(notes_call("local: the notes of the lead")),
-        *[t(c) for c in commit_push("Notes: the lead")],
-        t(work("rlead", "r", "[lane:r] Make a canvas for your notes and add your note.")),
-        t(remote_log_call(), after=["r"]),
-        t({"name": "done"}),
-    ]
-    # the bridge is deleted first: its open forwarded channel would keep the tunnel's ssh session
-    # alive after the remote kernel ends (it is made again in 2)
-    pause = [t({"target": "kernel", "type": "delete_agent", "args": {"id": BRIDGE}}), *stop_turns(),
-             t({"name": "done"})]
-    # the lead's kernel restarted: its first request rebuilds its working context from its records
-    # (fantastic ai-core's recall pass), a request of its own, answered before the message's turns
-    two = [t({"text": "The context as it is."}),
-           t(run_call(ssh_args(kernel_start_command(), tunnel=True), verb="start")),
-           t(ssh_call(wait_up_command())),
-           t({"target": "kernel", "type": "create_agent", "args": bridge_record(("rlead",))}),
-           t({"name": "done"})]
-    three = [t(forward("kernel", {"type": "delete_agent", "id": CANVAS["id"]})),
-             t({"target": "kernel", "type": "delete_agent", "args": {"id": BRIDGE}}),
-             *stop_turns(),
-             t(cli.run_call("git", "pull", "-q", "--ff-only")),
-             t({"name": "done"})]
-    r = [dict(t(forward("kernel", {k: v for k, v in CANVAS.items()}), "r"), say=SAY),
-         t(remote_run(cli.run_call("git", "pull", "-q", "--ff-only")), "r"),
-         t(remote_run(notes_call("remote: the notes of rlead")), "r"),
-         *[t(remote_run(c), "r") for c in commit_push("Notes: rlead")],
-         t({"name": "done"}, "r")]
-    return one + pause + two + three + r
-
-
-CANVAS_PHASES = (11, 4, 5, 6)  # the lead's turns per message of script_headless_and_canvas (lane r: 7 more)
-
-
 SCRIPTS = {GIT_TWIN: script_git_credentials, BUSY_TWIN: script_checkins_busy_stuck, "single_lead": script_single_lead, "precreated_1_2": script_precreated_1_2,
            "precreated_tree": script_precreated_tree, "lead_spawns_two": script_lead_spawns_two,
-           "leads_spawn_leads": script_leads_spawn_leads, "headless_and_canvas": script_headless_and_canvas}
+           "leads_spawn_leads": script_leads_spawn_leads}
 
 
 def script_path(name: str) -> str:
@@ -1096,7 +1028,7 @@ class Box:
     def end(self, v, remote_base=(), label: str = "", solved: bool = True, streams=(), landed: bool = True) -> dict:
         """The checks every twin shares. `remote_base`: the agents the lead keeps on the remote kernel
         beyond its stock (the surface and the exec agent are always there). `solved`: the fixture
-        is the task (the canvas twin's task is its notes, checked by its probe). `landed`: one commit from each
+        is the task. `landed`: one commit from each
         side is on the git server (the git twin pushes work branches and checks them itself). `streams`: the
         `(label, client)` of each remote work run whose arrival log must show the stream. Returns the
         remote records; the git server's files at HEAD are in `self.server_files`."""
@@ -1362,56 +1294,6 @@ def reconnect_phase(ctx, box: Box, v, backend: str = "w2", slow: str = "w3") -> 
     ok, why = streamed(box.events("b"), "master")
     v.check("the watch made before the break went on with no new `watch`: the master's turn streamed to the box "
             "(status and part_* before done)", ended and watcher.get("ok") and ok, f"{watcher} {why}")
-
-
-# ---- the canvas twins: the remote agents, listed through a local socket ------------------
-
-# What a local page asks over its socket: `user.forward` to the bridge, which asks the remote
-# `user` to forward `list_agents` to the remote kernel.
-ASK = {"type": "forward", "target": "user", "payload": {"type": "forward", "target": "kernel",
-                                                         "payload": {"type": "list_agents"}}}
-
-
-def remote_agents(reply) -> dict:
-    """The remote kernel's records out of a forwarded `list_agents` (the reply may be wrapped)."""
-    r = reply or {}
-    for _ in range(3):
-        if isinstance(r, dict) and isinstance(r.get("agents"), list):
-            # a record, or a bare id (a reply rendered short): either names an agent
-            return {(a.get("id") if isinstance(a, dict) else a): (a if isinstance(a, dict) else {})
-                    for a in r["agents"]}
-        r = r.get("result") if isinstance(r, dict) else None
-    return {}
-
-
-def ask_through(port, path: str = "/team_ws/ws", wait_s: float = 30.0) -> dict:
-    """`ASK` over a local page's socket (`path`: its leg's, the team page's by default), asked again
-    for up to `wait_s` until the reply lists the remote's canvas: a page just started may route its
-    first ask before the bridge has settled, and get the master's own agents back."""
-    end = time.time() + wait_s
-    while True:
-        reply = _ask_once(port, path)
-        if "sketch" in remote_agents(reply) or time.time() >= end:
-            return reply
-        time.sleep(2)
-
-
-def _ask_once(port, path: str) -> dict:
-    try:
-        ws = web.WsClient(int(port), path=path)
-        reply = ws.call("user", {"type": "forward", "target": BRIDGE, "payload": ASK}, timeout=60)
-        ws.close()
-        return reply
-    except OSError as e:
-        return {"error": str(e)}
-
-
-def shows_canvas(v, label: str, reply) -> None:
-    agents = remote_agents(reply)
-    sk = agents.get("sketch") or {}
-    v.check(f"{label} lists the remote agents through the bridge: the canvas `rlead` (a backend on the master) made there",
-            sk.get("handler_module") == "canvas_page.tools" and "rlead" not in agents,
-            str(sorted(agents))[:300] if agents else str(reply)[:400])
 
 
 if __name__ == "__main__":

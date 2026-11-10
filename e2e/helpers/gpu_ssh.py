@@ -1,4 +1,4 @@
-"""The gpu tier's ssh twins (#242, #252): the six cli scenarios split across the local kernel (the master) and
+"""The gpu tier's ssh twins (#242, #252): the five cli scenarios split across the local kernel (the master) and
 one in a Podman box, on a real model (the vllm plug, no script).
 
 The box, the fixture on the test's git server and the checks are `helpers/ssh_twins.py`'s, the
@@ -108,27 +108,7 @@ TASKS = {
         f"workspace, whose commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the "
         "work, for the sub-lead to pass on to its worker word for word. Each sub-lead spawns one worker (the remote "
         "sub-lead's with role `remote_worker`, which has no local exec), and deletes it when done. " + gpu.COMMIT + gpu.DELETE),
-    "headless_and_canvas": (
-        "Your agent `rlead` exists here (it admits the bridge). Have the remote ask it (the work program, step 5): "
-        "the work is to make a canvas for its notes, a `create_agent` on the remote kernel (through the bridge) with "
-        "the id `sketch`, `parent_id` `user`, `handler_module` `canvas_page.tools`, then to pull in the remote "
-        "workspace, add the line `remote: the notes of rlead` to NOTES.md there, commit and push (its commands go "
-        f"through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`). Add the line "
-        "`local: the notes of the lead` to NOTES.md in your clone (a new file), commit and push before that. "
-        + gpu.COMMIT + " Keep the remote running "
-        "(do not do step 6 yet) and end your run with the `done` call."),
 }
-
-PAUSE = ("Delete the bridge and stop the remote kernel as step 6 says, but keep `sketch` on it; "
-         "end your run with the `done` call.")
-
-RESTART = ("Your kernel was restarted. Start the remote again: step (1) again (the tunnel and the remote kernel, "
-           "in one job); then, in the box, once `~/w/.fantastic/cli/mcp.sock` exists, send `{\"type\":\"boot\"}` "
-           f"to `{T.WEB}` (its record is kept, not booted); then step (4), the bridge, again. Make nothing else; "
-           "end your run with the `done` call.")
-
-CLEANUP = ("Now clean up as step 6 says: delete `sketch` on the remote kernel through the bridge, "
-           "delete the bridge, stop the remote kernel, pull your clone.")
 
 
 def play(ctx, v, lead: str, text: str, label: str = "") -> gpu.Lead:
