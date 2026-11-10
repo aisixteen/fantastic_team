@@ -35,9 +35,10 @@ mod tests_staleness;
 
 use std::sync::{Arc, OnceLock};
 
+use fantastic_ai_core::helpers::agent_meta;
 use fantastic_ai_core::schema::{self, Field};
 use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
-use fantastic_kernel::refusal::{refusal, with};
+use fantastic_kernel::refusal::{refusal, with, BAD_ARG, UNHANDLED};
 use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Map, Value};
 use team_git_connector::text_of;
@@ -51,8 +52,6 @@ pub const README: &str = include_str!("readme.md");
 /// One-line sentence of what the agent is.
 pub const SENTENCE: &str = "github connector — a personal token or a GitHub App, bound by configuration (env refs): push via a git agent, draft pull requests, issues, comments, labels and PR status on allowlisted repos; local only without a credential.";
 
-const BAD_ARG: &str = "bad_arg";
-const UNHANDLED: &str = "unhandled";
 const DEFAULT_API: &str = "https://api.github.com";
 
 /// The github connector bundle.
@@ -284,11 +283,7 @@ impl Bundle for GithubConnectorBundle {
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let meta = kernel
-            .agents
-            .get(agent_id)
-            .map(|e| e.meta.read().expect("meta").clone())
-            .unwrap_or_default();
+        let meta = agent_meta(agent_id, kernel);
         let cfg = Self::cfg(&Value::Object(meta));
         if t == "boot" {
             // A fresh process or agent starts with an empty call log.

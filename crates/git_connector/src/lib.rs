@@ -19,9 +19,10 @@ mod tests_secrets;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
+use fantastic_ai_core::helpers::agent_meta;
 use fantastic_ai_core::schema::{self, credentials_field, Field};
 use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
-use fantastic_kernel::refusal::{missing, refusal, with};
+use fantastic_kernel::refusal::{missing, refusal, with, BAD_ARG, UNHANDLED};
 use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Map, Value};
 
@@ -33,9 +34,6 @@ const NAME: &str = "team_git";
 pub const README: &str = include_str!("readme.md");
 /// One-line sentence of what the agent is.
 pub const SENTENCE: &str = "git connector — worktrees, commits and pushes of work branches to one remote; never the default branch, never a force.";
-
-const BAD_ARG: &str = "bad_arg";
-const UNHANDLED: &str = "unhandled";
 
 /// Refusal text: the record's remote carries a user or password.
 pub(crate) const URL_CREDS: &str = "team_git: the remote URL carries a user or password — remove it and name a credential store ref in credentials instead";
@@ -278,11 +276,7 @@ impl Bundle for GitConnectorBundle {
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let meta = kernel
-            .agents
-            .get(agent_id)
-            .map(|e| e.meta.read().expect("meta").clone())
-            .unwrap_or_default();
+        let meta = agent_meta(agent_id, kernel);
         let cfg = Self::cfg(agent_id.as_str(), &Value::Object(meta));
         let out: Value = match t {
             "reflect" => json!({
