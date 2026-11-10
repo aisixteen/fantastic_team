@@ -235,7 +235,6 @@ End to end (e2e/README.md) has three tiers:
 | `gpu` | a local-model plug on the GPU box | not built |
 
 - `python3 e2e/run.py --only-free`: every free test. No network, no key; it builds the binary with cargo.
-- `python3 e2e/run.py --build github --bin PATH`: the tests for the GitHub build.
 - `python3 e2e/run.py --only-turns`: the turns tests, with a real model, by hand. Without a key they are skipped. Never in CI.
 - `python3 e2e/run.py --only-gpu`: the five cli scenarios on the shared vLLM server (the `vllm` plug), by hand, one test at a time. Without `VLLM_ENDPOINT`, `FANTASTIC_AI_MODEL`, `VLLM_KV_SLOTS` (1 or 2) and `VLLM_KV_OVERFLOW` they are skipped. Never in CI. See `e2e/README.md`.
 

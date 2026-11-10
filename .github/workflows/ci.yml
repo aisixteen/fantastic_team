@@ -356,6 +356,6 @@ jobs:
         with:
           name: fantastic_team-${{ matrix.os }}
           path: bin
-      - name: scripted e2e tests, general build
+      - name: scripted e2e tests
         if: runner.os != 'Windows'
-        run: python3 e2e/run.py --only-free --build general --bin bin/fantastic_team
+        run: python3 e2e/run.py --only-free --bin bin/fantastic_team

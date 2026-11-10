@@ -271,8 +271,6 @@ fn ci_builds_and_tests_the_build() {
     );
     let text = raw();
     assert!(text.contains("name: fantastic_team-${{ matrix.os }}"));
-    let e2e = run_text(job(&doc, "e2e"));
-    assert!(e2e.contains("--build general"), "{e2e}");
 }
 
 #[test]
