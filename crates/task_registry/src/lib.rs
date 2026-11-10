@@ -83,17 +83,6 @@ fn agent_of(kernel: &Kernel, id: &AgentId) -> Option<Arc<Agent>> {
     kernel.agents.get(id).map(|e| Arc::clone(&e))
 }
 
-/// Every id above `id`, nearest first.
-fn ancestors(kernel: &Kernel, id: &AgentId) -> Vec<AgentId> {
-    let mut out = Vec::new();
-    let mut cur = agent_of(kernel, id).and_then(|a| a.parent_id.clone());
-    while let Some(p) = cur {
-        cur = agent_of(kernel, &p).and_then(|a| a.parent_id.clone());
-        out.push(p);
-    }
-    out
-}
-
 /// A required non-empty string arg.
 fn str_arg<'a>(verb: &str, payload: &'a Value, arg: &str) -> Result<&'a str, Value> {
     match payload.get(arg) {
@@ -613,7 +602,11 @@ async fn report_inner(
             ));
         }
         if let Some(c) = caller.as_ref() {
-            if who != c && !ancestors(kernel, who).contains(c) {
+            if who != c
+                && !kernel
+                    .ancestor_ids(agent_of(kernel, who).as_deref())
+                    .contains(c.as_str())
+            {
                 return Err(refusal::refusal(
                     refusal::NOT_IN_SUBTREE,
                     format!(

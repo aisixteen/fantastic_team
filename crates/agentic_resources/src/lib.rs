@@ -91,7 +91,10 @@ struct Spawned {
 
 /// Is `s` in `lead`'s subtree: below it in the tree, or spawned by it `from` a fork?
 fn below_lead(kernel: &Kernel, s: &Spawned, lead: &AgentId) -> bool {
-    s.lead.as_deref() == Some(lead.as_str()) || ancestors(kernel, &s.id).contains(lead)
+    s.lead.as_deref() == Some(lead.as_str())
+        || kernel
+            .ancestor_ids(agent_of(kernel, &s.id).as_deref())
+            .contains(lead.as_str())
 }
 
 fn spawned(kernel: &Kernel, reg: &AgentId) -> Vec<Spawned> {
