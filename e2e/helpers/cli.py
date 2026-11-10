@@ -84,8 +84,12 @@ def solved(repo: str) -> tuple[bool, str]:
 EXEC = "worker_exec"
 
 
-def run_call(command: str, *args: str, target: str = EXEC) -> dict:
-    return {"target": target, "type": "run", "args": {"command": command, "args": list(args), "wait_s": 30}}
+def run_call(command: str, *args: str, target: str = EXEC, wait_s: int = 30, verb: str = "run") -> dict:
+    """A scripted call to an exec agent: `run` waits `wait_s`, `start` (a job) does not."""
+    call_args = {"command": command, "args": list(args)}
+    if verb == "run":
+        call_args["wait_s"] = wait_s
+    return {"target": target, "type": verb, "args": call_args}
 
 
 def replace_call(path: str, old: str, new: str) -> dict:
@@ -334,6 +338,15 @@ def roles_dir(name: str) -> str:
     return os.path.join(TESTS, "cli", name, "bundles")
 
 
+SPAWN_ROLES = os.path.join(TESTS, "cli", "spawn_bundles")  # the `worker` and `remote_worker` cards both spawn scenarios use
+
+
+def spawn_roles(name: str) -> list[str]:
+    """The role bundles of a spawn scenario `name`: the shared worker cards, then the scenario's own."""
+    own = roles_dir(name)
+    return [SPAWN_ROLES] + ([own] if os.path.isdir(own) else [])
+
+
 def model_credentials(ctx) -> dict | None:
     """The `credentials` an AI of this plug carries (the store and the model's ref), or None for
     a keyless server."""
@@ -417,25 +430,26 @@ def worker_model() -> str | None:
     return os.environ.get("E2E_WORKER_MODEL") or None
 
 
-def make_registry(ctx, total: int, parent: str = LEAD, roles: str | None = None) -> str:
+def make_registry(ctx, total: int, parent: str = LEAD, roles: str | list[str] | None = None) -> str:
     """The roles registry `roles` (`agentic_resources`) under `parent`, with `limits.total`, and
-    the test's ROLE BUNDLES (a folder of `<role>/bundle.yaml`; default the test's own `bundles/`)
+    the test's ROLE BUNDLES (a folder, or a list of folders, of `<role>/bundle.yaml`; default the test's own `bundles/`)
     written under the team's `.fantastic/bundles/` and loaded into the running kernel
     (`reload_bundle`). A role names no model: a spawned agent runs on its spawner's backend, with
     the model the spawn names. The lead may call the registry."""
     team = ctx.team
-    src = roles or os.path.join(ctx.dir, "bundles")
+    srcs = [roles or os.path.join(ctx.dir, "bundles")] if not isinstance(roles, list) else roles
     dst = os.path.join(ctx.work, ".fantastic", "bundles")
-    for name in sorted(os.listdir(src)):
-        shutil.copytree(os.path.join(src, name), os.path.join(dst, name), dirs_exist_ok=True)
-        if not check_ins_on(ctx):  # a sub-lead bundle carries the check-ins paragraph: off, it goes
-            y = os.path.join(dst, name, "bundle.yaml")
-            with open(y) as f:
-                text = f.read()
-            with open(y, "w") as f:
-                f.write(text.replace("\n\n    " + CHECK_INS, ""))
-        loaded = team.send("kernel", {"type": "reload_bundle", "name": name})
-        assert (loaded.get("result") or {}).get("reloaded") == name, f"bundle {name}: {loaded}"
+    for src in srcs:
+        for name in sorted(os.listdir(src)):
+            shutil.copytree(os.path.join(src, name), os.path.join(dst, name), dirs_exist_ok=True)
+            if not check_ins_on(ctx):  # a sub-lead bundle carries the check-ins paragraph: off, it goes
+                y = os.path.join(dst, name, "bundle.yaml")
+                with open(y) as f:
+                    text = f.read()
+                with open(y, "w") as f:
+                    f.write(text.replace("\n\n    " + CHECK_INS, ""))
+            loaded = team.send("kernel", {"type": "reload_bundle", "name": name})
+            assert (loaded.get("result") or {}).get("reloaded") == name, f"bundle {name}: {loaded}"
     records.create(team, {"id": "roles", "parent_id": parent, "handler_module": "agentic_resources.tools",
                           "limits": {"total": total},
                           "can_call": {"$self": "*"}, "callable_by": {"$self": "*", "$parent": "*"}})
@@ -458,58 +472,28 @@ def delete_calls(*targets: str) -> list[dict]:
     return [{"target": "kernel", "type": "delete_agent", "args": {"id": t}} for t in targets]
 
 
-def wait_served(ctx, wait_s: float = 120.0) -> bool:
-    """Wait until the scripted model has played every turn; then let the last reply settle."""
-    import time
+def wait_served(ctx, wait_s: float = 120.0, upto: int | None = None) -> bool:
+    """Wait until the scripted model has played `upto` turns (default: every turn); then let the last reply settle."""
+    want = len(ctx.model.turns) if upto is None else upto
     end = time.time() + wait_s
-    while time.time() < end and ctx.model.served < len(ctx.model.turns):
+    while time.time() < end and ctx.model.served < want:
         time.sleep(0.3)
-    time.sleep(2.0)
-    return ctx.model.served >= len(ctx.model.turns)
+    time.sleep(2.0)  # the last turn's reply is routed after the last request
+    return ctx.model.served >= want
+
+
+
+
+def history_rows(team, agent: str) -> list[dict]:
+    """Every row of an agent's history, page by page (the last page has no `next`, so no cursor survives a read)."""
+    rows, after = [], None
+    while True:
+        res = team.send(agent, {"type": "history", **({"after": after} if after else {})}, timeout=60).get("result") or {}
+        rows += res.get("rows") or []
+        after = res.get("next")
+        if not after:
+            return rows
 
 
 def dump(obj) -> str:
     return json.dumps(obj, sort_keys=True)[:600]
-
-
-ALT_SCREEN = ("\x1b[?1049h", "\x1b[?25l", "\x1b[2J")
-
-
-def descendants(pid: int) -> list[int]:
-    out = [pid]
-    r = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True)
-    for line in r.stdout.split():
-        out += descendants(int(line))
-    return out
-
-
-def listeners(pid: int):
-    """TCP LISTEN ports of pid and its children (a set of strings), or None when this host
-    has neither `lsof` nor `/proc/net/tcp` to tell."""
-    pids = descendants(pid)
-    if shutil.which("lsof"):
-        r = subprocess.run(["lsof", "-nP", "-a", "-p", ",".join(map(str, pids)), "-iTCP",
-                            "-sTCP:LISTEN", "-Fn"], capture_output=True, text=True)
-        return {l.rsplit(":", 1)[-1] for l in r.stdout.splitlines() if l.startswith("n")}
-    if os.path.exists("/proc/net/tcp"):
-        inodes = set()
-        for p in pids:
-            try:
-                for fd in os.listdir(f"/proc/{p}/fd"):
-                    link = os.readlink(os.path.join(f"/proc/{p}/fd", fd))
-                    if link.startswith("socket:["):
-                        inodes.add(link[8:-1])
-            except OSError:
-                pass
-        ports = set()
-        for f in ("/proc/net/tcp", "/proc/net/tcp6"):
-            try:
-                rows = open(f).read().splitlines()[1:]
-            except OSError:
-                continue
-            for row in rows:
-                c = row.split()
-                if c[3] == "0A" and c[9] in inodes:  # 0A = LISTEN
-                    ports.add(str(int(c[1].rsplit(":", 1)[1], 16)))
-        return ports
-    return None

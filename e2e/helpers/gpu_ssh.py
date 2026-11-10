@@ -1,4 +1,4 @@
-"""The gpu tier's ssh twins (#242, #252): the six cli scenarios split across the local kernel (the master) and
+"""The gpu tier's ssh twins (#242, #252): the five cli scenarios split across the local kernel (the master) and
 one in a Podman box, on a real model (the vllm plug, no script).
 
 The box, the fixture on the test's git server and the checks are `helpers/ssh_twins.py`'s, the
@@ -15,9 +15,9 @@ usage of the local kernel's agents, which are all of them.
 from __future__ import annotations
 
 import json
-import time
 
-from . import cli, gpu_cli as gpu, podman_remote as pr, ssh_twins as T
+from . import cli, cli_scenarios as S, gpu_cli as gpu, podman_remote as pr, ssh_twins as T, team as team_mod
+from .verdict import Verdict
 
 
 def require(ctx) -> None:
@@ -108,37 +108,60 @@ TASKS = {
         f"workspace, whose commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the "
         "work, for the sub-lead to pass on to its worker word for word. Each sub-lead spawns one worker (the remote "
         "sub-lead's with role `remote_worker`, which has no local exec), and deletes it when done. " + gpu.COMMIT + gpu.DELETE),
-    "headless_and_canvas": (
-        "Your agent `rlead` exists here (it admits the bridge). Have the remote ask it (the work program, step 5): "
-        "the work is to make a canvas for its notes, a `create_agent` on the remote kernel (through the bridge) with "
-        "the id `sketch`, `parent_id` `user`, `handler_module` `canvas_page.tools`, then to pull in the remote "
-        "workspace, add the line `remote: the notes of rlead` to NOTES.md there, commit and push (its commands go "
-        f"through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`). Add the line "
-        "`local: the notes of the lead` to NOTES.md in your clone (a new file), commit and push before that. "
-        + gpu.COMMIT + " Keep the remote running "
-        "(do not do step 6 yet) and end your run with the `done` call."),
 }
-
-PAUSE = ("Delete the bridge and stop the remote kernel as step 6 says, but keep `sketch` on it; "
-         "end your run with the `done` call.")
-
-RESTART = ("Your kernel was restarted. Start the remote again: step (1) again (the tunnel and the remote kernel, "
-           "in one job); then, in the box, once `~/w/.fantastic/cli/mcp.sock` exists, send `{\"type\":\"boot\"}` "
-           f"to `{T.WEB}` (its record is kept, not booted); then step (4), the bridge, again. Make nothing else; "
-           "end your run with the `done` call.")
-
-CLEANUP = ("Now clean up as step 6 says: delete `sketch` on the remote kernel through the bridge, "
-           "delete the bridge, stop the remote kernel, pull your clone.")
 
 
 def play(ctx, v, lead: str, text: str, label: str = "") -> gpu.Lead:
     """Hand `lead` its task in plain words and wait for its `done` (as `gpu_cli.play`)."""
-    watch = ctx.watch = gpu.Lead(ctx.team, lead)
-    gpu.wait_booted(ctx, watch)
-    watch.mark()  # a lead told before: its earlier `done` does not count
-    started = time.time()
-    gpu.hand_task(ctx, lead, text + gpu.END)
-    how = gpu.wait_done(ctx, watch, max(60.0, ctx.test["timeout"] - gpu.CHECK_MARGIN_S))
-    ctx.elapsed = time.time() - started
-    v.check(f"{label}the lead answered done", how == "done", f"{how}; {getattr(ctx, 'kicked', {})}")
-    return watch
+    return gpu.play_text(ctx, v, lead, text + gpu.END, label)
+
+
+def spawn_run(ctx, name: str, total: int):
+    """`gpu_cli_ssh/<name>` for a lead that spawns (`lead_spawns_two`, `leads_spawn_leads`): the registry has
+    room for `total`; the verdict of the probe."""
+    v = Verdict(f"gpu_cli_ssh/{name}")
+    require(ctx)
+    with T.Box(ctx) as box:
+        cli.start(ctx, roles=True)
+        cli.add_base(ctx)
+        cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "update_agent", "delete_agent"]}, subtree=True, runs_agents=True)
+        cli.make_registry(ctx, total=total, roles=cli.spawn_roles(name))
+        cli.add_cadencer(ctx)
+        before = cli.tree(ctx.team)
+        box.publish()
+        watch = play(ctx, v, "lead", wiring(ctx, box) + TASKS[name])
+        gpu.check_ins_ran(ctx, v)
+        gpu.lead_on_default(ctx, v)
+        gpu.workers_on_model(ctx, v)
+        ok, why = cli.solved(ctx.repo)
+        v.check("solved in the local clone (the test passes on HEAD, the fix is committed)", ok, why)
+        after = cli.tree(ctx.team)
+        left = [i for i, a in ctx.team.agents().items() if a.get("spawned_by")]
+        v.check("no spawned agent is left", not left, str(left))
+        after = cli.without_new_schedulers(ctx.team, after, before)
+        v.check("the records are the ones it started with (a lead's scheduler may stay)", after == before,
+                f"before {sorted(before)} after {sorted(after)}")
+        v.check("something was spawned", ("roles", "spawn") in team_mod.log_calls(ctx.team.log()))
+        box.end(v)
+        gpu.report(ctx, watch)
+    box.removed(v)
+    return v.finish()
+
+
+def precreated_run(ctx, name: str, tree: dict, remote_agent: str):
+    """`gpu_cli_ssh/<name>` for the precreated trees: the remote asks `remote_agent` (a backend on the master)."""
+    v = Verdict(f"gpu_cli_ssh/{name}")
+    require(ctx)
+    with T.Box(ctx) as box:
+        before = S.precreate(ctx, v, tree, all_keyed=ctx.model.keyed)
+        box.open_backends([remote_agent])
+        box.publish()
+        watch = play(ctx, v, "lead", wiring(ctx, box, [remote_agent]) + TASKS[name])
+        gpu.check_ins_ran(ctx, v)
+        gpu.lead_on_default(ctx, v)
+        gpu.workers_on_model(ctx, v)
+        S.precreated_end(ctx, v, before)
+        box.end(v)
+        gpu.report(ctx, watch)
+    box.removed(v)
+    return v.finish()

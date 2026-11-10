@@ -1,4 +1,4 @@
-# roles/total_limit_refuses_fourth_worker (free, build: any)
+# roles/total_limit_refuses_fourth_worker (free)
 
 A team with `roles: limits: total: 3` (#185). The lead, on the scripted model, sends the roles agent four `spawn {role: worker}` calls, ONE call per turn (calls in a turn run at the same time and would race the limit), then `done`.
 

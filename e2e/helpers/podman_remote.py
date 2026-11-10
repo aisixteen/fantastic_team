@@ -399,6 +399,12 @@ class Remote:
     def exists(self) -> bool:
         return pm("container", "exists", self.name, check=False, timeout=60).returncode == 0
 
+    def listening(self) -> set[int]:
+        """The TCP ports the box listens on (its /proc/net/tcp and tcp6, LISTEN rows)."""
+        rows = self.ssh("cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4==\"0A\"{print $2}'",
+                        check=False).stdout.split()
+        return {int(a.rsplit(":", 1)[1], 16) for a in rows}
+
     def stop(self) -> None:
         """Close the tunnels, remove the container (pass or fail). Safe to call twice."""
         for p in self.tunnels:
@@ -491,11 +497,9 @@ def smoke() -> int:
             c = r.ssh(f"git -c {header} clone -q {shq(url)} w/repo && git -C w/repo log --format=%s", check=False)
             check("git clone of the host's git server through the gateway", c.returncode == 0 and "seed" in c.stdout,
                   (c.stderr or c.stdout)[-300:])
-            listening = r.ssh("cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4==\"0A\"{print $2}'",
-                              check=False).stdout.split()
-            ports = sorted({int(a.rsplit(':', 1)[1], 16) for a in listening})
+            ports = sorted(r.listening())
             check("the box listens on sshd and the web host's port only", set(ports) <= {22, n}, str(ports))
-            stop = r.ssh(STOP.format(dir="w"), check=False)
+            stop = r.ssh(stop_line("w"), check=False)
             check("the remote kernel stops on SIGTERM over ssh", stop.returncode == 0, (stop.stderr or stop.stdout)[-300:])
             print(f"remote walk: {time.time() - t1:.0f}s")
         check("the container is removed", not r.exists())
@@ -507,8 +511,13 @@ def smoke() -> int:
 
 # The binary has no `stop` word: the kernel started with `echo $! > team.pid` is stopped the way
 # `helpers/team.py` stops a local one, SIGTERM and a bounded wait for the drain.
-STOP = ("cd {dir} && p=$(cat team.pid) && kill -TERM $p && "
-        "for i in $(seq 150); do kill -0 $p 2>/dev/null || exit 0; sleep 0.2; done; exit 1")
+STOP = ("cd {dir} && p=$(cat {pid}) && kill -TERM $p && "
+        "for i in $(seq {wait}); do kill -0 $p 2>/dev/null || exit 0; sleep 0.2; done; exit 1")
+
+
+def stop_line(dir: str, pid: str = "team.pid", wait_s: int = 30) -> str:
+    """The shell line that SIGTERMs the kernel whose pid is in `dir/pid` and waits for it, `wait_s` at most."""
+    return STOP.format(dir=dir, pid=pid, wait=wait_s * 5)
 
 
 def shq(s: str) -> str:

@@ -1,4 +1,3 @@
 costs: free
 timeout: 180
 plug: scripted
-build: any

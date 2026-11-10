@@ -1,7 +1,7 @@
 # cli/lead_spawns_two
 
 A lead with a roles registry (`agentic_resources`, switched on by
-`FANTASTIC_AGENTIC_RESOURCES=1`; the role bundle `bundles/worker/bundle.yaml`) spawns two workers.
+`FANTASTIC_AGENTIC_RESOURCES=1`; the role bundle `tests/cli/spawn_bundles/worker/bundle.yaml`, shared with `leads_spawn_leads`) spawns two workers.
 They solve the shared fixture, one bug each (`adder.py`, `muler.py`) with a commit apiece, and the
 lead deletes each with `delete_agent` as soon as it has reported (#264, lead-side: the registry frees nothing on its own).
 

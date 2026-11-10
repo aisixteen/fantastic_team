@@ -59,10 +59,6 @@ TASKS = {
         "for its file. " + COMMIT + "Tell them that the worker commits this way, and tell each one: \"send your parent a "
         "message when you are done\"." + TELL + DELETE +
         " Check that the test passes at the end." + END),
-    "headless_and_canvas": (
-        "Make a canvas for your notes: call `create_agent` on `kernel` with the id `sketch`, `parent_id` "
-        "`lead` (yourself) and `handler_module` `canvas_page.tools`. Make nothing else and change no file. "
-        "Then end your run with the `done` call."),
 }
 
 
@@ -82,17 +78,7 @@ class Lead:
 
     def refresh(self) -> None:
         """Read the whole history again: its last page has no `next`, so no cursor survives a read."""
-        rows, after = [], None
-        while True:
-            payload = {"type": "history"}
-            if after is not None:
-                payload["after"] = after
-            res = self.team.send(self.id, payload, timeout=60).get("result") or {}
-            rows += res.get("rows") or []
-            after = res.get("next")
-            if not after:
-                break
-        self.rows = rows
+        self.rows = cli.history_rows(self.team, self.id)
 
     def mark(self) -> None:
         """A new task: a `done` before now does not count."""
@@ -200,11 +186,16 @@ def wait_done(ctx, watch: Lead, wait_s: float) -> str:
 def play(ctx, v, lead: str, name: str, label: str = "") -> Lead:
     """Hand `lead` the task of scenario `name` and wait for its `done`; checks the wait. `label`
     prefixes the check ("A: ") when a test plays twice."""
+    return play_text(ctx, v, lead, TASKS[name], label)
+
+
+def play_text(ctx, v, lead: str, text: str, label: str = "") -> Lead:
+    """Hand `lead` the task `text` and wait for its `done`; checks the wait (`play` of a task in plain words)."""
     watch = ctx.watch = Lead(ctx.team, lead)
     wait_booted(ctx, watch)
     watch.mark()
     started = time.time()
-    hand_task(ctx, lead, TASKS[name])
+    hand_task(ctx, lead, text)
     how = wait_done(ctx, watch, max(60.0, ctx.test["timeout"] - CHECK_MARGIN_S))
     ctx.elapsed = time.time() - started
     why = {"timeout": "the lead did not answer done before the wait ran out",
@@ -286,3 +277,19 @@ def report(ctx, watch: Lead | None = None) -> None:
         mine = [r for r in watch.rows if r.get("kind") == "assistant"]
         first = mine[0].get("head", "")[:100] if mine else ""
         print(f"  report: the lead took {len(mine)} turns; its first: {first!r}")
+
+
+def precreated_run(ctx, name: str, tree: dict):
+    """`gpu_cli/<name>` for the precreated trees: the lead is told the task; the tree after is the tree before."""
+    from . import cli_scenarios as S
+    from .verdict import Verdict
+    v = Verdict(f"gpu_cli/{name}")
+    before = S.precreate(ctx, v, tree, all_keyed=True)
+    watch = play(ctx, v, "lead", name)
+    check_ins_ran(ctx, v)
+    lead_on_default(ctx, v)
+    workers_on_model(ctx, v)
+    S.precreated_end(ctx, v, before)
+    check_key_not_on_disk(ctx, v)
+    report(ctx, watch)
+    return v.finish()

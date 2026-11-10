@@ -1,4 +1,4 @@
-# task/github_merge_through_connector (free, build: any)
+# task/github_merge_through_connector (free)
 
 Issue #273, Decision A: the merge is sent by a scripted lead. The lead is an AI chat (`cli.make_lead`) whose only github grant is `merge`; the scripted lead sends every `merge` (red, pending, then green). The probe sends only the setup verbs: `git` worktree_add and commit, `github` push and pr_create, for three branches (green, red, pending checks).
 

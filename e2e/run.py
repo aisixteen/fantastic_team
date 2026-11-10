@@ -8,12 +8,11 @@
     python3 e2e/run.py --only-gpu --dry-run   discover the gpu tests and collect their probes; start nothing
     BACKEND=anthropic python3 e2e/run.py --only-gpu   the gpu tests on the anthropic relay instead (by hand; costs money)
     python3 e2e/run.py --only task/one_issue_to_draft_pr
-    python3 e2e/run.py --build github         the tests for the GitHub build (default: general)
     python3 e2e/run.py --selftest             prove the harness itself, no binary
     python3 e2e/run.py --bin PATH ...         use a built binary instead of building
 
 A test is a folder `e2e/tests/<group>/<id>/` with `test.yaml` (`costs`, `timeout`,
-`plug`, `build`), a plug's input (`script.json` for the scripted plug) and
+`plug`), a plug's input (`script.json` for the scripted plug) and
 `probe.py`, whose `run(ctx)` returns the exit code of its `Verdict`.
 A `costs: gpu` test takes its plug from `BACKEND` (`vllm` or `anthropic`) when set; no other test
 does. A test whose plug has no key (or, for vllm, no server variables) in the environment is skipped
@@ -62,11 +61,9 @@ from helpers.verdict import Skip, Verdict  # noqa: E402
 
 # A real-key shape, built from pieces so this file does not hold one.
 KEY_SHAPE = re.compile("sk-" "ant-" r"[A-Za-z0-9_\-]{20,}")
-BUILD = "general"  # set by --build; the worker's exec record follows it (helpers/stock.py)
 TURNS_TESTS = ["turns/task/worker_finishes_small_spec", "turns/secrets/real_key_stays_in_x_api_key"]
-CLI_SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tree", "leads_spawn_leads",
-                 "headless_and_canvas")
-# the gpu tier: the six cli scenarios (#237) and their ssh twins (#242)
+CLI_SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tree", "leads_spawn_leads")
+# the gpu tier: the five cli scenarios (#237) and their ssh twins (#242)
 GPU_TESTS = [f"{g}/{n}" for g in ("gpu_cli", "gpu_cli_ssh") for n in CLI_SCENARIOS]
 SSH_TESTS = [f"cli_ssh/{n}" for n in CLI_SCENARIOS]
 GIT_TWIN = f"cli_ssh/{ssh_twins.GIT_TWIN}"  # #253: the box's git credentials come through the bridge
@@ -100,8 +97,7 @@ def discover() -> list[dict]:
                         "costs": meta.get("costs", "free"),
                         "timeout": int(meta.get("timeout", "180")),
                         "plug": plug_of(meta),
-                        "declared_plug": meta.get("plug", "scripted"),
-                        "build": meta.get("build", "any")})
+                        "declared_plug": meta.get("plug", "scripted")})
     return sorted(out, key=lambda t: t["name"])
 
 
@@ -144,11 +140,6 @@ def collect_probe(test_dir: str) -> tuple[bool, str]:
     return True, "run(ctx) defined"
 
 
-def for_build(tests: list[dict], build: str) -> list[dict]:
-    """The tests that run on a build: those that name no build (`any`) or that one."""
-    return [t for t in tests if t["build"] in ("any", build)]
-
-
 class Ctx:
     """What a probe gets: the plug, the fake forge, the team, the run dir."""
 
@@ -158,7 +149,6 @@ class Ctx:
         self.vars: dict = {}
         self.team: team_mod.Team | None = None
         self.secrets: dict = {}
-        self.build = BUILD  # "general" or "github": which exec the worker gets
         self.lead = "lead"  # the lead `stock.make_lead` creates, under a fixed id
         self.work = run_dir
 
@@ -258,20 +248,6 @@ def dry_run(tests: list[dict]) -> int:
     return 1 if bad else 0
 
 
-def holding(root: str, needle: str) -> list[str]:
-    """Paths under `root` whose bytes hold `needle`."""
-    hits = []
-    for base, _, names in os.walk(root):
-        for n in names:
-            p = os.path.join(base, n)
-            try:
-                if needle.encode() in open(p, "rb").read():
-                    hits.append(os.path.relpath(p, root))
-            except OSError:
-                pass
-    return hits
-
-
 def post_to(url: str, key: str) -> tuple[int, bytes]:
     body = json.dumps({"model": "selftest", "max_tokens": 8, "messages": []}).encode()
     req = urllib.request.Request(url, data=body, method="POST", headers={
@@ -354,14 +330,6 @@ def selftest() -> int:
         if f:
             f.stop()
         shutil.rmtree(tmp, ignore_errors=True)
-    sample = [{"name": n, "build": b} for n, b in
-              [("a", "any"), ("b", "general"), ("c", "github")]]
-    v.check("the build filter keeps any and the selected build",
-            [t["name"] for t in for_build(sample, "general")] == ["a", "b"]
-            and [t["name"] for t in for_build(sample, "github")] == ["a", "c"])
-    names = {t["name"]: t["build"] for t in discover()}
-    v.check("the exec tests name their build", names.get("exec/general_allows_gh") == "general"
-            and names.get("exec/github_refuses_forge_calls") == "github")
     selftest_relay(v)
     selftest_fake_vllm(v)
     selftest_vllm_plug(v)
@@ -378,7 +346,6 @@ def selftest() -> int:
     selftest_cli_fixture(v)
     selftest_app_helpers(v)
     selftest_new_tests_collect(v)
-    selftest_no_blueprints(v)
     selftest_podman_remote(v)
     selftest_ssh_twins(v)
     selftest_remote_work(v)
@@ -429,7 +396,7 @@ def selftest_relay(v: Verdict) -> None:
         v.check("cost.json prices the usage when both prices are set",
                 abs(cost["usd_estimate"] - 0.00005) < 1e-9, raw)
         v.check("the forwarded key is never stored: cost.json and the run hold none",
-                key not in raw and holding(run_a, key) == [], str(holding(run_a, key)))
+                key not in raw and app_mod.files_holding(run_a, key, skip=()) == [], str(app_mod.files_holding(run_a, key, skip=())))
         v.check("with no team watched, cost.json's `agents` is null", cost["agents"] is None, raw)
         relay_records(v, a, key)
         relay_usage(v, tmp, key)
@@ -795,7 +762,7 @@ def selftest_vllm_plug(v: Verdict) -> None:
                     cost["model"] == "m-1" and cost["requests"] == 7 and cost["input_tokens"] == 200
                     and cost["output_tokens"] == 40 and abs(cost["usd_estimate"] - 0.00028) < 1e-9, raw)
             v.check("the key is never in cost.json or on a file of the run", key not in raw
-                    and holding(tmp, key) == [], str(holding(tmp, key)))
+                    and app_mod.files_holding(tmp, key, skip=()) == [], str(app_mod.files_holding(tmp, key, skip=())))
         with vllm_env(**base):
             keyless = vllm_mod.make(tmp, {"run_dir": tmp})
             v.check("without VLLM_API_KEY the plug is keyless: no key variable, no credentials on the records",
@@ -844,7 +811,7 @@ def selftest_gpu(v: Verdict) -> None:
         t = by.get(n)
         twin = by.get(n.replace("gpu_cli_ssh/", "cli_ssh/").replace("gpu_cli/", "cli/"))
         files = t and all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "probe.py"))
-        if not (t and twin and files and t["costs"] == "gpu" and t["declared_plug"] == "vllm" and t["build"] == "any"
+        if not (t and twin and files and t["costs"] == "gpu" and t["declared_plug"] == "vllm"
                 and not os.path.exists(os.path.join(t["dir"], "script.json"))):
             bad.append(n)
     v.check("each gpu test has a cli twin, its README, test.yaml and probe, costs gpu on the vllm plug, no script.json",
@@ -852,7 +819,7 @@ def selftest_gpu(v: Verdict) -> None:
 
 
 def selftest_backend(v: Verdict) -> None:
-    """BACKEND picks the plug of the gpu tests only; `--only-gpu --dry-run` collects all twelve with either."""
+    """BACKEND picks the plug of the gpu tests only; `--only-gpu --dry-run` collects all ten with either."""
     gpu, free = {"costs": "gpu", "plug": "vllm"}, {"costs": "free"}
     turns = {"costs": "turns", "plug": "anthropic"}
     with model_env():
@@ -863,7 +830,7 @@ def selftest_backend(v: Verdict) -> None:
                 (plug_of(gpu), plug_of(free), plug_of(turns)) == ("anthropic", "scripted", "anthropic"))
         by = {t["name"]: t for t in discover()}
         moved = sorted(n for n, t in by.items() if t["plug"] != t["declared_plug"])
-        v.check("discover: the twelve gpu tests (and only they) are on the anthropic plug, declared on vllm",
+        v.check("discover: the ten gpu tests (and only they) are on the anthropic plug, declared on vllm",
                 moved == sorted(GPU_TESTS) and all(by[n]["plug"] == "anthropic" and by[n]["declared_plug"] == "vllm"
                                                    for n in GPU_TESTS), str(moved))
     with model_env(BACKEND="vllm"):
@@ -883,7 +850,7 @@ def selftest_backend(v: Verdict) -> None:
         r = subprocess.run([sys.executable, me, "--only-gpu", "--dry-run"], env=env, capture_output=True,
                            text=True, timeout=120)
         ok = all(f"COLLECT {n}  (costs: gpu, plug: {backend})  (would SKIP: {why}" in r.stdout for n in GPU_TESTS)
-        v.check(f"BACKEND={backend}: --only-gpu --dry-run collects the twelve on that plug, each would SKIP here",
+        v.check(f"BACKEND={backend}: --only-gpu --dry-run collects the ten on that plug, each would SKIP here",
                 r.returncode == 0 and ok and f"{len(GPU_TESTS)}/{len(GPU_TESTS)} probes collect" in r.stdout,
                 (r.stdout + r.stderr)[-800:])
 
@@ -945,8 +912,7 @@ def selftest_source(v: Verdict) -> None:
 
 
 NEW_TESTS = ("app/launcher_start_attach_stop", "app/handle_serves_port", "app/window_per_platform",
-             "app/attach_remote", "dispatcher/chat_history_send_stream",
-             "dispatcher/chat_features")
+             "app/attach_remote")
 
 
 def selftest_skip(v: Verdict) -> None:
@@ -962,8 +928,7 @@ def selftest_skip(v: Verdict) -> None:
             f.write("from helpers.verdict import Skip\n\ndef run(ctx):\n    raise Skip('no such thing here')\n")
         with open(os.path.join(tdir, "script.json"), "w") as f:
             f.write("[]")
-        test = {"name": "g/skipper", "dir": tdir, "costs": "free", "timeout": 30, "plug": "scripted",
-                "build": "any"}
+        test = {"name": "g/skipper", "dir": tdir, "costs": "free", "timeout": 30, "plug": "scripted"}
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             res = run_test(test, "/nonexistent", os.path.join(tmp, "runs"))
@@ -1129,9 +1094,9 @@ def selftest_team_args(v: Verdict) -> None:
                     ": > .fantastic/cli/mcp.sock\nexec sleep 20\n")
         os.chmod(stub, 0o755)
         t = team_mod.Team(stub, tmp, {})
-        t.start(wait_s=10, extra_args=["canvas", "--port", 18080])
+        t.start(wait_s=10, extra_args=["webui", "--port", 18080])
         argv = open(os.path.join(tmp, "argv.txt")).read().split("\n")[:-1]
-        v.check("Team.start passes fantastic's words as they are", argv == ["canvas", "--port", "18080"], str(argv))
+        v.check("Team.start passes fantastic's words as they are", argv == ["webui", "--port", "18080"], str(argv))
         v.check("Team.port is the port of the start", t.port == 18080)
         v.check("it runs in the run folder (fantastic has no --dir)",
                 os.path.realpath(open(os.path.join(tmp, "cwd.txt")).read().strip()) == os.path.realpath(tmp))
@@ -1142,7 +1107,7 @@ def selftest_team_args(v: Verdict) -> None:
         v.check("Team.start with no extra_args is [--headless] only, and clears the port",
                 argv == ["--headless"] and t.port is None, str(argv))
         v.check("Team.argv builds the same command line",
-                t.argv(["canvas", "--port", 7]) == [stub, "canvas", "--port", "7"] and "--dir" not in t.argv())
+                t.argv(["webui", "--port", 7]) == [stub, "webui", "--port", "7"] and "--dir" not in t.argv())
     finally:
         if t:
             t.stop()
@@ -1262,7 +1227,7 @@ def selftest_app_helpers(v: Verdict) -> None:
 def selftest_new_tests_collect(v: Verdict) -> None:
     """Every app/ and dispatcher/ test has its files, collects, and is in the free tier."""
     by = {t["name"]: t for t in discover()}
-    v.check("the six #37 e2e tests exist", set(NEW_TESTS) <= set(by), str(sorted(set(NEW_TESTS) - set(by))))
+    v.check("the four #37 e2e tests exist", set(NEW_TESTS) <= set(by), str(sorted(set(NEW_TESTS) - set(by))))
     bad = []
     for n in NEW_TESTS:
         t = by.get(n)
@@ -1270,51 +1235,15 @@ def selftest_new_tests_collect(v: Verdict) -> None:
             continue
         ok, detail = collect_probe(t["dir"])
         files = all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py"))
-        if not (ok and files and t["costs"] == "free" and t["plug"] == "scripted" and t["build"] == "any"):
-            bad.append(f"{n}: collect={detail} files={files} costs={t['costs']} plug={t['plug']} build={t['build']}")
-    v.check("each collects, has its files, and is free / scripted / any build", not bad, "; ".join(bad))
+        if not (ok and files and t["costs"] == "free" and t["plug"] == "scripted"):
+            bad.append(f"{n}: collect={detail} files={files} costs={t['costs']} plug={t['plug']}")
+    v.check("each collects, has its files, and is free / scripted", not bad, "; ".join(bad))
 
 
-def selftest_no_blueprints(v: Verdict) -> None:
-    """The tests hold no team.yaml and no blueprint: every agent is a `create_agent` payload
-    sent with `send` (`helpers/stock.py`, `helpers/cli.py`), and the GitHub build's exec pattern
-    is read from its patch."""
-    from helpers import stock
-    tests = discover()
-    v.check("no test holds a team.yaml (the config is fantastic's records)",
-            not [t["name"] for t in tests if os.path.exists(os.path.join(t["dir"], "team.yaml"))])
-    held = []
-    for t in tests:
-        for dirpath, _, files in os.walk(t["dir"]):
-            held += [os.path.join(dirpath, f) for f in files if f == "blueprint.yaml"]
-        if os.path.isdir(os.path.join(t["dir"], "blueprint")):
-            held.append(os.path.join(t["dir"], "blueprint"))
-    v.check("no test holds a blueprint (agents are made with send + create_agent)", not held, str(held))
-    v.check("the GitHub build's worker exec pattern is the patch's, the general build's is any command",
-            "api\\.github\\.com" in stock.github_allowed()
-            and stock.worker_exec_record("github")["allowed"] == [stock.github_allowed()]
-            and stock.worker_exec_record()["allowed"] == [".*"])
-
-
-class podman_env:
-    """The Podman remote helper's variables for a block (`E2E_PODMAN`, the build dirs), restored after."""
-    NAMES = ("E2E_PODMAN", "E2E_PODMAN_BUILD_DIR", "CARGO_TARGET_DIR", "FAKE_PODMAN_LOG", "FAKE_PODMAN_MODE")
-
-    def __init__(self, **given: str) -> None:
-        self.given = given
-
-    def __enter__(self):
-        self.saved = {k: os.environ.get(k) for k in self.NAMES}
-        for k in self.NAMES:
-            os.environ.pop(k, None)
-        os.environ.update(self.given)
-
-    def __exit__(self, *_):
-        for k, val in self.saved.items():
-            if val is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = val
+class podman_env(vllm_env):
+    """The Podman remote helper's variables for a block (`E2E_PODMAN`, the build dirs): set the given
+    ones, clear the rest, restore after."""
+    names = ("E2E_PODMAN", "E2E_PODMAN_BUILD_DIR", "CARGO_TARGET_DIR", "FAKE_PODMAN_LOG", "FAKE_PODMAN_MODE")
 
 
 # A fake `podman`: logs each argv (and whether AUTHORIZED_KEY came in its environment) and answers
@@ -1480,7 +1409,7 @@ def selftest_ssh_twins(v: Verdict) -> None:
             os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py"))
         if not ok:
             bad.append(n)
-    v.check("the six cli_ssh twins exist, collect, and are free on the scripted plug", not bad, str(bad))
+    v.check("the five cli_ssh twins exist, collect, and are free on the scripted plug", not bad, str(bad))
     values = {"ssh_port": "2200", "ssh_key": "/k/id", "tunnel_port": "4100",
               "master_guid": "0123456789abcdef", "remote_git_url": "http://host.containers.internal:8/acme/widgets.git"}
     left = []
@@ -1490,7 +1419,7 @@ def selftest_ssh_twins(v: Verdict) -> None:
             m.bind(**values)
         except ValueError as e:
             left.append(f"{n}: {e}")
-    v.check("every placeholder of the six scripts is one the box binds", not left, str(left))
+    v.check("every placeholder of the five scripts is one the box binds", not left, str(left))
     m = scripted.ScriptedModel([{"text": "{{a}} {{b}}"}], {"a": "1"})
     try:
         m.bind()
@@ -1610,7 +1539,7 @@ def selftest_remote_work(v: Verdict) -> None:
                 if p.get("type") == "create_agent":
                     made.append(p.get("handler_module"))
     v.check("the box is given no backend: no script or setup command makes an AI agent or names a model endpoint there",
-            not bad_setup and set(made) == {"canvas_page.tools"}, f"{bad_setup} {sorted(set(made))}")
+            not bad_setup and not made, f"{bad_setup} {sorted(set(made))}")
     v.check("the remote exec agent may call the master's agents send/watch/status/stop only",
             T.REMOTE_EXEC["can_call"] == {"$self": "*", "{{master_guid}}|*": ["send", "watch", "status", "stop"]})
     v.check("the bridge record grants its leg exactly those verbs on the backends named, and nothing without",
@@ -1634,8 +1563,6 @@ def selftest_remote_work(v: Verdict) -> None:
     leaked = [k for k, rows in mutations.items() if T.streamed(rows, "w2")[0]]
     v.check("streamed refuses each mutation (unwatched, refused, parts after done, none, no status, other client, no done)",
             not leaked, str(leaked))
-    v.check("holds_key finds a key in a blob and refuses to find it where it is not",
-            T.holds_key([b"aa KEY123 bb", b"clean"], ["KEY123"]) == [0] and T.holds_key([b"clean"], ["", "KEY123"]) == [])
     # the work program, against a stub connector
     tmp = tempfile.mkdtemp(prefix="e2e-work-")
     try:
@@ -1727,38 +1654,10 @@ def selftest_remote_work(v: Verdict) -> None:
 
 
 def selftest_git_credentials(v: Verdict) -> None:
-    """The git twin (#253) without Podman: the guard finds a planted secret in every form and only there, the
-    bridge's grant on the store is `get` and nothing else, the connector's record names the master's store and holds
-    no value, and neither the script nor the box's setup writes a token."""
+    """The git twin (#253) without Podman: the bridge's grant on the store is `get` and nothing else, the
+    connector's record names the master's store and holds no value, and neither the script nor the box's
+    setup writes a token."""
     T = ssh_twins
-    tok = "gh" "s_" + "0123456789abcdef0123456789abcdef0123"  # a fake, built from pieces
-    forms = T.secret_forms(tok)
-    names = set(forms)
-    v.check("secret_forms: plain, base64, base64url (padded or not), url-, form-encoded and git's Basic credential",
-            {"plain", "base64", "base64url", "url-encoded", "form-encoded", "basic credential"} <= names, str(sorted(names)))
-    odd = "t0k/en+va=lue&x y"
-    missed = [f for f, needle in T.secret_forms(odd).items() if T.leaks({"blob": b"..." + needle + b"..."}, odd) == []]
-    v.check("leaks finds the secret in each of its forms, a token with characters that encode differently included",
-            not missed, str(missed))
-    found = T.leaks({"a": b"clean", "b": b"x " + tok.encode() + b" y"}, tok)
-    v.check("leaks names the blob and the form (a token with nothing to encode is also its own url-encoded form), never the "
-            "secret", "b as plain" in found and all(f.startswith("b as ") and tok not in f for f in found), str(found))
-    v.check("leaks finds nothing in a blob that does not hold it, and refuses a secret too short to search for",
-            T.leaks({"a": b"clean", "b": b""}, tok) == [] and _raises(lambda: T.leaks({"a": b""}, "short")))
-    tmp = tempfile.mkdtemp(prefix="e2e-guard-")
-    try:
-        os.makedirs(os.path.join(tmp, "d", "skipped"))
-        for name, data in (("a.txt", b"clean"), ("d/b.txt", b"x " + forms["basic credential"]), ("d/skipped/c.txt", tok.encode())):
-            with open(os.path.join(tmp, name), "wb") as f:
-                f.write(data)
-        blobs = T.folder_blobs(tmp, skip={os.path.join(tmp, "d", "skipped")})
-        at = os.path.join("d", "b.txt")
-        found = T.leaks(blobs, tok)
-        v.check("folder_blobs reads every file but the skipped folders; the guard finds the Basic credential in one file and "
-                "nowhere else", set(blobs) == {"a.txt", at} and f"{at} as basic credential" in found
-                and all(f.startswith(at + " as ") for f in found), str(found))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
     v.check("the store's grant is `get` and nothing else; the bridge record grants it on the stores named, beside the backends'",
             T.STORE_VERBS == ["get"]
             and T.bridge_record(stores=[T.GIT_STORE])["can_call"] == {"$self": "*", T.GIT_STORE: ["get"]}
@@ -1804,14 +1703,6 @@ def selftest_git_credentials(v: Verdict) -> None:
                     os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py")))
 
 
-def _raises(f) -> bool:
-    try:
-        f()
-    except ValueError:
-        return True
-    return False
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("--only-free", action="store_true", help="run only tests whose costs is free")
@@ -1824,16 +1715,12 @@ def main() -> int:
     ap.add_argument("--only", action="append", default=[], metavar="GROUP/ID")
     ap.add_argument("--bin", help="a built fantastic_team (default: cargo build)")
     ap.add_argument("--selftest", action="store_true", help="check the harness, no binary")
-    ap.add_argument("--build", choices=["general", "github"], default="general",
-                    help="which build the binary is; runs the tests for that build (default general)")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
 
     if a.selftest:
         return selftest()
-    global BUILD
-    BUILD = a.build
-    tests = for_build(discover(), a.build)
+    tests = discover()
     if a.only:
         missing = set(a.only) - {t["name"] for t in tests}
         if missing:
@@ -1841,7 +1728,7 @@ def main() -> int:
     tests = pick(tests, a.only, a.only_free, a.only_turns, a.only_gpu)
     if a.list:
         for t in tests:
-            print(f"{t['name']}\t{t['costs']}\t{t['plug']}\t{t['build']}")
+            print(f"{t['name']}\t{t['costs']}\t{t['plug']}")
         return 0
     if not tests:
         sys.exit("no tests selected")

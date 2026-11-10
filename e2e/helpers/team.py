@@ -1,7 +1,7 @@
 """Start and stop the team binary in a run dir, and talk to it.
 
 The binary is fantastic's command line, run in the run folder (fantastic has no `--dir`:
-it works in the directory it is started in): `--headless` by default, `canvas --port N`
+it works in the directory it is started in): `--headless` by default, `webui --port N`
 for the web. Everything it is told goes through `fantastic_team send '<item>'` (attach-only, over
 `.fantastic/cli/mcp.sock`): `create_agent` and `update_agent` on the root. `helpers/stock.py` builds the stock team with them.
 """
@@ -63,7 +63,7 @@ class Team:
 
     def argv(self, extra_args=HEADLESS) -> list[str]:
         """The command line of a start: fantastic's own words, run in the run folder
-        (`["--headless"]`, `["canvas", "--port", "8123"]`, `["--headless", "ai", "anthropic", ...]`)."""
+        (`["--headless"]`, `["webui", "--port", "8123"]`, `["--headless", "ai", "anthropic", ...]`)."""
         return [self.binary, *map(str, extra_args)]
 
     def start(self, wait_s: float = 60.0, extra_args=HEADLESS) -> None:
@@ -131,27 +131,6 @@ class Team:
 
 
 CHAT_VERBS = ["history", "send", "stop", "status", "watch"]  # tree.rs CHAT_VERBS
-
-
-def grant_chat(team: "Team", leg: str, workers, verbs=CHAT_VERBS) -> None:
-    """Give a ws leg the page's chat grant on `workers`, on both ends (`leg`'s `can_call`
-    names the worker, the worker's `callable_by` names `leg`): what `tree::grant_chat_to`
-    writes for the page's leg. An operator write through the `send` leg, merged into what
-    the records hold. The binary's `--port` serves the canvas, whose leg is `canvas_ws`."""
-    r = team.send("kernel", {"type": "list_agents"})
-    agents = {a["id"]: a for a in r["result"]["agents"]}
-    for w in workers:
-        cb = dict(agents[w].get("callable_by") or {})
-        cb[leg] = list(verbs)
-        out = team.send("kernel", {"type": "update_agent", "id": w, "callable_by": cb})
-        if out.get("status") != "completed":
-            raise RuntimeError(f"cannot grant {leg} on {w}: {out}")
-    cc = dict((agents.get(leg) or {}).get("can_call") or {})
-    for w in workers:
-        cc[w] = list(verbs)
-    out = team.send("kernel", {"type": "update_agent", "id": leg, "can_call": cc})
-    if out.get("status") != "completed":
-        raise RuntimeError(f"cannot grant {leg}: {out}")
 
 
 def log_calls(log_text: str) -> list[tuple[str, str]]:

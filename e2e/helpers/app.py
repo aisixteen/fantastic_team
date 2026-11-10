@@ -167,13 +167,17 @@ def wait_refused(port: int, timeout: float = 15.0) -> bool:
     return web.refuses(port)
 
 
-def files_holding(root: str, needle: str, skip=("secrets",)) -> list[str]:
-    """Paths under `root` (not under a top-level folder in `skip`) whose bytes hold `needle`."""
+def files_holding(root: str, needle: str, skip=("secrets",), skip_files=()) -> list[str]:
+    """Paths under `root` (not under a top-level folder in `skip`, not a top-level file in `skip_files`)
+    whose bytes hold `needle`."""
     hits = []
     for base, dirs, names in os.walk(root):
-        if os.path.abspath(base) == os.path.abspath(root):
+        top = os.path.abspath(base) == os.path.abspath(root)
+        if top:
             dirs[:] = [d for d in dirs if d not in skip]
         for n in names:
+            if top and n in skip_files:
+                continue
             path = os.path.join(base, n)
             try:
                 if os.path.islink(path):

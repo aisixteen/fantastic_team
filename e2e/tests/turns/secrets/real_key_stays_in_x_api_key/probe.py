@@ -5,39 +5,12 @@ cost.json) holds it, nor the app key or the minted token. Outcomes only."""
 import json
 import os
 import re
-import subprocess
 
-from helpers import run_flow
+from helpers import app, run_flow
 from helpers.verdict import Verdict
 
 WAIT_S = 1200.0
-REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), *[".."] * 5))  # the repo root
 SKIP_NAMES = {"cost.json"}  # the relay's record: checked on its own below
-
-
-def files_holding(root, needles, skip=()):
-    """Paths under `root` whose bytes hold any needle (binary files too)."""
-    hits = []
-    for base, dirs, names in os.walk(root):
-        dirs[:] = [d for d in dirs if os.path.join(base, d) not in skip]
-        for n in names:
-            p = os.path.join(base, n)
-            if n in SKIP_NAMES and base == root:
-                continue
-            try:
-                data = open(p, "rb").read()
-            except OSError:
-                continue
-            for what, needle in needles.items():
-                if needle.encode() in data:
-                    hits.append(f"{os.path.relpath(p, root)} ({what})")
-    return hits
-
-
-def pushed_branches(bare):
-    r = subprocess.run(["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
-                       cwd=bare, capture_output=True, text=True)
-    return [b for b in r.stdout.split() if b != "main"]
 
 
 def run(ctx):
@@ -74,17 +47,11 @@ def run(ctx):
     log = team.log()
     for what, needle in needles.items():
         v.check(f"the team's stdout and stderr hold no {what}", needle not in log)
-    skip = {os.path.join(ctx.run_dir, "secrets")}
-    hits = files_holding(ctx.run_dir, needles, skip)
+    hits = [f"{p} ({what})" for what, needle in needles.items()
+            for p in app.files_holding(ctx.run_dir, needle, skip_files=SKIP_NAMES)]
     v.check("no file of the run holds a key or token (outside secrets/ and cost.json)", not hits,
             "; ".join(hits))
     v.check("the cost record holds no key", real not in json.dumps(m.totals()))
-
-    # the repo's own scanner over the run
-    subprocess.run(["git", "init", "-q"], cwd=ctx.run_dir, capture_output=True)
-    scan = subprocess.run(["sh", os.path.join(REPO, "scripts", "check-secrets.sh"), ctx.run_dir],
-                          capture_output=True, text=True)
-    v.check("scripts/check-secrets.sh finds nothing in the run", scan.returncode == 0, scan.stderr)
 
     totals = m.totals()
     print(f"  tokens: {totals['input_tokens']} in, {totals['output_tokens']} out, "

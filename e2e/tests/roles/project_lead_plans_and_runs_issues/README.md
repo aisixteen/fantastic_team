@@ -1,4 +1,4 @@
-# roles/project_lead_plans_and_runs_issues (free, build: any)
+# roles/project_lead_plans_and_runs_issues (free)
 
 The coder `project_lead` (#185, extended) over 4 fake issues, on the scripted model and the fake forge: "do your best choice", a proposed tree, then "yes", two workers are started through the registry, a PR is opened for each, and the tree stays.
 

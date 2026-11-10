@@ -27,21 +27,7 @@ srv = socket.socket()
 srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 srv.bind((bind, local))
 srv.listen(16)
-def pipe(a, b):
-    try:
-        while True:
-            d = a.recv(65536)
-            if not d:
-                break
-            b.sendall(d)
-    except OSError:
-        pass
-    for s in (a, b):
-        try:
-            s.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-while True:
+''' + web.PIPE + r'''while True:
     c, _ = srv.accept()
     r = socket.create_connection(("127.0.0.1", rport))
     threading.Thread(target=pipe, args=(c, r), daemon=True).start()

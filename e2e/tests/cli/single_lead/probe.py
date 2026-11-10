@@ -7,29 +7,17 @@ The script plays twice in a row (turns 1-6 for A, 7-12 for B); one lead is on at
 The steps and the outcome checks are `helpers/cli_scenarios.py`'s (the gpu twin uses them too).
 """
 
-import time
-
-from helpers import cli, cli_scenarios as S
+from helpers import cli, cli_scenarios as S, run_flow
 from helpers.verdict import Verdict
 
 TASK = "Fix the failing test in the repo and commit the fix."
 PER_RUN = 6
 
 
-def hand_over(ctx, lead, upto):
-    r = ctx.team.send(lead, {"type": "send", "text": TASK})
-    ok = r.get("status") == "completed"
-    end = time.time() + 120
-    while time.time() < end and ctx.model.served < upto:
-        time.sleep(0.3)
-    time.sleep(2.0)  # the last turn's reply is routed after the last request
-    return ok and ctx.model.served >= upto
-
-
 def run(ctx):
     v = Verdict("cli/single_lead")
     lead, before = S.single_by_hand(ctx, v)
-    v.check("A: it played every turn", hand_over(ctx, lead, PER_RUN), f"served {ctx.model.served}")
+    v.check("A: it played every turn", run_flow.hand_over(ctx, TASK, lead=lead, upto=PER_RUN), f"served {ctx.model.served}")
     S.single_end(ctx, v, "A", before)
     ctx.team.stop()
 
