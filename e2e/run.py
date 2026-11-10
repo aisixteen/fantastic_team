@@ -8,12 +8,11 @@
     python3 e2e/run.py --only-gpu --dry-run   discover the gpu tests and collect their probes; start nothing
     BACKEND=anthropic python3 e2e/run.py --only-gpu   the gpu tests on the anthropic relay instead (by hand; costs money)
     python3 e2e/run.py --only task/one_issue_to_draft_pr
-    python3 e2e/run.py --build github         the tests for the GitHub build (default: general)
     python3 e2e/run.py --selftest             prove the harness itself, no binary
     python3 e2e/run.py --bin PATH ...         use a built binary instead of building
 
 A test is a folder `e2e/tests/<group>/<id>/` with `test.yaml` (`costs`, `timeout`,
-`plug`, `build`), a plug's input (`script.json` for the scripted plug) and
+`plug`), a plug's input (`script.json` for the scripted plug) and
 `probe.py`, whose `run(ctx)` returns the exit code of its `Verdict`.
 A `costs: gpu` test takes its plug from `BACKEND` (`vllm` or `anthropic`) when set; no other test
 does. A test whose plug has no key (or, for vllm, no server variables) in the environment is skipped
@@ -62,7 +61,6 @@ from helpers.verdict import Skip, Verdict  # noqa: E402
 
 # A real-key shape, built from pieces so this file does not hold one.
 KEY_SHAPE = re.compile("sk-" "ant-" r"[A-Za-z0-9_\-]{20,}")
-BUILD = "general"  # set by --build; the worker's exec record follows it (helpers/stock.py)
 TURNS_TESTS = ["turns/task/worker_finishes_small_spec", "turns/secrets/real_key_stays_in_x_api_key"]
 CLI_SCENARIOS = ("single_lead", "lead_spawns_two", "precreated_1_2", "precreated_tree", "leads_spawn_leads")
 # the gpu tier: the five cli scenarios (#237) and their ssh twins (#242)
@@ -99,8 +97,7 @@ def discover() -> list[dict]:
                         "costs": meta.get("costs", "free"),
                         "timeout": int(meta.get("timeout", "180")),
                         "plug": plug_of(meta),
-                        "declared_plug": meta.get("plug", "scripted"),
-                        "build": meta.get("build", "any")})
+                        "declared_plug": meta.get("plug", "scripted")})
     return sorted(out, key=lambda t: t["name"])
 
 
@@ -143,11 +140,6 @@ def collect_probe(test_dir: str) -> tuple[bool, str]:
     return True, "run(ctx) defined"
 
 
-def for_build(tests: list[dict], build: str) -> list[dict]:
-    """The tests that run on a build: those that name no build (`any`) or that one."""
-    return [t for t in tests if t["build"] in ("any", build)]
-
-
 class Ctx:
     """What a probe gets: the plug, the fake forge, the team, the run dir."""
 
@@ -157,7 +149,6 @@ class Ctx:
         self.vars: dict = {}
         self.team: team_mod.Team | None = None
         self.secrets: dict = {}
-        self.build = BUILD  # "general" or "github": which exec the worker gets
         self.lead = "lead"  # the lead `stock.make_lead` creates, under a fixed id
         self.work = run_dir
 
@@ -353,14 +344,6 @@ def selftest() -> int:
         if f:
             f.stop()
         shutil.rmtree(tmp, ignore_errors=True)
-    sample = [{"name": n, "build": b} for n, b in
-              [("a", "any"), ("b", "general"), ("c", "github")]]
-    v.check("the build filter keeps any and the selected build",
-            [t["name"] for t in for_build(sample, "general")] == ["a", "b"]
-            and [t["name"] for t in for_build(sample, "github")] == ["a", "c"])
-    names = {t["name"]: t["build"] for t in discover()}
-    v.check("the exec tests name their build", names.get("exec/general_allows_gh") == "general"
-            and names.get("exec/github_refuses_forge_calls") == "github")
     selftest_relay(v)
     selftest_fake_vllm(v)
     selftest_vllm_plug(v)
@@ -843,7 +826,7 @@ def selftest_gpu(v: Verdict) -> None:
         t = by.get(n)
         twin = by.get(n.replace("gpu_cli_ssh/", "cli_ssh/").replace("gpu_cli/", "cli/"))
         files = t and all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "probe.py"))
-        if not (t and twin and files and t["costs"] == "gpu" and t["declared_plug"] == "vllm" and t["build"] == "any"
+        if not (t and twin and files and t["costs"] == "gpu" and t["declared_plug"] == "vllm"
                 and not os.path.exists(os.path.join(t["dir"], "script.json"))):
             bad.append(n)
     v.check("each gpu test has a cli twin, its README, test.yaml and probe, costs gpu on the vllm plug, no script.json",
@@ -960,8 +943,7 @@ def selftest_skip(v: Verdict) -> None:
             f.write("from helpers.verdict import Skip\n\ndef run(ctx):\n    raise Skip('no such thing here')\n")
         with open(os.path.join(tdir, "script.json"), "w") as f:
             f.write("[]")
-        test = {"name": "g/skipper", "dir": tdir, "costs": "free", "timeout": 30, "plug": "scripted",
-                "build": "any"}
+        test = {"name": "g/skipper", "dir": tdir, "costs": "free", "timeout": 30, "plug": "scripted"}
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             res = run_test(test, "/nonexistent", os.path.join(tmp, "runs"))
@@ -1268,16 +1250,14 @@ def selftest_new_tests_collect(v: Verdict) -> None:
             continue
         ok, detail = collect_probe(t["dir"])
         files = all(os.path.isfile(os.path.join(t["dir"], f)) for f in ("README.md", "test.yaml", "script.json", "probe.py"))
-        if not (ok and files and t["costs"] == "free" and t["plug"] == "scripted" and t["build"] == "any"):
-            bad.append(f"{n}: collect={detail} files={files} costs={t['costs']} plug={t['plug']} build={t['build']}")
-    v.check("each collects, has its files, and is free / scripted / any build", not bad, "; ".join(bad))
+        if not (ok and files and t["costs"] == "free" and t["plug"] == "scripted"):
+            bad.append(f"{n}: collect={detail} files={files} costs={t['costs']} plug={t['plug']}")
+    v.check("each collects, has its files, and is free / scripted", not bad, "; ".join(bad))
 
 
 def selftest_no_blueprints(v: Verdict) -> None:
     """The tests hold no team.yaml and no blueprint: every agent is a `create_agent` payload
-    sent with `send` (`helpers/stock.py`, `helpers/cli.py`), and the GitHub build's exec pattern
-    is read from its patch."""
-    from helpers import stock
+    sent with `send` (`helpers/stock.py`, `helpers/cli.py`)."""
     tests = discover()
     v.check("no test holds a team.yaml (the config is fantastic's records)",
             not [t["name"] for t in tests if os.path.exists(os.path.join(t["dir"], "team.yaml"))])
@@ -1288,10 +1268,6 @@ def selftest_no_blueprints(v: Verdict) -> None:
         if os.path.isdir(os.path.join(t["dir"], "blueprint")):
             held.append(os.path.join(t["dir"], "blueprint"))
     v.check("no test holds a blueprint (agents are made with send + create_agent)", not held, str(held))
-    v.check("the GitHub build's worker exec pattern is the patch's, the general build's is any command",
-            "api\\.github\\.com" in stock.github_allowed()
-            and stock.worker_exec_record("github")["allowed"] == [stock.github_allowed()]
-            and stock.worker_exec_record()["allowed"] == [".*"])
 
 
 class podman_env:
@@ -1822,16 +1798,12 @@ def main() -> int:
     ap.add_argument("--only", action="append", default=[], metavar="GROUP/ID")
     ap.add_argument("--bin", help="a built fantastic_team (default: cargo build)")
     ap.add_argument("--selftest", action="store_true", help="check the harness, no binary")
-    ap.add_argument("--build", choices=["general", "github"], default="general",
-                    help="which build the binary is; runs the tests for that build (default general)")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
 
     if a.selftest:
         return selftest()
-    global BUILD
-    BUILD = a.build
-    tests = for_build(discover(), a.build)
+    tests = discover()
     if a.only:
         missing = set(a.only) - {t["name"] for t in tests}
         if missing:
@@ -1839,7 +1811,7 @@ def main() -> int:
     tests = pick(tests, a.only, a.only_free, a.only_turns, a.only_gpu)
     if a.list:
         for t in tests:
-            print(f"{t['name']}\t{t['costs']}\t{t['plug']}\t{t['build']}")
+            print(f"{t['name']}\t{t['costs']}\t{t['plug']}")
         return 0
     if not tests:
         sys.exit("no tests selected")

@@ -1,4 +1,4 @@
-# roles/one_store_survives_restart (free, build: any)
+# roles/one_store_survives_restart (free)
 
 Every AI agent's memory and the task registry point at ONE store agent (#185): a `sqlite_store` named `memory`, one file `.fantastic/memory.db` in the team directory. The home's own `memory` agent is that store; this test runs the default.
 

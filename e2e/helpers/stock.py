@@ -16,7 +16,6 @@ Nothing here is a team config: every step is a fantastic verb a person can type.
 from __future__ import annotations
 
 import os
-import re
 import time
 
 from . import forge as forge_mod, run_flow, team as T
@@ -63,25 +62,14 @@ def credential_refs(ctx, github: bool = True, github_mode: str = "app") -> dict:
     return refs
 
 
-def github_allowed() -> str:
-    """The `allowed` pattern of the GitHub build: the one `patches/github-exec.patch` gives
-    `worker_exec::WORKER_ALLOWED` (read from the patch, so the test follows the build)."""
-    patch = os.path.join(os.path.dirname(__file__), "..", "..", "patches", "github-exec.patch")
-    with open(patch) as f:
-        m = re.search(r'^\+pub const WORKER_ALLOWED: &str = r#"(.*)"#;$', f.read(), re.M)
-    if not m:
-        raise RuntimeError("patches/github-exec.patch no longer sets WORKER_ALLOWED")
-    return m.group(1)
-
-
-def worker_exec_record(build: str = "general") -> dict:
+def worker_exec_record() -> dict:
     """The restricted exec of a worker (`worker_exec::worker_exec_record`), relative to the
-    folder the team runs in: its HOME is `./sandbox/home` and no credential is inherited. The
-    general build allows any command line; the GitHub build refuses forge calls."""
+    folder the team runs in: its HOME is `./sandbox/home` and no credential is inherited. It
+    allows any command line."""
     ssh = ("ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes "
            "-o IdentityFile=/dev/null -o BatchMode=yes")
     return {"handler_module": "exec_bridge.tools", "ingress_rule": "allow_all_ingress",
-            "cwd": "./work", "allowed": [github_allowed() if build == "github" else ".*"],
+            "cwd": "./work", "allowed": [".*"],
             "inherit_env": ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TZ", "USER",
                             "LOGNAME", "SHELL"],
             "env": {"HOME": "./sandbox/home", "XDG_CONFIG_HOME": "./sandbox/home/.config",
@@ -93,7 +81,7 @@ def make_tools(ctx, team, queue: bool = True) -> None:
     """The worker's exec and files (under `user`, as the product's own are), the RAM queue."""
     for d in ("work/wt", "work/tasks", "sandbox/home"):
         os.makedirs(os.path.join(ctx.work, d), exist_ok=True)
-    create(team, id="worker_exec", parent_id="user", **worker_exec_record(getattr(ctx, "build", "general")))
+    create(team, id="worker_exec", parent_id="user", **worker_exec_record())
     create(team, id="worker_files", parent_id="user", handler_module="file_bridge.tools",
            root="./work", allow=["."], ingress_rule="allow_all_ingress")
     if queue:

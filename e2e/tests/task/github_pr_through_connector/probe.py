@@ -1,4 +1,4 @@
-"""GitHub build: the connector pushes and opens the draft PR as the app; the worker
+"""The connector pushes and opens the draft PR as the app; the worker
 never held the token."""
 
 import os

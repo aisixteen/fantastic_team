@@ -10,7 +10,6 @@ python3 e2e/run.py --only-turns --dry-run   discover the turns tests and collect
 python3 e2e/run.py --only-gpu           the gpu tests, a vLLM server (the shared RTX 6000), by hand; SKIP without its variables
 python3 e2e/run.py --only-gpu --dry-run discover the gpu tests and collect their probes; starts nothing
 BACKEND=anthropic python3 e2e/run.py --only-gpu   the gpu tests on Sonnet/Haiku through the relay instead; real money, by hand
-python3 e2e/run.py --build github --bin PATH   the tests for the GitHub build (default: general)
 python3 e2e/run.py --selftest           the harness proves itself, no binary
 python3 e2e/run.py --only app/attach_remote --bin /ABSOLUTE/path/fantastic_team   a test that needs the app: build it next to the binary first
 python3 e2e/run.py --list
@@ -159,14 +158,12 @@ Facts found while building them (fantastic at 5e74eb5):
 
 ## The stock team of the older tests (`helpers/stock.py`)
 
-The older groups (`task`, `secrets`, `exec`, `dispatcher`, `roles`, `ui`, `app`, `turns`) once held a `team.yaml`; the binary has no config file and the team uses no blueprint, so each test builds its team the way a person does (#219, #221): every agent is a `create_agent` payload sent with `fantastic_team send`, under an id the test chooses, and every edge is written on both ends (`records.link`):
+The older groups (`task`, `secrets`, `dispatcher`, `roles`, `ui`, `app`, `turns`) once held a `team.yaml`; the binary has no config file and the team uses no blueprint, so each test builds its team the way a person does (#219, #221): every agent is a `create_agent` payload sent with `fantastic_team send`, under an id the test chooses, and every edge is written on both ends (`records.link`):
 
 - the lead is `lead` (`ctx.lead`), made by `stock.make_lead`: the plug's model and credential ref, the shared `memory` store, and the tools it may call (`worker_exec`, `worker_files`, `queue`, `git`, `github`, those that exist; `lead_tools=` narrows them);
 - the other agents, under the ids the product's code and the role cards name: the credential store, `worker_exec` and `worker_files`, `queue`, the `git` and `github` connectors against the fake forge, the queue folder and the puller; the roles registry (`agentic_resources`, with its tiers and limits) and the `tasks` registry; the board, the dispatcher with its `worker_view`, the cadencer. Every edge is written on both ends (`stock.link`);
 - the team page the UI tests drive comes from the binary: `stock.serve_webui(team, port)` stops the headless team and starts it again with `webui --port N` (#224), which makes the `web` host, `team_page` and `team_ws` and grants the leg what the page sends to, for the agents that exist at that start (make them first). `stock.serve_team_page(team, port)` is the older by-hand port of `app_control::prepare_web`, still used by `ui/worker_view_opens`;
-- a probe starts it with `run_flow.boot(ctx, ...)` / `stock.boot(ctx, ...)`: `forge=False` (no connectors), `git=False, puller=False`, `board=True`, `groups={name: {driver: "$lead", members: [...]}}` (the dispatcher and cadencer), `registry_tiers={...}` (a roles registry the dispatcher makes workers from), `roles_tiers={...}` plus `limits` (roles mode: the cards), `sub="a"` (a second team in a sub folder), `port=N` (`canvas --port N`).
-
-The GitHub build's tests (`build: github`) get the worker exec the patch gives (`stock.github_allowed()` reads `patches/github-exec.patch`); run them with a binary built from the patched tree.
+- a probe starts it with `run_flow.boot(ctx, ...)` / `stock.boot(ctx, ...)`: `forge=False` (no connectors), `git=False, puller=False`, `board=True`, `groups={name: {driver: "$lead", members: [...]}}` (the dispatcher and cadencer), `registry_tiers={...}` (a roles registry the dispatcher makes workers from), `roles_tiers={...}` plus `limits` (roles mode: the cards), `sub="a"` (a second team in a sub folder).
 
 ## Tiers
 
@@ -206,9 +203,9 @@ Facts about the web UI at this commit, found while writing these tests:
 3. The Rust ai-core never emits the `tool_calling` status the page's tool blocks key on; a tool call is a `call` part sent to the watchers of its addressee.
 4. The scripted plug takes `"thinking": "..."` (a reasoning block before the text) and `"delay": seconds` (the plug waits before it answers) on a turn.
 
-## Two builds
+## The GitHub connector tests
 
-The general build (stock exec) and the GitHub build (`patches/github-exec.patch`, built by `scripts/build-github.sh`) share the `any` tests. `exec/general_allows_gh` runs on the general binary only; the four `dispatcher/*` tests (`digest_reaches_driver`, `quiet_heartbeat`, `stop_asks_then_stops`, `hand_task_add_worker`) are free and run on either build; `exec/github_refuses_forge_calls`, `secrets/github_no_credential_in_worker` and `task/github_pr_through_connector` on the GitHub binary only. `task/github_merge_through_connector` (#273, free, either build): the probe makes three branches and draft PRs with the `git`/`github` verbs; a scripted lead (an AI chat granted only `merge` on `github`) sends every `merge` against the fake forge's PRs, check runs (`forge.checks`), ready mutation and `PUT .../merge`: green draft merged, red and pending refused by check name, no token in a reply, model request or log. The forge's fixed pull request 7 (`pr_status`, roles/lead_verifies_on_github) answers only when the run opened none.
+`task/github_merge_through_connector` (#273, free): the probe makes three branches and draft PRs with the `git`/`github` verbs; a scripted lead (an AI chat granted only `merge` on `github`) sends every `merge` against the fake forge's PRs, check runs (`forge.checks`), ready mutation and `PUT .../merge`: green draft merged, red and pending refused by check name, no token in a reply, model request or log. The forge's fixed pull request 7 (`pr_status`, roles/lead_verifies_on_github) answers only when the run opened none.
 
 ## How a free test runs
 
@@ -230,7 +227,7 @@ These are facts about the binary at the commit this was built on, not decisions 
 
 ## The roles group
 
-`tests/roles/*` (issue #185) drive the roles registry (`agentic_resources`) with the repo's `roles/` cards, which each probe copies into the run dir. Both are free (scripted model, fake forge), `build: any`, and not part of any CI: run them by hand (`python3 e2e/run.py --only roles/total_limit_refuses_fourth_worker --bin /ABS/PATH`). The scripted plug is one ordered script for every agent, so each test keeps one agent's model request open at a time.
+`tests/roles/*` (issue #185) drive the roles registry (`agentic_resources`) with the repo's `roles/` cards, which each probe copies into the run dir. Both are free (scripted model, fake forge), and not part of any CI: run them by hand (`python3 e2e/run.py --only roles/total_limit_refuses_fourth_worker --bin /ABS/PATH`). The scripted plug is one ordered script for every agent, so each test keeps one agent's model request open at a time.
 
 - `roles/total_limit_refuses_fourth_worker`: `roles: limits: total: 3`; the lead spawns four workers, one call per turn; the fourth is refused with its reason; `get_count`, `fleet` and the dispatcher's `fleet` agree (3 of 3). The worker tiers are inert, so no worker asks the model.
 - `roles/project_lead_plans_and_runs_issues`: the coder `project_lead` reads four fake issues, proposes a tree and waits for "yes"; then two workers are started, a PR is opened for each, and the tree stays. The chat entry, the plan view and the approval gate (LATER, UI) are skipped with a note. The README of the test lists the ordering it relies on and the gaps it works around.
