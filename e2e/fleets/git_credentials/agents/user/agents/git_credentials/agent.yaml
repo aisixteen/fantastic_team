@@ -1,0 +1,13 @@
+id: git_credentials
+handler_module: credential_store.tools
+backend: env
+refs:
+  "git/forge":
+    host: "{{forge_host}}"
+    env:
+      api_key: E2E_GIT_TOKEN
+can_call:
+  "$self": "*"
+callable_by:
+  "$self": "*"
+  remote: [get]

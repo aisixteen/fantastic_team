@@ -1,5 +1,5 @@
-"""gpu_cli_ssh/single_lead: `cli_ssh/single_lead` on a real model, started two ways (A: the lead made
-with create_agent; B: fantastic's recipe, the root AI `ai`), each with a box of its own: told in plain
+"""gpu_cli_ssh/single_lead: `cli_ssh/single_lead` on a real model, started two ways (A: the lead laid
+as a record file; B: fantastic's recipe, the root AI `ai`), each with a box of its own: told in plain
 words where the box is and what the wiring is, the lead fixes adder.py here and muler.py in its remote
 workspace through the bridge, pushing both. The box and the checks are `helpers/ssh_twins.py`'s; the
 task is `helpers/gpu_ssh.py`'s; no script. One lead is live at a time."""

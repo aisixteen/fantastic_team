@@ -133,10 +133,9 @@ def spawn_two_end(ctx, v, before: dict) -> None:
 
 # ---- precreated_1_2 and precreated_tree ------------------------------------------------
 
-def precreate(ctx, v, expect: dict, all_keyed: bool = False) -> dict:
+def precreate(ctx, v, expect: dict) -> dict:
     """Start on the fleet of `expect` (id -> parent, parents first), laid as record files: each agent
-    able to call its children, a leaf the exec agent. Returns the tree before the task.
-    `all_keyed`: kept for the callers; the key is the provider's, never a chat's."""
+    able to call its children, a leaf the exec agent. Returns the tree before the task."""
     cli.start(ctx)
     check_in_leads(ctx, [i for i in expect if i in expect.values()])
     fleet_there(v, ctx, "the tree is the one laid: each agent an AI chat under the parent it was laid under",

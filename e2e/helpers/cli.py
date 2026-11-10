@@ -235,33 +235,11 @@ CHECK_INS = (
     "(`unschedule`) is your very last call, after every other step and wait, right before you end; the "
     "scheduler agent stays. Never end your run while an agent you started is still working; its report or your "
     "next check-in wakes you. To wait, end your turn with `await`; never start a timer or sleep job to wait.")
-SCHEDULER_VERBS = ["schedule", "unschedule", "list", "pause", "resume", "tick_now", "history"]
 
 
 def check_ins_on(ctx) -> bool:
     """Leads get `CHECK_INS` on a model test, unless `E2E_CHECK_INS=0` (the A/B run without them)."""
     return ctx.test.get("costs") == "gpu" and os.environ.get("E2E_CHECK_INS", "1") != "0"
-
-
-def _with(grants: dict, key: str, verbs: list) -> None:
-    """Add `verbs` to `grants[key]` (a `"*"` stays)."""
-    have = grants.get(key)
-    if have == "*" or have == ["*"]:
-        return
-    grants[key] = list(dict.fromkeys([*(have or []), *verbs]))
-
-
-def check_ins(ctx, rec: dict) -> None:
-    """Make `rec` a lead with check-ins: the grants to make, use and delete its own scheduler, and
-    `$subtree` `send` so the scheduler, its child, may wake it; on a model test also `CHECK_INS`
-    (the grants go to the scripted twin too: the sub-lead bundle it spawns asks for them)."""
-    _with(rec["can_call"], "$subtree", SCHEDULER_VERBS)
-    _with(rec["can_call"], "kernel_state", ["create_agent", "delete_agent"])
-    _with(rec["callable_by"], "$subtree", ["send"])
-    if not check_ins_on(ctx):
-        return
-    rec["post_system_prompt"] = CHECK_INS
-    ctx.check_in_leads = [*getattr(ctx, "check_in_leads", []), rec["id"]]
 
 
 # THE PROVIDER: one per team, the connection to the plug's model (its kind, endpoint, key, the
@@ -337,23 +315,18 @@ def add_provider(ctx, parent: str) -> None:
         records.merge(team, "credentials", "callable_by", {PROVIDER: ["get"]}, team.agents())
 
 
-def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool = False,
-               lead: bool = False, **extra) -> str:
+def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool = False, **extra) -> str:
     """One AI agent: an AI chat (`ai_chat.tools`) under `parent` with the fixed id `id`, completing
     through the team's provider (`PROVIDER`, made under the first chat) on the provider's default
     model, or the `model` named in `extra`. `grants` is its `can_call` beyond `$self`, the shared
     `memory` store and its provider (agent -> verbs, `"*"` for every verb). An edge is written on
     both ends: the caller's `can_call` in this payload, the callee's `callable_by` for the callees
     that exist already (a child made later admits its parent through `$parent`). `key` is kept for
-    the callers: the key is the provider's, never a chat's. `lead`: it runs agents, so it gets
-    check-ins (`check_ins`). Returns `id`."""
+    the callers: the key is the provider's, never a chat's. Returns `id`."""
     team = ctx.team
     can_call = {"$self": "*", "memory": "*", PROVIDER: PROVIDER_VERBS, **(grants or {})}
     rec = {"id": id, "parent_id": parent, "handler_module": CHAT, "provider_id": PROVIDER,
            "memory_store_id": "memory", "can_call": can_call, "callable_by": {"$self": "*", "$parent": "*"}}
-    if lead:
-        check_ins(ctx, rec)
-        can_call = rec["can_call"]
     rec.update(extra)
     records.create(team, rec)
     if PROVIDER not in team.agents():
@@ -365,19 +338,9 @@ def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool 
     return id
 
 
-def make_lead(ctx, grants: dict | None = None, subtree: bool = False, runs_agents: bool = False) -> str:
-    """The lead: `make_agent` under `user` with the model's key. `subtree` lets it call
-    everything below it; `runs_agents`: it has agents to look after, so it gets check-ins."""
-    grants = dict(grants or {})
-    # fantastic's own hints send every agent to `send kernel {type: docs, of: ...}` for a verb's
-    # signature: a lead that may not read them stops and asks the operator, who is not there
-    # (only a listed grant is extended: with none, the lead keeps the reach it has)
-    ks = grants.get("kernel_state")
-    if isinstance(ks, list):
-        grants["kernel_state"] = list(dict.fromkeys([*ks, "docs"]))
-    lead = make_agent(ctx, LEAD, "user", {**({"$subtree": "*"} if subtree else {}), **grants},
-                      key=True, lead=runs_agents)
-    return lead
+def make_lead(ctx, grants: dict | None = None) -> str:
+    """The lead: `make_agent` under `user` with the model's key."""
+    return make_agent(ctx, LEAD, "user", dict(grants or {}), key=True)
 
 
 TESTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests")
@@ -479,25 +442,6 @@ def worker_model() -> str | None:
     spawn its workers with it, so leads (`E2E_MODEL`) and workers run different models; None: every
     agent runs the lead's own."""
     return os.environ.get("E2E_WORKER_MODEL") or None
-
-
-def make_registry(ctx, total: int, parent: str = LEAD, roles: str | list[str] | None = None) -> str:
-    """The roles registry `roles` (`agentic_resources`) under `parent`, with `limits.total`, and
-    the test's ROLE BUNDLES (a folder, or a list of folders, of `<role>/bundle.yaml`; default the test's own `bundles/`)
-    written under the team's `.fantastic/bundles/` and loaded into the running kernel
-    (`reload_bundle`). A role names no model: a spawned agent runs on its spawner's backend, with
-    the model the spawn names. The lead may call the registry."""
-    team = ctx.team
-    srcs = [roles or os.path.join(ctx.dir, "bundles")] if not isinstance(roles, list) else roles
-    for name in lay_bundles(ctx, srcs):
-        loaded = team.send("kernel", {"type": "reload_bundle", "name": name})
-        assert (loaded.get("result") or {}).get("reloaded") == name, f"bundle {name}: {loaded}"
-    records.create(team, {"id": "roles", "parent_id": parent, "handler_module": "agentic_resources.tools",
-                          "limits": {"total": total},
-                          "can_call": {"$self": "*"}, "callable_by": {"$self": "*", "$parent": "*"}})
-    records.link(team, "roles", "memory")
-    records.link(team, parent, "roles", ["roles", "role", "spawn", "get_count", "fleet"])
-    return "roles"
 
 
 def ids(team) -> dict:

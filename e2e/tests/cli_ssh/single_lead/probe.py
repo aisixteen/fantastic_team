@@ -1,5 +1,5 @@
 """cli_ssh/single_lead: one lead, its workspace split across the local kernel and a remote one in a
-Podman box, started two ways (A: `create_agent` under the id `lead`; B: fantastic's recipe, the root
+Podman box, started two ways (A: the lead laid as a record file under the id `lead`; B: fantastic's recipe, the root
 AI `ai`), each with a box of its own. Locally the lead fixes adder.py, commits and pushes; through the
 bridge it drives the remote kernel's exec agent in the box's clone: pull, fix muler.py, test, commit,
 push. The wiring and the shared checks are `helpers/ssh_twins.py`'s; the local checks are

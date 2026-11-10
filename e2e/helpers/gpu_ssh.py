@@ -116,17 +116,16 @@ def play(ctx, v, lead: str, text: str, label: str = "") -> gpu.Lead:
     return gpu.play_text(ctx, v, lead, text + gpu.END, label)
 
 
-def spawn_run(ctx, name: str, total: int):
-    """`gpu_cli_ssh/<name>` for a lead that spawns (`lead_spawns_two`, `leads_spawn_leads`): the registry has
-    room for `total`; the verdict of the probe."""
+def spawn_run(ctx, name: str):
+    """`gpu_cli_ssh/<name>` for a lead that spawns (`lead_spawns_two`, `leads_spawn_leads`): the registry is on
+    the fleet laid; the verdict of the probe."""
     v = Verdict(f"gpu_cli_ssh/{name}")
     require(ctx)
     with T.Box(ctx) as box:
-        cli.start(ctx, roles=True)
-        cli.add_base(ctx)
-        cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "update_agent", "delete_agent"]}, subtree=True, runs_agents=True)
-        cli.make_registry(ctx, total=total, roles=cli.spawn_roles(name))
-        cli.add_cadencer(ctx)
+        cli.start(ctx, roles=True, bundles=cli.spawn_roles(name))
+        S.check_in_leads(ctx, [cli.LEAD])
+        S.fleet_there(v, ctx, "the lead, its provider (and store) and its roles registry are loaded, under the ids laid",
+                      {cli.LEAD: (cli.CHAT, "user"), "roles": ("agentic_resources.tools", cli.LEAD), **S.provider_there(ctx)})
         before = cli.tree(ctx.team)
         box.publish()
         watch = play(ctx, v, "lead", wiring(ctx, box) + TASKS[name])
@@ -153,12 +152,12 @@ def precreated_run(ctx, name: str, tree: dict, remote_agent: str):
     v = Verdict(f"gpu_cli_ssh/{name}")
     require(ctx)
     with T.Box(ctx) as box:
-        before = S.precreate(ctx, v, tree, all_keyed=ctx.model.keyed)
+        before = S.precreate(ctx, v, tree)
         box.open_backends([remote_agent])
         box.publish()
         watch = play(ctx, v, "lead", wiring(ctx, box, [remote_agent]) + TASKS[name])
         gpu.check_ins_ran(ctx, v)
-        gpu.lead_on_default(ctx, v)
+        gpu.lead_on_default(ctx, v, named=True)
         gpu.workers_on_model(ctx, v)
         S.precreated_end(ctx, v, before)
         box.end(v)

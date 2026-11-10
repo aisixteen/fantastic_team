@@ -286,7 +286,7 @@ def bridge_record(backends=(), stores=()) -> dict:
     """The master's bridge to the leg. The leg is open and may call exactly `BACKEND_VERBS` on
     `backends` (the master's backends the remote is to call; a backend minted later is opened by
     `grant_leg`) and `get` on `stores` (the master's credential stores the remote reads: #253). The
-    other end of each grant is the callee's `callable_by` (`open_backends`; `git_store_record` for the store)."""
+    other end of each grant is the callee's `callable_by` (`open_backends`; the store's record file, `fleets/git_credentials`, for the store)."""
     rec = {"id": BRIDGE, "parent_id": "user", "handler_module": "ws_bridge.tools",
            "ingress_rule": "allow_all_ingress", "transport": "ws", "host": "127.0.0.1",
            "port": "{{tunnel_port}}", "peer_id": LEG}
@@ -788,15 +788,6 @@ def streamed(rows: list[dict], client: str) -> tuple[bool, str]:
     return True, ""
 
 
-def git_store_record(ctx) -> dict:
-    """The master's credential store for the git server: one ref, bound to the server's host, its value read at
-    each `get` from the kernel's environment (`GIT_ENV`; the `env` backend keeps nothing at rest). Only the
-    bridge's leg may `get` from it (its `callable_by`)."""
-    return {"id": GIT_STORE, "parent_id": "user", "handler_module": "credential_store.tools", "backend": "env",
-            "refs": {GIT_REF: {"host": ctx.forge.host, "env": {"api_key": GIT_ENV}}},
-            "callable_by": {BRIDGE: list(STORE_VERBS)}}
-
-
 # ---- the harness: the box, the fixture on the git server, the checks -------------------
 
 def git_url(ctx) -> str:
@@ -832,9 +823,10 @@ class Box:
     def __enter__(self) -> "Box":
         self.remote.__enter__()
         try:
+            self.lay_stock()
             if self.git_token:
                 self.write_box_gitconfig()
-            self.stock_records = self.records(f"{DIR}0")  # a fresh remote kernel's own agents
+            self.stock_records = self.records(f"{DIR}0")  # a remote kernel on the stock records: base's stock agents and the ones its boot makes
             self.stock = set(self.stock_records)
         except BaseException:
             self.remote.stop()
@@ -843,6 +835,20 @@ class Box:
 
     def __exit__(self, *_):
         self.remote.stop()
+
+    def lay_stock(self) -> None:
+        """Base's stock records (the `stock` layer of `e2e/fleets/`) into `~/w/.fantastic` and `~/w0/.fantastic`
+        of the box, before any kernel starts there: each kernel loads them at its first start, the team's seed
+        does not run, and the remote folder holds base's stock agents and what the lead creates, nothing else.
+        One file per write, through ssh (copy only: no record is read)."""
+        stock = os.path.join(cli.FLEETS, "stock")
+        for folder in (DIR, f"{DIR}0"):
+            for rel, text in team_mod.fleet_files([stock], {}):
+                path = f"{folder}/.fantastic/{rel}"
+                r = subprocess.run(self.remote.argv(f"mkdir -p {shq(os.path.dirname(path))} && cat > {shq(path)}"),
+                                   input=text, capture_output=True, text=True, timeout=60)
+                if r.returncode != 0:
+                    raise pr.RemoteError(f"box stock record {path}: {r.stderr[-400:]}")
 
     def write_box_gitconfig(self) -> None:
         text = gitconfig(pr.gateway_url(git_url(self.ctx)), auth_header(self.ctx))

@@ -7,7 +7,7 @@ checks are `helpers/ssh_twins.py`'s; the local checks are `cli/lead_spawns_two`'
 
 import re
 
-from helpers import cli, podman_remote, ssh_twins as T, team as team_mod
+from helpers import cli, cli_scenarios as S, podman_remote, ssh_twins as T, team as team_mod
 from helpers.verdict import Verdict
 
 TASK = "Fix the failing test: spawn two workers here, one for the box's workspace (the remote asks it), then delete them."
@@ -17,18 +17,7 @@ def run(ctx):
     v = Verdict("cli_ssh/lead_spawns_two")
     podman_remote.require()
     with T.Box(ctx) as box:
-        cli.start(ctx, roles=True)
-        cli.add_base(ctx)
-        base = set(cli.ids(ctx.team))
-        cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "delete_agent"]}, subtree=True)
-        cli.make_registry(ctx, total=2, roles=cli.spawn_roles("lead_spawns_two"))
-        new = set(cli.ids(ctx.team)) - base
-        v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
-                new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
-        count = ctx.team.send("roles", {"type": "get_count"})["result"]
-        v.check("the registry is on and counts nothing running", count == {"running": 0, "max": 2}, str(count))
-        cli.add_cadencer(ctx)
-        before = cli.tree(ctx.team)
+        before = S.spawn_two_start(ctx, v)
         box.publish()
         box.bind()
         v.check("the scripted model played every turn, none past the end",

@@ -47,9 +47,7 @@ def run(ctx):
     token = ctx.forge.token
     with T.Box(ctx, git_token=False) as box:
         cli.start(ctx, env={T.GIT_ENV: token})
-        cli.add_base(ctx)
-        cli.create(ctx.team, T.git_store_record(ctx))
-        lead = cli.make_lead(ctx, {cli.EXEC: "*"})
+        lead = cli.LEAD
         before = cli.ids(ctx.team)
         box.publish()
         start = server_refs(ctx)

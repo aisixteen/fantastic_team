@@ -1495,6 +1495,25 @@ def selftest_ssh_twins(v: Verdict) -> None:
     v.check("the remote kernel starts in the tunnel's ssh session, its pid kept",
             T.kernel_start_command() == "mkdir -p w && cd w && echo $$ > team.pid && "
             "exec fantastic_team --headless >> team.log 2>&1")
+    # the box's lay: base's stock records, one write per file, into the box's two kernel folders before any start
+    import types
+    from unittest import mock
+    sent = []
+
+    def fake_run(argv, input=None, **_):
+        sent.append((argv[-1], input))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    lay_box = T.Box(types.SimpleNamespace(run_dir=tempfile.gettempdir()))
+    lay_box.remote.port, lay_box.remote.key = 2200, "/k/id"
+    with mock.patch.object(T.subprocess, "run", fake_run):
+        lay_box.lay_stock()
+    stock_files = dict(team_mod.fleet_files([os.path.join(cli_mod.FLEETS, "stock")], {}))
+    written = {cmd.split(" && cat > ", 1)[1].strip("'"): text for cmd, text in sent}
+    v.check("the box lay sends one write per stock record file under w/.fantastic and one under w0/.fantastic, each "
+            "the file's text, with the folder made first",
+            len(sent) == 2 * len(stock_files) == len(written) and len(stock_files) == 6
+            and written == {f"{d}/.fantastic/{rel}": text for d in (T.DIR, f"{T.DIR}0") for rel, text in stock_files.items()}
+            and all(cmd.startswith("mkdir -p ") for cmd, _ in sent), str(sorted(written)))
     from helpers import gpu_cli as gpu_mod
 
     class History:
@@ -1729,6 +1748,11 @@ def selftest_git_credentials(v: Verdict) -> None:
             rec["handler_module"] == "team_git.tools" and rec["credentials"] == {"store": store, "ref": T.GIT_REF}
             and rec["can_call"] == {"$self": "*", store: ["get"]} and "token" not in json.dumps(rec).lower().replace("x-access-token", ""),
             str(rec))
+    with open(os.path.join(cli_mod.FLEETS, "git_credentials", "agents", "user", "agents", "git_credentials", "agent.yaml")) as f:
+        store_file = f.read()
+    v.check("the master's store file names the ref and the env of the constants the probe and the script use, and admits "
+            "the bridge's `get` only", f'"{T.GIT_REF}"' in store_file and f"api_key: {T.GIT_ENV}" in store_file
+            and f"{T.BRIDGE}: [get]" in store_file, store_file)
     script = json.dumps(T.script_git_credentials()) + T.git_box_command() + T.setup_command()
     v.check("neither the script nor the box's setup names a token, an Authorization header, a git config or a credential helper: the "
             "box is given none", not [w for w in ("Authorization", "extraHeader", ".gitconfig", "credential.helper", "x-access-token",

@@ -6,7 +6,7 @@ box, and s2 spawns its worker (on the master, its tools the box's exec agent), w
 and pushes. Each sub-lead deletes its worker, the lead deletes both sub-leads. The wiring and the shared checks
 are `helpers/ssh_twins.py`'s; the local checks are `cli/leads_spawn_leads`'s."""
 
-from helpers import cli, podman_remote, ssh_twins as T, team as team_mod
+from helpers import cli, cli_scenarios as S, podman_remote, ssh_twins as T, team as team_mod
 from helpers.verdict import Verdict
 
 TASK = "Fix the failing test with two sub-leads here, one for the box's workspace (the remote asks it); delete what you spawned."
@@ -16,16 +16,7 @@ def run(ctx):
     v = Verdict("cli_ssh/leads_spawn_leads")
     podman_remote.require()
     with T.Box(ctx) as box:
-        cli.start(ctx, roles=True)
-        cli.add_base(ctx)
-        base = set(cli.ids(ctx.team))
-        cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "delete_agent"]}, subtree=True)
-        cli.make_registry(ctx, total=4, roles=cli.spawn_roles("leads_spawn_leads"))
-        new = set(cli.ids(ctx.team)) - base
-        v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
-                new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
-        cli.add_cadencer(ctx)
-        before = cli.tree(ctx.team)
+        before = S.spawn_leads_start(ctx, v)
         box.publish()
         box.bind()
         v.check("the scripted model played every turn, none past the end",
