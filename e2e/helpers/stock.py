@@ -202,11 +202,17 @@ def spawn_project_lead(ctx, team) -> dict:
     """The registry's spawned tree is rooted at the `project_lead` (what the cadencer digests, in roles
     mode): the team gets its provider (the scripted model, under the lead) and the operator spawns
     one naming it. A spawner grants only what it holds, so the operator holds what the card grants
-    first. Returns the spawn's result (`id`, ...)."""
+    first. A child takes its memory store from its spawner and the operator has none, so the
+    spawned lead gets the team's store here, before its first message (its workers copy it).
+    Returns the spawn's result (`id`, ...)."""
     operator_holds(team, {"github": "*", "roles": "*", "kernel_state": "*", "canvas_page": ["new_canvas"]})
     cli.add_provider(ctx, ctx.lead)
-    return team.send("roles", {"type": "spawn", "role": "project_lead", "provider": cli.PROVIDER,
+    made = team.send("roles", {"type": "spawn", "role": "project_lead", "provider": cli.PROVIDER,
                                "model": ctx.vars["model_name"]})["result"]
+    if made.get("id"):
+        update(team, made["id"], memory_store_id="memory")
+        link(team, made["id"], "memory")
+    return made
 
 
 def lead_tier(ctx, **extra) -> dict:
