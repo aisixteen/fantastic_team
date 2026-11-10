@@ -175,3 +175,14 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 - **e2e for the failed-turn retry** (#533).
 - **Prices are one `prices` map on the provider** (#535): `{<model>: {input, output, cache_read?, cache_write_5m?}}` in $ per million tokens replaces the four flat `price_*_per_mtok` fields, which are removed. A model with no entry is `unpriced`, never $0; `usage` `by_model` carries `cost_usd` per model and in total.
 - **`usage` has `by_agent`** (#546).
+
+## Pin at `255bef1`
+
+`Cargo.lock` now pins fantastic `255bef1`.
+
+- Base has one boot and one stop: `boot_kernel`, `stop_kernel` and `starts_kernel`. `main_with` takes a third argument, `readme_sections`.
+- `--headless --port N --host ADDR` is accepted. A recorded `web` boots in every mode and records a free port when it has none. A taken port is only a warning.
+- The stop is bounded: 15 s grace, then exit 1.
+- The launcher seeds the folder before `main_with`; the kernel never seeds.
+- `BootstrapOptions::one_shot(state_dir, work_dir)` has two folders.
+- The `status` reply of an AI agent has `inquiry_from`.
