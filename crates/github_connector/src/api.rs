@@ -1,29 +1,10 @@
-//! HTTP to the GitHub API, and the one redaction rule for this connector.
+//! HTTP to the GitHub API.
 
 use std::time::Duration;
 
 use reqwest::Method;
 use serde_json::{json, Value};
-use team_git_connector::git::{redact as git_redact, Auth};
-
-/// Replace every given secret in `s` with the shown marker.
-pub(crate) fn redact(s: &str, secrets: &[&str]) -> String {
-    let mut out = s.to_string();
-    for secret in secrets {
-        if !secret.is_empty() {
-            out = git_redact(
-                &out,
-                Some(&Auth {
-                    username: String::new(),
-                    token: secret.to_string(),
-                    host: String::new(),
-                    proto: String::new(),
-                }),
-            );
-        }
-    }
-    out
-}
+use team_git_connector::git::redact_all as redact;
 
 /// A client bound to one API root and one timeout.
 pub(crate) struct Api {

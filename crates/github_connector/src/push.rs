@@ -8,22 +8,9 @@ use reqwest::Url;
 use serde_json::{json, Value};
 use team_git_connector::git::{self, Auth};
 
-use crate::api::{redact, Api};
+use crate::api::Api;
 use crate::app;
 use crate::{bad, valid_repo, Cfg};
-
-fn scrub_reply(mut v: Value, secrets: &[&str]) -> Value {
-    fn walk(v: &mut Value, secrets: &[&str]) {
-        match v {
-            Value::String(s) => *s = redact(s, secrets),
-            Value::Array(a) => a.iter_mut().for_each(|x| walk(x, secrets)),
-            Value::Object(m) => m.values_mut().for_each(|x| walk(x, secrets)),
-            _ => {}
-        }
-    }
-    walk(&mut v, secrets);
-    v
-}
 
 /// Push `branch` from the worktree `path` of the record's git agent to `repo`.
 pub(crate) async fn push(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, payload: &Value) -> Value {
@@ -159,5 +146,7 @@ pub(crate) async fn push(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, payload:
         }),
         Err(e) => e,
     };
-    scrub_reply(reply, &[token.as_str()])
+    let mut reply = reply;
+    git::scrub_all(&mut reply, &[token.as_str()]);
+    reply
 }

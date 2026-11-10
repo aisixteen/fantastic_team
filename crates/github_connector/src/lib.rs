@@ -40,6 +40,7 @@ use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
 use fantastic_kernel::refusal::{refusal, with};
 use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Map, Value};
+use team_git_connector::text_of;
 
 /// The handler module name this bundle registers under.
 pub const HANDLER_MODULE: &str = "team_github.tools";
@@ -105,10 +106,6 @@ pub(crate) fn valid_repo(s: &str) -> bool {
     ok(owner) && ok(name)
 }
 
-fn text(meta: &Value, key: &str) -> Option<String> {
-    meta.get(key).and_then(|v| v.as_str()).map(str::to_string)
-}
-
 impl GithubConnectorBundle {
     /// Read the config from the agent's merged meta.
     pub(crate) fn cfg(meta: &Value) -> Cfg {
@@ -132,12 +129,12 @@ impl GithubConnectorBundle {
                         .collect()
                 })
                 .unwrap_or_default(),
-            api_url: text(meta, "api_url")
+            api_url: text_of(meta, "api_url")
                 .unwrap_or_else(|| DEFAULT_API.into())
                 .trim_end_matches('/')
                 .to_string(),
-            git: text(meta, "git").filter(|s| !s.is_empty()),
-            directive: text(meta, "directive").unwrap_or_default(),
+            git: text_of(meta, "git").filter(|s| !s.is_empty()),
+            directive: text_of(meta, "directive").unwrap_or_default(),
             timeout_s: meta.get("timeout_s").and_then(|v| v.as_u64()).unwrap_or(30),
         }
     }

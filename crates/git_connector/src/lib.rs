@@ -87,7 +87,8 @@ pub struct Cfg {
     pub has_credentials: bool,
 }
 
-fn text_of(meta: &Value, key: &str) -> Option<String> {
+/// The string at `key` of a merged meta, as it is (an empty one too).
+pub fn text_of(meta: &Value, key: &str) -> Option<String> {
     meta.get(key).and_then(|v| v.as_str()).map(str::to_string)
 }
 
@@ -98,7 +99,9 @@ impl GitConnectorBundle {
         Cfg {
             repo_dir: PathBuf::from(text_of(meta, "repo_dir").unwrap_or_default()),
             default_root: root.is_none(),
-            workspace_root: root.map(PathBuf::from).unwrap_or_else(|| default_workspace_root(id)),
+            workspace_root: root
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_workspace_root(id)),
             remote: text_of(meta, "remote").unwrap_or_default(),
             default_branch: text_of(meta, "default_branch").unwrap_or_default(),
             username: text_of(meta, "username").unwrap_or_else(|| "x-access-token".into()),
@@ -127,9 +130,14 @@ static WORKTREES_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// second call is refused.
 pub fn set_worktrees_dir(dir: PathBuf) -> Result<(), String> {
     if !dir.is_absolute() {
-        return Err(format!("--worktrees needs an absolute path, not `{}`", dir.display()));
+        return Err(format!(
+            "--worktrees needs an absolute path, not `{}`",
+            dir.display()
+        ));
     }
-    WORKTREES_DIR.set(dir).map_err(|_| "--worktrees is set twice".to_string())
+    WORKTREES_DIR
+        .set(dir)
+        .map_err(|_| "--worktrees is set twice".to_string())
 }
 
 /// The default worktree root of git agent `id`: `<worktrees folder>/<id>`, the folder being
@@ -138,7 +146,11 @@ pub fn default_workspace_root(id: &str) -> PathBuf {
     WORKTREES_DIR
         .get()
         .cloned()
-        .unwrap_or_else(|| std::env::temp_dir().join("fantastic_team").join("worktrees"))
+        .unwrap_or_else(|| {
+            std::env::temp_dir()
+                .join("fantastic_team")
+                .join("worktrees")
+        })
         .join(id)
 }
 
