@@ -36,6 +36,7 @@ pub mod roles;
 use async_trait::async_trait;
 use fantastic_bundle::py_repr;
 use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
+use fantastic_kernel::grants::union;
 use fantastic_kernel::refusal::{self, bad, missing};
 use fantastic_kernel::{current_origin, Agent, AgentId, Item, Kernel};
 use roles::{Card, REGISTRY_TOKEN};
@@ -162,25 +163,6 @@ fn limit_refusal(scope: &str, role: &str, running: usize, max: u64, who: Option<
         refusal::with(&mut r, "lead", json!(w));
     }
     r
-}
-
-/// Add `verbs` to a grant map's `key` (a `"*"` stays `"*"`).
-fn grant_verbs(map: &mut Map<String, Value>, key: &str, verbs: &Value) {
-    let merged = match (map.get(key), verbs) {
-        (Some(Value::String(s)), _) if s == "*" => json!("*"),
-        (_, Value::String(s)) if s == "*" => json!("*"),
-        (Some(Value::Array(a)), Value::Array(b)) => {
-            let mut all = a.clone();
-            for v in b {
-                if !all.contains(v) {
-                    all.push(v.clone());
-                }
-            }
-            Value::Array(all)
-        }
-        _ => verbs.clone(),
-    };
-    map.insert(key.to_string(), merged);
 }
 
 /// The roles, and the bundles that failed to load (their errors).
@@ -466,7 +448,10 @@ async fn spawn_reply(
     let mut can_call = card_can_call(reg, card);
     // the child completes through its provider
     if let Some(p) = provider_of(&tier_fields) {
-        grant_verbs(&mut can_call, &p, &json!(PROVIDER_VERBS));
+        union(
+            &mut can_call,
+            &Map::from_iter([(String::from(&p), json!(PROVIDER_VERBS))]),
+        );
     }
     // a tier that names the store the agent keeps its conversation in: the agent may
     // use it (the other end is opened below, before the first message)
@@ -476,18 +461,25 @@ async fn spawn_reply(
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     if let Some(s) = &store {
-        grant_verbs(&mut can_call, s, &json!("*"));
+        union(
+            &mut can_call,
+            &Map::from_iter([(String::from(s), json!("*"))]),
+        );
     }
     let reg_verbs = reg_verbs_of(&can_call, reg);
     let mut callable_by = Map::new();
-    for (k, v) in &card.callable_by {
-        grant_verbs(&mut callable_by, k, v);
-    }
+    union(&mut callable_by, &card.callable_by);
     if let Some(c) = &caller {
-        grant_verbs(&mut callable_by, c.as_str(), &json!(PARENT_VERBS));
+        union(
+            &mut callable_by,
+            &Map::from_iter([(String::from(c.as_str()), json!(PARENT_VERBS))]),
+        );
     }
     if first_message.is_some() {
-        grant_verbs(&mut callable_by, reg.as_str(), &json!(["send"]));
+        union(
+            &mut callable_by,
+            &Map::from_iter([(String::from(reg.as_str()), json!(["send"]))]),
+        );
     }
 
     let mut create = Map::new();
@@ -526,7 +518,7 @@ async fn spawn_reply(
     if let Some(s) = store_id.clone() {
         let cid = child.clone();
         let _ = kernel.edit_callable_by(&AgentId::from(s.as_str()), move |m| {
-            grant_verbs(m, &cid, &json!("*"));
+            union(m, &Map::from_iter([(String::from(&cid), json!("*"))]));
             true
         });
     }
@@ -647,7 +639,10 @@ fn open_provider(kernel: &Kernel, provider: &str, child: &str) {
     if agent_of(kernel, &id).is_some() {
         let cid = child.to_string();
         let _ = kernel.edit_callable_by(&id, move |m| {
-            grant_verbs(m, &cid, &json!(PROVIDER_VERBS));
+            union(
+                m,
+                &Map::from_iter([(String::from(&cid), json!(PROVIDER_VERBS))]),
+            );
             true
         });
     }
@@ -662,7 +657,10 @@ fn card_can_call(reg: &AgentId, card: &Card) -> Map<String, Value> {
         } else {
             k.as_str()
         };
-        grant_verbs(&mut can_call, key, v);
+        union(
+            &mut can_call,
+            &Map::from_iter([(key.to_string(), v.clone())]),
+        );
     }
     can_call
 }
@@ -699,7 +697,7 @@ fn open_edges(
         let child_id = child.to_string();
         kernel
             .edit_callable_by(reg, move |m| {
-                grant_verbs(m, &child_id, &verbs);
+                union(m, &Map::from_iter([(child_id.clone(), verbs.clone())]));
                 true
             })
             .map_err(grant_failed)?;
@@ -712,7 +710,10 @@ fn open_edges(
     let cid = child.to_string();
     kernel
         .edit_can_call(c, move |m| {
-            grant_verbs(m, &cid, &json!(PARENT_VERBS));
+            union(
+                m,
+                &Map::from_iter([(String::from(&cid), json!(PARENT_VERBS))]),
+            );
             true
         })
         .map_err(grant_failed)?;
@@ -720,7 +721,10 @@ fn open_edges(
     let pid = c.as_str().to_string();
     kernel
         .edit_can_call(&child_id, move |m| {
-            grant_verbs(m, &pid, &json!(CHILD_VERBS));
+            union(
+                m,
+                &Map::from_iter([(String::from(&pid), json!(CHILD_VERBS))]),
+            );
             true
         })
         .map_err(grant_failed)?;
@@ -728,7 +732,10 @@ fn open_edges(
     let cid = child.to_string();
     kernel
         .edit_callable_by(c, move |m| {
-            grant_verbs(m, &cid, &json!(CHILD_VERBS));
+            union(
+                m,
+                &Map::from_iter([(String::from(&cid), json!(CHILD_VERBS))]),
+            );
             true
         })
         .map_err(grant_failed)?;
@@ -776,7 +783,7 @@ fn send_first(kernel: &Arc<Kernel>, reg: &AgentId, child: &str, text: String) {
     let text = format!("{text}{}", team_note(kernel, reg, &AgentId::from(child)));
     let cid = child.to_string();
     let _ = kernel.edit_can_call(reg, move |m| {
-        grant_verbs(m, &cid, &json!(["send"]));
+        union(m, &Map::from_iter([(String::from(&cid), json!(["send"]))]));
         true
     });
     let k = Arc::clone(kernel);
@@ -875,7 +882,7 @@ fn open_tool_edges(kernel: &Kernel, child: &str, card: &Card) -> Result<(), Valu
         }
         let cid = child.to_string();
         match kernel.edit_callable_by(&id, move |m| {
-            grant_verbs(m, &cid, &verbs);
+            union(m, &Map::from_iter([(cid.clone(), verbs.clone())]));
             true
         }) {
             Ok(_) => done.push(id),
@@ -958,13 +965,13 @@ fn fork_grant(
     let s = src.as_str().to_string();
     kernel.edit_can_call(reg, |m| {
         before_cc = m.get(&s).cloned();
-        grant_verbs(m, &s, &json!(["fork"]));
+        union(m, &Map::from_iter([(String::from(&s), json!(["fork"]))]));
         true
     })?;
     let r = reg.as_str().to_string();
     if let Err(e) = kernel.edit_callable_by(src, |m| {
         before_cb = m.get(&r).cloned();
-        grant_verbs(m, &r, &json!(["fork"]));
+        union(m, &Map::from_iter([(String::from(&r), json!(["fork"]))]));
         true
     }) {
         fork_ungrant(kernel, reg, src, &(before_cc, None));
@@ -1052,12 +1059,13 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
             can_call.insert(s.clone(), v.clone());
         }
     }
-    for (k, v) in card_can_call(reg, card) {
-        grant_verbs(&mut can_call, &k, &v);
-    }
+    union(&mut can_call, &card_can_call(reg, card));
     // the fork completes through its provider
     if let Some(p) = provider_of(c.tier_fields) {
-        grant_verbs(&mut can_call, &p, &json!(PROVIDER_VERBS));
+        union(
+            &mut can_call,
+            &Map::from_iter([(String::from(&p), json!(PROVIDER_VERBS))]),
+        );
         open_provider(kernel, &p, fork.id.as_str());
     }
     let reg_verbs = reg_verbs_of(&can_call, reg);
@@ -1110,14 +1118,15 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
     let own = card.callable_by.clone();
     let opened = kernel
         .edit_callable_by(&fork.id, move |m| {
-            for (k, v) in &own {
-                grant_verbs(m, k, v);
-            }
+            union(m, &own);
             if let Some(w) = &caller {
-                grant_verbs(m, w.as_str(), &json!(PARENT_VERBS));
+                union(
+                    m,
+                    &Map::from_iter([(String::from(w.as_str()), json!(PARENT_VERBS))]),
+                );
             }
             if first {
-                grant_verbs(m, &r, &json!(["send"]));
+                union(m, &Map::from_iter([(String::from(&r), json!(["send"]))]));
             }
             true
         })

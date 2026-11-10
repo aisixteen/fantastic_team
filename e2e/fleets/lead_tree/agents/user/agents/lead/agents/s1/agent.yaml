@@ -1,0 +1,17 @@
+id: s1
+handler_module: ai_chat.tools
+provider_id: provider
+memory_store_id: memory
+model: "{{model_name}}"
+post_system_prompt: {{check_ins}}
+can_call:
+  "$self": "*"
+  memory: "*"
+  provider: [complete, watch]
+  w1: "*"
+  "$subtree": [schedule, unschedule, list, pause, resume, tick_now, history]
+  kernel_state: [create_agent, delete_agent]
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  "$subtree": [send]

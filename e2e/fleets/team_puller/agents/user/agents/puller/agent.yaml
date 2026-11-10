@@ -1,0 +1,13 @@
+id: puller
+handler_module: team_puller.tools
+repos: [acme/widgets]
+maintainer: maintainer-login
+app: "team-bot[bot]"
+github: github
+store: queue_files
+can_call:
+  "$self": "*"
+  github: "*"
+  queue_files: "*"
+callable_by:
+  "$self": "*"

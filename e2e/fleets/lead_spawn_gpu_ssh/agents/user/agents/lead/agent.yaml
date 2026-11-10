@@ -1,0 +1,17 @@
+id: lead
+handler_module: ai_chat.tools
+provider_id: provider
+memory_store_id: memory
+post_system_prompt: {{check_ins}}
+can_call:
+  "$self": "*"
+  memory: "*"
+  provider: [complete, watch]
+  worker_exec: "*"
+  "$subtree": "*"
+  kernel_state: [create_agent, update_agent, delete_agent, docs]
+  roles: [roles, role, spawn, get_count, fleet]
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  "$subtree": [send]

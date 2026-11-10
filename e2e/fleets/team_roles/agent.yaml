@@ -1,0 +1,8 @@
+id: kernel_state
+handler_module: kernel_state.tools
+callable_by:
+  "$self": "*"
+  lead: [await_set, await_cancel, create_agent, delete_agent]
+  dispatcher: [create_agent, update_agent, delete_agent]
+  board: [reflect]
+  cadencer: [reflect]

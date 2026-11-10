@@ -1,9 +1,11 @@
 """The cli group's shared steps (issues #219, #221): one fixture, fantastic's own start, agents.
 
 Every test in `tests/cli/` starts the team binary the way fantastic is started
-(`--headless`, or `webui --port N`) in the run folder, makes its agents with `send` +
-`create_agent` under fixed ids (no blueprint, no import), hands the lead its task, and checks
-the result and the record set.
+(`--headless`, or `webui --port N`) in the run folder, on a fleet laid as record files, hands the
+lead its task, and checks the result and the record set. The fleet is `e2e/fleets/<layer>/` folders
+(files relative to `.fantastic/`) named by the `fleet:` key of the test's `test.yaml`, with `{{marks}}`
+filled and copied into `<run>/.fantastic/` before the first start (`start`): the kernel loads the
+records at boot, the seed does not run, and no `create_agent` sets the test up.
 
 THE FIXTURE is a local git repo with one failing test: `test_calc.py` checks `adder.add`
 and `muler.mul`, and both are wrong. SOLVED means the test passes AND the fix is committed
@@ -131,12 +133,37 @@ def create(team, payload: dict) -> dict:
     return records.create(team, payload)
 
 
+FLEETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fleets")
+
+
+def lay_bundles(ctx, srcs) -> list[str]:
+    """Copy the role bundles (folders of `<role>/bundle.yaml`) into the team's `.fantastic/bundles/`;
+    the kernel reads them at boot. Without check-ins (`check_ins_on`) a sub-lead bundle's check-ins
+    paragraph goes. Returns the bundle names."""
+    dst = os.path.join(ctx.work, ".fantastic", "bundles")
+    names = []
+    for src in srcs:
+        for name in sorted(os.listdir(src)):
+            shutil.copytree(os.path.join(src, name), os.path.join(dst, name), dirs_exist_ok=True)
+            if not check_ins_on(ctx):  # a sub-lead bundle carries the check-ins paragraph: off, it goes
+                y = os.path.join(dst, name, "bundle.yaml")
+                with open(y) as f:
+                    text = f.read()
+                with open(y, "w") as f:
+                    f.write(text.replace("\n\n    " + CHECK_INS, ""))
+            names.append(name)
+    return names
+
+
 def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | None = None,
-          env: dict | None = None):
+          env: dict | None = None, bundles: str | list[str] | None = None, fleet: str = "fleet"):
     """Start the team binary as fantastic's CLI, in the run folder (or its `sub` folder, for a
-    test that runs twice). `roles` turns on the `agentic_resources` bundle
-    (`FANTASTIC_AGENTIC_RESOURCES=1`). `env`: more variables for the kernel (a credential store's
-    `env` backend reads its values from them). Returns the Team; `ctx.repo` is the fixture."""
+    test that runs twice), on the fleet its `test.yaml` names (`fleet:`; `fleet_<name>` for a second team folder, named by
+    `fleet`): the layers' record files are laid in `.fantastic/` before the first start, and every agent laid must be loaded after it.
+    `roles` turns on the `agentic_resources` bundle (`FANTASTIC_AGENTIC_RESOURCES=1`); `bundles`: the
+    role bundle folders (or one) the scenario's roles registry offers, copied to `.fantastic/bundles/`.
+    `env`: more variables for the kernel (a credential store's `env` backend reads its values from
+    them). Returns the Team; `ctx.repo` is the fixture."""
     keys = run_flow.fake_keys(ctx)
     ctx.secrets = keys
     env = {"E2E_MODEL_KEY": keys["model_key"], **(env or {})}
@@ -149,21 +176,35 @@ def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | Non
     env["GIT_CEILING_DIRECTORIES"] = os.path.dirname(os.path.abspath(ctx.work))
     ctx.repo = make_fixture(ctx.work)
     os.makedirs(os.path.join(ctx.work, "sandbox"), exist_ok=True)
+    if bundles:
+        lay_bundles(ctx, [bundles] if isinstance(bundles, str) else bundles)
+    laid = lay_test_fleet(ctx, fleet)
     ctx.team = team_mod.Team(ctx.binary, ctx.work, env)
+    default = ctx.model.ai_record().get("model")
+    if PROVIDER in laid and default:  # a RAM store starts empty: every start plants the default again
+        ctx.team.on_start = [*getattr(ctx.team, "on_start", []), lambda t: plant_provider_default(t, default)]
     ctx.team.start(extra_args=extra_args)
+    missing = [i for i in laid if i not in ctx.team.agents()]
+    if missing:
+        raise RuntimeError(f"the kernel did not load these laid records: {missing}")
     if hasattr(ctx.model, "watch"):  # the vllm and anthropic plugs count the agents' usage through the team
         ctx.model.watch(ctx.team)
     return ctx.team
 
 
-def add_base(ctx) -> None:
-    """The two agents every test of this group's lead and workers use: the credential store
-    (the model's key from the environment, the way `backend: env` says) and the exec agent."""
-    create(ctx.team, {"id": "credentials", "parent_id": "user", "handler_module": "credential_store.tools",
-                      "backend": "env",
-                      "refs": {f"model/{ctx.model.host}": {"host": ctx.model.host,
-                                                            "env": {"api_key": "E2E_MODEL_KEY"}}}})
-    create(ctx.team, dict(tool_record(ctx.repo, ctx.work), id=EXEC, parent_id="user"))
+def lay_test_fleet(ctx, key: str = "fleet") -> list[str]:
+    """Lay the fleet the test's `key` names into `ctx.work`'s `.fantastic/`: the layers of
+    `e2e/fleets/` (a `{{provider_shape}}` in a name filled), then the test's own folder `<key>/`
+    when it has one; the marks are `ctx.vars` and `work`, `check_ins` (the check-ins paragraph as a
+    quoted string on a model test, empty otherwise). Returns the ids laid; none when the test has no `key`."""
+    names = team_mod.fill_text(ctx.test.get(key, ""), ctx.vars).split()
+    if not names:
+        return []
+    variables = {**ctx.vars, "work": ctx.work,
+                 "check_ins": json.dumps(CHECK_INS) if check_ins_on(ctx) else '""'}
+    own = os.path.join(ctx.dir, key)
+    return team_mod.lay_fleet(ctx.work, [os.path.join(FLEETS, n) for n in names], variables,
+                              own if os.path.isdir(own) else None)
 
 
 LEAD = "lead"
@@ -184,33 +225,11 @@ CHECK_INS = (
     "(`unschedule`) is your very last call, after every other step and wait, right before you end; the "
     "scheduler agent stays. Never end your run while an agent you started is still working; its report or your "
     "next check-in wakes you. To wait, end your turn with `await`; never start a timer or sleep job to wait.")
-SCHEDULER_VERBS = ["schedule", "unschedule", "list", "pause", "resume", "tick_now", "history"]
 
 
 def check_ins_on(ctx) -> bool:
     """Leads get `CHECK_INS` on a model test, unless `E2E_CHECK_INS=0` (the A/B run without them)."""
     return ctx.test.get("costs") == "gpu" and os.environ.get("E2E_CHECK_INS", "1") != "0"
-
-
-def _with(grants: dict, key: str, verbs: list) -> None:
-    """Add `verbs` to `grants[key]` (a `"*"` stays)."""
-    have = grants.get(key)
-    if have == "*" or have == ["*"]:
-        return
-    grants[key] = list(dict.fromkeys([*(have or []), *verbs]))
-
-
-def check_ins(ctx, rec: dict) -> None:
-    """Make `rec` a lead with check-ins: the grants to make, use and delete its own scheduler, and
-    `$subtree` `send` so the scheduler, its child, may wake it; on a model test also `CHECK_INS`
-    (the grants go to the scripted twin too: the sub-lead bundle it spawns asks for them)."""
-    _with(rec["can_call"], "$subtree", SCHEDULER_VERBS)
-    _with(rec["can_call"], "kernel_state", ["create_agent", "delete_agent"])
-    _with(rec["callable_by"], "$subtree", ["send"])
-    if not check_ins_on(ctx):
-        return
-    rec["post_system_prompt"] = CHECK_INS
-    ctx.check_in_leads = [*getattr(ctx, "check_in_leads", []), rec["id"]]
 
 
 # THE PROVIDER: one per team, the connection to the plug's model (its kind, endpoint, key, the
@@ -286,23 +305,18 @@ def add_provider(ctx, parent: str) -> None:
         records.merge(team, "credentials", "callable_by", {PROVIDER: ["get"]}, team.agents())
 
 
-def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool = False,
-               lead: bool = False, **extra) -> str:
+def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool = False, **extra) -> str:
     """One AI agent: an AI chat (`ai_chat.tools`) under `parent` with the fixed id `id`, completing
     through the team's provider (`PROVIDER`, made under the first chat) on the provider's default
     model, or the `model` named in `extra`. `grants` is its `can_call` beyond `$self`, the shared
     `memory` store and its provider (agent -> verbs, `"*"` for every verb). An edge is written on
     both ends: the caller's `can_call` in this payload, the callee's `callable_by` for the callees
     that exist already (a child made later admits its parent through `$parent`). `key` is kept for
-    the callers: the key is the provider's, never a chat's. `lead`: it runs agents, so it gets
-    check-ins (`check_ins`). Returns `id`."""
+    the callers: the key is the provider's, never a chat's. Returns `id`."""
     team = ctx.team
     can_call = {"$self": "*", "memory": "*", PROVIDER: PROVIDER_VERBS, **(grants or {})}
     rec = {"id": id, "parent_id": parent, "handler_module": CHAT, "provider_id": PROVIDER,
            "memory_store_id": "memory", "can_call": can_call, "callable_by": {"$self": "*", "$parent": "*"}}
-    if lead:
-        check_ins(ctx, rec)
-        can_call = rec["can_call"]
     rec.update(extra)
     records.create(team, rec)
     if PROVIDER not in team.agents():
@@ -312,21 +326,6 @@ def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool 
         if callee in have and callee != "$self":
             records.merge(team, callee, "callable_by", {id: verbs}, have)
     return id
-
-
-def make_lead(ctx, grants: dict | None = None, subtree: bool = False, runs_agents: bool = False) -> str:
-    """The lead: `make_agent` under `user` with the model's key. `subtree` lets it call
-    everything below it; `runs_agents`: it has agents to look after, so it gets check-ins."""
-    grants = dict(grants or {})
-    # fantastic's own hints send every agent to `send kernel {type: docs, of: ...}` for a verb's
-    # signature: a lead that may not read them stops and asks the operator, who is not there
-    # (only a listed grant is extended: with none, the lead keeps the reach it has)
-    ks = grants.get("kernel_state")
-    if isinstance(ks, list):
-        grants["kernel_state"] = list(dict.fromkeys([*ks, "docs"]))
-    lead = make_agent(ctx, LEAD, "user", {**({"$subtree": "*"} if subtree else {}), **grants},
-                      key=True, lead=runs_agents)
-    return lead
 
 
 TESTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests")
@@ -428,34 +427,6 @@ def worker_model() -> str | None:
     spawn its workers with it, so leads (`E2E_MODEL`) and workers run different models; None: every
     agent runs the lead's own."""
     return os.environ.get("E2E_WORKER_MODEL") or None
-
-
-def make_registry(ctx, total: int, parent: str = LEAD, roles: str | list[str] | None = None) -> str:
-    """The roles registry `roles` (`agentic_resources`) under `parent`, with `limits.total`, and
-    the test's ROLE BUNDLES (a folder, or a list of folders, of `<role>/bundle.yaml`; default the test's own `bundles/`)
-    written under the team's `.fantastic/bundles/` and loaded into the running kernel
-    (`reload_bundle`). A role names no model: a spawned agent runs on its spawner's backend, with
-    the model the spawn names. The lead may call the registry."""
-    team = ctx.team
-    srcs = [roles or os.path.join(ctx.dir, "bundles")] if not isinstance(roles, list) else roles
-    dst = os.path.join(ctx.work, ".fantastic", "bundles")
-    for src in srcs:
-        for name in sorted(os.listdir(src)):
-            shutil.copytree(os.path.join(src, name), os.path.join(dst, name), dirs_exist_ok=True)
-            if not check_ins_on(ctx):  # a sub-lead bundle carries the check-ins paragraph: off, it goes
-                y = os.path.join(dst, name, "bundle.yaml")
-                with open(y) as f:
-                    text = f.read()
-                with open(y, "w") as f:
-                    f.write(text.replace("\n\n    " + CHECK_INS, ""))
-            loaded = team.send("kernel", {"type": "reload_bundle", "name": name})
-            assert (loaded.get("result") or {}).get("reloaded") == name, f"bundle {name}: {loaded}"
-    records.create(team, {"id": "roles", "parent_id": parent, "handler_module": "agentic_resources.tools",
-                          "limits": {"total": total},
-                          "can_call": {"$self": "*"}, "callable_by": {"$self": "*", "$parent": "*"}})
-    records.link(team, "roles", "memory")
-    records.link(team, parent, "roles", ["roles", "role", "spawn", "get_count", "fleet"])
-    return "roles"
 
 
 def ids(team) -> dict:

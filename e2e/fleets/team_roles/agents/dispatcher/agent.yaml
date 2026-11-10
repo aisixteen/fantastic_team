@@ -1,0 +1,16 @@
+id: dispatcher
+handler_module: team_dispatcher.tools
+groups: {}
+team: lead
+board: board
+roles: roles
+can_call:
+  "$self": "*"
+  worker_view: "*"
+  kernel_state: [create_agent, update_agent, delete_agent]
+  cadencer: [status]
+  roles: [get_count]
+  github: [reflect]
+callable_by:
+  "$self": "*"
+  "$parent": "*"

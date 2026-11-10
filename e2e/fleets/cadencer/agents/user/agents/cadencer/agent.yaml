@@ -1,0 +1,7 @@
+id: cadencer
+handler_module: team_cadencer.tools
+can_call:
+  "$self": "*"
+callable_by:
+  "$self": "*"
+  "$parent": "*"

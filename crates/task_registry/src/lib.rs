@@ -101,13 +101,6 @@ fn opt_str<'a>(verb: &str, payload: &'a Value, arg: &str) -> Result<Option<&'a s
     }
 }
 
-const USAGE_KEYS: [&str; 4] = [
-    "input_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-    "output_tokens",
-];
-
 /// An optional `versions`: a list of `{repo, branch, commit}`, all non-empty strings.
 fn versions_arg(verb: &str, payload: &Value) -> Result<Option<Value>, Value> {
     const WANT: &str = "a list of {repo, branch, commit} strings";
@@ -166,7 +159,7 @@ fn facts_arg(verb: &str, payload: &Value) -> Result<Facts, Value> {
     ))
 }
 
-/// An optional `usage`: token counts, a subset of [`USAGE_KEYS`], each a non-negative
+/// An optional `usage`: token counts, a subset of [`fantastic_ai_core::USAGE_KEYS`], each a non-negative
 /// integer. Stored with all four keys (missing ones 0).
 fn usage_arg(payload: &Value) -> Result<Option<Value>, Value> {
     const WANT: &str = "an object of non-negative integer token counts \
@@ -176,11 +169,13 @@ fn usage_arg(payload: &Value) -> Result<Option<Value>, Value> {
         Some(Value::Object(m)) => m,
         Some(_) => return Err(bad("report", "usage", WANT)),
     };
-    if m.keys().any(|k| !USAGE_KEYS.contains(&k.as_str())) {
+    if m.keys()
+        .any(|k| !fantastic_ai_core::USAGE_KEYS.contains(&k.as_str()))
+    {
         return Err(bad("report", "usage", WANT));
     }
     let mut out = Map::new();
-    for k in USAGE_KEYS {
+    for k in fantastic_ai_core::USAGE_KEYS {
         let n = match m.get(k) {
             None => 0,
             Some(v) => v.as_u64().ok_or_else(|| bad("report", "usage", WANT))?,
@@ -667,7 +662,7 @@ async fn list_inner(kernel: &Arc<Kernel>, store: &str, payload: &Value) -> Resul
         .filter(|t| holder.is_none_or(|h| &t["holder"] == h))
         .collect();
     let mut sum = Map::new();
-    for k in USAGE_KEYS {
+    for k in fantastic_ai_core::USAGE_KEYS {
         let n: u64 = out
             .iter()
             .map(|t| t["usage"].get(k).and_then(Value::as_u64).unwrap_or(0))

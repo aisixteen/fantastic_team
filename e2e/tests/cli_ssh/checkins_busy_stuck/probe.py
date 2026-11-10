@@ -15,16 +15,7 @@ def run(ctx):
     v = Verdict("cli_ssh/checkins_busy_stuck")
     podman_remote.require()
     with T.Box(ctx) as box:
-        cli.start(ctx, roles=True)
-        cli.add_base(ctx)
-        base = set(cli.ids(ctx.team))
-        cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "delete_agent"]}, subtree=True)
-        cli.make_registry(ctx, total=2, roles=cli.roles_dir("checkins_busy_stuck"))
-        new = set(cli.ids(ctx.team)) - base
-        v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
-                new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
-        cli.add_cadencer(ctx)
-        before = cli.tree(ctx.team)
+        before = S.busy_stuck_start(ctx, v)
         box.publish()
         box.bind()
         v.check("the scripted model played every turn, none past the end",

@@ -1,4 +1,4 @@
-"""precreated_1_2: a lead and two workers made with create_agent; the lead tells each worker to fix one
+"""precreated_1_2: a lead and two workers laid as record files before the first start; the lead tells each worker to fix one
 file, they solve. The tree after is the tree before: the same 3, nothing extra. The steps and the
 outcome checks are `helpers/cli_scenarios.py`'s (the gpu twin uses them too)."""
 

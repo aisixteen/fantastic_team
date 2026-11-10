@@ -4,7 +4,7 @@ credential. App mode is covered by task/github_merge_through_connector."""
 import json
 import os
 
-from helpers import cli, forge as F, stock
+from helpers import cli, forge as F
 from helpers.verdict import Verdict
 
 LOCAL = "no GitHub credential defined: local work only"
@@ -24,10 +24,8 @@ def run(ctx):
     v = Verdict("task/github_auth_by_env_ref")
 
     # ---- personal: the token comes from E2E_GH_TOKEN, no mint ----
-    team = cli.start(ctx, sub="personal", env={"E2E_GH_TOKEN": ctx.forge.token})
-    stock.make_credentials(ctx, team, github=True, github_mode="personal")
+    team = cli.start(ctx, sub="personal", env={"E2E_GH_TOKEN": ctx.forge.token}, fleet="fleet_personal")
     os.makedirs(os.path.join(ctx.work, "work", "wt"), exist_ok=True)
-    stock.make_forge(ctx, team, puller=False)
     forge = ctx.forge
     token = forge.token
     refl = team.send("github", {"type": "reflect"})
@@ -53,10 +51,8 @@ def run(ctx):
 
     # ---- local: no variable, no credential ----
     n0 = len(forge.requests)
-    team = cli.start(ctx, sub="local")
-    stock.make_credentials(ctx, team, github=True, github_mode="personal")
+    team = cli.start(ctx, sub="local", fleet="fleet_local")
     os.makedirs(os.path.join(ctx.work, "work", "wt"), exist_ok=True)
-    stock.make_forge(ctx, team, puller=False)
     refl = team.send("github", {"type": "reflect"})
     auth = refl["result"].get("auth", {})
     v.check("local: the team booted and reflect shows auth.mode local with the note",

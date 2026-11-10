@@ -97,7 +97,9 @@ def discover() -> list[dict]:
                         "costs": meta.get("costs", "free"),
                         "timeout": int(meta.get("timeout", "180")),
                         "plug": plug_of(meta),
-                        "declared_plug": meta.get("plug", "scripted")})
+                        "declared_plug": meta.get("plug", "scripted"),
+                        # the fleet layers (`fleet`, and `fleet_<name>` for a second team folder): names, space-separated
+                        **{k: v for k, v in meta.items() if k == "fleet" or k.startswith("fleet_")}})
     return sorted(out, key=lambda t: t["name"])
 
 
@@ -149,12 +151,12 @@ class Ctx:
         self.vars: dict = {}
         self.team: team_mod.Team | None = None
         self.secrets: dict = {}
-        self.lead = "lead"  # the lead `stock.make_lead` creates, under a fixed id
+        self.lead = "lead"  # the lead the fleet lays, under a fixed id
         self.work = run_dir
 
     def boot_team(self, env_extra: dict[str, str] | None = None, **kw) -> team_mod.Team:
-        """Start the stock team (`helpers/stock.py`): fantastic's CLI in the run folder, the
-        the lead and the rest made with `send` + `create_agent`."""
+        """Start the stock team (`helpers/stock.py`): fantastic's CLI in the run folder on the fleet
+        the test's `test.yaml` names (`fleet:`); `cards=True` copies the repo's role bundles first."""
         return stock_mod.boot(self, env_extra, **kw)
 
 
@@ -177,7 +179,10 @@ def run_test(test: dict, binary: str, stamp_dir: str) -> str:
         forge = forge_mod.Forge(os.path.join(run_dir, "forge")).start()
         variables = {"run_dir": run_dir, "forge_url": forge.url, "forge_host": forge.host}
         model = PLUGS[test["plug"]](test["dir"], variables)
-        variables.update(provides_vars(model))  # model_name: what the lead's `model` field takes
+        variables.update(provides_vars(model))  # model_name, and the provider's fields for the fleet files
+        default = model.ai_record().get("model")
+        variables["worker_model"] = cli_mod.worker_model() or default
+        variables["models"] = json.dumps(list(dict.fromkeys(m for m in (default, cli_mod.worker_model()) if m)))
         model.start()
         ctx = Ctx(test, run_dir, binary, model, forge)
         ctx.vars = dict(variables, model_endpoint=model.endpoint, model_host=model.host)
@@ -223,10 +228,9 @@ def summary(results: dict) -> int:
 
 
 def build() -> str:
-    print("building fantastic_team, fantastic_team_app and the handle_serve example ...", flush=True)
+    print("building fantastic_team and fantastic_team_app ...", flush=True)
     for cmd in (["-p", "fantastic-team", "--bin", "fantastic_team"],
-                ["-p", "fantastic-team-app", "--bin", "fantastic_team_app"],
-                ["-p", "fantastic-team", "--example", "handle_serve"]):
+                ["-p", "fantastic-team-app", "--bin", "fantastic_team_app"]):
         if subprocess.run(["cargo", "build", *cmd], cwd=ROOT).returncode != 0:
             sys.exit("cargo build failed")
     meta = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=ROOT,
@@ -350,7 +354,62 @@ def selftest() -> int:
     selftest_ssh_twins(v)
     selftest_remote_work(v)
     selftest_git_credentials(v)
+    selftest_fleet(v)
     return v.finish()
+
+
+def selftest_fleet(v: Verdict) -> None:
+    """Fleets as record files: the layers lay in order, a later file of the same path replaces the
+    earlier, marks are filled (an unknown one raises), the ids are the folders that hold a record,
+    and every layer a test.yaml names is a folder under `fleets/`."""
+    tmp = tempfile.mkdtemp(prefix="e2e-selftest-fleet-")
+    try:
+        def put(layer, rel, text):
+            path = os.path.join(tmp, layer, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(text)
+        put("one", "agents/user/agent.yaml", "id: user\nfrom: one\n")
+        put("one", "agents/user/agents/lead/agent.yaml", 'id: lead\nhost: "{{host}}"\n')
+        put("two", "agents/user/agent.yaml", "id: user\nfrom: two\n")
+        put("two", "agent.yaml", "id: kernel_state\n")
+        put("own", "agents/user/agents/w1/agent.yaml", "id: w1\n")
+        layers = [os.path.join(tmp, "one"), os.path.join(tmp, "two")]
+        files = dict(team_mod.fleet_files(layers, {"host": "h:1"}))
+        v.check("a later layer's file of the same path replaces the earlier one whole",
+                files["agents/user/agent.yaml"] == "id: user\nfrom: two\n", str(files))
+        v.check("a mark is filled", files["agents/user/agents/lead/agent.yaml"] == 'id: lead\nhost: "h:1"\n', str(files))
+        try:
+            list(team_mod.fleet_files(layers, {}))
+            raised = False
+        except KeyError:
+            raised = True
+        v.check("an unknown mark raises", raised)
+        try:
+            list(team_mod.fleet_files([os.path.join(tmp, "nope")], {}))
+            named = ""
+        except FileNotFoundError as e:
+            named = str(e)
+        v.check("a missing layer folder raises with its name", os.path.join(tmp, "nope") in named, named)
+        dest = os.path.join(tmp, "run")
+        ids = team_mod.lay_fleet(dest, layers, {"host": "h:1"}, os.path.join(tmp, "own"))
+        v.check("lay_fleet returns the folders that hold a record, the root file excluded",
+                sorted(ids) == ["lead", "user", "w1"], str(ids))
+        v.check("and writes them under .fantastic/, the own folder last",
+                os.path.isfile(os.path.join(dest, ".fantastic", "agent.yaml"))
+                and os.path.isfile(os.path.join(dest, ".fantastic", "agents", "user", "agents", "w1", "agent.yaml")))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    missing = []
+    for t in discover():
+        for key, text in t.items():
+            if key != "fleet" and not key.startswith("fleet_"):
+                continue
+            for shape in ("anthropic", "vllm", "vllm_keyed"):
+                for layer in text.replace("{{provider_shape}}", shape).split():
+                    if not os.path.isdir(os.path.join(cli_mod.FLEETS, layer)):
+                        missing.append(f"{t['name']}: {layer}")
+    v.check("every layer a test.yaml names is a folder under e2e/fleets/", not missing, str(sorted(set(missing))))
 
 
 def selftest_relay(v: Verdict) -> None:
@@ -911,7 +970,7 @@ def selftest_source(v: Verdict) -> None:
             ", ".join(hits))
 
 
-NEW_TESTS = ("app/launcher_start_attach_stop", "app/handle_serves_port", "app/window_per_platform",
+NEW_TESTS = ("app/launcher_start_attach_stop", "app/window_per_platform",
              "app/attach_remote")
 
 
@@ -1188,13 +1247,13 @@ def selftest_app_helpers(v: Verdict) -> None:
         class C:
             binary = os.path.join(tmp, "fantastic_team")
         errs = []
-        for fn in (app_mod.app_binary, app_mod.handle_example):
+        for fn in (app_mod.app_binary,):
             try:
                 fn(C())
             except Skip as e:
                 errs.append(e.reason)
-        v.check("app_binary and handle_example raise Skip when the file is not built next to --bin",
-                len(errs) == 2 and "fantastic_team_app" in errs[0] and "handle_serve" in errs[1], str(errs))
+        v.check("app_binary raises Skip when the file is not built next to --bin",
+                len(errs) == 1 and "fantastic_team_app" in errs[0], str(errs))
         open(os.path.join(tmp, "fantastic_team_app"), "w").close()
         v.check("app_binary finds the file next to --bin", app_mod.app_binary(C()).endswith("fantastic_team_app"))
         parent = subprocess.Popen(["sh", "-c", "sleep 30 & wait"])
@@ -1436,6 +1495,25 @@ def selftest_ssh_twins(v: Verdict) -> None:
     v.check("the remote kernel starts in the tunnel's ssh session, its pid kept",
             T.kernel_start_command() == "mkdir -p w && cd w && echo $$ > team.pid && "
             "exec fantastic_team --headless >> team.log 2>&1")
+    # the box's lay: base's stock records, one write per file, into the box's two kernel folders before any start
+    import types
+    from unittest import mock
+    sent = []
+
+    def fake_run(argv, input=None, **_):
+        sent.append((argv[-1], input))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    lay_box = T.Box(types.SimpleNamespace(run_dir=tempfile.gettempdir()))
+    lay_box.remote.port, lay_box.remote.key = 2200, "/k/id"
+    with mock.patch.object(T.subprocess, "run", fake_run):
+        lay_box.lay_stock()
+    stock_files = dict(team_mod.fleet_files([os.path.join(cli_mod.FLEETS, "stock")], {}))
+    written = {cmd.split(" && cat > ", 1)[1].strip("'"): text for cmd, text in sent}
+    v.check("the box lay sends one write per stock record file under w/.fantastic and one under w0/.fantastic, each "
+            "the file's text, with the folder made first",
+            len(sent) == 2 * len(stock_files) == len(written) and len(stock_files) == 6
+            and written == {f"{d}/.fantastic/{rel}": text for d in (T.DIR, f"{T.DIR}0") for rel, text in stock_files.items()}
+            and all(cmd.startswith("mkdir -p ") for cmd, _ in sent), str(sorted(written)))
     from helpers import gpu_cli as gpu_mod
 
     class History:
@@ -1670,6 +1748,11 @@ def selftest_git_credentials(v: Verdict) -> None:
             rec["handler_module"] == "team_git.tools" and rec["credentials"] == {"store": store, "ref": T.GIT_REF}
             and rec["can_call"] == {"$self": "*", store: ["get"]} and "token" not in json.dumps(rec).lower().replace("x-access-token", ""),
             str(rec))
+    with open(os.path.join(cli_mod.FLEETS, "git_credentials", "agents", "user", "agents", "git_credentials", "agent.yaml")) as f:
+        store_file = f.read()
+    v.check("the master's store file names the ref and the env of the constants the probe and the script use, and admits "
+            "the bridge's `get` only", f'"{T.GIT_REF}"' in store_file and f"api_key: {T.GIT_ENV}" in store_file
+            and f"{T.BRIDGE}: [get]" in store_file, store_file)
     script = json.dumps(T.script_git_credentials()) + T.git_box_command() + T.setup_command()
     v.check("neither the script nor the box's setup names a token, an Authorization header, a git config or a credential helper: the "
             "box is given none", not [w for w in ("Authorization", "extraHeader", ".gitconfig", "credential.helper", "x-access-token",

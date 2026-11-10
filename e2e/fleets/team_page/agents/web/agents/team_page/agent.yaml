@@ -1,0 +1,9 @@
+id: team_page
+handler_module: team_page.tools
+verbs:
+  read_stream: 'args: path:str (req), offset:int?, length:int?. The team page (index.html, page.css, shim.js, page.js, card.js) as a BINARY reply: the bytes as the body, {path, offset, next_offset, eof, size} as the head.'
+can_call:
+  "$self": "*"
+callable_by:
+  "$self": "*"
+  web: [read_stream]

@@ -10,8 +10,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
+use fantastic_kernel::grants::union;
 use fantastic_kernel::{Item, Kernel};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 /// The root agent's id: the target of `create_agent` and the other kernel verbs.
 pub const ROOT_ID: &str = DEFAULT_ROOT_ID;
@@ -34,15 +35,6 @@ pub const DISPATCHER_KERNEL_VERBS: [&str; 3] = ["create_agent", "update_agent", 
 /// `stop`, `status`, `watch`). Granted by [`grant_chat_to`]; never `*`.
 pub const CHAT_VERBS: [&str; 5] = ["history", "send", "stop", "status", "watch"];
 
-/// True when the agent `id` is live in the kernel. Read from the kernel's table,
-/// not by a `reflect`: a team bundle need not answer `reflect` (the dispatcher
-/// and worker view do not), so a reflect would call a live agent missing.
-fn exists(kernel: &Arc<Kernel>, id: &str) -> bool {
-    kernel
-        .agents
-        .contains_key(&fantastic_kernel::AgentId::from(id))
-}
-
 /// Grant the page's principal (the `web_ws` leg that serves the page) the chat verbs on
 /// each worker in `workers` and on every agent whose parent is one of them (its
 /// subagents), on both ends: the principal's `can_call` names the agent and the
@@ -51,12 +43,12 @@ fn exists(kernel: &Arc<Kernel>, id: &str) -> bool {
 /// fatal. Returns how many agents got the grant. An agent made after the start gets it
 /// at the next start.
 pub fn grant_chat_to(kernel: &Arc<Kernel>, workers: &[String], principal: &str) -> usize {
-    if !exists(kernel, principal) {
+    if !kernel.exists(principal) {
         return 0;
     }
     let live: Vec<String> = workers
         .iter()
-        .filter(|w| exists(kernel, w))
+        .filter(|w| kernel.exists(w))
         .cloned()
         .collect();
     let mut targets: BTreeSet<String> = live.iter().cloned().collect();
@@ -98,7 +90,7 @@ pub fn grant_chat_to(kernel: &Arc<Kernel>, workers: &[String], principal: &str) 
 /// verbs of its panel (`view.calls`) plus `get_html` and `watch`, never `*`. An id that is
 /// not live or has no `view` is skipped. Idempotent. Returns how many agents got the grant.
 pub fn grant_card_ids(kernel: &Arc<Kernel>, principal: &str, ids: &[String]) -> usize {
-    if !exists(kernel, principal) {
+    if !kernel.exists(principal) {
         return 0;
     }
     let leg = fantastic_kernel::AgentId::from(principal);
@@ -156,7 +148,7 @@ const CARD_HISTORY_PAGES: usize = 50;
 /// as the operator) and the embedded hosts that are on show get the grant. A chat that
 /// does not answer `history` grants nothing.
 pub async fn grant_cards(kernel: &Arc<Kernel>, principal: &str, chat_agent: &str) -> usize {
-    if !exists(kernel, principal) || !exists(kernel, chat_agent) {
+    if !kernel.exists(principal) || !kernel.exists(chat_agent) {
         return 0;
     }
     let mut rows: Vec<Value> = Vec::new();
@@ -189,13 +181,13 @@ pub const CONTROL_VERBS: [&str; 4] = ["send", "stop", "start", "pause"];
 /// Returns how many workers hold the grant. A worker made after the start is granted by
 /// `add_worker`.
 pub fn grant_control(kernel: &Arc<Kernel>, workers: &[String]) -> usize {
-    if !exists(kernel, DISPATCHER_ID) {
+    if !kernel.exists(DISPATCHER_ID) {
         return 0;
     }
     let verbs = json!(CONTROL_VERBS);
     let dispatcher = fantastic_kernel::AgentId::from(DISPATCHER_ID);
     let mut granted = 0;
-    for id in workers.iter().filter(|w| exists(kernel, w)) {
+    for id in workers.iter().filter(|w| kernel.exists(w)) {
         let agent = fantastic_kernel::AgentId::from(id.as_str());
         let by_agent = kernel.edit_callable_by(&agent, |cb| {
             if cb.get(DISPATCHER_ID) == Some(&verbs) {
@@ -224,7 +216,7 @@ pub fn grant_control(kernel: &Arc<Kernel>, workers: &[String]) -> usize {
 /// The worker's own `can_call` already names the store (`config::agent_record`). An
 /// operator write, idempotent. `Err` when the store is not live or refuses the edit.
 pub fn grant_store(kernel: &Arc<Kernel>, store: &str, agent: &str) -> Result<(), String> {
-    if !exists(kernel, store) {
+    if !kernel.exists(store) {
         return Err(format!("the store agent `{store}` does not exist"));
     }
     kernel
@@ -257,33 +249,34 @@ pub fn digest_leads(fleet: &Value) -> Vec<String> {
     out
 }
 
-/// Let the cadencer `send` to the given live agents, on both ends: the agent's
+/// Let the cadencer call `verbs` on the given live agents, on both ends: the agent's
 /// `callable_by[cadencer]` and the cadencer's `can_call[agent]`. A spawned agent's
 /// `callable_by` names only its spawner, so the digest could not reach it otherwise.
-/// An operator write; idempotent; a dead id is skipped. Returns how many agents got a
-/// new grant.
-pub fn grant_digest_targets(kernel: &Arc<Kernel>, ids: &[String]) -> usize {
-    if !exists(kernel, CADENCER_ID) {
+/// The fleet leads get `send` and `status` (the digest, and the open inquiry read from
+/// their `status`); a team notice passes `send` only. The verbs are merged with what an
+/// end already holds, never narrowed. An operator write; idempotent; a dead id is
+/// skipped. Returns how many agents got a new grant.
+pub fn grant_digest_targets(kernel: &Arc<Kernel>, ids: &[String], verbs: &[&str]) -> usize {
+    if !kernel.exists(CADENCER_ID) {
         return 0;
     }
-    let verbs = json!(["send"]);
+    let verbs = json!(verbs);
     let mut granted = 0;
-    for id in ids.iter().filter(|i| exists(kernel, i)) {
+    for id in ids.iter().filter(|i| kernel.exists(i)) {
         let by_agent =
             kernel.edit_callable_by(&fantastic_kernel::AgentId::from(id.as_str()), |cb| {
-                if cb.get(CADENCER_ID) == Some(&verbs) {
-                    return false;
-                }
-                cb.insert(CADENCER_ID.into(), verbs.clone());
-                true
+                let before = cb.clone();
+                union(
+                    cb,
+                    &Map::from_iter([(CADENCER_ID.to_string(), verbs.clone())]),
+                );
+                *cb != before
             });
         let by_cadencer =
             kernel.edit_can_call(&fantastic_kernel::AgentId::from(CADENCER_ID), |cc| {
-                if cc.get(id.as_str()) == Some(&verbs) {
-                    return false;
-                }
-                cc.insert(id.clone(), verbs.clone());
-                true
+                let before = cc.clone();
+                union(cc, &Map::from_iter([(id.clone(), verbs.clone())]));
+                *cc != before
             });
         match (by_agent, by_cadencer) {
             (Ok(a), Ok(b)) => granted += usize::from(a || b),
@@ -302,14 +295,15 @@ pub async fn grant_fleet_digest_targets(kernel: &Arc<Kernel>, roles_id: &str) ->
         .first()
         .map(|o| o.result.clone())
         .unwrap_or(Value::Null);
-    grant_digest_targets(kernel, &digest_leads(&fleet))
+    grant_digest_targets(kernel, &digest_leads(&fleet), &["send", "status"])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dispatcher;
-    use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
+    use crate::test_boot::{boot_at, Booted, Seed};
+    use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
     use fantastic_kernel::Status;
     use std::path::Path;
 
@@ -323,9 +317,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn grant_digest_targets_grants_send_to_fleet_leads() {
+    async fn grant_digest_targets_grants_send_and_status_to_fleet_leads() {
         let dir = tempfile::tempdir().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
+        let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
         for id in [CADENCER_ID, "pl", "sub", "w1"] {
             let mk = json!({"type": "create_agent", "id": id, "parent_id": DEFAULT_ROOT_ID,
                 "handler_module": "ram_store.tools", "callable_by": {"$self": "*", "$parent": "*"}});
@@ -335,26 +329,34 @@ mod tests {
             "worker": [{"id": "w1"}]}});
         let ids = digest_leads(&fleet);
         assert_eq!(
-            grant_digest_targets(&kernel, &ids),
+            grant_digest_targets(&kernel, &ids, &["send", "status"]),
             2,
             "the dead id is skipped"
         );
-        assert_eq!(grant_digest_targets(&kernel, &ids), 0, "idempotent");
+        assert_eq!(
+            grant_digest_targets(&kernel, &ids, &["send", "status"]),
+            0,
+            "idempotent"
+        );
+        assert_eq!(
+            grant_digest_targets(&kernel, &ids, &["send"]),
+            0,
+            "a notice never narrows"
+        );
         for id in ["pl", "sub"] {
             assert_eq!(
                 field_of(&kernel, id, "callable_by")[CADENCER_ID],
-                json!(["send"])
+                json!(["send", "status"])
             );
             assert_eq!(
                 field_of(&kernel, CADENCER_ID, "can_call")[id],
-                json!(["send"])
+                json!(["send", "status"])
             );
         }
         assert!(field_of(&kernel, "w1", "callable_by")[CADENCER_ID].is_null());
         assert!(field_of(&kernel, CADENCER_ID, "can_call")["w1"].is_null());
         assert!(field_of(&kernel, CADENCER_ID, "can_call")["gone"].is_null());
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[test]
@@ -364,8 +366,8 @@ mod tests {
     }
 
     /// A kernel with a bare dispatcher and workers `w1` and `w2`, none of them granted.
-    async fn kernel_with_workers(dir: &Path) -> Arc<Kernel> {
-        let kernel = crate::start(dir).await.unwrap();
+    async fn kernel_with_workers(dir: &Path) -> Booted {
+        let kernel = boot_at(dir, Seed::Stock, &[], None).await;
         let mut items = vec![json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID,
             "id": "dispatcher", "handler_module": dispatcher::HANDLER_MODULE})];
         for w in ["w1", "w2"] {
@@ -422,8 +424,7 @@ mod tests {
         }
         assert!(grants(DISPATCHER_ID, "can_call")["w2"].is_null());
         assert!(grants("w2", "callable_by")[DISPATCHER_ID].is_null());
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -454,15 +455,14 @@ mod tests {
             )])
             .await;
         assert_eq!(grant_control(&kernel, &ids), 0);
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     // ---- the page leg and the card views ----
 
     /// A kernel with a live principal for the page's ws leg.
-    async fn started_with_leg(dir: &Path) -> Arc<Kernel> {
-        let kernel = crate::start(dir).await.unwrap();
+    async fn started_with_leg(dir: &Path) -> Booted {
+        let kernel = boot_at(dir, Seed::Stock, &[], None).await;
         let leg = json!({"type": "create_agent", "id": crate::page::WS_ID, "parent_id": DEFAULT_ROOT_ID, "handler_module": "ram_store.tools"});
         let outs = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, leg)]).await;
         assert!(
@@ -502,8 +502,7 @@ mod tests {
                 "{worker}"
             );
         }
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     fn rows_of_cards(spec: &[(&str, &str)]) -> Vec<Value> {
@@ -559,8 +558,7 @@ mod tests {
         // a host that is not embedded is not granted
         assert!(field_of(&kernel, "other", "callable_by").get(leg).is_none());
         assert!(field_of(&kernel, leg, "can_call").get("other").is_none());
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -575,8 +573,7 @@ mod tests {
         assert!(field_of(&kernel, "h", "callable_by")
             .get(crate::page::WS_ID)
             .is_none());
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -592,8 +589,7 @@ mod tests {
         // a chat agent that does not answer history grants nothing and does not panic
         assert_eq!(grant_cards(&kernel, crate::page::WS_ID, "plain").await, 0);
         assert_eq!(grant_cards(&kernel, crate::page::WS_ID, "missing").await, 0);
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -613,7 +609,6 @@ mod tests {
             field_of(&kernel, crate::page::WS_ID, "can_call"),
         );
         assert_eq!(first, second);
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 }

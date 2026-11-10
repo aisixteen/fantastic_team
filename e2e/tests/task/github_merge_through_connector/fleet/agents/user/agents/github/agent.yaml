@@ -1,0 +1,16 @@
+id: github
+handler_module: team_github.tools
+app:
+  credentials:
+    store: credentials
+    ref: github/app
+repos: [acme/widgets]
+api_url: "{{forge_url}}"
+git: git
+directive: Push a work branch and open a draft pull request.
+can_call:
+  "$self": "*"
+  credentials: "*"
+callable_by:
+  "$self": "*"
+  lead: [merge]

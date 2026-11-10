@@ -30,7 +30,7 @@ Team's `repro` CI job (`.github/workflows/ci.yml`) compares `SHA256SUMS` from tw
 
 ## Pin at `b175660`
 
-`Cargo.lock` now pins fantastic `b175660`. It brings `fantastic_tui::seed_dir(dir) -> Result<bool, String>` (fantastic#444: the shell's first-run seeding, a no-op once `.fantastic` exists) and spawn applying the card's tool grants on both ends (fantastic#436: a card may only grant what its spawner holds, so the lead holds `board` and the root's await verbs). Team calls `seed_dir` before it boots a fresh directory (`run_at_start`, `persist_web`), so the first `--port` start serves the page; `seed_base_tree` keeps the stores the seed wrote.
+`Cargo.lock` now pins fantastic `b175660`. It brings `fantastic_tui::seed_dir(dir) -> Result<bool, String>` (fantastic#444: the shell's first-run seeding, a no-op once `.fantastic` exists) and spawn applying the card's tool grants on both ends (fantastic#436: a card may only grant what its spawner holds, so the lead holds `board` and the root's await verbs). Team calls `seed_dir` before it boots a fresh directory, so the first `--port` start serves the page.
 
 ## Pin at `b980705`
 
@@ -96,9 +96,9 @@ What the ssh twins measured at `a9b7a31` (#252: the backends and the key are on 
 
 `Cargo.lock` now pins fantastic `a6975ea` (main after fantastic#480, `fantastic_tui::seed_dir_with(dir, &[blueprint])`: a host writes its own agents after the stock tree at the first run, ids as written, by the same writer: no `parent_id`, `@root` resolved, disk position is the parent; an entry that names an earlier blueprint's id is a parent entry that carries only `id` and `agents`). Team uses it for `crates/team/blueprint.yaml` (#261), and does the same as fantastic does for its own stock agents, nothing more:
 
-- **First run.** `hydrate::seed` (called by `persist_web`, the `webui` word) writes the fixed agents with their grants and config from the yaml. `@work` and the worker's exec record are filled in first, because they are absolute paths of the folder; `allowed` is the yaml entry's own value.
+- **First run.** `hydrate::seed` (called by the launcher, `main.rs`, when `starts_kernel` is true) writes the fixed agents with their grants and config from the yaml. `@work` and the worker's exec record are filled in first, because they are absolute paths of the folder; `allowed` is the yaml entry's own value.
 - **Every run after.** The fs loader (`kernel_state`) is the root loader and rehydrates `.fantastic/agents/**`; fantastic's own boot (`Host::boot`, `kern/host.rs`) runs `reach::grant_all` (`kern/reach.rs`), which writes both ends of the edges of the human and of every AI agent (a record that names a `memory_store_id`: the lead and each spawned worker) on every agent, and again for each agent added later. The blueprint is never read again (`src/tui/src/boot/seed.rs`, module doc, and `seed_dir_with`: a folder that has its `.fantastic` is left alone). A fixed agent deleted from disk stays deleted and a field changed on disk stays changed, exactly as for `exec`, `files` or `memory`; the team keeps no `ensure`, no boot-time `create_agent`/`update_agent` and no boot-time grant.
-- **The run's flags.** `--port`/`--host` are the run's, not the blueprint's: `webui` puts them on the seeded `web` host (`app_control::set_run_flags`), as fantastic's `Host::boot` does for its own `canvas` (`kern/host.rs`, `set_web_field`, `set_web_bind`).
+- **The run's flags.** `--port`/`--host` are the run's, not the blueprint's: fantastic's boot sets them (`--headless --port`), as fantastic's `Host::boot` does for its own `canvas` (`kern/host.rs`, `set_web_field`, `set_web_bind`).
 - **The gap** (closed at `4954bb0`, below): a parent entry could not carry fields, so the other end of the team's edges on the stock agents could not be written from yaml.
 
 ## Pin at `4954bb0`
@@ -175,3 +175,16 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 - **e2e for the failed-turn retry** (#533).
 - **Prices are one `prices` map on the provider** (#535): `{<model>: {input, output, cache_read?, cache_write_5m?}}` in $ per million tokens replaces the four flat `price_*_per_mtok` fields, which are removed. A model with no entry is `unpriced`, never $0; `usage` `by_model` carries `cost_usd` per model and in total.
 - **`usage` has `by_agent`** (#546).
+
+## Pin at `255bef1`
+
+`Cargo.lock` now pins fantastic `255bef1`.
+
+- Base has one boot and one stop: `boot_kernel`, `stop_kernel` and `starts_kernel`. `main_with` takes a third argument, `readme_sections`.
+- `--headless --port N --host ADDR` is accepted. A recorded `web` boots in every mode and records a free port when it has none. A taken port is only a warning.
+- The stop is bounded: 15 s grace, then exit 1.
+- The launcher seeds the folder before `main_with`; the kernel never seeds.
+- `BootstrapOptions::one_shot(state_dir, work_dir)` has two folders.
+- The `status` reply of an AI agent has `inquiry_from`: the cadencer holds `send` and `status` on its digest leads and reads an open inquiry from it.
+- Base's boot writes the way back, so `team_ws` and every agent may `send` to `user` and an AI agent holds `*`. This is base's behaviour and the team keeps it; the blueprint is unchanged.
+- The team calls base's `error_text`, `Kernel::exists`, `grants::union` and `USAGE_KEYS` in place of its own copies.

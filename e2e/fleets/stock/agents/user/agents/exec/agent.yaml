@@ -1,0 +1,11 @@
+id: exec
+handler_module: exec_bridge.tools
+allowed: [".*"]
+cwd: "."
+inherit_env: ["*"]
+ingress_rule: allow_all_ingress
+callable_by:
+  user: "*"
+can_call:
+  files: "*"
+  user: "*"

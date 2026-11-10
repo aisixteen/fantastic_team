@@ -1,0 +1,7 @@
+id: sub_a_memory
+handler_module: ram_store.tools
+can_call:
+  "$self": "*"
+callable_by:
+  "$self": "*"
+  sub_a: "*"

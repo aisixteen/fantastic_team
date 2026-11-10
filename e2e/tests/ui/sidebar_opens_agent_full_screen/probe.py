@@ -18,36 +18,6 @@ from helpers.page import Page, PageError, node_ok
 from helpers.verdict import Verdict
 
 NAME = "ui/sidebar_opens_agent_full_screen"
-ROOT = "kernel_state"  # where the team's agents live
-
-
-def worker_record(ctx, agent_id: str, parent: str, key_ref: str) -> dict:
-    """A chat-capable agent on the scripted endpoint (what `agent_record` makes from worker_t)."""
-    return {"type": "create_agent", "id": agent_id, "parent_id": parent,
-            "handler_module": "anthropic_backend.tools", "model": "scripted-model",
-            "endpoint": ctx.vars["model_endpoint"],
-            "credentials": {"store": "credentials", "ref": key_ref},
-            "memory_store_id": agent_id + "_memory",
-            "can_call": {"$self": "*", "credentials": "*", agent_id + "_memory": "*"},
-            "callable_by": {"$self": "*", "$parent": "*"},
-            "context_window": 100000, "max_tokens": 4000}
-
-
-def operator(team, **fields) -> None:
-    r = team.send("kernel", fields)
-    if r.get("status") != "completed" or "error" in (r.get("result") or {}):
-        raise RuntimeError(f"cannot write {fields.get('id')}: {r}")
-
-
-def grant_chat(team, chat_agents) -> None:
-    """The app grants the page's leg the chat verbs of a group's workers, at
-    start (`tree::grant_chat_to`). These agents are made after boot, so the operator writes
-    the same grants. `update_agent` rewrites a field whole, so `team_ws` gets the union."""
-    for aid in chat_agents:
-        operator(team, type="update_agent", id=aid,
-                 callable_by={"$self": "*", "$parent": "*", "team_ws": team_mod.CHAT_VERBS})
-    operator(team, type="update_agent", id="team_ws",
-             can_call={"$self": "*", "dispatcher": S.PAGE_VERBS, **{a: team_mod.CHAT_VERBS for a in chat_agents}})
 
 
 def holders(page: Page, token: str, nodes) -> dict:
@@ -68,25 +38,14 @@ def run(ctx):
     if not node_ok():
         print(f"SKIP {NAME}: needs node >= 22 (global WebSocket) to drive the page's script against the live socket")
         return 0
-    # the stock records (the dispatcher with its group `fantastic`) and the lead, started
-    # headless; the agents below are made next, then the binary serves the team page
+    # the fleet is laid before the start (`fleet:` of test.yaml): the dispatcher with its group
+    # `fantastic`, the lead, the workers and their subagents, the page, its leg and its grants;
+    # started headless, then stopped and started again as `webui --port N`
     port = team_mod.free_port()
-    S.boot(ctx, forge=False, groups={"fantastic": {"members": ["w1", "w2"]}})
+    ctx.vars["web_port"] = port
+    S.boot(ctx)
     team = ctx.team
-    ref = "model/" + ctx.vars["model_host"]
-    agents = [("w1", ROOT), ("w2", ROOT), ("sub_a", "w2"), ("sub_b", "w2")]
-    for aid, parent in agents:
-        mem = {"type": "create_agent", "id": aid + "_memory", "parent_id": ROOT, "handler_module": "ram_store.tools",
-               "callable_by": {"$self": "*", aid: "*"}}
-        r = team.send("kernel", mem)
-        if r.get("status") != "completed":
-            raise RuntimeError(f"cannot make the memory of {aid}: {r}")
-        r = team.send("kernel", worker_record(ctx, aid, parent, ref))
-        if r.get("status") != "completed":
-            raise RuntimeError(f"cannot make {aid}: {r}")
-    S.merge(team, "credentials", "callable_by", {a: "*" for a, _ in agents})
-    S.serve_webui(team, port)  # `webui --port N`: the binary makes the page, its leg and their grants
-    grant_chat(team, [a for a, _ in agents])
+    S.serve_webui(team, port)
 
     status, body = team_mod.http_get(port, "/team_page/file/index.html")
     _, script = team_mod.http_get(port, "/team_page/file/page.js")  # the page's script is its own file

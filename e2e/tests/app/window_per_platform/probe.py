@@ -36,7 +36,7 @@ def run(ctx):
         raise Skip("no Linux display or tauri build here: " + ", ".join(gone))
     v = Verdict("app/window_per_platform")
     tauri = os.environ["E2E_APP_TAURI_BIN"]
-    run_flow.boot(ctx, forge=False)
+    run_flow.boot(ctx)
     ctx.team.stop()
     port = app.free_port()
     env = dict(app.env_of(ctx.team))

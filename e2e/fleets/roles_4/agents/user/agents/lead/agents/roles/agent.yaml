@@ -1,0 +1,11 @@
+id: roles
+handler_module: agentic_resources.tools
+limits:
+  total: 4
+can_call:
+  "$self": "*"
+  memory: "*"
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  lead: [roles, role, spawn, get_count, fleet]

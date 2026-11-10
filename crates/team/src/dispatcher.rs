@@ -246,7 +246,7 @@ fn worker_items(
 /// in one more. Subagents start collapsed; `expanded` names the open workers.
 /// `load` is the roles registry's `load` object (`Null` when none came). The team gets `load`
 /// {tasks, done_last_hour} when one came, plus the cadencer's
-/// `digest_bytes_per_hour` and `driver_tokens_per_hour` when `load` carries them,
+/// `digest_bytes_per_hour` when `load` carries it,
 /// and `waiting` {prs, stalled}: the PRs waiting for approval and the stalled
 /// workers, the figures that need the person. (The bundle adds `fleet` after this.)
 pub fn sidebar(
@@ -282,10 +282,11 @@ pub fn sidebar(
             "tasks": load["tasks"],
             "done_last_hour": load["done_last_hour"],
         });
-        for k in ["digest_bytes_per_hour", "driver_tokens_per_hour"] {
-            if load.get(k).is_some_and(|v| !v.is_null()) {
-                team_load[k] = load[k].clone();
-            }
+        if load
+            .get("digest_bytes_per_hour")
+            .is_some_and(|v| !v.is_null())
+        {
+            team_load["digest_bytes_per_hour"] = load["digest_bytes_per_hour"].clone();
         }
         out["load"] = team_load;
         out["waiting"] = json!({
@@ -653,18 +654,6 @@ fn refused(node: &str, action: &str, error: String) -> Value {
     json!({"sent": false, "node": node, "action": action, "error": error})
 }
 
-/// The error text of a kernel reply, if it is a refusal.
-fn error_of(reply: &Value) -> Option<String> {
-    if reply.is_null() {
-        return Some("no reply".into());
-    }
-    reply.get("error").filter(|e| !e.is_null()).map(|e| {
-        e.as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| e.to_string())
-    })
-}
-
 /// Write the new membership to the dispatcher's own record, through the kernel's
 /// `update_agent`.
 /// Where the groups are kept: the dispatcher's own record (`me`), and the groups as they stand.
@@ -687,7 +676,7 @@ async fn save_groups(
             json!({"type": "update_agent", "id": me, "groups": groups}),
         )
         .await;
-    match error_of(&r) {
+    match fantastic_kernel::error_text(&r) {
         Some(e) => Err(format!("could not update the groups: {e}")),
         None => Ok(()),
     }
@@ -784,7 +773,7 @@ async fn add_worker(
         json!({"$self": "*", "$subtree": "*", (store.as_str()): "*"}),
     );
     rec.insert("callable_by".into(), json!({"$self": "*", "$parent": "*"}));
-    if let Some(e) = error_of(&peers.ask(root, Value::Object(rec)).await) {
+    if let Some(e) = fantastic_kernel::error_text(&peers.ask(root, Value::Object(rec)).await) {
         return refused(group, action, format!("could not create '{id}': {e}"));
     }
     if let Err(e) = crate::tree::grant_store(kernel, &store, &id) {
@@ -815,7 +804,7 @@ async fn remove_worker(
     let r = peers
         .ask(root, json!({"type": "delete_agent", "id": worker}))
         .await;
-    if let Some(e) = error_of(&r) {
+    if let Some(e) = fantastic_kernel::error_text(&r) {
         return refused(worker, action, format!("could not remove '{worker}': {e}"));
     }
     let left = groups_without(at.groups, worker);
@@ -1157,6 +1146,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
 mod tests {
     use super::*;
     use crate::page::HTML;
+    use crate::test_boot::{boot_at, Booted, Seed};
 
     fn board() -> Value {
         json!({
@@ -1451,10 +1441,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn open_worker_via_kernel_returns_fullscreen_chat() {
-        use fantastic_kernel::bootstrap::{self, DEFAULT_ROOT_ID};
+        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = crate::start(dir.path()).await.unwrap();
+        let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
         // As the plan creates them: the view agent under the dispatcher.
         kernel
             .send(vec![Item::new(
@@ -1475,8 +1465,7 @@ mod tests {
         assert_eq!(out["view"], "chat");
         assert_eq!(out["fullscreen"], json!(true));
         assert_eq!(out["target"], "w1");
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[test]
@@ -1544,10 +1533,19 @@ mod tests {
 
     const PROBE: &str = "probe_test.tools";
 
-    /// Records every message it gets. It refuses `pause` as an unknown verb.
-    struct ProbeBundle {
-        seen: Arc<std::sync::Mutex<Vec<Value>>>,
+    type Seen = Arc<std::sync::Mutex<Vec<Value>>>;
+
+    /// What each folder's probe has been sent, by the kernel's work dir (an `Extra` is a
+    /// plain fn and carries no state).
+    static SEEN: std::sync::Mutex<BTreeMap<std::path::PathBuf, Seen>> =
+        std::sync::Mutex::new(BTreeMap::new());
+
+    fn register_probe(reg: &mut fantastic_kernel::BundleRegistry) {
+        reg.register(PROBE, ProbeBundle);
     }
+
+    /// Records every message it gets. It refuses `pause` as an unknown verb.
+    struct ProbeBundle;
 
     #[async_trait::async_trait]
     impl fantastic_kernel::bundle::Bundle for ProbeBundle {
@@ -1559,13 +1557,20 @@ mod tests {
             &self,
             _agent_id: &fantastic_kernel::AgentId,
             payload: &Value,
-            _kernel: &Arc<fantastic_kernel::Kernel>,
+            kernel: &Arc<fantastic_kernel::Kernel>,
         ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
         {
             if payload["type"] == json!("boot") {
                 return Ok(None);
             }
-            self.seen.lock().unwrap().push(payload.clone());
+            let seen = SEEN
+                .lock()
+                .unwrap()
+                .get(&kernel.work_dir().unwrap())
+                .cloned();
+            if let Some(seen) = seen {
+                seen.lock().unwrap().push(payload.clone());
+            }
             if payload["type"] == json!("pause") {
                 return Ok(Some(json!({"error": "no such verb"})));
             }
@@ -1573,21 +1578,13 @@ mod tests {
         }
     }
 
-    /// A kernel booted the way `crate::start` boots, with the probe registered,
-    /// a dispatcher that may call it, and the probe that may be called by it.
-    async fn kernel_with_probe(
-        dir: &std::path::Path,
-        seen: Arc<std::sync::Mutex<Vec<Value>>>,
-    ) -> Arc<fantastic_kernel::Kernel> {
-        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+    /// A kernel booted with the probe registered, a dispatcher that may call it, and the
+    /// probe that may be called by it.
+    async fn kernel_with_probe(dir: &std::path::Path, seen: Seen) -> Booted {
+        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
-        let mut reg = crate::registry();
-        reg.register(PROBE, ProbeBundle { seen });
-        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir)).unwrap();
-        fantastic_kernel::lock::acquire(dir).unwrap();
-        booted.write_seed().unwrap();
-        let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel, true).await.unwrap();
+        SEEN.lock().unwrap().insert(dir.to_path_buf(), seen);
+        let kernel = boot_at(dir, Seed::Stock, &[register_probe], None).await;
         for item in [
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
                 "handler_module": HANDLER_MODULE, "can_call": {"probe": "*"}}),
@@ -1609,7 +1606,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn control_via_kernel_does_not_relay_an_unknown_action() {
-        use fantastic_kernel::bootstrap;
         let dir = tempfile::TempDir::new().unwrap();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let kernel = kernel_with_probe(dir.path(), seen.clone()).await;
@@ -1626,13 +1622,11 @@ mod tests {
             "{:?}",
             seen.lock().unwrap()
         );
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn control_via_kernel_reports_a_peer_refusal() {
-        use fantastic_kernel::bootstrap;
         let dir = tempfile::TempDir::new().unwrap();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let kernel = kernel_with_probe(dir.path(), seen.clone()).await;
@@ -1647,13 +1641,11 @@ mod tests {
             out["error"].as_str().unwrap_or("").contains("no such verb"),
             "{out}"
         );
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn control_via_kernel_stop_needs_confirm_then_reaches_the_node() {
-        use fantastic_kernel::bootstrap;
         let dir = tempfile::TempDir::new().unwrap();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let kernel = kernel_with_probe(dir.path(), seen.clone()).await;
@@ -1674,8 +1666,7 @@ mod tests {
         .await;
         assert_eq!(done["sent"], json!(true), "{done}");
         assert_eq!(*seen.lock().unwrap(), vec![json!({"type": "stop"})]);
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     /// The text of one top-level JS function: from its header to the closing
@@ -1775,7 +1766,6 @@ mod tests {
             "tasks": {"held": 1, "in_review": 3, "done": 2, "blocked": 0, "queued": 3},
             "done_last_hour": 2,
             "digest_bytes_per_hour": 480,
-            "driver_tokens_per_hour": 1200,
         })
     }
 
@@ -1793,20 +1783,15 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_load_carries_digest_bytes_and_driver_tokens_per_hour() {
+    fn sidebar_load_carries_digest_bytes_per_hour() {
         let sb = sidebar_of(&rows_w(), &load_full());
         assert_eq!(sb["load"]["digest_bytes_per_hour"], 480);
-        assert_eq!(sb["load"]["driver_tokens_per_hour"], 1200);
         let mut bare = load_full();
         bare.as_object_mut()
             .unwrap()
             .remove("digest_bytes_per_hour");
-        bare.as_object_mut()
-            .unwrap()
-            .remove("driver_tokens_per_hour");
         let sb = sidebar_of(&rows_w(), &bare);
         assert!(sb["load"].get("digest_bytes_per_hour").is_none(), "{sb}");
-        assert!(sb["load"].get("driver_tokens_per_hour").is_none(), "{sb}");
     }
 
     #[test]
@@ -1932,7 +1917,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn hand_task_needs_a_task_text() {
-        use fantastic_kernel::bootstrap;
         let dir = tempfile::TempDir::new().unwrap();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let kernel = kernel_with_probe(dir.path(), seen.clone()).await;
@@ -1948,13 +1932,11 @@ mod tests {
             );
         }
         assert!(seen.lock().unwrap().is_empty());
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn control_via_kernel_hand_task_reaches_the_worker() {
-        use fantastic_kernel::bootstrap;
         let dir = tempfile::TempDir::new().unwrap();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let kernel = kernel_with_probe(dir.path(), seen.clone()).await;
@@ -1969,17 +1951,16 @@ mod tests {
             *seen.lock().unwrap(),
             vec![json!({"type": "send", "text": "task fix r#5"})]
         );
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     /// A kernel with a dispatcher (the agent verbs on the root, `roles` naming the
     /// registry), a roles registry whose `tiers` field holds the tier `t`, a board record,
-    /// the store `memory`, and one group `g` with `w1`.
-    async fn kernel_with_groups(dir: &std::path::Path) -> Arc<fantastic_kernel::Kernel> {
+    /// the stock tree's store `memory`, and one group `g` with `w1`.
+    async fn kernel_with_groups(dir: &std::path::Path) -> Booted {
         use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
-        let kernel = crate::start(dir).await.unwrap();
+        let kernel = boot_at(dir, Seed::Stock, &[], None).await;
         let can_call = json!({ (DEFAULT_ROOT_ID): crate::tree::DISPATCHER_KERNEL_VERBS });
         for item in [
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
@@ -1991,13 +1972,18 @@ mod tests {
                 "handler_module": "agentic_resources.tools",
                 "tiers": {"t": {"handler_module": "ram_store.tools", "model": "m",
                     "endpoint": "http://e", "memory_store_id": "memory"}}}),
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "memory",
-                "handler_module": "sqlite_store.tools", "path": ".fantastic/memory.db",
-                "callable_by": {"$self": "*", "lead": "*", "w1": "*"}}),
         ] {
             let o = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
             assert!(o[0].result.get("error").is_none(), "{:?}", o[0].result);
         }
+        // the stock tree's own `memory` store: the lead and `w1` may call it
+        kernel
+            .edit_callable_by(&fantastic_kernel::AgentId::from("memory"), |cb| {
+                cb.insert("lead".into(), json!("*"));
+                cb.insert("w1".into(), json!("*"));
+                true
+            })
+            .unwrap();
         // the root's end of the dispatcher's `can_call` on it (an operator write)
         kernel
             .edit_callable_by(&fantastic_kernel::AgentId::from(DEFAULT_ROOT_ID), |cb| {
@@ -2021,7 +2007,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn control_via_kernel_add_worker_creates_the_agent_and_lists_it_in_the_tree() {
-        use fantastic_kernel::bootstrap;
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = kernel_with_groups(dir.path()).await;
         let out = ask_kernel(
@@ -2068,13 +2053,11 @@ mod tests {
             .map(|c| c["row"]["id"].as_str().unwrap())
             .collect();
         assert!(ids.contains(&"w2"), "{tree}");
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn control_via_kernel_add_worker_grants_the_dispatcher_the_new_worker() {
-        use fantastic_kernel::bootstrap;
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = kernel_with_groups(dir.path()).await;
         let added = ask_kernel(
@@ -2097,13 +2080,11 @@ mod tests {
         .await;
         let err = stop["error"].as_str().unwrap_or("");
         assert!(!err.contains("may not call"), "{stop}");
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn add_worker_uses_the_shared_store_and_makes_no_memory() {
-        use fantastic_kernel::bootstrap;
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = kernel_with_groups(dir.path()).await;
         let out = ask_kernel(
@@ -2133,13 +2114,11 @@ mod tests {
             w["callable_by"]["dispatcher"],
             json!(crate::tree::CONTROL_VERBS)
         );
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn add_worker_without_the_store_is_refused_and_leaves_no_worker() {
-        use fantastic_kernel::bootstrap;
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = kernel_with_groups(dir.path()).await;
         let gone = ask_kernel(
@@ -2170,13 +2149,11 @@ mod tests {
             meta_of(&kernel, "dispatcher")["groups"],
             json!({"g": ["w1"]})
         );
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn remove_worker_keeps_the_store() {
-        use fantastic_kernel::bootstrap;
         use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
         let dir = tempfile::TempDir::new().unwrap();
@@ -2200,13 +2177,11 @@ mod tests {
         assert!(kernel
             .agents
             .contains_key(&fantastic_kernel::AgentId::from("memory")));
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn control_via_kernel_remove_worker_deletes_it_and_drops_it_from_the_groups() {
-        use fantastic_kernel::bootstrap;
         use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
         let dir = tempfile::TempDir::new().unwrap();
@@ -2237,8 +2212,7 @@ mod tests {
             .agents
             .contains_key(&fantastic_kernel::AgentId::from("w1")));
         assert_eq!(meta_of(&kernel, "dispatcher")["groups"], json!({"g": []}));
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[test]
@@ -2257,6 +2231,10 @@ mod tests {
         // The confirm for a remove goes through the same question as stop.
         assert!(js_fn("control").contains("reply.question"));
         assert!(!HTML.contains("innerHTML"));
+    }
+
+    fn register_load(reg: &mut fantastic_kernel::BundleRegistry) {
+        reg.register("load_test.tools", LoadBundle);
     }
 
     /// A sidebar answers with the cadencer's load (cost per hour) when it replies.
@@ -2278,7 +2256,7 @@ mod tests {
             Ok(match payload["type"].as_str() {
                 Some("status") => Some(json!({"load": {
                     "tasks": {"in_review": 2}, "workers": {"stalled": 1},
-                    "digest_bytes_per_hour": 99, "driver_tokens_per_hour": 7}})),
+                    "digest_bytes_per_hour": 99}})),
                 _ => None,
             })
         }
@@ -2286,16 +2264,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn sidebar_via_kernel_takes_the_cost_per_hour_from_the_cadencer() {
-        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
         let dir = tempfile::TempDir::new().unwrap();
-        let mut reg = crate::registry();
-        reg.register("load_test.tools", LoadBundle);
-        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir.path())).unwrap();
-        fantastic_kernel::lock::acquire(dir.path()).unwrap();
-        booted.write_seed().unwrap();
-        let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel, true).await.unwrap();
+        let kernel = boot_at(dir.path(), Seed::Stock, &[register_load], None).await;
         for item in [
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
                 "handler_module": HANDLER_MODULE, "can_call": {"board": "*", "cadencer": "*"}}),
@@ -2308,15 +2280,17 @@ mod tests {
         }
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
         assert_eq!(sb["load"]["digest_bytes_per_hour"], 99, "{sb}");
-        assert_eq!(sb["load"]["driver_tokens_per_hour"], 7, "{sb}");
         assert_eq!(sb["waiting"], json!({"prs": 2, "stalled": 1}), "{sb}");
-        kernel.shutdown().await;
-        bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     /// A registry stand-in: answers `get_count` with {running: 2, max: 3}, or with a
     /// refusal when its `fail` field is set.
     struct CountBundle;
+
+    fn register_count(reg: &mut fantastic_kernel::BundleRegistry) {
+        reg.register("count_test.tools", CountBundle);
+    }
 
     #[async_trait::async_trait]
     impl fantastic_kernel::bundle::Bundle for CountBundle {
@@ -2349,16 +2323,10 @@ mod tests {
         dir: &std::path::Path,
         roles: Option<&str>,
         fail: bool,
-    ) -> Arc<fantastic_kernel::Kernel> {
-        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+    ) -> Booted {
+        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
-        let mut reg = crate::registry();
-        reg.register("count_test.tools", CountBundle);
-        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir)).unwrap();
-        fantastic_kernel::lock::acquire(dir).unwrap();
-        booted.write_seed().unwrap();
-        let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel, true).await.unwrap();
+        let kernel = boot_at(dir, Seed::Stock, &[register_count], None).await;
         let mut d = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
             "handler_module": HANDLER_MODULE, "can_call": {"reg": "*"}});
         if let Some(r) = roles {
@@ -2381,8 +2349,7 @@ mod tests {
         let kernel = kernel_with_registry(dir.path(), Some("reg"), false).await;
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
         assert_eq!(sb["fleet"], json!({"running": 2, "max": 3}), "{sb}");
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2392,8 +2359,7 @@ mod tests {
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
         assert!(sb.get("fleet").is_none(), "{sb}");
         assert!(sb["team"].is_string(), "{sb}");
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2402,8 +2368,7 @@ mod tests {
         let kernel = kernel_with_registry(dir.path(), Some("reg"), true).await;
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
         assert!(sb.get("fleet").is_none(), "{sb}");
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[test]
@@ -2787,6 +2752,11 @@ mod tests {
     /// A board stand-in: answers `board` with the `roles` section its meta holds (when any).
     struct RolesBoard;
 
+    fn register_roles_mocks(reg: &mut fantastic_kernel::BundleRegistry) {
+        reg.register("count_test.tools", CountBundle);
+        reg.register("roles_board_test.tools", RolesBoard);
+    }
+
     #[async_trait::async_trait]
     impl fantastic_kernel::bundle::Bundle for RolesBoard {
         fn name(&self) -> &str {
@@ -2818,20 +2788,10 @@ mod tests {
     /// A kernel with a dispatcher (roles mode when `section` is given), a board stand-in,
     /// the `team_ws` leg, and the agents `pl` (the lead) and `c1` (its child), made after
     /// the start so nobody granted them a chat.
-    async fn kernel_in_roles_mode(
-        dir: &std::path::Path,
-        section: Option<Value>,
-    ) -> Arc<fantastic_kernel::Kernel> {
-        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+    async fn kernel_in_roles_mode(dir: &std::path::Path, section: Option<Value>) -> Booted {
+        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
-        let mut reg = crate::registry();
-        reg.register("count_test.tools", CountBundle);
-        reg.register("roles_board_test.tools", RolesBoard);
-        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir)).unwrap();
-        fantastic_kernel::lock::acquire(dir).unwrap();
-        booted.write_seed().unwrap();
-        let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel, true).await.unwrap();
+        let kernel = boot_at(dir, Seed::Stock, &[register_roles_mocks], None).await;
         let mut d = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
             "handler_module": HANDLER_MODULE, "can_call": {"reg": "*", "board": "*"}});
         let mut b = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
@@ -2871,8 +2831,7 @@ mod tests {
         assert_eq!(sb["agents"][1]["id"], "c1");
         assert_eq!(sb["plan"]["tasks"][0]["id"], "o/r#1", "{sb}");
         assert_eq!(sb["plan"]["lead"], "pl");
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2883,8 +2842,7 @@ mod tests {
         assert!(sb.get("agents").is_none(), "{sb}");
         assert!(sb.get("plan").is_none(), "{sb}");
         assert!(sb["team"].is_string());
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2903,8 +2861,7 @@ mod tests {
             assert_eq!(m["callable_by"]["dispatcher_view"], json!(null));
         }
         assert!(ws["can_call"].get("*").is_none());
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2925,8 +2882,7 @@ mod tests {
         .await;
         let ws = meta_of(&kernel, "team_ws");
         assert!(ws["can_call"].get("reg").is_none(), "{ws:?}");
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[test]
@@ -3039,6 +2995,12 @@ mod tests {
     /// meta holds, or with an error carrying a secret when its `fail` field is set.
     struct ViewsBoard;
 
+    fn register_services_mocks(reg: &mut fantastic_kernel::BundleRegistry) {
+        reg.register("views_board_test.tools", ViewsBoard);
+        reg.register("team_github.tools", StubGithub);
+        reg.register("count_test.tools", CountBundle);
+    }
+
     #[async_trait::async_trait]
     impl fantastic_kernel::bundle::Bundle for ViewsBoard {
         fn name(&self) -> &str {
@@ -3110,18 +3072,10 @@ mod tests {
         board_reply: Value,
         gh: bool,
         fail: bool,
-    ) -> Arc<fantastic_kernel::Kernel> {
-        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+    ) -> Booted {
+        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
-        let mut reg = crate::registry();
-        reg.register("views_board_test.tools", ViewsBoard);
-        reg.register("team_github.tools", StubGithub);
-        reg.register("count_test.tools", CountBundle);
-        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir)).unwrap();
-        fantastic_kernel::lock::acquire(dir).unwrap();
-        booted.write_seed().unwrap();
-        let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel, true).await.unwrap();
+        let kernel = boot_at(dir, Seed::Stock, &[register_services_mocks], None).await;
         let mut items = vec![
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
                 "handler_module": HANDLER_MODULE,
@@ -3186,8 +3140,7 @@ mod tests {
         ];
         assert_eq!(ids_of(&sb["services"]), want, "{sb}");
         assert!(sb.get("agents").is_none(), "this is not roles mode: {sb}");
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
 
         // Roles mode too.
         let dir = tempfile::TempDir::new().unwrap();
@@ -3199,8 +3152,7 @@ mod tests {
             vec![pair("dispatcher", "dispatcher"), pair("board", "board")],
             "{sb}"
         );
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3229,8 +3181,7 @@ mod tests {
             !ids_of(&sb["services"]).iter().any(|(_, k)| k == "queue"),
             "{sb}"
         );
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     fn queue_board() -> Value {
@@ -3258,8 +3209,7 @@ mod tests {
         assert_eq!(m["sections"][0]["name"], "queued");
         assert_eq!(m["sections"][0]["rows"][0][0], "first");
         assert_eq!(m["sections"][1]["rows"][0][1], "w1");
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3284,8 +3234,7 @@ mod tests {
             m["sections"][1]["rows"][0],
             json!(["o/r#1", "gh:o/r#1", "c1", "in_work"])
         );
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3302,8 +3251,7 @@ mod tests {
         assert_eq!(out["kind"], "dispatcher");
         assert_eq!(out["model"]["sections"][0]["name"], "workers");
         assert_eq!(out["model"]["sections"][0]["rows"][0][0], "w1");
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3324,8 +3272,7 @@ mod tests {
         assert!(!s.contains(&secret_text()), "{s}");
         assert!(!s.contains("PRIVATE"), "{s}");
         assert!(!s.contains("Bearer"), "{s}");
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3346,8 +3293,7 @@ mod tests {
                 "{node}: {s}"
             );
         }
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3366,8 +3312,7 @@ mod tests {
         .await;
         assert_eq!(g["view"], "dispatcher", "{g}");
         assert!(g.get("model").is_none());
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[test]
@@ -3743,6 +3688,13 @@ mod tests {
     /// or with an error carrying a secret when its `fail` field is set.
     struct StubDeclared(&'static str);
 
+    /// The stand-ins of the three team modules the tests below declare, after the team's own.
+    fn register_declared(reg: &mut fantastic_kernel::BundleRegistry) {
+        for module in ["team_cadencer.tools", "team_git.tools", "team_puller.tools"] {
+            reg.register(module, StubDeclared(module));
+        }
+    }
+
     #[async_trait::async_trait]
     impl fantastic_kernel::bundle::Bundle for StubDeclared {
         fn name(&self) -> &str {
@@ -3776,18 +3728,10 @@ mod tests {
     async fn kernel_with_declared(
         dir: &std::path::Path,
         agents: &[(&str, &'static str, Value)],
-    ) -> Arc<fantastic_kernel::Kernel> {
-        use fantastic_kernel::bootstrap::{self, BootstrapOptions, DEFAULT_ROOT_ID};
+    ) -> Booted {
+        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
-        let mut reg = crate::registry();
-        for (_, module, _) in agents {
-            reg.register(module, StubDeclared(module));
-        }
-        let mut booted = bootstrap::bootstrap(reg, BootstrapOptions::one_shot(dir)).unwrap();
-        fantastic_kernel::lock::acquire(dir).unwrap();
-        booted.write_seed().unwrap();
-        let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel, true).await.unwrap();
+        let kernel = boot_at(dir, Seed::Stock, &[register_declared], None).await;
         let can_call: serde_json::Map<String, Value> = agents
             .iter()
             .map(|(id, _, _)| (id.to_string(), json!("*")))
@@ -3834,8 +3778,7 @@ mod tests {
             "{sb}"
         );
         assert_eq!(sb["services"][1]["label"], "Cadencer (cad)");
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
 
         // Without the agents, none is listed.
         let dir = tempfile::TempDir::new().unwrap();
@@ -3846,8 +3789,7 @@ mod tests {
             vec![pair("dispatcher", "dispatcher")],
             "{sb}"
         );
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3875,8 +3817,7 @@ mod tests {
             json!(["stalled", "2"]),
             "{out}"
         );
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3893,7 +3834,6 @@ mod tests {
         assert_eq!(out["view"], "panel", "{out}");
         assert_eq!(out["model"]["summary"], json!(["unavailable"]), "{out}");
         assert!(!out.to_string().contains(&secret_text()), "{out}");
-        kernel.shutdown().await;
-        fantastic_kernel::bootstrap::shutdown(dir.path()).unwrap();
+        kernel.stop().await;
     }
 }

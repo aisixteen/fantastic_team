@@ -1,0 +1,17 @@
+id: worker_exec
+handler_module: exec_bridge.tools
+ingress_rule: allow_all_ingress
+cwd: ./work
+allowed: [".*"]
+inherit_env: [PATH, LANG, LC_ALL, LC_CTYPE, TERM, TMPDIR, TZ, USER, LOGNAME, SHELL]
+env:
+  HOME: ./sandbox/home
+  XDG_CONFIG_HOME: ./sandbox/home/.config
+  GIT_CONFIG_NOSYSTEM: "1"
+  GIT_TERMINAL_PROMPT: "0"
+  GCM_INTERACTIVE: never
+  GIT_SSH_COMMAND: ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes
+can_call:
+  "$self": "*"
+callable_by:
+  "$self": "*"

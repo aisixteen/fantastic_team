@@ -61,7 +61,7 @@ def run(ctx):
     procs = []
     try:
         real = app.free_port()
-        keys = run_flow.boot(ctx, forge=False, extra_args=["webui", "--port", real], seeded=True)
+        keys = run_flow.boot(ctx, extra_args=["webui", "--port", real], seeded=True)
         v.check("the shift serves its web UI on its port", app.wait_http(f"http://127.0.0.1:{real}{PAGE}", 30))
         remote = app.free_port()
         front = app.Proc([sys.executable, "-c", FRONT, str(remote), str(real), PAGE], app.env_of(ctx.team),

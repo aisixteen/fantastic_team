@@ -1,0 +1,18 @@
+id: board
+handler_module: team_board.tools
+repos: [acme/widgets]
+github: github
+store: queue
+roles: roles
+can_call:
+  "$self": "*"
+  github: "*"
+  queue: "*"
+  roles: [fleet, get_count]
+  tasks: [list]
+  kernel_state: [reflect]
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  dispatcher: "*"
+  lead: [board]

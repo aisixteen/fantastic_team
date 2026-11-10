@@ -852,7 +852,7 @@ async fn child_to_parent_send_is_merged_never_overwritten() {
     // child to the parent on both ends before `create_agent` returns
     r.kernel
         .edit_callable_by(&AgentId::from(lead.as_str()), |m| {
-            grant_verbs(m, &peer, &json!(["send"]));
+            union(m, &Map::from_iter([(String::from(&peer), json!(["send"]))]));
             true
         })
         .unwrap();
@@ -872,12 +872,18 @@ async fn child_to_parent_send_is_merged_never_overwritten() {
             }
             let (pid, cid) = (l.clone(), id.to_string());
             k.edit_can_call(&AgentId::from(id), move |m| {
-                grant_verbs(m, &pid, &json!(["history"]));
+                union(
+                    m,
+                    &Map::from_iter([(String::from(&pid), json!(["history"]))]),
+                );
                 true
             })
             .unwrap();
             k.edit_callable_by(&AgentId::from(l.as_str()), move |m| {
-                grant_verbs(m, &cid, &json!(["history"]));
+                union(
+                    m,
+                    &Map::from_iter([(String::from(&cid), json!(["history"]))]),
+                );
                 true
             })
             .unwrap();
@@ -1140,7 +1146,7 @@ fn grant_fork(r: &Rig, who: &str, src: &str) {
     let s = src.to_string();
     r.kernel
         .edit_can_call(&AgentId::from(who), move |m| {
-            grant_verbs(m, &s, &json!(["fork"]));
+            union(m, &Map::from_iter([(String::from(&s), json!(["fork"]))]));
             true
         })
         .unwrap();
@@ -1513,13 +1519,13 @@ fn reach(r: &Rig, holders: &[String]) {
             for h in holders.iter().filter(|h| h.as_str() != id) {
                 let new = id.to_string();
                 k.edit_can_call(&AgentId::from(h.as_str()), move |m| {
-                    grant_verbs(m, &new, &json!("*"));
+                    union(m, &Map::from_iter([(String::from(&new), json!("*"))]));
                     true
                 })
                 .unwrap();
                 let holder = h.clone();
                 k.edit_callable_by(&AgentId::from(id), move |m| {
-                    grant_verbs(m, &holder, &json!("*"));
+                    union(m, &Map::from_iter([(String::from(&holder), json!("*"))]));
                     true
                 })
                 .unwrap();
@@ -1586,7 +1592,10 @@ async fn spawn_merges_verbs_the_spawner_already_holds() {
             };
             let new = id.to_string();
             k.edit_can_call(&AgentId::from(l.as_str()), move |m| {
-                grant_verbs(m, &new, &json!(["send", "history"]));
+                union(
+                    m,
+                    &Map::from_iter([(String::from(&new), json!(["send", "history"]))]),
+                );
                 true
             })
             .unwrap();

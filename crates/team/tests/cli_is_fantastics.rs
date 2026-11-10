@@ -1,5 +1,5 @@
 //! #219: the team binary takes fantastic's command line unchanged. It adds its bundles
-//! and one first word of its own (`ai-readme`), and nothing else.
+//! and its text for `readme`, and nothing else.
 
 use std::process::{Command, Output, Stdio};
 
@@ -40,9 +40,15 @@ fn fantastic_s_one_shot_words_run_here() {
     assert!(text(&o.stderr).contains("no path"), "{}", text(&o.stderr));
 }
 
+/// The launcher passes the team's text to `main_with` as a `readme` section; fantastic
+/// owns how sections print.
 #[test]
-fn the_team_s_own_first_words_are_still_the_teams() {
-    let o = run(&["ai-readme"]);
-    assert!(o.status.success());
-    assert_eq!(text(&o.stdout), fantastic_team::AI_README);
+fn the_team_s_text_is_a_section_of_fantastic_s_readme() {
+    let o = run(&["readme"]);
+    assert!(o.status.success(), "{}", text(&o.stderr));
+    let first = fantastic_team::AI_README
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap();
+    assert!(text(&o.stdout).contains(first), "{}", text(&o.stdout));
 }

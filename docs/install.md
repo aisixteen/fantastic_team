@@ -48,7 +48,7 @@ The build is reproducible in intent (#137): the same commit gives the same bytes
 Only needed for the GitHub side (pull requests, issue comments, labels). The mode is configuration, set by env refs; nothing pastes or stores a token.
 
 - Personal: export `GH_TOKEN` (a fine-grained token with Contents, Pull requests and Issues read/write, Metadata read). The stock `github_credentials` store reads it at each call; no command is needed.
-- App: create and install your own app on GitHub by hand, with these permissions, then name it in team.yaml with `env: {app_id: VAR, private_key: VAR}` (the key variable holds the PEM text or the path of the .pem file):
+- App: create and install your own app on GitHub by hand, with these permissions, then set the connector's credential record to `env: {app_id: VAR, private_key: VAR}` (the key variable holds the PEM text or the path of the .pem file):
   - Contents: read and write
   - Pull requests: read and write
   - Issues: read and write
@@ -70,7 +70,7 @@ The command line is fantastic's, unchanged: `fantastic_team` is `fantastic` with
     cd ./my-team
     ./target/release/fantastic_team --headless
 
-No screen and no port.
+No screen; the team page is served on the recorded or a free 127.0.0.1 port.
 
 Serve the web UI on a port:
 
@@ -80,9 +80,9 @@ The terminal UI (needs a terminal):
 
     ./target/release/fantastic_team
 
-The first word the team adds to fantastic's (`ai-readme`):
+`fantastic_team readme` prints fantastic's readme followed by the team's:
 
-    fantastic_team ai-readme
+    fantastic_team readme
 
 `--dir`, `--port` outside `canvas` and `webui`, `--tui`, `--instructions` and `--resend-instructions` are not flags any more; fantastic refuses them.
 

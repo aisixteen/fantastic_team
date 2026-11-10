@@ -1,6 +1,6 @@
 """single_lead: one lead solves the fixture, started two ways.
 
-A: `--headless`, then the lead made with `send` + `create_agent` under the fixed id `lead`.
+A: the lead laid as a record file (fixed id `lead`) before the first start of `--headless`.
 B: no file. `--headless ai anthropic --model M --endpoint URL` (fantastic's recipe: the root AI
    `ai`), then `send` of `create_agent` / `update_agent` payloads.
 The script plays twice in a row (turns 1-6 for A, 7-12 for B); one lead is on at a time.

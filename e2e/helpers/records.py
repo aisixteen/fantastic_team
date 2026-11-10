@@ -1,9 +1,10 @@
 """Agent records made with fantastic's own verbs, for every helper and test (issue #221).
 
-There are no blueprints: an agent is a `create_agent` payload sent to the root with `send`,
-under an id the test chooses, and a grant is written on BOTH ends of the edge (the caller's
-`can_call` and the callee's `callable_by`). `update_agent` replaces a whole map, so `merge`
-restates the entries the agent has.
+A test's team is record files (`e2e/fleets/`, named by `fleet:` in its `test.yaml`), laid before the
+first start (`team.lay_fleet`). What a scenario does with agents while it runs is a `create_agent`
+payload sent to the root with `send`, under an id the test chooses, and a grant is written on BOTH
+ends of the edge (the caller's `can_call` and the callee's `callable_by`). `update_agent` replaces a
+whole map, so `merge` restates the entries the agent has.
 """
 
 from __future__ import annotations

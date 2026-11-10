@@ -4,8 +4,8 @@ The gpu twin of `cli/single_lead` (#237): one lead solves the shared fixture (a 
 failing test; solved = the test fails on the start commit, passes on HEAD, the work tree is clean) on
 a real model, the shared vLLM server, with no script.
 
-- A, the lead made by hand: `fantastic_team --headless`, then `send` of `create_agent` for the lead,
-  under the fixed id `lead`, with the vllm record (`helpers/cli.py make_agent`).
+- A, the lead laid as a record file under the fixed id `lead`, with the vllm record, before the first
+  start of `fantastic_team --headless`.
 - B, the recipe: `--headless ai vllm -p PORT --host H --kv-overflow O` (the root AI `ai`), then `send`
   of `update_agent`: the server's URL as given (the recipe only knows `http://H:P/v1`), the model, the
   budgets, `kv_slots` (never read from the shared server), the credential ref and the exec grant.

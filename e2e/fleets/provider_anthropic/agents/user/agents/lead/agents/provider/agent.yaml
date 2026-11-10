@@ -1,0 +1,16 @@
+id: provider
+handler_module: anthropic_backend.tools
+endpoint: "{{model_endpoint}}"
+caching: {{caching}}
+models: {{models}}
+memory_store_id: provider_store
+credentials:
+  store: credentials
+  ref: "model/{{model_host}}"
+can_call:
+  "$self": "*"
+  provider_store: "*"
+  credentials: [get]
+callable_by:
+  "$self": "*"
+  "$parent": [complete, watch, models, set_default_model]

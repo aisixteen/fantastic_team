@@ -16,7 +16,7 @@ Verbs: `worktree_add`, `worktree_remove`, `commit`, `push`, `fetch`,
 Where the worktrees go:
 - No `workspace_root` on the record: `<default folder>/<agent id>`, made at
   the first `worktree_add`. The default folder is the system temp folder's
-  `fantastic_team/worktrees`, or the binary's `--worktrees DIR`.
+  `fantastic_team/worktrees`.
 - Another folder: `update_agent` of this record with `workspace_root`, and
   only after the user agrees to that folder. Ask first.
 

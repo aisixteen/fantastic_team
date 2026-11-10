@@ -1,3 +1,4 @@
 costs: gpu
 timeout: 3600
 plug: vllm
+fleet: stock cli_base lead_tree provider_{{provider_shape}} cadencer

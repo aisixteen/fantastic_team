@@ -1,13 +1,13 @@
 """The five scenarios of the cli group, defined once (issues #219, #237, #242).
 
 A `cli/` test plays one on the scripted model; its `gpu_cli/` twin plays the same on a real model
-(the vllm plug, no script). Both build the same team through the same `create_agent` calls, under
+(the vllm plug, no script). Both start on the same fleet (record files laid before the first start, `e2e/fleets/`), under
 the same fixed ids and the same role cards, and run the same checks on the result. What differs is
 only what the model path is: the scripted test also checks that every scripted turn was served and
 that each lane asked the model (checks about a script); the gpu test hands the lead its task in
 plain words and waits for the lead to answer `done`, and asserts nothing about the model's own path.
 
-Each scenario is a `*_start(ctx, v)` that boots and builds the team (and checks it), and a
+Each scenario is a `*_start(ctx, v)` that boots the team on its fleet (and checks it), and a
 `*_end(ctx, v, ...)` that checks the outcome. Both return what the other half needs.
 """
 
@@ -29,28 +29,45 @@ TREE = {"lead": "user", "s1": "lead", "w1": "s1", "s2": "lead", "w2": "s2"}
 
 # ---- single_lead -----------------------------------------------------------------------
 
+def fleet_there(v, ctx, label: str, expect: dict) -> None:
+    """Every agent of `expect` (id -> (handler, parent)) is there, loaded from its record file."""
+    tree = cli.tree(ctx.team)
+    wrong = {i: tree.get(i) for i, hp in expect.items() if tree.get(i) != hp}
+    v.check(label, not wrong, f"wanted {expect}, found {wrong}")
+
+
+def provider_there(ctx, parent: str = cli.LEAD) -> dict:
+    """The provider and its store, under `parent`, as `fleet_there` wants them."""
+    return {cli.PROVIDER: (ctx.model.ai_record()["handler_module"], parent),
+            cli.PROVIDER_STORE: ("ram_store.tools", parent)}
+
+
+def check_in_leads(ctx, leads) -> None:
+    """The leads whose records carry the check-ins paragraph (a model test), for `gpu_cli.check_ins_ran`."""
+    if cli.check_ins_on(ctx):
+        ctx.check_in_leads = list(leads)
+
+
 def single_by_hand(ctx, v, sub: str = "create_agent_run"):
-    """A: `--headless`, then the lead made with `create_agent` under the id `lead`.
-    Returns (lead id, the records before the task)."""
+    """A: `--headless` on the fleet laid in the folder `sub`: the lead (id `lead`), its provider
+    with its store, the cadencer. Returns (lead id, the records before the task)."""
     cli.start(ctx, sub=sub)
-    cli.add_base(ctx)
-    base = set(cli.ids(ctx.team))
-    lead = cli.make_lead(ctx, {cli.EXEC: "*"})
-    made = set(cli.ids(ctx.team)) - base
-    v.check("A: create_agent made the lead (and its provider with its store), under the id `lead`",
-            made == {"lead"} | {cli.PROVIDER, cli.PROVIDER_STORE} and lead == "lead", str(made))
-    cli.add_cadencer(ctx)
+    lead = cli.LEAD
+    fleet_there(v, ctx, "A: the lead (and its provider with its store) and the cadencer are loaded, under the ids laid",
+                {lead: (cli.CHAT, "user"), "cadencer": ("team_cadencer.tools", "user"), **provider_there(ctx)})
     before = cli.ids(ctx.team)
     v.check(f"A: the lead is an AI chat ({cli.CHAT}) on the team's provider",
             before.get(lead) == cli.CHAT and before.get(cli.PROVIDER) == ctx.model.ai_record()["handler_module"], str(before))
     return lead, before
 
 
-def single_by_recipe(ctx, v, sub: str = "recipe_run"):
+def single_by_recipe(ctx, v, sub: str = "recipe_run", fleet: str = "fleet_recipe"):
     """B: fantastic's recipe makes the root AI `ai`, then `send` of `create_agent` /
     `update_agent` gives it the key, the exec grant and whatever the recipe leaves to the plug.
+    The creates here are this step's own live creates: `fleet` names a key no `test.yaml` carries, so
+    no fleet is laid and the recipe starts on a fresh folder.
     Returns ("ai", the records before the task)."""
-    cli.start(ctx, ctx.model.recipe_args(), sub=sub)
+    cli.start(ctx, ctx.model.recipe_args(), sub=sub, fleet=fleet)
     cli.create(ctx.team, {"id": "credentials", "parent_id": "user",
                           "handler_module": "credential_store.tools", "backend": "env",
                           "refs": {f"model/{ctx.model.host}": {"host": ctx.model.host,
@@ -88,15 +105,10 @@ def spawn_two_start(ctx, v, credentials: bool = False) -> dict:
     """A lead with the registry and the `worker` card (room for 2). Returns the tree before.
     `credentials`: kept for the callers; a spawned agent takes its spawner's backend, the key ref
     included."""
-    cli.start(ctx, roles=True)
-    cli.add_base(ctx)
-    base = set(cli.ids(ctx.team))
-    cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True, runs_agents=True)
-    cli.make_registry(ctx, total=2, roles=cli.spawn_roles("lead_spawns_two"))
-    new = set(cli.ids(ctx.team)) - base
-    v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
-                new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
-    cli.add_cadencer(ctx)
+    cli.start(ctx, roles=True, bundles=cli.spawn_roles("lead_spawns_two"))
+    check_in_leads(ctx, [cli.LEAD])
+    fleet_there(v, ctx, "the lead, its provider (and store) and its roles registry are loaded, under the ids laid",
+                {cli.LEAD: (cli.CHAT, "user"), "roles": ("agentic_resources.tools", cli.LEAD), **provider_there(ctx)})
     count = ctx.team.send("roles", {"type": "get_count"})["result"]
     v.check("the registry is on and counts nothing running", count == {"running": 0, "max": 2}, str(count))
     return cli.tree(ctx.team)
@@ -123,26 +135,14 @@ def spawn_two_end(ctx, v, before: dict) -> None:
 
 # ---- precreated_1_2 and precreated_tree ------------------------------------------------
 
-def precreate(ctx, v, expect: dict, all_keyed: bool = False) -> dict:
-    """Make the agents of `expect` (id -> parent, parents first) with `create_agent`, each
-    able to call its children, a leaf the exec agent. Returns the tree before the task. Only the
-    lead reads the model's key (the scripted server wants none); `all_keyed`: every agent does,
-    for a server behind a door that asks every request for it."""
+def precreate(ctx, v, expect: dict) -> dict:
+    """Start on the fleet of `expect` (id -> parent, parents first), laid as record files: each agent
+    able to call its children, a leaf the exec agent. Returns the tree before the task."""
     cli.start(ctx)
-    cli.add_base(ctx)
-    base = set(cli.ids(ctx.team))
-    for id, parent in expect.items():
-        kids = {c: "*" for c, p in expect.items() if p == id}
-        worker = {"model": cli.worker_model()} if not kids and cli.worker_model() else {}
-        cli.make_agent(ctx, id, parent, kids or {cli.EXEC: "*"}, key=(id == cli.LEAD or all_keyed),
-                       lead=bool(kids), **worker)
-    before = cli.tree(ctx.team)
-    v.check("the tree is the one made and the base, nothing else",
-            set(before) == base | set(expect) | {cli.PROVIDER, cli.PROVIDER_STORE}, str(sorted(set(before) - base)))
-    v.check("each agent sits under the parent it was made under",
-            all(before[i][1] == p for i, p in expect.items()),
-            str({i: before[i][1] for i in expect}))
-    cli.add_cadencer(ctx)
+    check_in_leads(ctx, [i for i in expect if i in expect.values()])
+    fleet_there(v, ctx, "the tree is the one laid: each agent an AI chat under the parent it was laid under",
+                {**{i: (cli.CHAT, p) for i, p in expect.items()}, "cadencer": ("team_cadencer.tools", "user"),
+                 **provider_there(ctx)})
     return cli.tree(ctx.team)
 
 
@@ -163,15 +163,10 @@ def precreated_end(ctx, v, before: dict) -> None:
 
 def spawn_leads_start(ctx, v, credentials: bool = False) -> dict:
     """A lead with the registry (room for 4) and the `sublead` and `worker` cards."""
-    cli.start(ctx, roles=True)
-    cli.add_base(ctx)
-    base = set(cli.ids(ctx.team))
-    cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True, runs_agents=True)
-    cli.make_registry(ctx, total=4, roles=cli.spawn_roles("leads_spawn_leads"))
-    new = set(cli.ids(ctx.team)) - base
-    v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
-                new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
-    cli.add_cadencer(ctx)
+    cli.start(ctx, roles=True, bundles=cli.spawn_roles("leads_spawn_leads"))
+    check_in_leads(ctx, [cli.LEAD])
+    fleet_there(v, ctx, "the lead, its provider (and store) and its roles registry are loaded, under the ids laid",
+                {cli.LEAD: (cli.CHAT, "user"), "roles": ("agentic_resources.tools", cli.LEAD), **provider_there(ctx)})
     return cli.tree(ctx.team)
 
 
@@ -197,15 +192,10 @@ def spawn_leads_end(ctx, v, before: dict) -> None:
 
 def busy_stuck_start(ctx, v) -> dict:
     """A lead with the registry (room for 2) and the `sublead` card. Returns the tree before."""
-    cli.start(ctx, roles=True)
-    cli.add_base(ctx)
-    base = set(cli.ids(ctx.team))
-    cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True, runs_agents=True)
-    cli.make_registry(ctx, total=2, roles=cli.roles_dir("checkins_busy_stuck"))
-    new = set(cli.ids(ctx.team)) - base
-    v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
-            new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
-    cli.add_cadencer(ctx)
+    cli.start(ctx, roles=True, bundles=cli.roles_dir("checkins_busy_stuck"))
+    check_in_leads(ctx, [cli.LEAD])
+    fleet_there(v, ctx, "the lead, its provider (and store) and its roles registry are loaded, under the ids laid",
+                {cli.LEAD: (cli.CHAT, "user"), "roles": ("agentic_resources.tools", cli.LEAD), **provider_there(ctx)})
     return cli.tree(ctx.team)
 
 

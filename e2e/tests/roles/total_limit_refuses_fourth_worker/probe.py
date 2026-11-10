@@ -3,7 +3,7 @@
 import os
 import shutil
 
-from helpers import run_flow, stock as S
+from helpers import run_flow
 from helpers.verdict import Verdict
 
 REASON = "all roles together are at the limit (3 running, max 3)"
@@ -12,9 +12,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..",
 
 def run(ctx):
     v = Verdict("roles/total_limit_refuses_fourth_worker")
-    team = ctx.boot_team(puller=False, board=True, board_store="queue", groups={}, limits={"total": 3},
-                         roles_tiers={"strong": S.lead_tier(ctx), "small": S.inert_tier(ctx),
-                                      "issue_keeper": S.inert_tier(ctx)})
+    team = ctx.boot_team(cards=True)
 
     roles = team.send("roles", {"type": "roles"})["result"]
     names = sorted(r["name"] for r in roles.get("roles", []))

@@ -1,0 +1,9 @@
+id: web
+handler_module: web.tools
+port: {{web_port}}
+can_call:
+  "$self": "*"
+  team_ws: [get_routes]
+  team_page: [read_stream]
+callable_by:
+  "$self": "*"

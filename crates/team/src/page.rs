@@ -119,23 +119,6 @@ fn read_stream(payload: &Value) -> (Value, Option<Vec<u8>>) {
     )
 }
 
-/// Start the `web` host listening, off this agent's own turn: the host mounts its
-/// children (this page among them) while it boots.
-fn start_host(kernel: &Arc<Kernel>) {
-    let kernel = Arc::clone(kernel);
-    tokio::spawn(async move {
-        let boot = fantastic_kernel::Item::new(WEB_ID, json!({"type": "boot"}));
-        if let Some(err) = kernel.send(vec![boot]).await.first().and_then(|o| {
-            o.result
-                .get("error")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        }) {
-            eprintln!("fantastic_team: the web host did not start: {err}");
-        }
-    });
-}
-
 /// The bundle. Stateless: the page is in the binary.
 #[derive(Default)]
 pub struct PageBundle;
@@ -149,7 +132,7 @@ impl Bundle for PageBundle {
     fn verb_docs(&self) -> Value {
         json!({
             "reflect": "No args.",
-            "boot": "The parent `web` host serves the route. In a process started with `webui` it also starts the host listening.",
+            "boot": "The parent `web` host serves the route.",
             "read_stream": READ_STREAM_DOC,
             "list": "No args. The served paths.",
         })
@@ -159,17 +142,12 @@ impl Bundle for PageBundle {
         &self,
         agent_id: &AgentId,
         payload: &Value,
-        kernel: &Arc<Kernel>,
+        _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         Ok(Some(match verb {
             "reflect" => json!({"id": agent_id.as_str(), "files": FILES}),
-            "boot" => {
-                if crate::webui::requested() {
-                    start_host(kernel);
-                }
-                json!({"booted": true})
-            }
+            "boot" => json!({"booted": true}),
             "list" => json!({"files": FILES}),
             "read_stream" => read_stream(payload).0,
             other => {

@@ -1,8 +1,7 @@
-"""The app shell (`fantastic_team_app`) and the in-process handle example, as processes.
+"""The app shell (`fantastic_team_app`), as a process.
 
-Both are built by `run.py` next to the team binary (`cargo build -p fantastic-team-app`,
-`cargo build -p fantastic-team --example handle_serve`). A test whose binary is not
-there raises `Skip`, not a failure.
+It is built by `run.py` next to the team binary (`cargo build -p fantastic-team-app`).
+A test whose binary is not there raises `Skip`, not a failure.
 """
 
 from __future__ import annotations
@@ -21,13 +20,6 @@ def app_binary(ctx) -> str:
     p = os.path.join(os.path.dirname(os.path.abspath(ctx.binary)), "fantastic_team_app")
     if not os.path.isfile(p):
         raise Skip("fantastic_team_app is not built next to --bin")
-    return p
-
-
-def handle_example(ctx) -> str:
-    p = os.path.join(os.path.dirname(os.path.abspath(ctx.binary)), "examples", "handle_serve")
-    if not os.path.isfile(p):
-        raise Skip("the handle_serve example is not built next to --bin")
     return p
 
 

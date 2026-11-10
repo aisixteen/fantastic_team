@@ -531,9 +531,6 @@ async fn no_workspace_root_means_the_default_folder_made_at_the_first_worktree()
 }
 
 #[test]
-fn the_default_folder_is_the_temp_one_and_worktrees_dir_must_be_absolute() {
+fn the_default_folder_is_the_temp_one() {
     assert!(crate::default_workspace_root("g").ends_with("fantastic_team/worktrees/g"));
-    assert!(crate::set_worktrees_dir(std::path::PathBuf::from("rel"))
-        .unwrap_err()
-        .contains("absolute"));
 }

@@ -46,14 +46,7 @@ def run(ctx):
     v = Verdict("roles/project_lead_plans_and_runs_issues")
     forge = ctx.forge
     forge.extra_issues = 3  # four open issues in all
-    team = ctx.boot_team(puller=False, board=True, board_store="queue", groups={},
-                         limits={"total": 5, "per_role": {"worker": 2}},
-                         roles_tiers={"strong": S.lead_tier(ctx),
-                                      # the small tier names a ref the store does not hold: a spawned
-                                      # worker's first message is refused until the operator gives it the real ref
-                                      "small": S.lead_tier(ctx, credentials={"store": "credentials",
-                                                                             "ref": "model/unprovisioned"}),
-                                      "issue_keeper": S.inert_tier(ctx)})
+    team = ctx.boot_team(cards=True)
 
     # the probe plays the user: it starts the project_lead through the registry. A spawner grants only
     # what it holds, so the operator holds what the card grants first.

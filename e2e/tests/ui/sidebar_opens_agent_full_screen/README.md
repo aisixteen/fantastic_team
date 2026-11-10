@@ -15,7 +15,7 @@ Asserts, in order:
 - Back scrolls the list into view (it only matters on a phone, where the list and the pane are two panels): `w1`'s chat stays open and `w2` stays expanded; then a click on `sub_a`: the same for the subagent, every `history`, `send` and `watch` frame sent meanwhile names `sub_a`, a second token costs exactly one more model request and only `sub_a`'s history holds it;
 - the list is still there with w2's subagents drawn and w1 collapsed, and the remembered key `fantastic.team.subagents.w2` is `1` (none for w1).
 
-The team serves the page with the `webui` word (`stock.serve_webui`: the headless team is stopped and started again with `webui --port N`, so the page, the `/team_ws/ws` leg and the dispatcher's and workers' grants are the binary's own records, `app_control::prepare_web`). What the harness works around: `sub_a` and `sub_b` are not members of the group, so the probe writes with operator verbs the chat grants for them (`grant_chat`); the model calls are the binary's own.
+The team serves the page with the `webui` word (`stock.serve_webui`: the headless team is stopped and started again with `webui --port N`, with the page, the `/team_ws/ws` leg and their grants laid as record files before the first start). What the harness works around: `sub_a` and `sub_b` are not members of the group, so their records (the test's `fleet/` folder) carry the chat grants for them; the model calls are the binary's own.
 
 The page changed under #216/#217: the pane sits beside the list (two columns), so there is no full-screen swap and no Back-hides-pane; this test follows that layout (#225).
 

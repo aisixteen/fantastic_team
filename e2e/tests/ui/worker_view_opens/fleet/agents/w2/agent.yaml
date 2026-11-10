@@ -1,0 +1,15 @@
+id: w2
+handler_module: anthropic_backend.tools
+model: scripted-model
+endpoint: "{{model_endpoint}}"
+memory_store_id: memory
+credentials:
+  store: credentials
+  ref: "model/{{model_host}}"
+can_call:
+  "$self": "*"
+  queue: "*"
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  team_ws: [history, send, stop, status, watch]

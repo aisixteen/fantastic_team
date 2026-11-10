@@ -1,0 +1,35 @@
+id: roles
+handler_module: agentic_resources.tools
+tiers:
+  strong:
+    handler_module: anthropic_backend.tools
+    model: scripted-model
+    endpoint: "{{model_endpoint}}"
+    credentials:
+      store: credentials
+      ref: "model/{{model_host}}"
+    memory_store_id: memory
+    context_window: 100000
+    max_tokens: 4000
+  small:
+    handler_module: ram_store.tools
+    model: inert
+    endpoint: "{{model_endpoint}}"
+    memory_store_id: memory
+  issue_keeper:
+    handler_module: ram_store.tools
+    model: inert
+    endpoint: "{{model_endpoint}}"
+    memory_store_id: memory
+limits:
+  total: 3
+can_call:
+  "$self": "*"
+  memory: "*"
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  lead: [roles, role, spawn, get_count, fleet]
+  dispatcher: [get_count]
+  board: [fleet, get_count]
+  cadencer: [fleet, get_count]

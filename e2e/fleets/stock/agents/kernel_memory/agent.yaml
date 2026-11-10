@@ -1,0 +1,5 @@
+id: kernel_memory
+handler_module: ram_store.tools
+admins: [kernel]
+callable_by:
+  user: "*"

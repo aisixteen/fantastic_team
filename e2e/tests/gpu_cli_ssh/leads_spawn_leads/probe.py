@@ -7,4 +7,4 @@ from helpers import gpu_ssh as G
 
 
 def run(ctx):
-    return G.spawn_run(ctx, "leads_spawn_leads", 4)
+    return G.spawn_run(ctx, "leads_spawn_leads")

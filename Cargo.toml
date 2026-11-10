@@ -32,15 +32,8 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 fantastic-ai-core = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-core = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-file = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-scheduler = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-credential-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-anthropic-backend = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-user = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-ram-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-sqlite-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-web-mcp = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-user-home-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 async-trait = "0.1"
 tempfile = "3"
 base64 = "0.22"

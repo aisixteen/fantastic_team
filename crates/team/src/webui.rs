@@ -1,33 +1,12 @@
 //! The `webui` word: `fantastic_team webui [--port N] [--host ADDR]` serves the team
 //! page from the binary, the way fantastic's `canvas` serves the canvas.
 //!
-//! Fantastic's command line is a closed set of words (`recipe::parse`, no extension
-//! point in `main_with`), so the team takes this one before fantastic sees the rest:
-//! [`split`] cuts `webui` and its two flags out of the argv, `app_control::persist_web`
-//! writes the page's records (the same ones the app's handle serves), and fantastic
-//! boots them headless, the way `canvas` is headless: the browser is the View.
+//! The word is cut out by [`split`] and its flags are passed to fantastic's
+//! `--headless --port --host`; the browser is the View.
 //!
 //! `webui` and `canvas` together are refused: both mount a `web_ws` leg on the one
 //! `/{host_id}/ws` route (`team_ws` and `canvas_ws`), and the second wins, so the
 //! other page would load and never connect.
-
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// Whether this process was started with `webui`. Fantastic boots a recorded `web`
-/// host only for its own `canvas` word (`kern/host.rs`, `Host::boot`'s `serve_web`), so
-/// `--headless` over `webui`'s records listens on nothing; the page agent, which
-/// fantastic does boot, starts the host when this is set (`page.rs`).
-static REQUESTED: AtomicBool = AtomicBool::new(false);
-
-/// Mark this process as the one `webui` serves from; set by the binary's `main`.
-pub fn request() {
-    REQUESTED.store(true, Ordering::SeqCst);
-}
-
-/// Whether this process was started with `webui` ([`request`]).
-pub fn requested() -> bool {
-    REQUESTED.load(Ordering::SeqCst)
-}
 
 /// What `webui` was given.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

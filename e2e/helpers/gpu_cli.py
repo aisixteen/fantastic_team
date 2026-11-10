@@ -207,12 +207,16 @@ def play_text(ctx, v, lead: str, text: str, label: str = "") -> Lead:
 
 # ---- checks and the report -------------------------------------------------------------
 
-def lead_on_default(ctx, v, label: str = "") -> None:
-    """The lead names no model and runs its provider's default (`E2E_MODEL`): the provider's
-    `models` and the relay's first request body."""
+def lead_on_default(ctx, v, label: str = "", named: bool = False) -> None:
+    """The lead runs its provider's default (`E2E_MODEL`): the provider's `models` and the relay's
+    first request body. It names no model, unless its record file does (`named`: the precreated
+    fleets, which name the lead's model `E2E_MODEL`)."""
     want = ctx.model.model_name
     lead = ctx.team.agents().get(cli.LEAD) or {}
-    v.check(f"{label}the lead names no model: it runs its provider's default", "model" not in lead, str(lead.get("model")))
+    if named:
+        v.check(f"{label}the lead's record names the default model", lead.get("model") == want, str(lead.get("model")))
+    else:
+        v.check(f"{label}the lead names no model: it runs its provider's default", "model" not in lead, str(lead.get("model")))
     m = ctx.team.send(cli.PROVIDER, {"type": "models"}, timeout=60).get("result") or {}
     v.check(f"{label}the provider's default model is {want}", m.get("default") == want, str(m))
     seen = [r.get("model") for r in ctx.model.requests if isinstance(r, dict) and r.get("model")]
@@ -284,10 +288,10 @@ def precreated_run(ctx, name: str, tree: dict):
     from . import cli_scenarios as S
     from .verdict import Verdict
     v = Verdict(f"gpu_cli/{name}")
-    before = S.precreate(ctx, v, tree, all_keyed=True)
+    before = S.precreate(ctx, v, tree)
     watch = play(ctx, v, "lead", name)
     check_ins_ran(ctx, v)
-    lead_on_default(ctx, v)
+    lead_on_default(ctx, v, named=True)
     workers_on_model(ctx, v)
     S.precreated_end(ctx, v, before)
     check_key_not_on_disk(ctx, v)

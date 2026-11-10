@@ -1,0 +1,8 @@
+id: queue
+handler_module: ram_store.tools
+can_call:
+  "$self": "*"
+callable_by:
+  "$self": "*"
+  lead: "*"
+  board: "*"

@@ -331,7 +331,7 @@ fn node_from(v: &Value) -> Option<Node> {
         driver: str_of(v, "driver"),
         state: str_of(v, "state"),
         task: str_of(v, "task"),
-        open_inquiry: v.get("inquiry").and_then(|x| x.as_bool()).unwrap_or(false),
+        open_inquiry: false,
         idle_s: u64_of(v, "idle_s"),
         time_on_task_s: u64_of(v, "time_on_task_s"),
         cost: v.get("cost").and_then(|x| x.as_f64()).unwrap_or(0.0),
@@ -492,8 +492,6 @@ struct Inner {
     timer_cfg: Option<(bool, u64)>,
     /// The roles registry's `load` object from the last read (`Null` when none came).
     load: Value,
-    /// The cumulative token count at the last beat; the beat records the change.
-    tokens_seen: u64,
     /// The clock's zero, set at first use. Per cadencer, so one cadencer's
     /// clock never depends on another's (tokio paused time differs per test).
     origin: Option<tokio::time::Instant>,
@@ -549,22 +547,7 @@ fn beat(inner: &mut Inner) -> Vec<Digest> {
         inner.last_digest_s.insert(lead.clone(), now);
     }
     let mut digests: Vec<Digest> = got.into_iter().map(|(_, d)| d).collect();
-    // The driver's tokens: the change of the registry's cumulative counter since
-    // the last beat goes into the meter (the first beat counts from zero).
-    if let Some(total) = inner.load["tokens_total"].as_u64() {
-        // A lower total means the counter restarted: the new total is all new.
-        let delta = if total >= inner.tokens_seen {
-            total - inner.tokens_seen
-        } else {
-            total
-        };
-        inner.tokens_seen = total;
-        inner.meter.record_tokens(now, delta);
-    }
-    let tok = inner.meter.status(now)["driver_tokens_per_hour"]
-        .as_u64()
-        .unwrap_or(0);
-    if let Some(line) = cadence_feed::load_line(&inner.load, tok) {
+    if let Some(line) = cadence_feed::load_line(&inner.load) {
         for d in digests.iter_mut() {
             d.lines.push(line.clone());
         }
@@ -601,7 +584,8 @@ fn beat(inner: &mut Inner) -> Vec<Digest> {
 }
 
 /// The spawned tree (roles mode) as nodes, with its load: the registries' reads
-/// through the public verbs only ([`crate::board::roles_tree_rows`]). `None` when the
+/// through the public verbs ([`crate::board::roles_tree_rows`]), and the `status` of
+/// each lead, whose `inquiry_from` says an inquiry is open on it. `None` when the
 /// project_lead's branch could not be read, so the last tree stays.
 async fn read_roles(
     peers: &dyn Peers,
@@ -613,7 +597,17 @@ async fn read_roles(
     if rows.is_empty() {
         return None;
     }
-    Some((rows.iter().filter_map(node_from).collect(), load))
+    let mut nodes: Vec<Node> = rows.iter().filter_map(node_from).collect();
+    let fleet = peers.ask(roles, json!({"type": "fleet"})).await;
+    for lead in crate::tree::digest_leads(&fleet) {
+        if let Some(n) = nodes.iter_mut().find(|n| n.id == lead) {
+            let st = peers.ask(&lead, json!({"type": "status"})).await;
+            n.open_inquiry = st["inquiry_from"]
+                .as_array()
+                .is_some_and(|askers| !askers.is_empty());
+        }
+    }
+    Some((nodes, load))
 }
 
 /// Send each digest to its target. A failed send is counted, never fatal.
@@ -754,10 +748,6 @@ fn dispatch(shared: &Arc<Mutex<Inner>>, payload: &Value) -> Value {
                 "digest_bytes_per_hour".into(),
                 meter["digest_bytes_per_hour"].clone(),
             );
-            load.insert(
-                "driver_tokens_per_hour".into(),
-                meter["driver_tokens_per_hour"].clone(),
-            );
             json!({
                 "settings": settings_json(&inner.settings),
                 "ticks": inner.ticks,
@@ -766,7 +756,6 @@ fn dispatch(shared: &Arc<Mutex<Inner>>, payload: &Value) -> Value {
                 "digests_sent": inner.digests_sent,
                 "delivery_errors": inner.delivery_errors,
                 "digest_bytes_per_hour": meter["digest_bytes_per_hour"],
-                "driver_tokens_per_hour": meter["driver_tokens_per_hour"],
                 "load": load,
             })
         }
@@ -811,11 +800,11 @@ impl Bundle for CadencerBundle {
 
     fn verb_docs(&self) -> Value {
         json!({
-            "tick": "tick {tree: [{id, parent?, has_ai?, state, task, inquiry?, idle_s, time_on_task_s, cost, cache_hit, new_results}]} → {digests: [{to, lines, text}], sent}",
+            "tick": "tick {tree: [{id, parent?, has_ai?, state, task, idle_s, time_on_task_s, cost, cache_hit, new_results}]} → {digests: [{to, lines, text}], sent}",
             "set": "set {sender, enabled?, cadence?, stall_after?, quiet?, lead?, on?} → settings (sender must be the parent, maintainer, user, the CLI or the team page); persisted in the agent record and restored at boot",
             "configure": "configure {parent?} → {parent}; parent (kept as cadencer_parent) is persisted in the agent record and restored at boot, and the timer restarts",
             "boot": "the kernel's lifecycle verb, boot {} → {loaded}: loads the settings from the agent record and restarts the timer when enabled with roles",
-            "status": "status {} → {settings, ticks, last_beat_s, next_beat_s, digests_sent, digest_bytes_per_hour, driver_tokens_per_hour, load}; load is the roles registry's counts (workers busy/idle/stalled per group, tasks held/in_review/done/blocked/queued, done_last_hour, tokens_total) and carries no mode",
+            "status": "status {} → {settings, ticks, last_beat_s, next_beat_s, digests_sent, digest_bytes_per_hour, load}; load is the roles registry's counts (workers busy/idle/stalled per group, tasks held/in_review/done/blocked/queued, done_last_hour) and carries no mode",
         })
     }
 
@@ -1318,36 +1307,6 @@ mod tests {
         assert_eq!(s["ticks"], 0);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn driver_tokens_per_hour_is_fed_by_counters() {
-        let b = shared();
-        let beat_with = |total: u64| {
-            let mut g = b.lock().unwrap();
-            g.load = json!({"tokens_total": total});
-            beat(&mut g);
-        };
-        beat_with(1000); // first beat: counter 1000
-        run_for(60).await;
-        beat_with(1500); // second beat: counter 1500, so 500 more
-        assert_eq!(status(&b)["driver_tokens_per_hour"], 1500);
-        run_for(3600).await; // both beats are now outside the hour
-        assert_eq!(status(&b)["driver_tokens_per_hour"], 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn driver_tokens_survive_a_counter_reset() {
-        let b = shared();
-        let beat_with = |total: u64| {
-            let mut g = b.lock().unwrap();
-            g.load = json!({"tokens_total": total});
-            beat(&mut g);
-        };
-        beat_with(1000); // first beat: counter 1000, all of it new
-        run_for(60).await;
-        beat_with(200); // the agent restarted: its counter began again
-        assert_eq!(status(&b)["driver_tokens_per_hour"], 1200);
-    }
-
     /// The load object for a fixed list (`done` tasks done, `pending` queued), or for a
     /// refilling queue when `recent`: its done tasks finished in the last hour.
     fn board_load(done: usize, pending: usize, recent: bool) -> Value {
@@ -1645,13 +1604,12 @@ mod tests {
     }
 
     /// The live check the issue asks for: after a real beat (the board read, the
-    /// digest built and delivered to the driver) `status` shows the digest bytes and
-    /// the driver's tokens per hour. The fake `Peers` stands in for the driver, since
-    /// no stock agent of `registry()` answers `send` and `reflect` with a usage.
+    /// digest built and delivered to the driver) `status` shows the digest bytes per
+    /// hour. The fake `Peers` stands in for the driver, since no stock agent
+    /// answers `send`.
     #[tokio::test(start_paused = true)]
-    async fn status_shows_digest_bytes_and_driver_tokens_per_hour_after_a_live_beat() {
-        let mut load = board_load(12, 17, false);
-        load["tokens_total"] = json!(1234);
+    async fn status_shows_digest_bytes_per_hour_after_a_live_beat() {
+        let load = board_load(12, 17, false);
         let (driver, b) = beat_and_deliver(load, "ok").await;
         let seen = driver.seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 1);
@@ -1662,9 +1620,7 @@ mod tests {
             "{st}"
         );
         assert!(st["digest_bytes_per_hour"].as_u64().unwrap() > 0, "{st}");
-        assert_eq!(st["driver_tokens_per_hour"], 1234, "{st}");
-        // The same figures sit in the load object the dispatcher card reads.
-        assert_eq!(st["load"]["driver_tokens_per_hour"], 1234, "{st}");
+        // The same figure sits in the load object the dispatcher card reads.
         assert_eq!(
             st["load"]["digest_bytes_per_hour"], st["digest_bytes_per_hour"],
             "{st}"
@@ -1736,6 +1692,8 @@ mod tests {
     /// `sub` (child `w1`) and workers `w2`, `w3`; it records every `send`.
     struct RolesPeers {
         tasks: Value,
+        /// The `status` reply of an id; any other id answers no open inquiry.
+        statuses: Mutex<BTreeMap<String, Value>>,
         asked: Mutex<Vec<(String, String)>>,
         sent: Mutex<Vec<(String, String)>>,
     }
@@ -1744,6 +1702,7 @@ mod tests {
         fn new(tasks: Value) -> Arc<Self> {
             Arc::new(RolesPeers {
                 tasks,
+                statuses: Mutex::new(BTreeMap::new()),
                 asked: Mutex::new(Vec::new()),
                 sent: Mutex::new(Vec::new()),
             })
@@ -1781,6 +1740,13 @@ mod tests {
                         .push((to.to_string(), p["text"].as_str().unwrap_or("").to_string()));
                     json!({"ok": true})
                 }
+                (_, "status") => self
+                    .statuses
+                    .lock()
+                    .unwrap()
+                    .get(to)
+                    .cloned()
+                    .unwrap_or_else(|| json!({"inquiry_from": []})),
                 _ => json!({"error": "unexpected"}),
             }
         }
@@ -1818,6 +1784,47 @@ mod tests {
         assert!(peers.sent_to("w2").is_empty(), "a worker has no children");
         assert!(peers.asked.lock().unwrap().iter().all(|(_, t)| t != "rows"));
         assert_eq!(status(&b)["delivery_errors"], 0);
+    }
+
+    #[tokio::test]
+    async fn open_inquiry_comes_from_the_status_of_the_leads() {
+        let peers = RolesPeers::new(json!({"tasks": []}));
+        peers
+            .statuses
+            .lock()
+            .unwrap()
+            .insert("sub".into(), json!({"inquiry_from": ["operator"]}));
+        let (nodes, _) = read_roles(peers.as_ref(), "roles", 300)
+            .await
+            .expect("the tree");
+        let open = |id: &str| nodes.iter().find(|n| n.id == id).unwrap().open_inquiry;
+        assert!(open("sub"));
+        for id in ["pl", "w1", "w2", "w3"] {
+            assert!(!open(id), "{id}");
+        }
+        let asked = peers.asked.lock().unwrap().clone();
+        for lead in ["pl", "sub"] {
+            assert!(asked.contains(&(lead.to_string(), "status".to_string())));
+        }
+        for w in ["w1", "w2", "w3"] {
+            assert!(!asked.contains(&(w.to_string(), "status".to_string())));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_error_or_missing_inquiry_from_is_no_open_inquiry() {
+        let peers = RolesPeers::new(json!({"tasks": []}));
+        {
+            let mut st = peers.statuses.lock().unwrap();
+            st.insert("pl".into(), json!({"error": "not granted"}));
+            st.insert("sub".into(), json!({}));
+        }
+        let (nodes, _) = read_roles(peers.as_ref(), "roles", 300)
+            .await
+            .expect("the tree");
+        for id in ["pl", "sub"] {
+            assert!(!nodes.iter().find(|n| n.id == id).unwrap().open_inquiry);
+        }
     }
 
     #[tokio::test]

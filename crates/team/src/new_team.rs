@@ -51,16 +51,19 @@ pub const LEAD_FILES_VERBS: [&str; 5] =
 mod tests {
     use super::*;
     use crate::roles;
+    use crate::test_boot::{boot_at, Booted, Seed};
     use crate::tree::ROOT_ID;
-    use fantastic_kernel::{bootstrap, AgentId, Item, Kernel};
+    use fantastic_kernel::{AgentId, Item, Kernel};
     use serde_json::{json, Value};
+    use std::collections::BTreeMap;
     use std::path::Path;
     use std::sync::Arc;
 
-    #[test]
-    fn the_stock_roles_are_the_kernels_own_and_nothing_is_written() {
-        let reg = crate::registry();
-        let rows = reg.folder_rows();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_stock_roles_are_the_kernels_own_and_nothing_is_written() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let booted = boot_at(dir.path(), Seed::Team, &[], None).await;
+        let rows = booted.bundles.folder_rows();
         for (name, _) in roles::ALL {
             let row = rows
                 .iter()
@@ -73,17 +76,47 @@ mod tests {
                 "{row}"
             );
         }
-        let dir = tempfile::TempDir::new().unwrap();
-        crate::hydrate::seed(dir.path()).unwrap();
         assert!(
             !dir.path().join(".fantastic/bundles").exists(),
             "the first run writes no role"
         );
+        booted.stop().await;
     }
 
     /// An agent that makes the call it is told to AS ITSELF, so the gate and `spawn`
     /// see a real lead (the lead and the strong tier are backends that need a model).
-    struct CallerBundle(Arc<std::sync::Mutex<Vec<(String, Value)>>>);
+    struct CallerBundle;
+
+    type SentLog = Arc<std::sync::Mutex<Vec<(String, Value)>>>;
+
+    /// The `send`s the `caller.tools` agents of each folder received, by the kernel's
+    /// work dir (an `Extra` is a plain fn and carries no state).
+    static LOGS: std::sync::Mutex<BTreeMap<std::path::PathBuf, SentLog>> =
+        std::sync::Mutex::new(BTreeMap::new());
+
+    fn log_of(dir: &Path) -> SentLog {
+        LOGS.lock()
+            .unwrap()
+            .entry(dir.to_path_buf())
+            .or_default()
+            .clone()
+    }
+
+    fn register_caller(reg: &mut fantastic_kernel::BundleRegistry) {
+        reg.register("caller.tools", CallerBundle);
+    }
+
+    /// The stock roles on the stand-in, so a spawned lead or worker makes its calls as
+    /// itself (a real lead keeps them on the AI agent).
+    fn roles_on_the_caller(reg: &mut fantastic_kernel::BundleRegistry) {
+        for (name, text) in roles::ALL {
+            reg.register_meta_yaml(
+                name,
+                &text.replace("base: ai_chat.tools", "base: caller.tools"),
+            )
+            .unwrap();
+        }
+    }
 
     #[async_trait::async_trait]
     impl fantastic_kernel::bundle::Bundle for CallerBundle {
@@ -101,7 +134,7 @@ mod tests {
             match payload["type"].as_str() {
                 // what a digest or a first message hands the agent
                 Some("send") => {
-                    self.0
+                    log_of(&kernel.work_dir().unwrap())
                         .lock()
                         .unwrap()
                         .push((agent_id.as_str().to_string(), payload.clone()));
@@ -126,15 +159,13 @@ mod tests {
     /// `crates/team/blueprint.yaml`), with this repo's bundles and a `caller.tools` bundle: the
     /// lead and the strong tier run on `caller.tools` (no model is called), nothing else
     /// changes.
-    async fn team() -> (tempfile::TempDir, Arc<Kernel>) {
+    async fn team() -> (tempfile::TempDir, Booted) {
         let (dir, kernel, _) = team_with_log().await;
         (dir, kernel)
     }
 
-    type SentLog = Arc<std::sync::Mutex<Vec<(String, Value)>>>;
-
     /// [`team`], and the log of the `send`s its `caller.tools` agents received.
-    async fn team_with_log() -> (tempfile::TempDir, Arc<Kernel>, SentLog) {
+    async fn team_with_log() -> (tempfile::TempDir, Booted, SentLog) {
         build(None).await
     }
 
@@ -204,10 +235,20 @@ mod tests {
         serde_yaml::to_string(&doc).unwrap()
     }
 
+    /// The grant `g` admits every verb of `verbs`. Fantastic's boot gives an AI agent (the
+    /// lead names a memory store) `*` on every agent, which covers the blueprint's list.
+    fn holds(g: &Value, verbs: &[&str]) -> bool {
+        g == &json!(["*"])
+            || g == &json!("*")
+            || verbs
+                .iter()
+                .all(|v| g.as_array().is_some_and(|a| a.contains(&json!(v))))
+    }
+
     /// What fantastic's own boot does for an AI agent and a blueprint cannot: the other end
     /// of the lead's edges on the stock agents (`reach::grant_all`, fantastic
-    /// `src/tui/src/kern/reach.rs`, run by `Host::boot` in the shell). These kernels are
-    /// in-process, with no shell, so the test writes that end itself.
+    /// `src/tui/src/kern/reach.rs`, run by `boot_kernel`) already writes the lead's edges (it names
+    /// a memory store); this writes the plain `*` form the assertions below read.
     fn reach_like_the_shell(kernel: &Arc<Kernel>) {
         for id in [MEMORY, FILES, CREDENTIALS, ROOT_ID] {
             kernel
@@ -222,30 +263,14 @@ mod tests {
     /// The home and the team of [`team_with_log`]. With `Some(endpoint)` the lead stays the
     /// real backend the app makes, pointed at `endpoint` (a scripted model on 127.0.0.1) with a
     /// key from a file credential store; nothing else about it changes.
-    async fn build(real_lead: Option<&str>) -> (tempfile::TempDir, Arc<Kernel>, SentLog) {
-        let log: SentLog = Arc::default();
+    async fn build(real_lead: Option<&str>) -> (tempfile::TempDir, Booted, SentLog) {
         let dir = tempfile::TempDir::new().unwrap();
-        fantastic_tui::seed_dir_with(dir.path(), &[&test_blueprint(dir.path(), real_lead)])
-            .unwrap();
-        let mut reg = crate::registry();
-        reg.register("caller.tools", CallerBundle(log.clone()));
-        // the stock roles on the stand-in, so a spawned lead or worker makes its calls as
-        // itself (a real lead keeps them on the AI agent)
-        if real_lead.is_none() {
-            for (name, text) in roles::ALL {
-                reg.register_meta_yaml(
-                    name,
-                    &text.replace("base: ai_chat.tools", "base: caller.tools"),
-                )
-                .unwrap();
-            }
-        }
-        let mut booted =
-            bootstrap::bootstrap(reg, bootstrap::BootstrapOptions::one_shot(dir.path())).unwrap();
-        fantastic_kernel::lock::acquire(dir.path()).unwrap();
-        booted.write_seed().unwrap();
-        let kernel = booted.kernel.clone();
-        crate::boot_kernel(&kernel, true).await.unwrap();
+        let seed = Seed::Text(test_blueprint(dir.path(), real_lead));
+        let extras: &[fantastic_tui::Extra] = match real_lead {
+            None => &[register_caller, roles_on_the_caller],
+            Some(_) => &[register_caller],
+        };
+        let kernel = boot_at(dir.path(), seed, extras, None).await;
         reach_like_the_shell(&kernel);
         if real_lead.is_some() {
             let o = ask(
@@ -256,6 +281,7 @@ mod tests {
             .await;
             assert_eq!(o["stored"], json!(true), "{o}");
         }
+        let log = log_of(dir.path());
         (dir, kernel, log)
     }
 
@@ -282,12 +308,6 @@ mod tests {
             json!({"type": "call", "target": target, "payload": p}),
         )
         .await
-    }
-
-    async fn finish(dir: &Path, kernel: Arc<Kernel>) {
-        kernel.shutdown().await;
-        fantastic_sqlite_store::close_all(&kernel);
-        bootstrap::shutdown(dir).unwrap();
     }
 
     /// The app's lead takes its first turn: its `system_prompt_file` is read through `files`
@@ -319,7 +339,7 @@ mod tests {
             .mount(&srv)
             .await;
         let _turn = REAL_LEAD.lock().await;
-        let (dir, kernel, _) = build(Some(&format!("{}/v1/messages", srv.uri()))).await;
+        let (_dir, kernel, _) = build(Some(&format!("{}/v1/messages", srv.uri()))).await;
         let r = ask(&kernel, LEAD, json!({"type": "send", "text": "go"})).await;
         let err = meta(&kernel, LEAD)["system_prompt_file_error"].clone();
         assert!(
@@ -329,7 +349,6 @@ mod tests {
         assert!(!r.to_string().contains("may not call"), "{r}");
         let seen = srv.received_requests().await.unwrap_or_default();
         assert_eq!(seen.len(), 1, "the model got no request: {r}");
-        let _ = &dir;
         let directive = crate::roles::parse_card(crate::roles::LEAD, "lead")
             .unwrap()
             .directive;
@@ -341,7 +360,7 @@ mod tests {
             "the system block holds the lead bundle's directive: {}",
             sent["system"]
         );
-        finish(dir.path(), kernel).await;
+        kernel.stop().await;
     }
 
     /// A spawned child tells its parent with a plain `send` (team#247): `spawn` opens the
@@ -374,7 +393,7 @@ mod tests {
             .mount(&srv)
             .await;
         let _turn = REAL_LEAD.lock().await;
-        let (dir, kernel, _) = build(Some(&format!("{}/v1/messages", srv.uri()))).await;
+        let (_dir, kernel, _) = build(Some(&format!("{}/v1/messages", srv.uri()))).await;
         let lead = AgentId::from(LEAD);
         let before = meta(&kernel, LEAD)["callable_by"].clone();
         // a sub-lead that makes its calls as itself: the lead role on the stand-in
@@ -436,14 +455,14 @@ mod tests {
             "the lead's turn carries the child's message: {}",
             sent["messages"]
         );
-        finish(dir.path(), kernel).await;
+        kernel.stop().await;
     }
 
     /// Roles mode on the new path: the lead has the roles registry and its spawn grants,
     /// the registry is the tiers-and-limits record, and the home agents admit the lead.
     #[tokio::test(flavor = "multi_thread")]
     async fn roles_mode_the_lead_holds_the_registry_and_its_spawn_grants() {
-        let (dir, kernel) = team().await;
+        let (_dir, kernel) = team().await;
         for id in [LEAD, GITHUB, ROLES, WORKER_EXEC, WORKER_FILES] {
             assert!(kernel.agents.contains_key(&AgentId::from(id)), "{id}");
         }
@@ -472,15 +491,24 @@ mod tests {
                 .contains("_backend.tools"),
             "and ships none"
         );
-        assert_eq!(lead["can_call"]["roles"], json!(LEAD_ROLES_VERBS));
-        assert_eq!(lead["can_call"]["kernel_state"], json!(LEAD_ROOT_VERBS));
+        assert!(
+            holds(&lead["can_call"]["roles"], &LEAD_ROLES_VERBS),
+            "{lead:?}"
+        );
+        assert!(
+            holds(&lead["can_call"]["kernel_state"], &LEAD_ROOT_VERBS),
+            "{lead:?}"
+        );
         let reg = meta(&kernel, ROLES);
         assert!(
             reg.get("tiers").is_none() && reg.get("role_dirs").is_none(),
             "the roles are bundles; the spawner names the model"
         );
         assert_eq!(reg["limits"]["total"], 3);
-        assert_eq!(reg["callable_by"]["lead"], json!(LEAD_ROLES_VERBS));
+        assert!(
+            holds(&reg["callable_by"]["lead"], &LEAD_ROLES_VERBS),
+            "{reg:?}"
+        );
         // the other ends on the home agents, merged with what they had
         assert_eq!(meta(&kernel, "memory")["callable_by"]["lead"], "*");
         assert!(
@@ -494,7 +522,7 @@ mod tests {
         for (name, _) in roles::ALL {
             assert!(all.to_string().contains(name), "{name}: {all}");
         }
-        finish(dir.path(), kernel).await;
+        kernel.stop().await;
     }
 
     /// The lead spawns through the registry as its card says: a worker with the tier's
@@ -503,7 +531,7 @@ mod tests {
     /// within the registry's limit of three.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_lead_spawns_a_worker_and_a_project_lead_through_the_registry() {
-        let (dir, kernel) = team().await;
+        let (_dir, kernel) = team().await;
         let spawn = |role: &'static str| json!({"type": "spawn", "role": role, "model": "claude-haiku-5-5"});
         let w = call_as(&kernel, LEAD, ROLES, spawn("worker")).await;
         let worker = w["id"]
@@ -544,7 +572,7 @@ mod tests {
         assert!(w2["id"].is_string(), "{w2}");
         let w3 = call_as(&kernel, LEAD, ROLES, spawn("worker")).await;
         assert_eq!(w3["reason"], "limit", "{w3}");
-        finish(dir.path(), kernel).await;
+        kernel.stop().await;
     }
 
     /// Room for every spawn of the tests below: the app's registry allows three agents in
@@ -579,7 +607,7 @@ mod tests {
     /// spawns a worker. A card may only grant what its spawner holds (aisixteen/fantastic_team#227).
     #[tokio::test(flavor = "multi_thread")]
     async fn leads_and_project_leads_spawn_workers_with_the_team_cards() {
-        let (dir, kernel) = team().await;
+        let (_dir, kernel) = team().await;
         raise_total(&kernel, 6).await;
         let sub = spawn_as(&kernel, LEAD, "lead").await;
         let w1 = spawn_as(&kernel, &sub, "worker").await;
@@ -593,21 +621,21 @@ mod tests {
         }
         let count = ask(&kernel, ROLES, json!({"type": "get_count"})).await;
         assert_eq!(count["running"], 4, "{count}");
-        finish(dir.path(), kernel).await;
+        kernel.stop().await;
     }
 
     /// Every card in `roles/` can be spawned by the main lead, so a card cannot grow past
     /// the lead's grants without this test saying so.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_main_lead_can_spawn_every_card() {
-        let (dir, kernel) = team().await;
+        let (_dir, kernel) = team().await;
         raise_total(&kernel, 12).await;
         for (name, _) in roles::ALL {
             let r = call_as(&kernel, LEAD, ROLES, json!({"type": "spawn", "role": name})).await;
             assert!(r["id"].is_string(), "{name}: {r}");
             assert_ne!(r["reason"], "not_allowed", "{name}: {r}");
         }
-        finish(dir.path(), kernel).await;
+        kernel.stop().await;
     }
 
     /// The root's `$subtree` await grant of the old plan is not needed: `spawn` writes the
@@ -615,7 +643,7 @@ mod tests {
     /// project_lead waits for an agent with `await_set` and no `$subtree` entry exists.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_spawned_project_lead_awaits_without_a_subtree_grant_on_the_root() {
-        let (dir, kernel) = team().await;
+        let (_dir, kernel) = team().await;
         assert!(
             meta(&kernel, ROOT_ID)["callable_by"]
                 .get("$subtree")
@@ -649,17 +677,17 @@ mod tests {
         )
         .await;
         assert!(out.get("error").is_none(), "{out}");
-        finish(dir.path(), kernel).await;
+        kernel.stop().await;
     }
 
     /// The cadencer on the new path: made with `create_agent`, its `group_settings` ride in its record, every edge it needs is written on
     /// both ends, and a beat reaches a spawned project_lead through the real gate.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_cadencer_made_with_create_agent_is_wired_and_delivers_a_digest() {
-        let (dir, kernel, sent) = team_with_log().await;
+        let (_dir, kernel, sent) = team_with_log().await;
         let edges = json!({
             "roles": ["fleet", "get_count"],
-            "kernel_state": ["reflect"], "lead": ["send"],
+            "kernel_state": ["reflect"], "lead": ["send", "status"],
         });
         let settings = json!({"lead": {"cadence": 120, "stall_after": 600, "quiet": false,
                                        "enabled": true}});
@@ -755,6 +783,6 @@ mod tests {
             sent.lock().unwrap()
         );
         assert!(st["digests_sent"].as_u64().unwrap_or(0) >= 1, "{st}");
-        finish(dir.path(), kernel).await;
+        kernel.stop().await;
     }
 }

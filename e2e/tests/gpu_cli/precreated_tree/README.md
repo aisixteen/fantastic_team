@@ -1,7 +1,7 @@
 # gpu_cli/precreated_tree
 
 The gpu twin of `cli/precreated_tree` (#237): a lead, sub-leads `s1` and `s2`, and a worker under each
-(`w1` under `s1`, `w2` under `s2`), all made with `create_agent` under fixed ids. The lead is asked, in
+(`w1` under `s1`, `w2` under `s2`), all laid as record files under fixed ids before the first start. The lead is asked, in
 plain words, to have the sub-leads get adder.py and muler.py fixed through their workers, committed. A real
 model answers; there is no script.
 
