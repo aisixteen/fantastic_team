@@ -1015,13 +1015,9 @@ class Box:
 def hand(ctx, lead: str, text: str, upto: int | None = None, wait_s: float = 240) -> bool:
     """Hand the lead a message; wait until the plug has served `upto` turns (default: all)."""
     r = ctx.team.send(lead, {"type": "send", "text": text})
-    want = len(ctx.model.turns) if upto is None else upto
-    end = time.time() + wait_s
-    while time.time() < end and ctx.model.served < want:
-        time.sleep(0.3)
-    time.sleep(2.0)
+    served = cli.wait_served(ctx, wait_s, upto)
     dump_requests(ctx)
-    return r.get("status") == "completed" and ctx.model.served >= want
+    return r.get("status") == "completed" and served
 
 
 def last_messages(ctx):

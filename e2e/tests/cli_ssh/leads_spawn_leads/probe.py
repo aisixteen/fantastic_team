@@ -20,7 +20,7 @@ def run(ctx):
         cli.add_base(ctx)
         base = set(cli.ids(ctx.team))
         cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "delete_agent"]}, subtree=True)
-        cli.make_registry(ctx, total=4, roles=cli.roles_dir("leads_spawn_leads"))
+        cli.make_registry(ctx, total=4, roles=cli.spawn_roles("leads_spawn_leads"))
         new = set(cli.ids(ctx.team)) - base
         v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
                 new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))

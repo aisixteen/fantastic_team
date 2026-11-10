@@ -92,7 +92,7 @@ def spawn_two_start(ctx, v, credentials: bool = False) -> dict:
     cli.add_base(ctx)
     base = set(cli.ids(ctx.team))
     cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True, runs_agents=True)
-    cli.make_registry(ctx, total=2, roles=cli.roles_dir("lead_spawns_two"))
+    cli.make_registry(ctx, total=2, roles=cli.spawn_roles("lead_spawns_two"))
     new = set(cli.ids(ctx.team)) - base
     v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
                 new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
@@ -116,14 +116,7 @@ def spawn_two_end(ctx, v, before: dict) -> None:
             f"before {sorted(before)} after {sorted(after)}")
     count = ctx.team.send("roles", {"type": "get_count"})["result"]
     v.check("the registry counts nothing running", count["running"] == 0, str(count))
-    rows, after = [], None
-    while True:
-        res = ctx.team.send("lead", {"type": "history", **({"after": after} if after else {})},
-                            timeout=60).get("result") or {}
-        rows += res.get("rows") or []
-        after = res.get("next")
-        if not after:
-            break
+    rows = cli.history_rows(ctx.team, "lead")
     told = [r for r in rows if "[team] The team of `lead` changed" in json.dumps(r)]
     v.check("the cadencer told the lead its team when the team changed", bool(told), f"{len(rows)} rows")
 
@@ -174,7 +167,7 @@ def spawn_leads_start(ctx, v, credentials: bool = False) -> dict:
     cli.add_base(ctx)
     base = set(cli.ids(ctx.team))
     cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["delete_agent"]}, subtree=True, runs_agents=True)
-    cli.make_registry(ctx, total=4, roles=cli.roles_dir("leads_spawn_leads"))
+    cli.make_registry(ctx, total=4, roles=cli.spawn_roles("leads_spawn_leads"))
     new = set(cli.ids(ctx.team)) - base
     v.check("create_agent made the lead, its provider (and store) and its roles registry, under fixed ids",
                 new == {"lead", "roles"} | {cli.PROVIDER, cli.PROVIDER_STORE}, str(new))
@@ -241,13 +234,7 @@ def busy_stuck_end(ctx, v, before: dict, report: str = S1_REPORT) -> None:
     v.check("the lead stopped the idle sub-lead", stuck[0] in stops, str(stops))
     v.check("the lead did not stop the generating one", busy[0] not in stops, str(stops))
     cli.reports_reached(ctx, v, [report])
-    rows, after = [], None
-    while True:
-        res = team.send("lead", {"type": "history", **({"after": after} if after else {})}, timeout=60).get("result") or {}
-        rows += res.get("rows") or []
-        after = res.get("next")
-        if not after:
-            break
+    rows = cli.history_rows(team, "lead")
     v.check("the lead said `task failed: …` for the stopped one", any("task failed:" in json.dumps(r) for r in rows),
             f"{len(rows)} rows")
     tree = cli.without_new_schedulers(team, cli.tree(team), before)

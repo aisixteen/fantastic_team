@@ -15,9 +15,9 @@ usage of the local kernel's agents, which are all of them.
 from __future__ import annotations
 
 import json
-import time
 
-from . import cli, gpu_cli as gpu, podman_remote as pr, ssh_twins as T
+from . import cli, cli_scenarios as S, gpu_cli as gpu, podman_remote as pr, ssh_twins as T, team as team_mod
+from .verdict import Verdict
 
 
 def require(ctx) -> None:
@@ -113,12 +113,55 @@ TASKS = {
 
 def play(ctx, v, lead: str, text: str, label: str = "") -> gpu.Lead:
     """Hand `lead` its task in plain words and wait for its `done` (as `gpu_cli.play`)."""
-    watch = ctx.watch = gpu.Lead(ctx.team, lead)
-    gpu.wait_booted(ctx, watch)
-    watch.mark()  # a lead told before: its earlier `done` does not count
-    started = time.time()
-    gpu.hand_task(ctx, lead, text + gpu.END)
-    how = gpu.wait_done(ctx, watch, max(60.0, ctx.test["timeout"] - gpu.CHECK_MARGIN_S))
-    ctx.elapsed = time.time() - started
-    v.check(f"{label}the lead answered done", how == "done", f"{how}; {getattr(ctx, 'kicked', {})}")
-    return watch
+    return gpu.play_text(ctx, v, lead, text + gpu.END, label)
+
+
+def spawn_run(ctx, name: str, total: int):
+    """`gpu_cli_ssh/<name>` for a lead that spawns (`lead_spawns_two`, `leads_spawn_leads`): the registry has
+    room for `total`; the verdict of the probe."""
+    v = Verdict(f"gpu_cli_ssh/{name}")
+    require(ctx)
+    with T.Box(ctx) as box:
+        cli.start(ctx, roles=True)
+        cli.add_base(ctx)
+        cli.make_lead(ctx, {cli.EXEC: "*", "kernel_state": ["create_agent", "update_agent", "delete_agent"]}, subtree=True, runs_agents=True)
+        cli.make_registry(ctx, total=total, roles=cli.spawn_roles(name))
+        cli.add_cadencer(ctx)
+        before = cli.tree(ctx.team)
+        box.publish()
+        watch = play(ctx, v, "lead", wiring(ctx, box) + TASKS[name])
+        gpu.check_ins_ran(ctx, v)
+        gpu.lead_on_default(ctx, v)
+        gpu.workers_on_model(ctx, v)
+        ok, why = cli.solved(ctx.repo)
+        v.check("solved in the local clone (the test passes on HEAD, the fix is committed)", ok, why)
+        after = cli.tree(ctx.team)
+        left = [i for i, a in ctx.team.agents().items() if a.get("spawned_by")]
+        v.check("no spawned agent is left", not left, str(left))
+        after = cli.without_new_schedulers(ctx.team, after, before)
+        v.check("the records are the ones it started with (a lead's scheduler may stay)", after == before,
+                f"before {sorted(before)} after {sorted(after)}")
+        v.check("something was spawned", ("roles", "spawn") in team_mod.log_calls(ctx.team.log()))
+        box.end(v)
+        gpu.report(ctx, watch)
+    box.removed(v)
+    return v.finish()
+
+
+def precreated_run(ctx, name: str, tree: dict, remote_agent: str):
+    """`gpu_cli_ssh/<name>` for the precreated trees: the remote asks `remote_agent` (a backend on the master)."""
+    v = Verdict(f"gpu_cli_ssh/{name}")
+    require(ctx)
+    with T.Box(ctx) as box:
+        before = S.precreate(ctx, v, tree, all_keyed=ctx.model.keyed)
+        box.open_backends([remote_agent])
+        box.publish()
+        watch = play(ctx, v, "lead", wiring(ctx, box, [remote_agent]) + TASKS[name])
+        gpu.check_ins_ran(ctx, v)
+        gpu.lead_on_default(ctx, v)
+        gpu.workers_on_model(ctx, v)
+        S.precreated_end(ctx, v, before)
+        box.end(v)
+        gpu.report(ctx, watch)
+    box.removed(v)
+    return v.finish()

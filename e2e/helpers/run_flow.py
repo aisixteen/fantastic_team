@@ -48,16 +48,14 @@ def boot(ctx, **kw) -> dict:
     return ctx.secrets
 
 
-def hand_over(ctx, text: str, wait_s: float = 120.0) -> bool:
-    """Send the lead its message and wait until the scripted model has played every turn."""
-    r = ctx.team.send(ctx.lead, {"type": "send", "text": text})
+def hand_over(ctx, text: str, wait_s: float = 120.0, lead: str | None = None, upto: int | None = None) -> bool:
+    """Send the lead (`ctx.lead` by default) its message and wait until the scripted model has played
+    `upto` turns (default: every turn)."""
+    from . import cli
+    r = ctx.team.send(lead or ctx.lead, {"type": "send", "text": text})
     if r.get("status") != "completed":
         return False
-    end = time.time() + wait_s
-    while time.time() < end and ctx.model.served < len(ctx.model.turns):
-        time.sleep(0.3)
-    time.sleep(2.0)  # the last turn's reply is routed after the last request
-    return ctx.model.served >= len(ctx.model.turns)
+    return cli.wait_served(ctx, wait_s, upto)
 
 
 def kick(ctx, text: str, timeout: float = 1800.0) -> threading.Thread:
