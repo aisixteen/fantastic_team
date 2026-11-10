@@ -188,3 +188,11 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 - The `status` reply of an AI agent has `inquiry_from`: the cadencer holds `send` and `status` on its digest leads and reads an open inquiry from it.
 - Base's boot writes the way back, so `team_ws` and every agent may `send` to `user` and an AI agent holds `*`. This is base's behaviour and the team keeps it; the blueprint is unchanged.
 - The team calls base's `error_text`, `Kernel::exists`, `grants::union` and `USAGE_KEYS` in place of its own copies.
+
+## Pin at `c8c6ad7`
+
+`Cargo.lock` now pins fantastic `c8c6ad7`.
+
+- `reflect` takes `handler_modules`, a list of handler names: `tree` keeps only the agents whose stored handler, or the base their role resolves to, is listed (#605). The team does not send it yet.
+- Base no longer has `fantastic_ai_core::is_ai`, `is_ai_handler` or `ai_check`; `Host::ai_agents` is async; `port_kind` has a new signature. The team called none of them.
+- An agent of a role counts by its role's base for base's reach and rows (#607), so the team's lead and workers, which are agents of roles, hold base's reach as before.
