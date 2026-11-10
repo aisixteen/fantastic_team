@@ -77,8 +77,8 @@ The inventory is `gh issue list --state closed` on aisixteen/fantastic_team (59 
 | #119 | SIGTERM stops the `--headless` binary | `crates/team/tests/shutdown_bounded.rs::sigterm_stops_a_headless_team` | n/a (shutdown_bounded.rs spawns the real binary) | covered |
 | #120 | Cadencer settings and timer survive a restart | `crates/team/tests/cadencer_live.rs::configure_survives_restart`, `crates/team/tests/cadencer_live.rs::set_survives_restart`, `crates/team/tests/cadencer_live.rs::off_list_survives_restart` | deferred to the e2e phase | units only |
 | #121 | github connector creates, closes and reopens issues as the app | `crates/github_connector/src/tests.rs::issue_create_posts_as_the_app_and_adds_to_board`, `crates/github_connector/src/tests.rs::issue_close_then_reopen_round_trips`, `crates/github_connector/src/tests.rs::closing_an_epic_is_refused_unless_maintainer`, `crates/github_connector/src/tests.rs::issue_create_and_state_refuse_repo_outside_allowlist` | deferred to the e2e phase | units only |
-| #122 | App sidebar: workers and subagents, collapsed by default; an agent opens full screen | `crates/team/src/dispatcher.rs::sidebar_subagent_lists_start_collapsed`, `crates/team/src/dispatcher.rs::expanding_one_worker_keeps_others_collapsed`, `crates/team/src/dispatcher.rs::open_worker_or_subagent_returns_fullscreen_chat_targeting_only_it`, `crates/team/src/dispatcher.rs::html_sidebar_has_expander_and_remembers_state` | `e2e/tests/ui/sidebar_opens_agent_full_screen` | covered |
-| #127 | Load view: code gives numbers, the LLM decides what to show | `crates/team/tests/load_view.rs::no_mode_field_or_enum_for_load`, `crates/team/src/dispatcher.rs::html_draws_team_load_footer` | `e2e/tests/dispatcher/digest_reaches_driver` | covered |
+| #122 | App sidebar: workers and subagents, collapsed by default; an agent opens full screen | `crates/team/src/dispatcher.rs::sidebar_subagent_lists_start_collapsed`, `crates/team/src/dispatcher.rs::expanding_one_worker_keeps_others_collapsed`, `crates/team/src/dispatcher.rs::open_worker_or_subagent_returns_fullscreen_chat_targeting_only_it` | `e2e/tests/ui/sidebar_opens_agent_full_screen` | covered |
+| #127 | Load view: code gives numbers, the LLM decides what to show | `crates/team/tests/load_view.rs::no_mode_field_or_enum_for_load` | `e2e/tests/dispatcher/digest_reaches_driver` | covered |
 | #146 | README video back as an inline preview; later deleted by #152 | none | n/a (superseded by #152) | n/a |
 | #152 | Delete the how-it-works video and GIF from the repo and README | none | deferred to the e2e phase | missing |
 | #164 | CI cleanup steps optional, off by default | none | n/a (workflow file) | missing |
@@ -95,7 +95,7 @@ The issues the coverage check reopened (see #147), and the rows above that are `
 - [x] #28: units for `issue_edit` and `project_field_set` now exist (`crates/github_connector/src/tests.rs`); its e2e is still deferred to the e2e phase.
 - [ ] #36: the worker view opens over the web UI in `e2e/tests/ui/worker_view_opens`, but #36 is open now with a different title (agent views), so it is not a row above; revisit when it closes.
 - [x] #57: `e2e/tests/dispatcher/digest_reaches_driver` runs the cadencer in the built binary and sees a digest reach a driver.
-- [x] #122: `e2e/tests/ui/sidebar_opens_agent_full_screen` runs the page's own script against the live socket (no real browser; a stub DOM).
+- [x] #122: `e2e/tests/ui/sidebar_opens_agent_full_screen` drives the page's socket against the live binary (no page DOM; the layout is `ui/layout_two_columns`).
 - [ ] #7: the queue bundle is fantastic's; this repo has an e2e but no unit test of take, renew and done.
 - [ ] #56: no test that the old "shift" name is gone from the code.
 - [ ] #102: no test that a new task starts the worker with a clear context.

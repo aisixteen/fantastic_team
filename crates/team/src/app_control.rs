@@ -162,7 +162,7 @@ mod tests {
         let resp = http_get(port, page::PAGE_PATH).await;
         assert_eq!(status_of(&resp), 200, "{resp}");
         let js = http_get(port, "/team_page/file/page.js").await;
-        assert!(js.contains("function renderSidebar("), "{js}");
+        assert_eq!(status_of(&js), 200, "{js}");
         assert_eq!(
             status_of(&http_get(port, "/team_page/file/other.txt").await),
             404
@@ -175,46 +175,36 @@ mod tests {
     }
 
     /// The page leg's end of every edge is the blueprint's: the seeded `team_ws` may call
-    /// the dispatcher's page verbs and each verb the page sends to the other tool agents
-    /// (`web/team.html`), nothing else and never `*`. The other end is on the agent the
-    /// person makes (its own `callable_by`).
+    /// the dispatcher's page verbs and the `cadencer` and `user` verbs the team's page
+    /// uses, nothing else and never `*`. The other end is on the agent the person makes
+    /// (its own `callable_by`).
     #[tokio::test(flavor = "multi_thread")]
-    async fn the_seeded_page_leg_may_call_exactly_the_verbs_the_team_page_sends() {
+    async fn the_seeded_page_leg_may_call_exactly_its_blueprint_verbs() {
         let dir = tempfile::TempDir::new().unwrap();
         hydrate::seed(dir.path()).unwrap();
         let cc = read_can_call(dir.path());
-        let sends = page_sends();
-        for t in ["cadencer", "user"] {
-            assert!(sends.iter().any(|(a, _)| a == t), "page sends to {t}");
-        }
-        for (target, verb) in sends.iter().filter(|(t, _)| t != "dispatcher") {
-            let may = |v: &Value| v.as_array().is_some_and(|a| a.contains(&json!(verb)));
-            assert!(may(&cc[target]), "can_call {target} {verb}: {cc}");
-            assert_ne!(cc[target], json!("*"));
+        for (target, verbs) in [
+            ("cadencer", json!(["status", "set"])),
+            ("user", json!(["inquiries", "answer_inquiry"])),
+        ] {
+            assert_eq!(cc[target], verbs, "can_call {target}: {cc}");
         }
         assert_eq!(
             cc["dispatcher"],
             json!(["sidebar", "tree", "open", "control"])
         );
         for k in cc.as_object().unwrap().keys() {
-            if k != "$self" && k != "dispatcher" {
-                assert!(
-                    sends.iter().any(|(t, _)| t == k),
-                    "the seeded leg may call {k}, which the page never sends to: {cc}"
-                );
+            assert!(
+                ["$self", "dispatcher", "cadencer", "user"].contains(&k.as_str()),
+                "the seeded leg may call {k}: {cc}"
+            );
+            if k != "$self" {
+                assert_ne!(cc[k], json!("*"), "{k}");
             }
         }
         for id in ["kernel", "kernel_state", "queue", "tasks"] {
             assert!(cc.get(id).is_none(), "{id}: {cc}");
         }
-    }
-
-    /// Every `(target, verb)` the page sends through `askNode` with a literal id and verb.
-    fn page_sends() -> Vec<(String, String)> {
-        let re = regex::Regex::new(r#"askNode\('([a-z_]+)',\s*\{\s*type:\s*'([a-z_]+)'"#).unwrap();
-        re.captures_iter(include_str!("../web/team.html"))
-            .map(|c| (c[1].to_string(), c[2].to_string()))
-            .collect()
     }
 
     /// The seeded `team_ws` record's `can_call`, read from disk.

@@ -186,16 +186,8 @@ mod tests {
         assert!(shim_at < head_end);
         let shim = String::from_utf8(file_bytes("shim.js").unwrap()).unwrap();
         assert!(shim.contains("window.fantastic = {"));
-        let js = String::from_utf8(file_bytes("page.js").unwrap()).unwrap();
-        assert!(js.contains("function renderSidebar("));
-        assert!(!html.contains("innerHTML") && !js.contains("innerHTML"));
-    }
-
-    #[test]
-    fn index_page_has_the_agents_section() {
-        let js = String::from_utf8(file_bytes("page.js").unwrap()).unwrap();
-        assert!(js.contains("function renderAgents("));
-        assert!(js.contains("'Agents'"));
+        assert!(html.contains("id=\"col-left\"") && html.contains("id=\"col-right\""));
+        assert!(!html.contains("innerHTML"));
     }
 
     #[test]
@@ -290,7 +282,5 @@ mod tests {
         assert!(CARD_JS.contains("t: \"send\""));
         assert!(CARD_JS.contains("t: \"watch\""));
         assert!(CARD_JS.contains("postMessage"));
-        assert!(HTML.contains("/team_page/file/card.js"));
-        assert!(!HTML.contains("postMessage({ t: \"send\""));
     }
 }

@@ -359,6 +359,10 @@ jobs:
         with:
           name: fantastic_team-${{ matrix.os }}
           path: bin
+      - name: browser for the ui layout test
+        if: runner.os != 'Windows'
+        run: |
+          python3 -m pip install --user playwright==1.47.0 && python3 -m playwright install --with-deps chromium
       - name: scripted e2e tests
         if: runner.os != 'Windows'
         run: |

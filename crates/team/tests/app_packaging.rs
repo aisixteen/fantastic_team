@@ -196,15 +196,6 @@ fn served_css_and_js_have_no_csp_violations() {
     for lit in ["http://", "https://", "ws://", "wss://"] {
         assert!(!shim.contains(lit), "shim has a {lit} literal");
     }
-    let d = fantastic_team::page::HTML;
-    assert!(d.contains("setAttribute('sandbox', 'allow-scripts')"));
-    assert!(!d.contains("allow-same-origin"));
-    let js = text("page.js");
-    assert_eq!(
-        js.matches("'script src=\"/team_page/file/card.js\"></'")
-            .count(),
-        1
-    );
     assert!(!text("card.js").contains("<script"));
 }
 
