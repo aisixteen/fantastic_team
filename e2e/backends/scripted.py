@@ -280,7 +280,10 @@ class ScriptedModel:
 
     # a team notice, fantastic's await note, and its memory recall row (the kernel's, after a restart)
     NOTICE_HEADS = ("[from cadencer]", "[team] The team of", "Members:", "- `", "[await: nothing to wait for]",
-                    "[recall ")
+                    "[recall ", "heartbeat: ")
+    # the cadencer's digest reaches the lead as the operator's message, with no `[from ...]` head: its
+    # last line is the load line
+    DIGEST_LOAD = re.compile(r"(^|\n)load: busy \d+ idle \d+ stalled \d+")
 
     @staticmethod
     def is_check_in(block: str) -> bool:
@@ -289,7 +292,8 @@ class ScriptedModel:
 
     @classmethod
     def is_notice(cls, block: str) -> bool:
-        return block.startswith(cls.NOTICE_HEADS) or cls.is_check_in(block)
+        return (block.startswith(cls.NOTICE_HEADS) or cls.is_check_in(block)
+                or bool(cls.DIGEST_LOAD.search(block)))
 
     @classmethod
     def own_blocks(cls, msg: dict) -> list[str]:

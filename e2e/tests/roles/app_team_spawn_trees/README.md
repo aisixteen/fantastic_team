@@ -1,22 +1,20 @@
 # roles/app_team_spawn_trees
 
-The team the app makes (`fantastic_team_app --dir`: the cards of `roles/` written next to the
-kernel, the agents seeded by the first run from `crates/team/blueprint.yaml`), not test cards, runs two
+The team the app makes (`fantastic_team_app --dir`: the agents seeded by the first run from `crates/team/blueprint.yaml`), not test cards, runs two
 trees with a scripted model (#227):
 
 - the main lead spawns a sub-lead (the `lead` card), which spawns a worker;
 - the main lead spawns a `project_lead`, which spawns a worker.
 
 Each parent deletes what it spawned (a worker by its parent, the sub-leads by the main lead).
-The key mode is the person's choice: the probe chooses `plain` as the set-up page does (`set_key_mode` on a `setup.tools` agent), so fantastic makes the `credentials` store; the app and the team choose none (#261). The probe keeps the model's key in it with the store's `set` (the ref declared first), as the set-up page does. The probe then only points the model at the plug: the lead's `model`, `endpoint` and credential
-ref, and the registry's tiers (model and endpoint, no `credentials`, as in `cli/` fact 2). No
+The key mode is the person's choice: the probe chooses `plain` as the set-up page does (`set_key_mode` on a `setup.tools` agent), so fantastic makes the `credentials` store; the app and the team choose none (#261). The probe keeps the model's key in it with the store's `set` (the ref declared first), as the set-up page does. The probe then only points the model at the plug: it adds a provider under the lead (its key the one in the credential store) and the lead names it (`provider_id`, `model`), as the team's yaml says the person does. No
 card or grant is touched. The one record change besides that is `limits.total` of the registry,
 raised from the app's 3 to 6 with `update_agent`: the two sub-leads and their two workers are
 alive at once (4).
 
 Needs `fantastic_team_app` next to `--bin` (a Skip otherwise).
 
-Checks: the cards on disk equal the repo's `roles/`; all four lanes asked the model (so four
+Checks: the roles registry serves the repo's role bundles (`crates/team/bundles/`); all four lanes asked the model (so four
 spawns succeeded); no agent with `spawned_by` is left; every agent's parent exists; the
 records are the ones the app made; the registry counts nothing running.
 

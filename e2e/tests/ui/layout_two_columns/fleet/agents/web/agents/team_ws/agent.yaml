@@ -1,0 +1,9 @@
+id: team_ws
+handler_module: web_ws.tools
+ingress_rule: allow_all_ingress
+can_call:
+  "$self": "*"
+  dispatcher: [sidebar, tree, open, control]
+callable_by:
+  "$self": "*"
+  web: [get_routes]
