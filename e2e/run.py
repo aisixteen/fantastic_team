@@ -1116,6 +1116,10 @@ def selftest_scripted_thinking(v: Verdict) -> None:
             "".join(d.get("thinking", "") for d in deltas if d["type"] == "thinking_delta") == "some thought"
             and "".join(d.get("text", "") for d in deltas if d["type"] == "text_delta") == "the answer", str(deltas))
     v.check("parse_stream still returns the text only", scripted.parse_stream(raw) == "the answer")
+    digest = "w1: idle ·  · 0s on task · cost 0.00 · cache 0%\nload: busy 0 idle 1 stalled 0 · held 0 queued 0 · done/h 0"
+    v.check("the cadencer's digest and its heartbeat are team notices; a task is not",
+            scripted.ScriptedModel.is_notice(digest) and scripted.ScriptedModel.is_notice("heartbeat: 2 idle, 1 queued")
+            and not scripted.ScriptedModel.is_notice("Start two workers."))
     plain = [(e["index"], e["content_block"]["type"]) for e in
              (json.loads(line[6:]) for block in b"".join(scripted.stream_frames("x")).decode().split("\n\n")
               for line in block.splitlines() if line.startswith("data: "))

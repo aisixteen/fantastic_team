@@ -51,6 +51,15 @@ def lay_role_bundles(work: str, src: str | None = None) -> list[str]:
     return names
 
 
+def roles_served(team) -> bool:
+    """Does the team's `roles` registry list exactly the role bundles of the repo
+    (`crates/team/bundles/`), with no load error? The roles are compiled in and no card is written
+    to the folder."""
+    reply = team.send("roles", {"type": "roles"}).get("result") or {}
+    names = sorted(r["name"] for r in reply.get("roles", []))
+    return names == sorted(os.listdir(os.path.join(REPO_DIR, "crates", "team", "bundles"))) and reply.get("errors") == []
+
+
 def operator_holds(team, targets: dict) -> None:
     """The operator (the `send` leg, `mcp`) may call `targets` (agent -> verbs): both ends. A
     spawner grants only what it holds, so the operator holds what a card grants before it spawns."""

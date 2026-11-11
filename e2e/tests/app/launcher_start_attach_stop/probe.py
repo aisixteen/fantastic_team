@@ -4,7 +4,7 @@ import os
 import signal
 import subprocess
 
-from helpers import app, records, run_flow, team as team_mod, web
+from helpers import app, records, run_flow, stock as S, team as team_mod, web
 from helpers.verdict import Verdict
 
 
@@ -141,8 +141,8 @@ def run(ctx):
         ucb = agents.get("user", {}).get("callable_by", {}).get("team_ws", [])
         v.check("the yaml's parent entry wrote the page leg's end on user (inquiries, answer_inquiry)",
                 {"inquiries", "answer_inquiry"} <= set(ucb), str(ucb))
-        v.check("the role cards were written next to the kernel",
-                os.path.isfile(os.path.join(new_dir, "roles", "project_lead.md")))
+        v.check("the roles registry serves the repo's role bundles (compiled in; no card is written to the folder)",
+                S.roles_served(t2))
         s2.signal(signal.SIGINT)
         v.check("start exits 0 on SIGINT", s2.wait(20) == 0, s2.log())
     finally:

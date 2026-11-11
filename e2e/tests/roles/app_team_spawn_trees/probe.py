@@ -5,11 +5,10 @@ import os
 import signal
 import time
 
-from helpers import app, cli, records, run_flow, team as team_mod
+from helpers import app, cli, records, run_flow, stock as S, team as team_mod
 from helpers.verdict import Verdict
 
 TASK = "Run a sub-lead and a project lead, each with a worker; delete what you spawned."
-REPO_ROLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "roles")
 
 
 def seed(ctx, folder, env, v, team):
@@ -46,11 +45,12 @@ def store_model_key(ctx, team, key):
 
 
 def point_at_plug(ctx, team):
-    """The only change to what the app made: the model answers from the plug."""
-    agents = team.agents()
-    records.update(team, "lead", model=cli.MODEL, endpoint=ctx.model.endpoint,
-                   credentials={"store": "credentials", "ref": f"model/{ctx.model.host}"})
-    # a spawned agent runs on its spawner's backend: pointing the lead at the plug points its tree there
+    """The only change to what the app made: the person adds a provider on the plug (under the lead,
+    its key the one in the credential store) and the lead names it, as the team's yaml says the user
+    does; a spawned chat takes the lead's provider."""
+    records.update(team, "lead", provider_id=cli.PROVIDER, model=cli.MODEL)
+    cli.add_provider(ctx, "lead")
+    # a spawned agent runs on its spawner's provider: pointing the lead at the plug points its tree there
     records.update(team, "roles", limits={"total": 6})
 
 
@@ -82,9 +82,8 @@ def run(ctx):
         v.check("the app made the team", bool(made), str(sorted(ids_once_up(probe))))
         if not made:
             return v.finish()  # no team to drive: the checks below would only read a missing kernel
-        for name in sorted(os.listdir(REPO_ROLES)):
-            with open(os.path.join(REPO_ROLES, name)) as f, open(os.path.join(folder, "roles", name)) as g:
-                v.check(f"roles/{name} on disk is the repo's card", f.read() == g.read())
+        v.check("the roles registry serves the repo's role bundles (compiled in; no card is written to the folder)",
+                S.roles_served(probe))
         store_model_key(ctx, probe, keys["model_key"])
         point_at_plug(ctx, probe)
         before = cli.tree(probe)

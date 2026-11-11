@@ -27,12 +27,20 @@ pub const PAGE_PATH: &str = "/team_page/file/index.html";
 
 const SHIM: &str = include_str!("../web/page_shim.js");
 const CARD_JS: &str = include_str!("../web/card_connector.js");
+const ICON: &str = include_str!("../web/icon.svg");
 
 /// The files the page serves, in order. Everything the page loads is one of these.
-pub const FILES: [&str; 5] = ["index.html", "page.css", "shim.js", "page.js", "card.js"];
+pub const FILES: [&str; 6] = [
+    "index.html",
+    "page.css",
+    "shim.js",
+    "page.js",
+    "card.js",
+    "icon.svg",
+];
 
 /// What `read_stream` declares on the record, so the host serves the page.
-pub const READ_STREAM_DOC: &str = "args: path:str (req), offset:int?, length:int?. The team page (index.html, page.css, shim.js, page.js, card.js) as a BINARY reply: the bytes as the body, {path, offset, next_offset, eof, size} as the head.";
+pub const READ_STREAM_DOC: &str = "args: path:str (req), offset:int?, length:int?. The team page (index.html, page.css, shim.js, page.js, card.js, icon.svg) as a BINARY reply: the bytes as the body, {path, offset, next_offset, eof, size} as the head.";
 
 /// Cut the first `<tag>...</tag>` body out of `html`; the html gets `replacement` in its place.
 fn cut(html: &str, open: &str, close: &str, replacement: &str) -> (String, String) {
@@ -83,6 +91,7 @@ pub fn file_bytes(path: &str) -> Option<Vec<u8>> {
             "shim.js" => SHIM.to_string(),
             "page.js" => split_page(HTML).2,
             "card.js" => CARD_JS.to_string(),
+            "icon.svg" => ICON.to_string(),
             _ => return None,
         }
         .into_bytes(),
@@ -252,7 +261,7 @@ mod tests {
 
     #[test]
     fn read_stream_serves_every_listed_file() {
-        for f in ["page.css", "shim.js", "page.js", "card.js"] {
+        for f in ["page.css", "shim.js", "page.js", "card.js", "icon.svg"] {
             let (head, body) = whole(f);
             assert!(!body.is_empty(), "{f}");
             assert_eq!(head["eof"], json!(true), "{f}");
