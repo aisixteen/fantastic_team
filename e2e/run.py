@@ -51,6 +51,7 @@ from helpers import app as app_mod  # noqa: E402
 from helpers import cli as cli_mod  # noqa: E402
 from helpers import fake_vllm  # noqa: E402
 from helpers import folds  # noqa: E402
+from helpers import lanes as lanes_mod  # noqa: E402
 from helpers import podman_remote  # noqa: E402
 from helpers import gpu_ssh  # noqa: E402
 from helpers import ssh_twins  # noqa: E402
@@ -98,6 +99,7 @@ def discover() -> list[dict]:
                         "costs": meta.get("costs", "free"),
                         "timeout": int(meta.get("timeout", "180")),
                         "plug": plug_of(meta),
+                        "serial": lanes_mod.is_serial(meta.get("serial", "false")),
                         "declared_plug": meta.get("plug", "scripted"),
                         # the fleet layers (`fleet`, and `fleet_<name>` for a second team folder): names, space-separated
                         **{k: v for k, v in meta.items() if k == "fleet" or k.startswith("fleet_")}})
@@ -351,6 +353,7 @@ def selftest() -> int:
     selftest_cli_fixture(v)
     selftest_app_helpers(v)
     selftest_new_tests_collect(v)
+    selftest_lanes(v)
     selftest_podman_remote(v)
     selftest_ssh_twins(v)
     selftest_remote_work(v)
@@ -1396,6 +1399,103 @@ def selftest_new_tests_collect(v: Verdict) -> None:
     v.check("each collects, has its files, and is free / scripted", not bad, "; ".join(bad))
 
 
+def selftest_lanes(v: Verdict) -> None:
+    """--lanes (#325): N workers at once, serial ones last and alone, a failure keeps the exit code
+    non-zero, `--lanes 1` runs in the selected order, the ssh image is built once before the pool."""
+    L = lanes_mod
+    mk = lambda n, serial=False: {"name": n, "serial": serial}  # noqa: E731
+    tests = [mk("a/1"), mk("a/2", True), mk("b/1"), mk("b/2"), mk("c/1", True), mk("c/2")]
+    lock, state = threading.Lock(), {"now": 0, "peak": 0, "order": [], "serial_overlap": False}
+
+    def run_one(t):
+        with lock:
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+            state["order"].append(t["name"])
+            if t["serial"] and state["now"] != 1:
+                state["serial_overlap"] = True
+        time.sleep(0.15)
+        with lock:
+            state["now"] -= 1
+        return "PASS"
+
+    res = L.schedule(tests, 1, run_one)
+    v.check("--lanes 1 runs in the selected order, serial ones where they are, one at a time",
+            state["order"] == [t["name"] for t in tests] and state["peak"] == 1, str(state))
+    v.check("the results come back in the order of the tests",
+            list(res) == [t["name"] for t in tests] and set(res.values()) == {"PASS"})
+    state.update(now=0, peak=0, order=[])
+    res = L.schedule(tests, 3, run_one)
+    v.check("--lanes 3 runs three at once (never more than three)", state["peak"] == 3, str(state["peak"]))
+    v.check("the serial scenarios run after the whole pool, alone",
+            set(state["order"][:4]) == {"a/1", "b/1", "b/2", "c/2"} and state["order"][4:] == ["a/2", "c/1"]
+            and not state["serial_overlap"], str(state["order"]))
+    v.check("every scenario runs once and the results keep the order of the tests",
+            sorted(state["order"]) == sorted(t["name"] for t in tests) and list(res) == [t["name"] for t in tests])
+    v.check("more lanes than tests is fine", L.schedule(tests[:2], 8, run_one) == {"a/1": "PASS", "a/2": "PASS"})
+
+    def failing(t):
+        return "FAIL" if t["name"] == "b/2" else "PASS"
+    for n in (1, 4):
+        res = L.schedule(tests, n, failing)
+        v.check(f"--lanes {n}: one failure keeps the exit code non-zero, the others still ran",
+                summary(res) == 1 and res["b/2"] == "FAIL" and res["c/1"] == "PASS" and len(res) == 6)
+
+    def raising(t):
+        raise RuntimeError("boom")
+    v.check("a worker that raises is a FAIL of that scenario, not a lost one",
+            set(L.schedule(tests[:2], 2, raising).values()) == {"FAIL"})
+    v.check("a SKIP never fails the run", summary(L.schedule(tests, 2, lambda t: "SKIP")) == 0)
+    done = []
+    L.schedule(tests, 2, lambda t: "PASS", on_done=lambda t, r: done.append(t["name"]))
+    v.check("on_done is called once per scenario", sorted(done) == sorted(t["name"] for t in tests))
+
+    by = {t["name"]: t for t in discover()}
+    v.check("serial: true is read from test.yaml: the window test and the gpu tests, no other",
+            {n for n, t in by.items() if t["serial"]} == {"app/window_per_platform", *GPU_TESTS},
+            str(sorted(n for n, t in by.items() if t["serial"])))
+    v.check("test.yaml's serial is true, yes or 1 and false otherwise",
+            L.is_serial("true") and L.is_serial("yes") and not L.is_serial("false") and not L.is_serial(""))
+
+    tmp = tempfile.mkdtemp(prefix="e2e-lanes-")
+    try:
+        os.makedirs(os.path.dirname(L.log_path(tmp, "x/y")))
+        with open(L.log_path(tmp, "x/y"), "w") as f:
+            f.write("".join(f"line {i}\n" for i in range(100)))
+        tails = L.failing_tails({"x/y": "FAIL", "x/z": "PASS", "x/w": "SKIP"}, tmp, lines=5)
+        v.check("a failing scenario's log tail is printed at the end; passes and skips print none",
+                "FAIL x/y" in tails and "line 99" in tails and "line 94" not in tails and "x/z" not in tails
+                and "x/w" not in tails, tails)
+        argv = L.child_argv("/r/run.py", "g/i", "/b/team", "/s")
+        v.check("a child runs one scenario by name on the parent's binary and stamp",
+                argv[1:] == ["/r/run.py", "--child", "g/i", "--bin", "/b/team", "--stamp-dir", "/s"], str(argv))
+        stub = os.path.join(tmp, "stub.py")  # a stand-in run.py: its exit code is the result
+        with open(stub, "w") as f:
+            f.write("import sys\nprint('child says', sys.argv[2])\n"
+                    "sys.exit({'p/pass': 0, 'p/skip': 77}.get(sys.argv[2], 1))\n")
+        got = {n: L.run_child(stub, {"name": n}, "/b", tmp) for n in ("p/pass", "p/skip", "p/fail")}
+        v.check("a child's exit code is its result: 0 PASS, 77 SKIP, anything else FAIL",
+                got == {"p/pass": "PASS", "p/skip": "SKIP", "p/fail": "FAIL"}, str(got))
+        with open(L.log_path(tmp, "p/fail")) as f:
+            v.check("a child's output lands in its own log", "child says p/fail" in f.read())
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    built = []
+    ssh_t = [mk("cli_ssh/single_lead"), mk("cli/single_lead")]
+    asked = L.prebuild_image(ssh_t, lambda: None, lambda log: built.append(1), log=lambda *_: None)
+    v.check("the ssh image is built once, before the pool, when an ssh twin is selected", asked and built == [1])
+    built.clear()
+    v.check("no ssh twin selected, or no podman: nothing is built",
+            not L.prebuild_image([mk("cli/single_lead")], lambda: None, lambda log: built.append(1))
+            and not L.prebuild_image(ssh_t, lambda: "no podman", lambda log: built.append(1)) and built == [])
+
+    def broken(log):
+        raise RuntimeError("no network")
+    v.check("a build that fails is left to the twins to report, the pool still starts",
+            L.prebuild_image(ssh_t, lambda: None, broken, log=lambda *_: None))
+
+
 class podman_env(vllm_env):
     """The Podman remote helper's variables for a block (`E2E_PODMAN`, the build dirs): set the given
     ones, clear the rest, restore after."""
@@ -1896,10 +1996,21 @@ def main() -> int:
     ap.add_argument("--bin", help="a built fantastic_team (default: cargo build)")
     ap.add_argument("--selftest", action="store_true", help="check the harness, no binary")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--lanes", type=int, default=1, metavar="N",
+                    help="run N scenarios at a time (default 1); `serial: true` ones run alone after the pool")
+    ap.add_argument("--child", metavar="GROUP/ID", help=argparse.SUPPRESS)  # one scenario of a lane
+    ap.add_argument("--stamp-dir", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.lanes < 1:
+        sys.exit("--lanes must be at least 1")
 
     if a.selftest:
         return selftest()
+    if a.child:  # a lane's child: the parent did the checks, the selftest and the build
+        t = next((t for t in discover() if t["name"] == a.child), None)
+        if t is None or not a.bin or not a.stamp_dir:
+            sys.exit("--child needs an existing GROUP/ID, --bin and --stamp-dir")
+        return lanes_mod.CHILD_EXIT[run_test(t, os.path.abspath(a.bin), a.stamp_dir)]
     tests = discover()
     if a.only:
         missing = set(a.only) - {t["name"] for t in tests}
@@ -1930,8 +2041,18 @@ def main() -> int:
         return 1
     binary = os.path.abspath(a.bin) if a.bin else build()
     stamp_dir = os.path.join(HERE, "runs", time.strftime("%Y%m%d-%H%M%S"))
-    results = {t["name"]: run_test(t, binary, stamp_dir) for t in tests}
+    if a.lanes == 1:
+        results = lanes_mod.schedule(tests, 1, lambda t: run_test(t, binary, stamp_dir))
+    else:
+        os.makedirs(stamp_dir, exist_ok=True)
+        print(f"{len(tests)} scenarios, {a.lanes} lanes; logs in {os.path.join(stamp_dir, '_logs')}", flush=True)
+        lanes_mod.prebuild_image(tests, podman_remote.why_not, podman_remote.image)
+        results = lanes_mod.schedule(
+            tests, a.lanes, lambda t: lanes_mod.run_child(os.path.abspath(__file__), t, binary, stamp_dir),
+            on_done=lambda t, r: print(f"{r}  {t['name']}", flush=True))
     print("\n" + "\n".join(f"{r}  {n}" for n, r in results.items()))
+    if a.lanes > 1:
+        print(lanes_mod.failing_tails(results, stamp_dir), end="")
     return summary(results)
 
 

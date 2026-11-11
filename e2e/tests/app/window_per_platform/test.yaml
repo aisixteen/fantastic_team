@@ -2,3 +2,4 @@ costs: free
 timeout: 180
 plug: scripted
 fleet: stock team_tools team_core provider_{{provider_shape}}
+serial: true  # the window needs the one DISPLAY (Xvfb or a screen) and xdotool searches it; runs alone after the lanes
