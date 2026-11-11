@@ -12,3 +12,10 @@ clean, and the record set after is the record set before the task (nothing was a
 
 Mutation: drop the commit turn from `script.json` and "solved" fails; make the lead
 `create_agent` something in a turn and "the records are the ones it started with" fails.
+
+Folds (team #323): after the commit the lead makes a thought and prints a large reply (an exec `run` of ~70k characters, over
+fantastic's autofold at 16000 tokens); message 1 ends with `done`, the probe reads the two rows from the lead's history and
+binds their ids (`bind`: `{{row_big}}`, `{{row_thought}}`), and message 2 recalls both. Checks, from the request
+bodies the plug recorded (`helpers/folds.py`): the large reply is whole in the request right after its call and only its anchor
+from the next on; the thought never reaches the model whole, only its anchor; a recall reply is whole in the next request and an
+anchor one request later; every anchor is byte-identical in every later request; the store keeps both rows whole.

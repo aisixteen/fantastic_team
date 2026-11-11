@@ -14,7 +14,7 @@ import time
 from collections import Counter
 
 from . import app, team as team_mod
-from . import cli
+from . import cli, folds
 from .cli import EXEC
 
 DONE_CALL = '<call name="done"'
@@ -277,7 +277,13 @@ def report(ctx, watch: Lead | None = None) -> None:
               f"{a['output_tokens']} out, cost_usd {'unpriced' if a['cost_usd'] is None else a['cost_usd']}")
     calls = Counter(f"{a} {verb}" for a, verb in team_mod.log_calls(ctx.team.log()))
     print(f"  report: calls {dict(calls.most_common(12))}")
+    if watch:
+        try:
+            watch.refresh()  # the folds are counted from the whole history, as it stands now
+        except Exception:  # the report must never fail
+            pass
     if watch and watch.rows:
+        print("  report: " + folds.report_line(watch.rows, sum(n for k, n in calls.items() if k.endswith(" recall"))))
         mine = [r for r in watch.rows if r.get("kind") == "assistant"]
         first = mine[0].get("head", "")[:100] if mine else ""
         print(f"  report: the lead took {len(mine)} turns; its first: {first!r}")

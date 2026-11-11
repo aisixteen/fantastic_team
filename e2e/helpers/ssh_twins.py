@@ -60,7 +60,7 @@ import sys
 import tempfile
 import time
 
-from . import cli, podman_remote as pr, records, team as team_mod, web
+from . import cli, folds, podman_remote as pr, records, team as team_mod, web
 from .podman_remote import shq
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -438,7 +438,8 @@ def remote_log_call() -> dict:
 def script_single_lead() -> list[dict]:
     """The lead alone, twice (A: laid as a record file; B: fantastic's recipe). Locally it fixes
     adder.py and pushes; in its remote workspace (the box's exec agent, through the bridge) it
-    pulls, fixes muler.py, commits and pushes. The lead is the only backend, on the master."""
+    pulls, fixes muler.py, commits and pushes. The lead is the only backend, on the master. Then the folds
+    (`helpers/folds.py`): message 1 ends with a thought and a large reply, message 2 recalls both and closes."""
     def one() -> list[dict]:
         local = [t(c) for c in (cli.run_call("python3", "test_calc.py"), cli.replace_call(*ADD),
                                 cli.run_call("git", "-c", "user.name=Worker", "-c", "user.email=worker@example.invalid",
@@ -450,7 +451,7 @@ def script_single_lead() -> list[dict]:
                             cli.run_call("git", "-c", "user.name=Worker", "-c", "user.email=worker@example.invalid",
                                          "commit", "-q", "-a", "-m", "Fix mul"),
                             cli.run_call("git", "push", "-q", "origin", "HEAD:main"))]
-        return open_turns() + local + remote + close_turns()
+        return open_turns() + local + remote + folds.turns_one() + folds.turns_two() + close_turns()
     return one() + one()
 
 
@@ -882,10 +883,11 @@ class Box:
             vals["forge_port"] = str(self.ctx.forge.port)
         return vals
 
-    def bind(self) -> None:
-        """Fill the script's values, and let the plug's `grant_leg` turns open a minted backend to the leg."""
+    def bind(self, keep: tuple = ()) -> None:
+        """Fill the script's values, and let the plug's `grant_leg` turns open a minted backend to the leg.
+        `keep`: names a later `bind` fills (the folds' row ids)."""
         self.ctx.model.leg_grant = lambda ids: grant_leg(self.ctx.team, ids)
-        self.ctx.model.bind(**self.values())
+        self.ctx.model.bind(keep=keep, **self.values())
 
     def open_backends(self, ids) -> None:
         """The master's end of the leg's grants on backends that exist before the task (the bridge's

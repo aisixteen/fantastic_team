@@ -266,12 +266,14 @@ class ScriptedModel:
         self.thinking = [t.get("thinking") for t in filled]
         self.grants = [list(t.get("grant_leg") or []) for t in filled]
 
-    def bind(self, **variables) -> "ScriptedModel":
-        """Fill the placeholders left open at load with values known only once the test runs.
-        Call it before the team asks the model; a name still open after it is an error."""
+    def bind(self, keep: tuple = (), **variables) -> "ScriptedModel":
+        """Fill the placeholders left open at load with values known only once the test runs. It may be called
+        again mid-run (a value that a turn already played made, such as a row id of the lead's own history): the
+        turns not served yet are rendered again. A name still open after it is an error, but for the names in
+        `keep`, which a later call fills."""
         self.variables.update(variables)
         self.render()
-        left = sorted({m for t in self.turns for m in re.findall(r"\{\{(\w+)\}\}", t)})
+        left = sorted({m for t in self.turns for m in re.findall(r"\{\{(\w+)\}\}", t)} - set(keep))
         if left:
             raise ValueError(f"scripted model: placeholders with no value: {left}")
         return self
