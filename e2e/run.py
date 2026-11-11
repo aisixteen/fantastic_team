@@ -1445,6 +1445,11 @@ def selftest_lanes(v: Verdict) -> None:
         raise RuntimeError("boom")
     v.check("a worker that raises is a FAIL of that scenario, not a lost one",
             set(L.schedule(tests[:2], 2, raising).values()) == {"FAIL"})
+    try:
+        L.schedule(tests[:2], 1, raising)
+        v.check("--lanes 1 lets an exception escape as the old loop did", False)
+    except RuntimeError:
+        v.check("--lanes 1 lets an exception escape as the old loop did", True)
     v.check("a SKIP never fails the run", summary(L.schedule(tests, 2, lambda t: "SKIP")) == 0)
     done = []
     L.schedule(tests, 2, lambda t: "PASS", on_done=lambda t, r: done.append(t["name"]))
@@ -1484,7 +1489,8 @@ def selftest_lanes(v: Verdict) -> None:
     built = []
     ssh_t = [mk("cli_ssh/single_lead"), mk("cli/single_lead")]
     asked = L.prebuild_image(ssh_t, lambda: None, lambda log: built.append(1), log=lambda *_: None)
-    v.check("the ssh image is built once, before the pool, when an ssh twin is selected", asked and built == [1])
+    v.check("the ssh image is built once, before the pool, when an ssh twin is selected",
+            asked == {} and built == [1])
     built.clear()
     v.check("no ssh twin selected, or no podman: nothing is built",
             not L.prebuild_image([mk("cli/single_lead")], lambda: None, lambda log: built.append(1))
@@ -1492,8 +1498,13 @@ def selftest_lanes(v: Verdict) -> None:
 
     def broken(log):
         raise RuntimeError("no network")
-    v.check("a build that fails is left to the twins to report, the pool still starts",
-            L.prebuild_image(ssh_t, lambda: None, broken, log=lambda *_: None))
+    bad = L.prebuild_image(ssh_t, lambda: None, broken, log=lambda *_: None)
+    v.check("a build that fails names the ssh twins (only) with the error, to fail up front",
+            list(bad) == ["cli_ssh/single_lead"] and "no network" in bad["cli_ssh/single_lead"], str(bad))
+    ran = []
+    res = L.schedule(ssh_t, 2, lambda t: ran.append(t["name"]) or "PASS", failed=bad)
+    v.check("a twin whose build failed is not dispatched; the others still run",
+            res == {"cli_ssh/single_lead": "FAIL", "cli/single_lead": "PASS"} and ran == ["cli/single_lead"], str(res))
 
 
 class podman_env(vllm_env):
@@ -2046,10 +2057,14 @@ def main() -> int:
     else:
         os.makedirs(stamp_dir, exist_ok=True)
         print(f"{len(tests)} scenarios, {a.lanes} lanes; logs in {os.path.join(stamp_dir, '_logs')}", flush=True)
-        lanes_mod.prebuild_image(tests, podman_remote.why_not, podman_remote.image)
+        failed = lanes_mod.prebuild_image(tests, podman_remote.why_not, podman_remote.image)
+        for n, why in failed.items():  # the twins fail with the build error, in their own log
+            os.makedirs(os.path.dirname(lanes_mod.log_path(stamp_dir, n)), exist_ok=True)
+            with open(lanes_mod.log_path(stamp_dir, n), "w") as f:
+                f.write(why + "\n")
         results = lanes_mod.schedule(
             tests, a.lanes, lambda t: lanes_mod.run_child(os.path.abspath(__file__), t, binary, stamp_dir),
-            on_done=lambda t, r: print(f"{r}  {t['name']}", flush=True))
+            failed=failed, on_done=lambda t, r: print(f"{r}  {t['name']}", flush=True))
     print("\n" + "\n".join(f"{r}  {n}" for n, r in results.items()))
     if a.lanes > 1:
         print(lanes_mod.failing_tails(results, stamp_dir), end="")

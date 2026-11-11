@@ -23,21 +23,30 @@ def is_serial(meta_value) -> bool:
     return str(meta_value).strip().lower() in ("true", "yes", "1")
 
 
-def schedule(tests: list[dict], lanes: int, run_one, on_done=None) -> dict:
+def schedule(tests: list[dict], lanes: int, run_one, on_done=None, failed: dict | None = None) -> dict:
     """Run every test; returns {name: result} in the order of `tests`.
 
     lanes <= 1: one after another in the given order (serial or not): today's loop.
     lanes > 1: the non-serial tests in a pool of `lanes` workers, then the serial ones, one at a time.
-    A `run_one` that raises is a FAIL of that test, never a lost one."""
+    A `run_one` that raises is a FAIL of that test on the pool path (lanes > 1), never a lost one; with
+    lanes <= 1 it propagates exactly as the old loop did. A test named in `failed` ({name: reason}) is
+    not run: it is a FAIL with that reason printed (its build failed before the pool)."""
+    failed = failed or {}
     results: dict = {}
     guard = threading.Lock()
 
-    def one(t: dict) -> None:
-        try:
-            r = run_one(t)
-        except Exception as e:  # the scheduler never loses a scenario
-            print(f"lane error in {t['name']}: {e!r}", file=sys.stderr)
+    def one(t: dict, guarded: bool = True) -> None:
+        if t["name"] in failed:
+            print(f"FAIL {t['name']}: {failed[t['name']]}", file=sys.stderr)
             r = "FAIL"
+        elif not guarded:
+            r = run_one(t)
+        else:
+            try:
+                r = run_one(t)
+            except Exception as e:  # the pool never loses a scenario
+                print(f"lane error in {t['name']}: {e!r}", file=sys.stderr)
+                r = "FAIL"
         with guard:
             results[t["name"]] = r
         if on_done:
@@ -45,7 +54,7 @@ def schedule(tests: list[dict], lanes: int, run_one, on_done=None) -> dict:
 
     if lanes <= 1:
         for t in tests:
-            one(t)
+            one(t, guarded=False)
     else:
         pool = [t for t in tests if not t.get("serial")]
         alone = [t for t in tests if t.get("serial")]
@@ -94,16 +103,17 @@ def failing_tails(results: dict, stamp_dir: str, lines: int = TAIL_LINES) -> str
     return "".join(out)
 
 
-def prebuild_image(tests: list[dict], why_not, image, log=print) -> bool:
+def prebuild_image(tests: list[dict], why_not, image, log=print) -> dict:
     """Before the pool: the ssh twins share one image tag, so it is built ONCE here, not by N
-    children at the same time. `why_not()` is None when the remote can run; a build error is
-    printed and left to each twin to report as it does today. Returns whether an image was asked for."""
-    if not any(t["name"].split("/")[0].endswith("_ssh") for t in tests):
-        return False
-    if why_not() is not None:
-        return False
+    children at the same time. `why_not()` is None when the remote can run. Returns {twin name: build
+    error} for the ssh twins when the build fails, so the caller fails them up front and no child ever
+    builds the image concurrently; {} when nothing was asked, the remote cannot run, or the build worked."""
+    twins = [t["name"] for t in tests if t["name"].split("/")[0].endswith("_ssh")]
+    if not twins or why_not() is not None:
+        return {}
     try:
         image(log=log)
     except Exception as e:
         log(f"  remote: image build failed before the pool: {e}")
-    return True
+        return {n: f"image build failed before the pool: {e}" for n in twins}
+    return {}
