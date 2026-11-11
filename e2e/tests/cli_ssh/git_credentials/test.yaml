@@ -2,3 +2,4 @@ costs: free
 timeout: 600
 plug: scripted
 fleet: stock cli_base lead_single provider_{{provider_shape}} git_credentials
+duration: 14

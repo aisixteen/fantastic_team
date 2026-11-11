@@ -78,10 +78,11 @@ def read_meta(path: str) -> dict:
     meta: dict = {}
     with open(path) as f:
         for line in f:
-            line = line.split("#", 1)[0].strip()
-            if ":" in line:
-                k, _, v = line.partition(":")
-                meta[k.strip()] = v.strip()
+            k, sep, v = line.partition(":")
+            v = v.strip()
+            if sep and k.strip() and not k.lstrip().startswith("#"):
+                # a quoted value keeps its `#` (`muted: "#616: reason"`); an unquoted one ends at a comment
+                meta[k.strip()] = v[1:v.rfind('"')] if v.startswith('"') and v.rfind('"') > 0 else v.split("#", 1)[0].strip()
     return meta
 
 
@@ -100,6 +101,8 @@ def discover() -> list[dict]:
                         "timeout": int(meta.get("timeout", "180")),
                         "plug": plug_of(meta),
                         "serial": lanes_mod.is_serial(meta.get("serial", "false")),
+                        "duration": int(meta.get("duration", "0")),  # seconds, a hint: longest first in the pool
+                        "muted": meta.get("muted", ""),  # `#<issue>: <reason>`: the runner reports SKIP and runs nothing
                         "declared_plug": meta.get("plug", "scripted"),
                         # the fleet layers (`fleet`, and `fleet_<name>` for a second team folder): names, space-separated
                         **{k: v for k, v in meta.items() if k == "fleet" or k.startswith("fleet_")}})
@@ -247,7 +250,7 @@ def dry_run(tests: list[dict]) -> int:
     for t in tests:
         ok, detail = collect_probe(t["dir"])
         why = why_not(t["plug"])
-        note = "" if why is None else f"  (would SKIP: {why})"
+        note = f"  (would SKIP: {lanes_mod.muted_line(t)})" if t["muted"] else "" if why is None else f"  (would SKIP: {why})"
         print(f"{'COLLECT' if ok else 'FAIL'} {t['name']}  (costs: {t['costs']}, plug: {t['plug']})"
               f"{note}  {detail}")
         bad += not ok
@@ -1455,6 +1458,14 @@ def selftest_lanes(v: Verdict) -> None:
     except RuntimeError:
         v.check("--lanes 1 lets an exception escape as the old loop did", True)
     v.check("a SKIP never fails the run", summary(L.schedule(tests, 2, lambda t: "SKIP")) == 0)
+    long = [dict(mk(n), duration=d) for n, d in (("l/a", 0), ("l/b", 30), ("l/c", 5), ("l/d", 30), ("l/e", 70))]
+    ran: list = []
+    L.schedule(long, 1, lambda t: ran.append(t["name"]) or "PASS")
+    v.check("--lanes 1 keeps the selected order whatever the durations", ran == [t["name"] for t in long], str(ran))
+    ran = []
+    res = L.schedule(long, 2, lambda t: ran.append(t["name"]) or time.sleep(0.1) or "PASS")
+    v.check("--lanes N starts the longest first (the two workers take e and b, unhinted last)",
+            set(ran[:2]) == {"l/e", "l/b"} and ran[4] == "l/a" and list(res) == [t["name"] for t in long], str(ran))
     done = []
     L.schedule(tests, 2, lambda t: "PASS", on_done=lambda t, r: done.append(t["name"]))
     v.check("on_done is called once per scenario", sorted(done) == sorted(t["name"] for t in tests))
@@ -1468,6 +1479,18 @@ def selftest_lanes(v: Verdict) -> None:
 
     tmp = tempfile.mkdtemp(prefix="e2e-lanes-")
     try:
+        mp = os.path.join(tmp, "test.yaml")
+        with open(mp, "w") as f:
+            f.write('costs: free\nmuted: "#616: why # and: more"\nduration: 9  # hint\n')
+        meta = read_meta(mp)
+        v.check("test.yaml's muted keeps its # and : and an unquoted value still ends at a comment",
+                meta == {"costs": "free", "muted": "#616: why # and: more", "duration": "9"}, str(meta))
+        v.check("a muted scenario is reported as SKIP with `muted #<issue>: <reason>`",
+                L.muted_line({"name": "g/m", "muted": "#616: why"}) == "g/m (muted #616: why)")
+        v.check("test.yaml's muted scenarios are the two #616 ones and none other",
+                {n: t["muted"].split(":")[0] for n, t in by.items() if t["muted"]}
+                == {"ui/worker_view_opens": "#616", "roles/project_lead_plans_and_runs_issues": "#616"},
+                str({n: t["muted"] for n, t in by.items() if t["muted"]}))
         os.makedirs(os.path.dirname(L.log_path(tmp, "x/y")))
         with open(L.log_path(tmp, "x/y"), "w") as f:
             f.write("".join(f"line {i}\n" for i in range(100)))
@@ -2043,7 +2066,10 @@ def main() -> int:
     for t in tests:
         if not available(t["plug"]):
             print(f"SKIP {t['name']} ({why_not(t['plug'])})")
-    tests = [t for t in tests if available(t["plug"])]
+    muted = {t["name"]: lanes_mod.muted_line(t) for t in tests if t["muted"]}
+    for line in muted.values():
+        print(f"SKIP {line}")
+    tests = [t for t in tests if available(t["plug"]) and not t["muted"]]
     if not tests:
         print("nothing to run")
         return 0
@@ -2070,6 +2096,8 @@ def main() -> int:
             tests, a.lanes, lambda t: lanes_mod.run_child(os.path.abspath(__file__), t, binary, stamp_dir),
             failed=failed, on_done=lambda t, r: print(f"{r}  {t['name']}", flush=True))
     print("\n" + "\n".join(f"{r}  {n}" for n, r in results.items()))
+    if muted:
+        print(f"\n{len(muted)} muted (counted with the skips):\n" + "\n".join(f"SKIP  {l}" for l in muted.values()))
     if a.lanes > 1:
         print(lanes_mod.failing_tails(results, stamp_dir), end="")
     return summary(results)

@@ -2,3 +2,5 @@ costs: free
 timeout: 300
 plug: scripted
 fleet: stock team_tools team_forge team_roles provider_{{provider_shape}}
+muted: "#616: a spawned worker gets github/queue grants at spawn, before the admit"
+duration: 19

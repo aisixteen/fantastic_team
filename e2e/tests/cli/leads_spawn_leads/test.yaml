@@ -2,3 +2,4 @@ costs: free
 timeout: 240
 plug: scripted
 fleet: stock cli_base lead_spawn roles_4 provider_{{provider_shape}} cadencer
+duration: 8
