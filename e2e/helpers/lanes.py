@@ -23,11 +23,16 @@ def is_serial(meta_value) -> bool:
     return str(meta_value).strip().lower() in ("true", "yes", "1")
 
 
+def muted_line(test: dict) -> str:
+    """How a muted scenario (test.yaml `muted: "#<issue>: <reason>"`) is reported: a SKIP that names the issue."""
+    return f"{test['name']} (muted {test['muted']})"
+
+
 def schedule(tests: list[dict], lanes: int, run_one, on_done=None, failed: dict | None = None) -> dict:
     """Run every test; returns {name: result} in the order of `tests`.
 
     lanes <= 1: one after another in the given order (serial or not): today's loop.
-    lanes > 1: the non-serial tests in a pool of `lanes` workers, then the serial ones, one at a time.
+    lanes > 1: the non-serial tests, longest first, in a pool of `lanes` workers, then the serial ones, one at a time.
     A `run_one` that raises is a FAIL of that test on the pool path (lanes > 1), never a lost one; with
     lanes <= 1 it propagates exactly as the old loop did. A test named in `failed` ({name: reason}) is
     not run: it is a FAIL with that reason printed (its build failed before the pool)."""
@@ -56,7 +61,8 @@ def schedule(tests: list[dict], lanes: int, run_one, on_done=None, failed: dict 
         for t in tests:
             one(t, guarded=False)
     else:
-        pool = [t for t in tests if not t.get("serial")]
+        # longest first (test.yaml's `duration:` hint, seconds; a stable sort keeps the selected order among ties)
+        pool = sorted((t for t in tests if not t.get("serial")), key=lambda t: -t.get("duration", 0))
         alone = [t for t in tests if t.get("serial")]
         with ThreadPoolExecutor(max_workers=lanes) as ex:
             list(ex.map(one, pool))

@@ -449,8 +449,23 @@ def wait_served(ctx, wait_s: float = 120.0, upto: int | None = None) -> bool:
     end = time.time() + wait_s
     while time.time() < end and ctx.model.served < want:
         time.sleep(0.3)
-    time.sleep(2.0)  # the last turn's reply is routed after the last request
+    settle(ctx)
     return ctx.model.served >= want
+
+
+def settle(ctx, quiet: float = 0.8, cap: float = 2.0) -> None:
+    """The last turn's reply is routed after the last request: wait until the model took no new request and
+    the team's log grew no more for `quiet` seconds (at most `cap`, the old fixed wait)."""
+    def mark():
+        team = getattr(ctx, "team", None)
+        return len(ctx.model.raw_bodies), len(team.log()) if team else 0
+
+    end, seen, since = time.time() + cap, mark(), time.time()
+    while time.time() < min(end, since + quiet):
+        time.sleep(0.1)
+        now = mark()
+        if now != seen:
+            seen, since = now, time.time()
 
 
 def history_rows(team, agent: str) -> list[dict]:

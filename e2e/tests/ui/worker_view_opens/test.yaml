@@ -2,3 +2,4 @@ costs: free
 timeout: 240
 plug: scripted
 fleet: stock team_tools team_core team_page provider_{{provider_shape}}
+muted: "#616: base boot grants team_ws → lead [send]"

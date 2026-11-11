@@ -2,3 +2,4 @@ costs: free
 timeout: 420
 plug: scripted
 fleet: stock cli_base lead_tree provider_{{provider_shape}} cadencer
+duration: 18
