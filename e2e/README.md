@@ -17,6 +17,14 @@ python3 e2e/run.py --list
 
 Needs `python3`, `git` (with `git http-backend`) and `openssl` (a throwaway app key is made per run, never committed; without openssl the launcher says so and runs nothing). Exit code is non-zero when any test fails; a test whose plug has no key is printed as `SKIP` and does not fail the run. A workflow (#46) calls `--only-free`; there is no workflow here, CI is manual, and CI never runs the turns or the gpu tier (`--only-free` selects neither).
 
+## Lanes (#325): scenarios in parallel
+
+```
+python3 e2e/run.py --only-free --lanes 8 --bin /ABSOLUTE/path/fantastic_team
+```
+
+`--lanes N` (default 1, today's loop in the selected order) runs N scenarios at a time, each in its own child process with its stdout and stderr in `e2e/runs/<stamp>/_logs/<group>__<id>.log`. The console shows one line per finished scenario, then the usual tally; the exit code is the same (a FAIL is non-zero, a SKIP is not), and the log tails of the failed scenarios are printed at the end, not interleaved. A scenario that touches a global thing declares `serial: true` in its `test.yaml` (with a comment saying why) and runs alone after the pool: `app/window_per_platform` (the one display) and the gpu tier (the one shared vLLM server). Isolation: every kernel, plug, fake forge, web host and tunnel port is a free port chosen at run time; every run folder holds its own HOME, forge, clone and keys; an ssh twin builds the image once before the pool (`podman_remote.image()`, one shared tag), then starts its own container (random name, `-p 127.0.0.1::22` for a free published port).
+
 ## The turns tier, by hand
 
 A turns test sends a real model's calls through the `anthropic` plug (`backends/anthropic.py`). It needs a key in the environment, and the launcher never writes it to disk:
