@@ -1463,9 +1463,9 @@ def selftest_lanes(v: Verdict) -> None:
     L.schedule(long, 1, lambda t: ran.append(t["name"]) or "PASS")
     v.check("--lanes 1 keeps the selected order whatever the durations", ran == [t["name"] for t in long], str(ran))
     ran = []
-    res = L.schedule(long, 2, lambda t: ran.append(t["name"]) or "PASS")
-    v.check("--lanes N starts the longest first (ties in the selected order, unhinted last)",
-            ran[:2] == ["l/e", "l/b"] and list(res) == [t["name"] for t in long], str(ran))
+    res = L.schedule(long, 2, lambda t: ran.append(t["name"]) or time.sleep(0.1) or "PASS")
+    v.check("--lanes N starts the longest first (the two workers take e and b, unhinted last)",
+            set(ran[:2]) == {"l/e", "l/b"} and ran[4] == "l/a" and list(res) == [t["name"] for t in long], str(ran))
     done = []
     L.schedule(tests, 2, lambda t: "PASS", on_done=lambda t, r: done.append(t["name"]))
     v.check("on_done is called once per scenario", sorted(done) == sorted(t["name"] for t in tests))
