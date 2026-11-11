@@ -13,7 +13,7 @@ The store keeps every row whole; `recall {id}` reads one back (its content, and 
 The scripted twins (`cli/single_lead`, `cli_ssh/single_lead`) play it with the lead's own turns: `turns_one` makes a
 thought and a large reply (an exec `run` that prints ~70k characters), `turns_two` recalls both by id. The ids are the
 rows the lead's own history assigned, so the probe reads them between the two messages (`bind_rows`) and the plug
-fills `{{late:row_big}}` / `{{late:row_thought}}` when it serves the recall turns (`ScriptedModel.later`). `check`
+binds them to `{{row_big}}` / `{{row_thought}}` of the recall turns (`ScriptedModel.bind`). `check`
 reads the request bodies the plug recorded. The gpu twins (a real model) assert nothing of this: `report_line` counts,
 from the lead's history, what the model folded and recalled.
 
@@ -54,9 +54,12 @@ def big_call() -> dict:
             "args": {"command": "python3", "args": ["-c", code], "wait_s": 30, "tail": BIG_LINES}}
 
 
-def recall_call(late: str) -> dict:
-    """The lead's `recall {id}` on itself, the id filled when the turn is served."""
-    return {"target": cli.LEAD, "type": "recall", "args": {"id": "{{late:" + late + "}}"}}
+ROW_NAMES = ("row_big", "row_thought")  # the placeholders `bind_rows` binds
+
+
+def recall_call(name: str) -> dict:
+    """The lead's `recall {id}` on itself, the id a placeholder the probe binds once it has read the row."""
+    return {"target": cli.LEAD, "type": "recall", "args": {"id": "{{" + name + "}}"}}
 
 
 def turns_one() -> list[dict]:
@@ -103,7 +106,7 @@ def bind_rows(ctx, v, lead: str = cli.LEAD, label: str = "") -> dict:
     v.check(f"{label}the store holds the large reply as one row over {FOLD_CHARS} characters and the thought as one row",
             len(found["big"]) == 1 and len(found["thought"]) == 1, str(found))
     if len(found["big"]) == 1 and len(found["thought"]) == 1:
-        ctx.model.later(row_big=found["big"][0], row_thought=found["thought"][0])
+        ctx.model.bind(row_big=found["big"][0], row_thought=found["thought"][0])
     return found
 
 

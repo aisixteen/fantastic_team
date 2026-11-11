@@ -19,7 +19,7 @@ def part(ctx, v, label: str, start, upto: int) -> None:
     with T.Box(ctx, "box_" + label.lower()) as box:
         lead, before = start(ctx, v)
         box.publish()
-        box.bind()
+        box.bind(keep=folds.ROW_NAMES)
         at = folds.at_of(ctx.model.script)
         folds.widen(ctx, v, lead)
         v.check(f"{label}: the first message played the work and the large reply, up to its `done`",

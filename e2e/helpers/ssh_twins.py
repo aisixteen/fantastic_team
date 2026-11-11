@@ -883,10 +883,11 @@ class Box:
             vals["forge_port"] = str(self.ctx.forge.port)
         return vals
 
-    def bind(self) -> None:
-        """Fill the script's values, and let the plug's `grant_leg` turns open a minted backend to the leg."""
+    def bind(self, keep: tuple = ()) -> None:
+        """Fill the script's values, and let the plug's `grant_leg` turns open a minted backend to the leg.
+        `keep`: names a later `bind` fills (the folds' row ids)."""
         self.ctx.model.leg_grant = lambda ids: grant_leg(self.ctx.team, ids)
-        self.ctx.model.bind(**self.values())
+        self.ctx.model.bind(keep=keep, **self.values())
 
     def open_backends(self, ids) -> None:
         """The master's end of the leg's grants on backends that exist before the task (the bridge's

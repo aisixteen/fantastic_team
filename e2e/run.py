@@ -1008,20 +1008,24 @@ def selftest_skip(v: Verdict) -> None:
 
 
 def selftest_folds(v: Verdict) -> None:
-    """The fold twins (team #323): the plug's late values, the script's turns, the counts of the gpu report and the
+    """The fold twins (team #323): the row ids bound mid-run, the script's turns, the counts of the gpu report and the
     checker itself on request bodies built the way the base folds (a body whole, then an anchor)."""
-    m = scripted.ScriptedModel([{"calls": [{"target": "lead", "type": "recall", "args": {"id": "{{late:row_big}}"}}]}])
-    v.check("a {{late:NAME}} placeholder is no open placeholder: bind accepts it and leaves it for the turn",
-            m.bind().turns[0].count("{{late:row_big}}") == 1, m.turns[0])
-    v.check("later() fills it when the turn is served, and an unset one stays as written",
-            m.fill_late(m.turns[0]).count("{{late:row_big}}") == 1
-            and "<id>41</id>" in m.later(row_big=41).fill_late(m.turns[0]), m.fill_late(m.turns[0]))
+    m = scripted.ScriptedModel([{"calls": [folds.recall_call("row_big")]}])
+    try:
+        m.bind()
+        refused = False
+    except ValueError:
+        refused = True
+    v.check("a recall turn's row id is an open placeholder: bind refuses it, and keep= lets a first bind leave it for the next",
+            refused and m.bind(keep=folds.ROW_NAMES).turns[0].count("{{row_big}}") == 1, m.turns[0])
+    v.check("the second bind renders the id into the turn: bind_rows' values reach the recall call",
+            "<id>41</id>" in m.bind(row_big=41).turns[0], m.turns[0])
     one, two = folds.turns_one(), folds.turns_two()
     script = [{"calls": []}] * 5 + one + two
     v.check("the fold turns: the thought comes with the large call, at_of finds it, message 1 ends with done, message 2 recalls twice",
             folds.at_of(script) == 5 and "thinking" in one[0] and one[-1]["calls"] == [{"name": "done"}]
             and [t["calls"][0]["type"] for t in two[:2]] == ["recall", "recall"]
-            and "{{late:row_big}}" in json.dumps(two[0]) and "{{late:row_thought}}" in json.dumps(two[1]), str(one)[:200])
+            and "{{row_big}}" in json.dumps(two[0]) and "{{row_thought}}" in json.dumps(two[1]), str(one)[:200])
     big = folds.big_call()["args"]
     printed = "".join("BIG%04d " % i + "x" * folds.BIG_PAD + "\n" for i in range(folds.BIG_LINES))
     markup = "".join(f"<item>\n<n>{i + 1}</n>\n<stream>stdout</stream>\n<line>{l}</line>\n</item>\n"
@@ -1568,7 +1572,7 @@ def selftest_ssh_twins(v: Verdict) -> None:
     for n in CLI_SCENARIOS:
         m = scripted.ScriptedModel(T.SCRIPTS[n]())
         try:
-            m.bind(**values)
+            m.bind(keep=folds.ROW_NAMES, **values)
         except ValueError as e:
             left.append(f"{n}: {e}")
     v.check("every placeholder of the five scripts is one the box binds", not left, str(left))

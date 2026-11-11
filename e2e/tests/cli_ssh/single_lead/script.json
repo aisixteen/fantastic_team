@@ -370,7 +370,7 @@
     "target": "lead",
     "type": "recall",
     "args": {
-     "id": "{{late:row_big}}"
+     "id": "{{row_big}}"
     }
    }
   ]
@@ -381,7 +381,7 @@
     "target": "lead",
     "type": "recall",
     "args": {
-     "id": "{{late:row_thought}}"
+     "id": "{{row_thought}}"
     }
    }
   ]
@@ -862,7 +862,7 @@
     "target": "lead",
     "type": "recall",
     "args": {
-     "id": "{{late:row_big}}"
+     "id": "{{row_big}}"
     }
    }
   ]
@@ -873,7 +873,7 @@
     "target": "lead",
     "type": "recall",
     "args": {
-     "id": "{{late:row_thought}}"
+     "id": "{{row_thought}}"
     }
    }
   ]

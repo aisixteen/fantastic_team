@@ -280,7 +280,7 @@ def report(ctx, watch: Lead | None = None) -> None:
     if watch:
         try:
             watch.refresh()  # the folds are counted from the whole history, as it stands now
-        except subprocess.TimeoutExpired:
+        except Exception:  # the report must never fail
             pass
     if watch and watch.rows:
         print("  report: " + folds.report_line(watch.rows, sum(n for k, n in calls.items() if k.endswith(" recall"))))
