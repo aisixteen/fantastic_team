@@ -184,7 +184,7 @@ The older groups (`task`, `secrets`, `dispatcher`, `roles`, `ui`, `app`, `turns`
 - `fleets/`: the shared layers of record files a test's fleet is made of (relative to `.fantastic/`: `agents/<id>/agent.yaml`).
 - `tests/<group>/<id>/`: `README.md`, `test.yaml` (`costs`, `timeout`, `plug`, `fleet`: the layers it names), `script.json` (the scripted plug's turns; none for a turns test), `probe.py` (`run(ctx)` returns the exit code), and the optional `fleet/` folder (the test's own last layer).
 - `ui/sidebar_opens_agent_full_screen` (free): the page's socket `/team_ws/ws` end to end (sidebar lists, `open`, a message reaching one agent alone), no page DOM.
-- `ui/layout_two_columns` (free): the page in headless Chromium at 1440x900 (two cells side by side) and 390x844 (stacked, no sideways scroll); needs Playwright: `python3 -m pip install --user playwright==1.55.0 && python3 -m playwright install --with-deps chromium`.
+- `ui/layout_two_columns` (free): the page in headless Chromium at 1440x900 (two cells side by side) and 390x844 (stacked, no sideways scroll); needs Playwright: `python3 -m pip install --user playwright==1.55.0`.
 - `tests/ui/`: the web UI (the team page on a web host, its websocket via `helpers/web.py`).
 - `runs/`: one folder per run, gitignored (it holds model output).
 
