@@ -26,7 +26,7 @@ def run(ctx):
         from playwright.sync_api import sync_playwright
     except ImportError:
         v.check("Playwright is installed (python3 -m pip install --user playwright==1.55.0 && "
-                "python3 -m playwright install --with-deps chromium)", False, "import playwright failed")
+                "Google Chrome installed)", False, "import playwright failed")
         return v.finish()
 
     port = app.free_port()
@@ -37,7 +37,7 @@ def run(ctx):
     errors = []
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(channel="chrome")
             try:
                 page = browser.new_page(viewport={"width": 1440, "height": 900})
                 page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
