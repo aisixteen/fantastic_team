@@ -7,3 +7,5 @@ One lead (the only backend, on the master), its workspace split: locally it fixe
 Checks: The local checks of `cli/single_lead` for each part; the remote runs' replies came back through the bridge with exit 0; the box holds no backend.
 
 The wiring, the shared checks (`Box.end`) and what the twin needs (Podman, else `SKIP`; builds the Linux binary once per source tree) are the twins' in `e2e/README.md` ("The weak wiring", "The twins"). The scripted plug's `script.json` is written by `python3 -m helpers.ssh_twins --write` in `e2e/`; the fake forge, no network.
+
+Folds (team #323): as in `cli/single_lead`, locally, after the remote work: a thought and a large reply (message 1, up to a `done`), the two recalled by id (message 2, then the close). Checks: `helpers/folds.py` on the request bodies.

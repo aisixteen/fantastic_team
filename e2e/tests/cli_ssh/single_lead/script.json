@@ -323,6 +323,86 @@
   ]
  },
  {
+  "thinking": "THOUGHT-MARK-7f3a91: before the large print I weigh what I need from it. The output is long, so I will read it once and keep only what the task needs; if I want a line of it again I can ask for the row by its id. Nothing in this reasoning goes back to the model whole after this turn, only an anchor that names it.",
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "-c",
+      "for i in range(400): print('BIG%04d ' % i + 'x' * 104)"
+     ],
+     "wait_s": 30,
+     "tail": 400
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "log",
+      "-1",
+      "--format=%s"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "lead",
+    "type": "recall",
+    "args": {
+     "id": "{{late:row_big}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "lead",
+    "type": "recall",
+    "args": {
+     "id": "{{late:row_thought}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "status",
+      "--porcelain"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
   "calls": [
    {
     "target": "kernel",
@@ -730,6 +810,86 @@
       }
      },
      "forward_timeout": 120
+    }
+   }
+  ]
+ },
+ {
+  "thinking": "THOUGHT-MARK-7f3a91: before the large print I weigh what I need from it. The output is long, so I will read it once and keep only what the task needs; if I want a line of it again I can ask for the row by its id. Nothing in this reasoning goes back to the model whole after this turn, only an anchor that names it.",
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "python3",
+     "args": [
+      "-c",
+      "for i in range(400): print('BIG%04d ' % i + 'x' * 104)"
+     ],
+     "wait_s": 30,
+     "tail": 400
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "log",
+      "-1",
+      "--format=%s"
+     ],
+     "wait_s": 30
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "lead",
+    "type": "recall",
+    "args": {
+     "id": "{{late:row_big}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "lead",
+    "type": "recall",
+    "args": {
+     "id": "{{late:row_thought}}"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "worker_exec",
+    "type": "run",
+    "args": {
+     "command": "git",
+     "args": [
+      "status",
+      "--porcelain"
+     ],
+     "wait_s": 30
     }
    }
   ]

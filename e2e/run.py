@@ -50,6 +50,7 @@ from helpers import forge as forge_mod  # noqa: E402
 from helpers import app as app_mod  # noqa: E402
 from helpers import cli as cli_mod  # noqa: E402
 from helpers import fake_vllm  # noqa: E402
+from helpers import folds  # noqa: E402
 from helpers import podman_remote  # noqa: E402
 from helpers import gpu_ssh  # noqa: E402
 from helpers import ssh_twins  # noqa: E402
@@ -355,6 +356,7 @@ def selftest() -> int:
     selftest_remote_work(v)
     selftest_git_credentials(v)
     selftest_fleet(v)
+    selftest_folds(v)
     return v.finish()
 
 
@@ -1003,6 +1005,97 @@ def selftest_skip(v: Verdict) -> None:
         v.check("a probe that returns 1 is a FAIL", res == "FAIL")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def selftest_folds(v: Verdict) -> None:
+    """The fold twins (team #323): the plug's late values, the script's turns, the counts of the gpu report and the
+    checker itself on request bodies built the way the base folds (a body whole, then an anchor)."""
+    m = scripted.ScriptedModel([{"calls": [{"target": "lead", "type": "recall", "args": {"id": "{{late:row_big}}"}}]}])
+    v.check("a {{late:NAME}} placeholder is no open placeholder: bind accepts it and leaves it for the turn",
+            m.bind().turns[0].count("{{late:row_big}}") == 1, m.turns[0])
+    v.check("later() fills it when the turn is served, and an unset one stays as written",
+            m.fill_late(m.turns[0]).count("{{late:row_big}}") == 1
+            and "<id>41</id>" in m.later(row_big=41).fill_late(m.turns[0]), m.fill_late(m.turns[0]))
+    one, two = folds.turns_one(), folds.turns_two()
+    script = [{"calls": []}] * 5 + one + two
+    v.check("the fold turns: the thought comes with the large call, at_of finds it, message 1 ends with done, message 2 recalls twice",
+            folds.at_of(script) == 5 and "thinking" in one[0] and one[-1]["calls"] == [{"name": "done"}]
+            and [t["calls"][0]["type"] for t in two[:2]] == ["recall", "recall"]
+            and "{{late:row_big}}" in json.dumps(two[0]) and "{{late:row_thought}}" in json.dumps(two[1]), str(one)[:200])
+    big = folds.big_call()["args"]
+    printed = "".join("BIG%04d " % i + "x" * folds.BIG_PAD + "\n" for i in range(folds.BIG_LINES))
+    markup = "".join(f"<item>\n<n>{i + 1}</n>\n<stream>stdout</stream>\n<line>{l}</line>\n</item>\n"
+                     for i, l in enumerate(printed.splitlines()))
+    v.check("the large print is over the fold (64,000 characters of body) and under the inline cap of a 200000 window",
+            folds.FOLD_CHARS < len(markup) < (folds.WINDOW - 1024) // 8 * 4 * 0.9 and big["tail"] == folds.BIG_LINES
+            and folds.BIG_FIRST in printed and folds.BIG_LAST in printed, str(len(markup)))
+    v.check("the thought is a few hundred characters", 300 <= len(folds.THOUGHT) <= 800, str(len(folds.THOUGHT)))
+    rows = [{"id": 1, "role": "user", "head": "[reply to 1 · worker_exec run", "bytes": 70000},
+            {"id": 2, "role": "assistant", "head": "x", "bytes": 3, "has_thinking": True},
+            {"id": 3, "role": "user", "head": "[reply to 2 · lead recall", "bytes": 70100},
+            {"id": 4, "role": "assistant", "head": "y", "bytes": 3},
+            {"id": 5, "role": "user", "head": "[reply to 3 · lead recall", "bytes": 500}]
+    v.check("rows_of finds the large reply and the thought; counts counts large replies, thoughts, recall replies and refolds",
+            folds.rows_of(rows) == {"big": [1, 3], "thought": [2]}
+            and folds.counts(rows, 2) == {"large_replies": 1, "thoughts": 1, "recalls": 2, "recall_replies": 2, "refolds": 1}
+            and "recall replies 2" in folds.report_line(rows, 2), str(folds.counts(rows, 2)))
+
+    # the request bodies, as the base shows them at `at` = 1
+    def reply(n, agent, verb, body):
+        return f"[reply to {n} · {agent} {verb}]\n{body}"
+    A_BIG = '[folded · run reply from worker_exec · ~17600 tokens · head: "<job_id>1</job_id>" · get: 7]'
+    A_TH = "[thought ~97 tokens · id 6]"
+    A_R1 = "[folded · recall reply from lead · id 7 · ~17600 tokens · get: 12]"
+    A_R2 = "[folded · recall reply from lead · id 6 · ~97 tokens · get: 14]"
+    wb = reply(7, "worker_exec", "run", printed)
+    texts = [
+        "task",
+        "the reply of the call before",
+        f"{A_TH}\n<call/>\n{wb}",
+        f"{A_TH}\n<call/>\n{A_BIG}\nlog",
+        f"{A_TH}\n{A_BIG}\nmore",
+        f"{A_TH}\n{A_BIG}\n" + reply(11, "lead", "recall", printed),
+        f"{A_TH}\n{A_BIG}\n{A_R1}\n" + reply(13, "lead", "recall", folds.THOUGHT),
+        f"{A_TH}\n{A_BIG}\n{A_R1}\n{A_R2}\nstatus",
+    ]
+
+    class Team:
+        def send(self, agent, payload, timeout=0):
+            return {"result": {"messages": [{"content": printed, "thinking": folds.THOUGHT}]}}
+
+    def ctx_of(texts):
+        c = type("C", (), {})()
+        c.model = type("M", (), {})()
+        c.model.requests = [{"messages": [{"role": "user", "content": t}]} for t in texts]
+        c.model.request_lanes = ["main"] * len(texts)
+        c.team = Team()
+        return c
+
+    def verdict(texts):
+        r = Verdict("inner")
+        import contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            folds.check(ctx_of(texts), r, "", 1, {"big": [7], "thought": [6]})
+        return r.failed
+
+    v.check("check passes on the requests of the three folds as the base shows them", verdict(texts) == [], str(verdict(texts)))
+    unfolded = list(texts)
+    unfolded[4] = f"{A_TH}\n{wb}\n{A_BIG}"
+    v.check("check fails when the large reply is still whole two requests after its call",
+            bool(verdict(unfolded)), "passed")
+    early = list(texts)
+    early[2] = f"{A_TH}\n{A_BIG}\nlog"
+    v.check("check fails when the large reply is already an anchor in the request that carries it",
+            bool(verdict(early)), "passed")
+    drift = list(texts)
+    drift[7] = drift[7].replace("~97 tokens", "~98 tokens")
+    v.check("check fails when an anchor changes between requests", bool(verdict(drift)), "passed")
+    leaked = list(texts)
+    leaked[3] = leaked[3] + "\n" + folds.THOUGHT
+    v.check("check fails when the thought reaches the model whole before its recall", bool(verdict(leaked)), "passed")
+    kept = list(texts)
+    kept[6] = kept[6].replace(A_R1, reply(12, "lead", "recall", printed))
+    v.check("check fails when a recall reply is not folded one request later", bool(verdict(kept)), "passed")
 
 
 def selftest_scripted_thinking(v: Verdict) -> None:

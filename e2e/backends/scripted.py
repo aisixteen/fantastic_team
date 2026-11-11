@@ -36,6 +36,9 @@ name it. `{{id:N}}` in a turn is the id in the Nth `<id>...</id>` of the request
 reply of a `spawn`, in the order the agent saw them), filled when the turn is served;
 `{{minted:N}}` is the Nth distinct minted id among them (`<handler>_<hex>`), whatever other
 `<id>` tags the body holds (a forwarded `create_agent`'s reply names its id too).
+LATE VALUES. `{{late:NAME}}` in a turn is filled when the turn is SERVED, from `later(NAME=value)`: a
+value that exists only after an earlier turn ran (a row id the lead's own history assigned) and that no
+`bind` can know before the run starts. `bind` does not count it as open; an unset one is left as written.
 Strings may hold `{{name}}` placeholders, filled from `variables`. A name the variables do not
 hold is left as written, for `bind`: a test whose values exist only once it runs (the ssh twins'
 port, key and tunnel, #242) binds them before the team asks the model.
@@ -209,6 +212,7 @@ class ScriptedModel:
         self.overrun = 0
         self.late_turns = 0  # a finished lane's agent woken by the reply to its last send, answered outside the script
         self.agent_lanes: dict[str, str] = {}  # agent id (the system prompt's "You are `id`") -> its lane
+        self.late: dict[str, str] = {}  # `{{late:NAME}}` values, set by `later` while the run goes
         self.leg_grant = self.no_leg_grant  # the test sets it when its script has `grant_leg` turns
         self.lock = threading.Lock()
         outer = self
@@ -275,6 +279,17 @@ class ScriptedModel:
         if left:
             raise ValueError(f"scripted model: placeholders with no value: {left}")
         return self
+
+    def later(self, **values) -> "ScriptedModel":
+        """Set the `{{late:NAME}}` values: read when a turn is served, so call it before the turn that holds one."""
+        with self.lock:
+            self.late.update({k: str(v) for k, v in values.items()})
+        return self
+
+    def fill_late(self, text: str) -> str:
+        with self.lock:
+            late = dict(self.late)
+        return re.sub(r"\{\{late:(\w+)\}\}", lambda m: late.get(m.group(1), m.group(0)), text)
 
     # a team notice, fantastic's await note, and its memory recall row (the kernel's, after a restart)
     NOTICE_HEADS = ("[from cadencer]", "[team] The team of", "Members:", "- `", "[await: nothing to wait for]",
@@ -396,7 +411,7 @@ class ScriptedModel:
         if i >= len(self.turns):
             return None
         self.hold(self.after[i])
-        text = self.resolve_ids(self.turns[i], raw)
+        text = self.fill_late(self.resolve_ids(self.turns[i], raw))
         if self.grants[i]:
             self.leg_grant([self.resolve_ids(g, raw) for g in self.grants[i]])
         if self.delays[i]:
