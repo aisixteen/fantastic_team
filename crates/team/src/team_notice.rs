@@ -314,17 +314,20 @@ mod tests {
             } else {
                 "ram_store.tools"
             };
-            let mut mk = json!({"type": "create_agent", "id": id, "parent_id": parent, "handler_module": handler,
+            let mk = json!({"type": "create_agent", "id": id, "parent_id": parent, "handler_module": handler,
                 "callable_by": {"$self": "*", "$parent": "*"}});
-            if !role.is_empty() {
-                mk["role"] = json!(role);
-            }
             let r = kernel
                 .send(vec![Item::new(DEFAULT_ROOT_ID, mk)])
                 .await
                 .remove(0)
                 .result;
             assert!(r.get("error").is_none(), "{id}: {r}");
+            if !role.is_empty() {
+                // the roles registry stamps `role` on the agents it spawns after the create
+                let mut stamp = serde_json::Map::new();
+                stamp.insert("role".into(), json!(role));
+                kernel.update(&fantastic_kernel::AgentId::from(id), stamp);
+            }
         }
         (dir, kernel)
     }
@@ -418,13 +421,17 @@ mod tests {
     async fn an_agent_with_only_a_provider_id_and_no_chat_is_not_told() {
         let (_dir, k) = tree().await;
         let mk = json!({"type": "create_agent", "id": "p1", "parent_id": "L", "handler_module": "ram_store.tools",
-            "provider_id": "p", "callable_by": {"$self": "*", "$parent": "*"}});
+            "callable_by": {"$self": "*", "$parent": "*"}});
         let r = k
             .send(vec![Item::new(DEFAULT_ROOT_ID, mk)])
             .await
             .remove(0)
             .result;
         assert!(r.get("error").is_none(), "{r}");
+        // a store has no `provider_id` of its own: set it after the create
+        let mut stamp = serde_json::Map::new();
+        stamp.insert("provider_id".into(), json!("p"));
+        k.update(&fantastic_kernel::AgentId::from("p1"), stamp);
         let (to, text) = plan(&k, "L", "changed");
         assert!(!to.contains(&"p1".to_string()), "{to:?}");
         assert!(!text.contains("`p1`"), "{text}");

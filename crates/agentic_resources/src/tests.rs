@@ -15,20 +15,50 @@ static PAUSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new())
 
 struct CallerBundle;
 
+fantastic_kernel::stand_in_verbs!(caller_verbs {
+    SendV "send" { text: Option<String> },
+    HistoryV "history" {},
+    PauseV "pause" {},
+    ResumeV "resume" {},
+    StopV "stop" {},
+    ReadV "read" {},
+    WriteV "write" {},
+});
+
+/// The `Handler` boilerplate of a stand-in: its name, verbs and an open record.
+macro_rules! stand_in {
+    ($ty:ty, $name:literal, $verbs:ident) => {
+        type Call = $verbs::Call;
+        fn name(&self) -> &str {
+            $name
+        }
+        fn man(&self) -> &'static str {
+            "A test stand-in."
+        }
+        fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+            $verbs::VERBS
+        }
+        fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+            $verbs::dynamic_verbs(agent)
+        }
+        fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+            fantastic_kernel::fixture_record!()
+        }
+    };
+}
+
 #[async_trait]
-impl Bundle for CallerBundle {
-    fn name(&self) -> &str {
-        "caller"
-    }
+impl Handler for CallerBundle {
+    stand_in!(CallerBundle, "caller", caller_verbs);
     async fn handle(
         &self,
         agent_id: &AgentId,
-        payload: &Value,
+        call: Self::Call,
         _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
+        let payload = call.payload();
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         match verb {
-            "boot" | "shutdown" => Ok(None),
             "reflect" => Ok(Some(
                 json!({"id": agent_id.as_str(), "sentence": "a caller"}),
             )),
@@ -54,17 +84,25 @@ impl Bundle for CallerBundle {
 /// is refused `cuts_turn`, 98 `no_such_row`.
 struct ForkBundle;
 
+fantastic_kernel::stand_in_verbs!(fork_verbs {
+    SendV "send" { text: Option<String> },
+    HistoryV "history" {},
+    PauseV "pause" {},
+    ResumeV "resume" {},
+    StopV "stop" {},
+    ForkV "fork" { at: i64 },
+});
+
 #[async_trait]
-impl Bundle for ForkBundle {
-    fn name(&self) -> &str {
-        "forkable"
-    }
+impl Handler for ForkBundle {
+    stand_in!(ForkBundle, "forkable", fork_verbs);
     async fn handle(
         &self,
         agent_id: &AgentId,
-        payload: &Value,
+        call: Self::Call,
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
+        let payload = &call.payload();
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         if verb == "send" {
             let text = payload["text"].as_str().unwrap_or("").to_string();
@@ -95,16 +133,22 @@ impl Bundle for ForkBundle {
             meta.remove(k);
         }
         meta.insert("forked_from".into(), json!(agent_id.as_str()));
-        meta.insert("handler_module".into(), json!("forkable.tools"));
-        meta.insert(
-            "parent_id".into(),
-            json!(src.parent_id.as_ref().map_or("kernel", |p| p.as_str())),
-        );
-        meta.insert("type".into(), json!("create_agent"));
         let root = kernel.root().unwrap();
-        let made =
-            fantastic_kernel::lifecycle::create_from_payload(kernel, &root, &Value::Object(meta))
-                .await;
+        let made = fantastic_kernel::lifecycle::create_agent(
+            kernel,
+            &root,
+            fantastic_kernel::declared::kernel::CreateAgent {
+                handler_module: "forkable.tools".to_string(),
+                parent_id: src
+                    .parent_id
+                    .as_ref()
+                    .map_or("kernel", |p| p.as_str())
+                    .to_string(),
+                id: None,
+                fields: meta,
+            },
+        )
+        .await;
         let id = made["id"].clone();
         Ok(Some(json!({"id": id, "copied": 3, "at": at})))
     }
@@ -114,15 +158,15 @@ impl Bundle for ForkBundle {
 /// `refuse_grants` (stands for a bundle whose `validate_meta` says no).
 struct PickyBundle;
 
+fantastic_kernel::stand_in_verbs!(picky_verbs { PingV "ping" {} });
+
 #[async_trait]
-impl Bundle for PickyBundle {
-    fn name(&self) -> &str {
-        "picky"
-    }
+impl Handler for PickyBundle {
+    stand_in!(PickyBundle, "picky", picky_verbs);
     async fn handle(
         &self,
         _agent_id: &AgentId,
-        _payload: &Value,
+        _call: Self::Call,
         _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         Ok(None)
@@ -413,7 +457,7 @@ async fn spawn_creates_child_with_directive_grants_on_the_spawners_backend() {
     );
     assert_eq!(m["spawned_by"], json!(r.reg));
     assert_eq!(m["role"], "writer");
-    assert_eq!(m["name"], "scribe");
+    assert_eq!(m["display_name"], "scribe");
     assert_eq!(m["can_call"]["notes"], json!(["read"]));
     assert_eq!(m["can_call"][&r.reg], json!(["roles"]));
     assert_eq!(
@@ -573,10 +617,8 @@ async fn set_limit_null_clears() {
         let out = r.op(json!({"type": "set_limit", "max": bad})).await;
         assert_eq!(out["reason"], "bad_arg", "{bad}: {out}");
     }
-    assert_eq!(
-        r.op(json!({"type": "set_limit"})).await["reason"],
-        "missing_arg"
-    );
+    // no `max` clears the cap
+    assert_eq!(r.op(json!({"type": "set_limit"})).await["ok"], true);
 }
 
 #[tokio::test]
@@ -1191,10 +1233,6 @@ async fn spawn_from_forks_and_applies_the_role_card() {
         "the default system block stays in force: {m:?}"
     );
     assert_eq!(m["role"], "writer");
-    assert_eq!(
-        m["bundle"], "writer",
-        "the fork names the role bundle it took"
-    );
     assert_eq!(m["spawned_by"], json!(r.reg));
     assert_eq!(m["model"], "m1", "the spawner's model, not the source's");
     assert_eq!(m["lead"], json!(lead));
@@ -1217,7 +1255,7 @@ async fn spawn_from_forks_and_applies_the_role_card() {
             json!({"role": "writer", "from": from(&src, 5), "name": "scribe"}),
         )
         .await;
-    assert_eq!(r.meta(named["id"].as_str().unwrap())["name"], "scribe");
+    assert_eq!(r.meta(named["id"].as_str().unwrap())["display_name"], "scribe");
 }
 
 #[tokio::test]
@@ -1482,13 +1520,13 @@ async fn spawn_from_bad_shape_refused() {
             .spawn_as(lead, json!({"role": "writer", "from": bad_from}))
             .await;
         assert!(
-            out["error"].as_str().unwrap_or("").contains("from"),
+            ["bad_arg", "missing_arg"].contains(&out["reason"].as_str().unwrap_or("")),
             "{bad_from}: {out}"
         );
-        assert!(out["error"]
-            .as_str()
-            .unwrap()
-            .contains("{agent:str, at:int}"));
+        assert!(
+            out["arg"].as_str().unwrap_or("").starts_with("from"),
+            "{bad_from}: {out}"
+        );
     }
     assert!(forks_of(&r, &src).is_empty());
     // without `from` a spawn is unchanged
@@ -1536,9 +1574,11 @@ fn reach(r: &Rig, holders: &[String]) {
 /// What `lead` may do on `child`, through the kernel's gate.
 async fn reaches(r: &Rig, lead: &str, child: &str) {
     for verb in ["send", "history", "pause", "resume", "stop"] {
-        let out = r
-            .call(lead, child, json!({"type": verb, "text": "hi"}))
-            .await;
+        let mut call = json!({"type": verb});
+        if verb == "send" {
+            call["text"] = json!("hi");
+        }
+        let out = r.call(lead, child, call).await;
         assert!(
             out.get("error").is_none() && out.get("reason").is_none(),
             "{lead} {verb} on {child}: {out}"

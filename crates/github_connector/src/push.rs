@@ -13,7 +13,7 @@ use crate::app;
 use crate::{bad, valid_repo, Cfg};
 
 /// Push `branch` from the worktree `path` of the record's git agent to `repo`.
-pub(crate) async fn push(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, payload: &Value) -> Value {
+pub(crate) async fn push(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &crate::verbs::Push) -> Value {
     let Some(git_id) = cfg.git.clone() else {
         return bad(
             "team_github push: no `git` on the record — name a git connector agent".into(),
@@ -38,7 +38,15 @@ pub(crate) async fn push(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, payload:
         Ok(c) => c,
         Err(e) => return e,
     };
-    let (branch, path) = match git::check_push(&gcfg, payload).await {
+    let (branch, path) = match git::check_push(
+        &gcfg,
+        &team_git_connector::verbs::Push {
+            path: a.path.clone(),
+            branch: a.branch.clone(),
+            force: a.force,
+        },
+    )
+    .await {
         Ok(v) => v,
         Err(e) => return e,
     };

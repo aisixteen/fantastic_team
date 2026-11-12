@@ -12,10 +12,13 @@ fantastic-kernel.workspace = true
 fantastic-ai-core.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
+serde.workspace = true
+schemars.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+fantastic-kernel = { workspace = true, features = ["test-support"] }
 fantastic-core.workspace = true
-fantastic-ram-store.workspace = true
+fantastic-ram-store = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros"] }

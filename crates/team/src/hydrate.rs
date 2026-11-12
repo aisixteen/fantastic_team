@@ -28,6 +28,10 @@ pub const BLUEPRINT: &str = include_str!("../blueprint.yaml");
 /// every machine (an absolute path), so the first run fills it in.
 const WORK_PLACEHOLDER: &str = "@work";
 
+/// The page's `read_stream` as its record declares it: one source in code
+/// ([`crate::page::read_stream_declared`]), filled where the blueprint says so.
+const READ_STREAM_PLACEHOLDER: &str = "@read_stream";
+
 /// The blueprint with the first run's placeholders of `dir` filled in. `@root` stays: the
 /// seed writer resolves it.
 fn filled(text: &str, dir: &Path) -> Result<Value, String> {
@@ -42,6 +46,9 @@ fn fill(v: &mut Value, dir: &Path) {
             *s = crate::worker_exec::work_dir(dir)
                 .to_string_lossy()
                 .into_owned();
+        }
+        Value::String(s) if s == READ_STREAM_PLACEHOLDER => {
+            *v = crate::page::read_stream_declared()["read_stream"].clone();
         }
         Value::Array(a) => a.iter_mut().for_each(|x| fill(x, dir)),
         Value::Object(o) => {
@@ -66,13 +73,18 @@ pub fn blueprint_text(dir: &Path) -> Result<String, String> {
     serde_yaml::to_string(&doc).map_err(|e| format!("blueprint: {e}"))
 }
 
-/// FIRST RUN: write the team's agents into a fresh `dir` after fantastic's stock tree
-/// (`fantastic_tui::seed_dir_with`). Returns whether it wrote: `.fantastic` already there
-/// means nothing is written.
-pub fn seed(dir: &Path) -> Result<bool, String> {
+/// FIRST RUN: write the team's agents into the state folder `state` after fantastic's stock
+/// tree (`fantastic_tui::seed_dir_with`); `work` is the team folder the blueprint's work dir
+/// is in. Returns whether it wrote: a state folder already there means nothing is written.
+pub fn seed_at(state: &Path, work: &Path) -> Result<bool, String> {
     // the stock roles are the kernel's own (embedded, `crate::roles::register`): nothing
     // of them is written here
-    fantastic_tui::seed_dir_with(dir, &[&blueprint_text(dir)?])
+    fantastic_tui::seed_dir_with(state, &[&blueprint_text(work)?])
+}
+
+/// [`seed_at`] for a team folder `dir`: its state folder is `dir/.fantastic`.
+pub fn seed(dir: &Path) -> Result<bool, String> {
+    seed_at(&dir.join(".fantastic"), dir)
 }
 
 #[cfg(test)]
@@ -161,16 +173,16 @@ mod tests {
         assert!(!blueprint_text(dir).unwrap().contains(WORK_PLACEHOLDER));
     }
 
-    /// The page's verb doc has one source in code (`page::READ_STREAM_DOC`) and is written
-    /// in the blueprint as it is: the yaml needs no fill for it.
+    /// The page's declared `read_stream` has one source in code
+    /// (`page::read_stream_declared`); the blueprint names it with a placeholder.
     #[test]
-    fn the_blueprints_page_verb_doc_is_the_pages_own() {
+    fn the_blueprints_page_verb_is_the_pages_own() {
         let doc = declared(Path::new("/team"));
         assert_eq!(
-            rec_in(&doc, PAGE_ID)["verbs"]["read_stream"],
-            crate::page::READ_STREAM_DOC
+            rec_in(&doc, PAGE_ID)["verbs"],
+            crate::page::read_stream_declared()
         );
-        assert!(!BLUEPRINT.contains("@read_stream"));
+        assert!(BLUEPRINT.contains("@read_stream"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

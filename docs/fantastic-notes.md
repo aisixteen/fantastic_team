@@ -196,3 +196,15 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 - `reflect` takes `handler_modules`, a list of handler names: `tree` keeps only the agents whose stored handler, or the base their role resolves to, is listed (#605). The team does not send it yet.
 - Base no longer has `fantastic_ai_core::is_ai`, `is_ai_handler` or `ai_check`; `Host::ai_agents` is async; `port_kind` has a new signature. The team called none of them.
 - An agent of a role counts by its role's base for base's reach and rows (#607), so the team's lead and workers, which are agents of roles, hold base's reach as before.
+
+## Pin at `cd28b38`
+
+`Cargo.lock` now pins fantastic `cd28b38` (#642). Every team bundle moves to the base's one entry.
+
+- A bundle implements `Handler`: `verbs!` declares each verb as a struct, `record!` the fields of its record, `handle` answers a typed `Call`. The kernel runs the generated entry first, so a call with a missing, unknown or wrongly typed argument is refused as the agent's own reply (`missing_arg`, `bad_arg`, `unhandled`) and the handler never sees a payload. There is no coercion, no readme, no `verb_docs` and no `record_schema`: `docs` and `reflect` render the declarations, and a bundle has one short man text.
+- A record is checked by its bundle at `create_agent` and `update_agent`: a field the record does not declare is refused. The roles registry stamps `spawned_by`, `role`, `limits` and `lead` on the agents it spawns after they are made (`Kernel::update`), since their bundle (an AI chat) does not declare them.
+- `boot` and `shutdown` are verbs only of the bundles that handle them; the kernel sends them only to an agent that declares them.
+- `create_agent` takes `handler_module` only (a bare name or a role bundle); the `bundle` alias is gone, and `lifecycle::create_agent` takes the typed `CreateAgent`.
+- The team page declares `read_stream` on its record (`verbs`) as `read_stream_declared()`; the blueprint names it with the placeholder `@read_stream`.
+- `boot_kernel` and the seeding take the state folder (`<folder>/.fantastic`) and the work folder apart; there is no `readme` word (a bare run with no terminal prints the readme).
+- Dev-dependencies that use base's fixtures turn on `test-support` (`fantastic-kernel`, `fantastic-ram-store`, `fantastic-credential-store`); a stand-in bundle declares its verbs with `stand_in_verbs!`.

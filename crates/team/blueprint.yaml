@@ -171,7 +171,7 @@ agents:
   - id: team_page
     handler_module: team_page.tools
     verbs:
-      read_stream: 'args: path:str (req), offset:int?, length:int?. The team page (index.html, page.css, shim.js, page.js, card.js, icon.svg) as a BINARY reply: the bytes as the body, {path, offset, next_offset, eof, size} as the head.'
+      read_stream: '@read_stream'
     callable_by:
       $self: '*'
       web:

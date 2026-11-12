@@ -17,23 +17,25 @@ mod tests;
 mod tests_secrets;
 
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
+use async_trait::async_trait;
 use fantastic_ai_core::helpers::agent_meta;
-use fantastic_ai_core::schema::{self, credentials_field, Field};
-use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
-use fantastic_kernel::refusal::{missing, refusal, with, BAD_ARG, UNHANDLED};
+use fantastic_kernel::bundle::{BundleError, Handler, Reply};
+use fantastic_kernel::refusal::{refusal, with, BAD_ARG};
 use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Map, Value};
+
+pub mod record;
+pub mod verbs;
 
 /// The handler module name this bundle registers under.
 pub const HANDLER_MODULE: &str = "team_git.tools";
 /// The bundle name.
 const NAME: &str = "team_git";
-/// The readme shown by `reflect` and the kernel.
-pub const README: &str = include_str!("readme.md");
-/// One-line sentence of what the agent is.
-pub const SENTENCE: &str = "git connector — worktrees, commits and pushes of work branches to one remote; never the default branch, never a force.";
+/// What the bundle is for: its one short man text; how to call it is rendered from its
+/// declared verbs (`docs`, `reflect`).
+pub const MAN: &str = "git connector — worktrees, commits and pushes of work branches to one remote; never the default branch, never a force. One agent is one local clone and one remote (SSH, HTTPS or a local path); an HTTPS token is read from the credential store at each fetch and push and never leaves the agent.";
 
 /// Refusal text: the record's remote carries a user or password.
 pub(crate) const URL_CREDS: &str = "team_git: the remote URL carries a user or password — remove it and name a credential store ref in credentials instead";
@@ -41,25 +43,6 @@ pub(crate) const URL_CREDS: &str = "team_git: the remote URL carries a user or p
 /// The git connector bundle.
 #[derive(Default)]
 pub struct GitConnectorBundle;
-
-/// The record schema of a `team_git` agent, as the catalog publishes it.
-pub(crate) fn record_schema() -> &'static Value {
-    static S: OnceLock<Value> = OnceLock::new();
-    S.get_or_init(|| {
-        json!({"fields": [
-            Field::new("repo_dir", "str", "absolute path of the local clone every worktree is made from").required().json(),
-            Field::new("workspace_root", "str", "absolute directory every worktree path must be inside; absent = <the default folder>/<agent id>, made at the first worktree_add (the default folder is the system temp folder's fantastic_team/worktrees). Set or change it (update_agent) only after the user agrees to that folder: ask first").json(),
-            Field::new("remote", "str", "a remote name in repo_dir (origin) or a URL (https://…, ssh://…, git@host:org/repo.git)").required().json(),
-            Field::new("default_branch", "str", "the remote's default branch — push refuses it (and main, master)").required().json(),
-            credentials_field(false).json(),
-            Field::new("username", "str", "the HTTPS user name sent with the token (GitHub: x-access-token, GitLab: oauth2)").default(json!("x-access-token")).json(),
-            Field::new("author_name", "str", "commit author and sign-off name (with author_email)").json(),
-            Field::new("author_email", "str", "commit author and sign-off email (with author_name)").json(),
-            Field::new("ssh_command", "str", "GIT_SSH_COMMAND for SSH remotes").default(json!("ssh -o BatchMode=yes")).json(),
-            Field::new("timeout_s", "int", "seconds one git command may run").default(json!(300)).json(),
-        ]})
-    })
-}
 
 /// The config of the agent, read from its meta at every call.
 pub struct Cfg {
@@ -85,34 +68,35 @@ pub struct Cfg {
     pub has_credentials: bool,
 }
 
-/// The string at `key` of a merged meta, as it is (an empty one too).
-pub fn text_of(meta: &Value, key: &str) -> Option<String> {
-    meta.get(key).and_then(|v| v.as_str()).map(str::to_string)
+/// The text of record field `key`, as the declaration reads it (the record's own value, else the declared default).
+fn field_text(meta: &Map<String, Value>, key: &str) -> Option<String> {
+    record::RECORD
+        .get(meta, key)
+        .and_then(|v| v.as_str().map(str::to_string))
 }
 
 impl GitConnectorBundle {
-    /// Read the config of agent `id` from its merged meta.
-    pub(crate) fn cfg(id: &str, meta: &Value) -> Cfg {
-        let root = text_of(meta, "workspace_root").filter(|r| !r.is_empty());
+    /// Read the config of agent `id` from its record.
+    pub(crate) fn cfg(id: &str, meta: &Map<String, Value>) -> Cfg {
+        let root = field_text(meta, "workspace_root").filter(|r| !r.is_empty());
         Cfg {
-            repo_dir: PathBuf::from(text_of(meta, "repo_dir").unwrap_or_default()),
+            repo_dir: PathBuf::from(field_text(meta, "repo_dir").unwrap_or_default()),
             default_root: root.is_none(),
             workspace_root: root
                 .map(PathBuf::from)
                 .unwrap_or_else(|| default_workspace_root(id)),
-            remote: text_of(meta, "remote").unwrap_or_default(),
-            default_branch: text_of(meta, "default_branch").unwrap_or_default(),
-            username: text_of(meta, "username").unwrap_or_else(|| "x-access-token".into()),
-            author: match (text_of(meta, "author_name"), text_of(meta, "author_email")) {
+            remote: field_text(meta, "remote").unwrap_or_default(),
+            default_branch: field_text(meta, "default_branch").unwrap_or_default(),
+            username: field_text(meta, "username").unwrap_or_default(),
+            author: match (field_text(meta, "author_name"), field_text(meta, "author_email")) {
                 (Some(n), Some(e)) => Some((n, e)),
                 _ => None,
             },
-            ssh_command: text_of(meta, "ssh_command")
-                .unwrap_or_else(|| "ssh -o BatchMode=yes".into()),
-            timeout_s: meta
-                .get("timeout_s")
+            ssh_command: field_text(meta, "ssh_command").unwrap_or_default(),
+            timeout_s: record::RECORD
+                .get(meta, "timeout_s")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(300),
+                .unwrap_or_default(),
             has_credentials: meta
                 .get("credentials")
                 .map(|c| !c.is_null())
@@ -137,7 +121,7 @@ pub fn cfg_of(kernel: &Kernel, id: &AgentId) -> Result<Cfg, Value> {
         .get(id)
         .ok_or_else(|| json!({"error": format!("team_git: no agent `{id}`")}))?;
     let meta = entry.meta.read().expect("meta").clone();
-    Ok(GitConnectorBundle::cfg(id.as_str(), &Value::Object(meta)))
+    Ok(GitConnectorBundle::cfg(id.as_str(), &meta))
 }
 
 /// A refusal reply: `error` text plus the arg that caused it.
@@ -147,96 +131,71 @@ pub(crate) fn bad(text: String, arg: &str, value: Value) -> Value {
     r
 }
 
-/// A missing-argument refusal for `verb` and `arg`.
-pub(crate) fn missing_arg(verb: &str, arg: &str) -> Value {
-    missing(verb, arg)
-}
+#[async_trait]
+impl Handler for GitConnectorBundle {
+    type Call = verbs::Call;
 
-#[async_trait::async_trait]
-impl Bundle for GitConnectorBundle {
     fn name(&self) -> &str {
         NAME
     }
 
-    fn readme(&self) -> Option<&'static str> {
-        Some(README)
+    fn man(&self) -> &'static str {
+        MAN
     }
 
-    fn verb_docs(&self) -> Value {
-        json!({
-            "reflect": "reflect → {id, sentence, repo_dir, workspace_root, remote, default_branch, credentials}",
-            "boot": "boot → nothing",
-            "worktree_add": "worktree_add {path, branch, base} → {path, branch, base, created}. `path` is inside workspace_root (reflect names it; a relative path is joined to it). To use another folder, change workspace_root with update_agent on this record, and only after the user agrees to the new folder: ask first.",
-            "worktree_remove": "worktree_remove {path} → {path, removed}",
-            "commit": "commit {path, message, trailers?} → {path, commit, committed}",
-            "push": "push {path, branch} → {path, branch, remote, pushed}",
-            "fetch": "fetch {} → {remote, fetched}",
-            "diff_stat": "diff_stat {path, base?} → {path, against, stat}",
-            "status": "status {path} → {path, branch, clean, entries}",
-        })
+    fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+        verbs::VERBS
     }
 
-    fn record_schema(&self) -> Option<Value> {
-        Some(record_schema().clone())
+    fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+        verbs::dynamic_verbs(agent)
     }
 
+    fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+        &record::RECORD
+    }
+
+    /// What the record's declaration cannot say: the paths are absolute, the remote
+    /// carries no user or password, and the author is both name and email or neither.
     fn validate_meta(
         &self,
         meta: &Map<String, Value>,
         record: &Map<String, Value>,
     ) -> Option<String> {
-        let meta_v = Value::Object(meta.clone());
-        let record_v = Value::Object(record.clone());
         for key in ["repo_dir", "workspace_root"] {
-            if let Some(v) = meta.get(key).filter(|v| !v.is_null()) {
-                let ok = v
-                    .as_str()
-                    .map(|s| std::path::Path::new(s).is_absolute())
-                    .unwrap_or(false);
-                if !ok {
+            if let Some(s) = meta.get(key).and_then(|v| v.as_str()) {
+                if !std::path::Path::new(s).is_absolute() {
                     return Some(format!("team_git: `{key}` must be an absolute path"));
                 }
             }
         }
-        if let Some(v) = meta.get("remote").filter(|v| !v.is_null()) {
-            match v.as_str() {
-                Some(s) if !s.is_empty() && !s.starts_with('-') => {
-                    let lower = s.to_ascii_lowercase();
-                    if lower.starts_with("http://") || lower.starts_with("https://") {
-                        let rest = &s[s.find("//").unwrap() + 2..];
-                        let authority = rest.split('/').next().unwrap_or("");
-                        if authority.contains('@') {
-                            return Some(URL_CREDS.to_string());
-                        }
-                    }
+        if let Some(s) = meta.get("remote").and_then(|v| v.as_str()) {
+            if s.is_empty() || s.starts_with('-') {
+                return Some("team_git: `remote` must be a remote name or a URL".into());
+            }
+            let lower = s.to_ascii_lowercase();
+            if lower.starts_with("http://") || lower.starts_with("https://") {
+                let rest = &s[s.find("//").unwrap() + 2..];
+                let authority = rest.split('/').next().unwrap_or("");
+                if authority.contains('@') {
+                    return Some(URL_CREDS.to_string());
                 }
-                _ => return Some("team_git: `remote` must be a remote name or a URL".into()),
             }
         }
-        if let Some(v) = meta.get("default_branch").filter(|v| !v.is_null()) {
-            match v.as_str() {
-                Some(s) if !s.is_empty() && !s.starts_with('-') => {}
-                _ => return Some("team_git: `default_branch` must be a branch name".into()),
+        if let Some(s) = meta.get("default_branch").and_then(|v| v.as_str()) {
+            if s.is_empty() || s.starts_with('-') {
+                return Some("team_git: `default_branch` must be a branch name".into());
             }
         }
         for key in ["username", "ssh_command"] {
-            if let Some(v) = meta.get(key).filter(|v| !v.is_null()) {
-                match v.as_str() {
-                    Some(s) if !s.is_empty() => {}
-                    _ => return Some(format!("team_git: `{key}` must be a non-empty string")),
-                }
+            if meta.get(key).and_then(|v| v.as_str()) == Some("") {
+                return Some(format!("team_git: `{key}` must be a non-empty string"));
             }
         }
-        if let Some(v) = meta.get("timeout_s").filter(|v| !v.is_null()) {
-            let ok = !v.is_boolean() && v.as_u64().map(|n| n > 0).unwrap_or(false);
-            if !ok {
-                return Some("team_git: `timeout_s` must be a positive int".into());
-            }
-        }
-        // Checked on the MERGED record: record plus meta.
+        // Checked on the merged record: the record plus the write.
         let set = |k: &str| {
-            meta_v.get(k).filter(|v| !v.is_null()).is_some()
-                || record_v.get(k).filter(|v| !v.is_null()).is_some()
+            meta.get(k).filter(|v| !v.is_null()).is_some()
+                || record.get(k).filter(|v| !v.is_null()).is_some()
         };
         if set("author_name") != set("author_email") {
             return Some(
@@ -244,55 +203,47 @@ impl Bundle for GitConnectorBundle {
                     .into(),
             );
         }
-        schema::validate(record_schema(), NAME, meta, record)
+        None
     }
 
     async fn handle(
         &self,
         agent_id: &AgentId,
-        payload: &Value,
+        call: Self::Call,
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
-        let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let meta = agent_meta(agent_id, kernel);
-        let cfg = Self::cfg(agent_id.as_str(), &Value::Object(meta));
-        let out: Value = match t {
-            "reflect" => json!({
+        let cfg = Self::cfg(agent_id.as_str(), &agent_meta(agent_id, kernel));
+        let out: Value = match call {
+            verbs::Call::Reflect(_) => json!({
                 "id": agent_id.to_string(),
-                "sentence": SENTENCE,
+                "sentence": MAN,
                 "repo_dir": cfg.repo_dir,
                 "workspace_root": cfg.workspace_root,
                 "remote": cfg.remote,
                 "default_branch": cfg.default_branch,
                 "credentials": cfg.has_credentials,
             }),
-            "boot" => return Ok(None),
-            "worktree_add" => match git::worktree_add(&cfg, payload).await {
+            verbs::Call::WorktreeAdd(a) => match git::worktree_add(&cfg, &a).await {
                 Ok(v) | Err(v) => v,
             },
-            "worktree_remove" => match git::worktree_remove(&cfg, payload).await {
+            verbs::Call::WorktreeRemove(a) => match git::worktree_remove(&cfg, &a).await {
                 Ok(v) | Err(v) => v,
             },
-            "commit" => match git::commit(&cfg, payload).await {
+            verbs::Call::Commit(a) => match git::commit(&cfg, &a).await {
                 Ok(v) | Err(v) => v,
             },
-            "push" => match git::push(&cfg, payload, agent_id, kernel).await {
+            verbs::Call::Push(a) => match git::push(&cfg, &a, agent_id, kernel).await {
                 Ok(v) | Err(v) => v,
             },
-            "fetch" => match git::fetch(&cfg, agent_id, kernel).await {
+            verbs::Call::Fetch(_) => match git::fetch(&cfg, agent_id, kernel).await {
                 Ok(v) | Err(v) => v,
             },
-            "diff_stat" => match git::diff_stat(&cfg, payload).await {
+            verbs::Call::DiffStat(a) => match git::diff_stat(&cfg, &a).await {
                 Ok(v) | Err(v) => v,
             },
-            "status" => match git::status(&cfg, payload).await {
+            verbs::Call::Status(a) => match git::status(&cfg, &a).await {
                 Ok(v) | Err(v) => v,
             },
-            other => {
-                let mut r = refusal(UNHANDLED, format!("team_git: unknown type '{other}'"));
-                with(&mut r, "verb", json!(other));
-                r
-            }
         };
         Ok(Some(out))
     }

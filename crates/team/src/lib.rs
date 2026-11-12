@@ -3,6 +3,27 @@
 //! line is fantastic's.
 #![deny(missing_docs)]
 
+/// The `Handler` boilerplate of a test stand-in whose verbs `stand_in_verbs!` declared:
+/// its `Call`, man text, verbs and an open record. Its `name` is the stand-in's own.
+#[cfg(test)]
+macro_rules! stand_in_body {
+    ($verbs:ident) => {
+        type Call = $verbs::Call;
+        fn man(&self) -> &'static str {
+            "A test stand-in."
+        }
+        fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+            $verbs::VERBS
+        }
+        fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+            $verbs::dynamic_verbs(agent)
+        }
+        fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+            fantastic_kernel::fixture_record!()
+        }
+    };
+}
+
 pub mod agent_views;
 pub mod app_control;
 pub mod board;

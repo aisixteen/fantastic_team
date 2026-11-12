@@ -11,6 +11,12 @@ pub const LABEL: &str = "team-ready";
 pub const SPEC_MARKER: &str = "## SPEC";
 /// The bundle's handler module name.
 pub const HANDLER_MODULE: &str = "team_puller.tools";
+/// What the bundle is for: its one short man text; how to call it is rendered from its
+/// declared verbs (`docs`, `reflect`).
+const MAN: &str = "The puller: issues the maintainer accepted (the `team-ready` label, a `## SPEC` comment) become task files in the queue, one pass per `pull`.";
+
+pub mod record;
+pub mod verbs;
 
 /// One issue comment, as the github connector returns it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,27 +175,26 @@ pub(crate) fn record_and_repos(
 fn cfg_of(
     kernel: &Arc<fantastic_kernel::Kernel>,
     id: &fantastic_kernel::AgentId,
-) -> Result<PullerCfg, String> {
+) -> PullerCfg {
     let (meta, repos) = record_and_repos(kernel, id);
     let s = |k: &str| {
-        meta.get(k)
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| format!("team_puller: record needs `{k}`"))
+        record::RECORD
+            .get(&meta, k)
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
     };
-    Ok(PullerCfg {
+    PullerCfg {
         repos,
-        maintainer: s("maintainer")?,
-        app: s("app")?,
-        github: s("github")?,
-        store: s("store")?,
+        maintainer: s("maintainer"),
+        app: s("app"),
+        github: s("github"),
+        store: s("store"),
         repo_config: meta
             .get("repo_config")
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default(),
-    })
+    }
 }
 
 fn events_of(v: &serde_json::Value) -> Vec<LabelEvent> {
@@ -386,41 +391,49 @@ impl PullerBundle {
 }
 
 #[async_trait::async_trait]
-impl fantastic_kernel::bundle::Bundle for PullerBundle {
+impl fantastic_kernel::bundle::Handler for PullerBundle {
+    type Call = verbs::Call;
+
     fn name(&self) -> &str {
         HANDLER_MODULE
     }
 
-    fn verb_docs(&self) -> serde_json::Value {
-        serde_json::json!({
-            "pull": "pull → {created: [repo#n], skipped: [[repo#n, reason]]}",
-            "status": "status → {repos, github, store, pulls, last_pull_s, last_created, last_skipped, total_created}; the figures count passes since the process started (last_pull_s is unix seconds, 0 before the first); no login and no token",
-        })
+    fn man(&self) -> &'static str {
+        MAN
+    }
+
+    fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+        verbs::VERBS
+    }
+
+    fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+        verbs::dynamic_verbs(agent)
+    }
+
+    fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+        &record::RECORD
     }
 
     async fn handle(
         &self,
         agent_id: &fantastic_kernel::AgentId,
-        payload: &serde_json::Value,
+        call: Self::Call,
         kernel: &Arc<fantastic_kernel::Kernel>,
     ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
-        let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if t == "boot" {
-            crate::declared_views::grant_views(kernel);
-            return Ok(None);
-        }
-        let out = match (t, cfg_of(kernel, agent_id)) {
-            (_, Err(e)) => serde_json::json!({"error": e}),
-            ("pull", Ok(cfg)) => {
+        let out = match call {
+            verbs::Call::Boot(_) => {
+                crate::declared_views::grant_views(kernel);
+                return Ok(None);
+            }
+            verbs::Call::Reflect(_) => serde_json::json!({"id": agent_id.as_str(), "sentence": MAN}),
+            verbs::Call::Pull(_) => {
+                let cfg = cfg_of(kernel, agent_id);
                 let r = self
                     .pull_and_record(&KernelPeers(kernel.clone()), &cfg)
                     .await;
                 serde_json::json!({"created": r.created, "skipped": r.skipped})
             }
-            ("status", Ok(cfg)) => self.status(&cfg),
-            (other, Ok(_)) => {
-                serde_json::json!({"error": format!("team_puller: unknown type '{other}'")})
-            }
+            verbs::Call::Status(_) => self.status(&cfg_of(kernel, agent_id)),
         };
         Ok(Some(out))
     }
@@ -620,7 +633,7 @@ mod tests {
             )])
             .await;
         assert!(outs[0].result.get("error").is_none(), "{}", outs[0].result);
-        let got = cfg_of(&kernel, &fantastic_kernel::AgentId::from("pull")).unwrap();
+        let got = cfg_of(&kernel, &fantastic_kernel::AgentId::from("pull"));
         assert_eq!(got.repos, vec!["o/r".to_string()]);
         let rc = crate::repo_config::from_record(got.repo_config.get("o/r")).unwrap();
         assert_eq!(rc.task_labels, vec!["do-it".to_string()]);

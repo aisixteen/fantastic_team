@@ -15,6 +15,7 @@ fantastic-kernel.workspace = true
 fantastic-ai-core.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
+schemars.workspace = true
 tokio.workspace = true
 team-git-connector = { path = "../git_connector" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -23,8 +24,9 @@ serde = { version = "1", features = ["derive"] }
 base64.workspace = true
 
 [dev-dependencies]
-fantastic-credential-store.workspace = true
-fantastic-ram-store.workspace = true
+fantastic-kernel = { workspace = true, features = ["test-support"] }
+fantastic-credential-store = { workspace = true, features = ["test-support"] }
+fantastic-ram-store = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 base64.workspace = true
 wiremock = "=0.6.5"

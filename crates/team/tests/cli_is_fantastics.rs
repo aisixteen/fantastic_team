@@ -24,7 +24,7 @@ fn text(b: &[u8]) -> String {
 
 #[test]
 fn fantastic_s_one_shot_words_run_here() {
-    let o = run(&["readme"]);
+    let o = run(&[]);
     assert!(o.status.success(), "{}", text(&o.stderr));
     assert!(text(&o.stdout).contains("fantastic"), "{}", text(&o.stdout));
     // `send` with no kernel in the directory fails loud and starts nothing
@@ -33,7 +33,7 @@ fn fantastic_s_one_shot_words_run_here() {
         r#"{"target":"kernel_state","payload":{"type":"reflect"}}"#,
     ]);
     assert_eq!(o.status.code(), Some(1));
-    assert!(text(&o.stderr).contains("no kernel runs in this directory"));
+    assert!(text(&o.stderr).contains("no kernel runs on this state folder"));
     // `import` is fantastic's too: it wants a path and a parent
     let o = run(&["import"]);
     assert_eq!(o.status.code(), Some(2));
@@ -44,7 +44,7 @@ fn fantastic_s_one_shot_words_run_here() {
 /// owns how sections print.
 #[test]
 fn the_team_s_text_is_a_section_of_fantastic_s_readme() {
-    let o = run(&["readme"]);
+    let o = run(&[]);
     assert!(o.status.success(), "{}", text(&o.stderr));
     let first = fantastic_team::AI_README
         .lines()

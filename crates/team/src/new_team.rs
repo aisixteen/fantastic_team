@@ -118,8 +118,15 @@ mod tests {
         }
     }
 
+    fantastic_kernel::stand_in_verbs!(caller_verbs {
+        SendV "send" { text: Option<String> },
+        CallV "call" { target: String, payload: serde_json::Value },
+    });
+
     #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Bundle for CallerBundle {
+    impl fantastic_kernel::bundle::Handler for CallerBundle {
+        stand_in_body!(caller_verbs);
+
         fn name(&self) -> &str {
             "caller"
         }
@@ -127,10 +134,11 @@ mod tests {
         async fn handle(
             &self,
             agent_id: &AgentId,
-            payload: &Value,
+            call: Self::Call,
             kernel: &Arc<Kernel>,
         ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
         {
+            let payload = &call.payload();
             match payload["type"].as_str() {
                 // what a digest or a first message hands the agent
                 Some("send") => {

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
+use fantastic_kernel::bundle::{BundleError, Handler, Reply};
 use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Value};
 
@@ -39,8 +39,23 @@ pub const FILES: [&str; 6] = [
     "icon.svg",
 ];
 
-/// What `read_stream` declares on the record, so the host serves the page.
-pub const READ_STREAM_DOC: &str = "args: path:str (req), offset:int?, length:int?. The team page (index.html, page.css, shim.js, page.js, card.js, icon.svg) as a BINARY reply: the bytes as the body, {path, offset, next_offset, eof, size} as the head.";
+/// What the bundle is for: its one short man text; how to call it is rendered from its
+/// declared verbs (`docs`, `reflect`).
+const MAN: &str = "The team page's files, served read-only: the page, its stylesheet and scripts embedded in the binary, streamed to the web host's file route.";
+
+pub mod record;
+pub mod verbs;
+
+/// What a `team_page` record's `verbs` field carries so the web host serves it: the
+/// `read_stream` verb as it is declared (its argument schema).
+#[must_use]
+pub fn read_stream_declared() -> Value {
+    let verb = verbs::VERBS
+        .iter()
+        .find(|v| v.name == "read_stream")
+        .expect("read_stream is declared");
+    json!({"read_stream": verb.schema()})
+}
 
 /// Cut the first `<tag>...</tag>` body out of `html`; the html gets `replacement` in its place.
 fn cut(html: &str, open: &str, close: &str, replacement: &str) -> (String, String) {
@@ -98,12 +113,8 @@ pub fn file_bytes(path: &str) -> Option<Vec<u8>> {
     )
 }
 
-fn read_stream(payload: &Value) -> (Value, Option<Vec<u8>>) {
-    let path = payload
-        .get("path")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim_start_matches('/');
+fn read_stream(a: &verbs::ReadStream) -> (Value, Option<Vec<u8>>) {
+    let path = a.path.trim_start_matches('/');
     let Some(bytes) = file_bytes(path) else {
         return (
             json!({"error": format!("team_page: no file {path:?} — this page serves {FILES:?}"),
@@ -112,15 +123,8 @@ fn read_stream(payload: &Value) -> (Value, Option<Vec<u8>>) {
         );
     };
     let size = bytes.len() as u64;
-    let offset = payload
-        .get("offset")
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-        .min(size);
-    let length = payload
-        .get("length")
-        .and_then(Value::as_u64)
-        .unwrap_or(size - offset);
+    let offset = a.offset.min(size);
+    let length = a.length.unwrap_or(size - offset);
     let end = offset.saturating_add(length).min(size);
     (
         json!({"path": path, "offset": offset, "next_offset": end, "eof": end >= size, "size": size}),
@@ -133,59 +137,72 @@ fn read_stream(payload: &Value) -> (Value, Option<Vec<u8>>) {
 pub struct PageBundle;
 
 #[async_trait]
-impl Bundle for PageBundle {
+impl Handler for PageBundle {
+    type Call = verbs::Call;
+
     fn name(&self) -> &str {
         "team_page"
     }
 
-    fn verb_docs(&self) -> Value {
-        json!({
-            "reflect": "No args.",
-            "boot": "The parent `web` host serves the route.",
-            "read_stream": READ_STREAM_DOC,
-            "list": "No args. The served paths.",
-        })
+    fn man(&self) -> &'static str {
+        MAN
+    }
+
+    fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+        verbs::VERBS
+    }
+
+    fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+        verbs::dynamic_verbs(agent)
+    }
+
+    fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+        &record::RECORD
     }
 
     async fn handle(
         &self,
         agent_id: &AgentId,
-        payload: &Value,
+        call: Self::Call,
         _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
-        let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
-        Ok(Some(match verb {
-            "reflect" => json!({"id": agent_id.as_str(), "files": FILES}),
-            "boot" => json!({"booted": true}),
-            "list" => json!({"files": FILES}),
-            "read_stream" => read_stream(payload).0,
-            other => {
-                json!({"error": format!("team_page: unknown type {other:?}"), "reason": "unhandled", "verb": other})
-            }
+        Ok(Some(match call {
+            verbs::Call::Reflect(_) => json!({"id": agent_id.as_str(), "sentence": MAN, "files": FILES}),
+            verbs::Call::List(_) => json!({"files": FILES}),
+            // Text-only callers get the head; the bytes ride a binary reply.
+            verbs::Call::ReadStream(a) => read_stream(&a).0,
         }))
     }
 
     async fn handle_binary(
         &self,
         agent_id: &AgentId,
-        header: Value,
+        call: Self::Call,
         _body: Option<fantastic_kernel::Blob>,
         kernel: &Arc<Kernel>,
     ) -> Result<(Reply, Option<fantastic_kernel::Blob>), BundleError> {
-        if header.get("type").and_then(Value::as_str) == Some("read_stream") {
-            let (head, body) = read_stream(&header);
+        if let verbs::Call::ReadStream(a) = &call {
+            let (head, body) = read_stream(a);
             return Ok((
                 Some(head),
                 body.map(|b| fantastic_kernel::Blob::key("bytes", b)),
             ));
         }
-        Ok((self.handle(agent_id, &header, kernel).await?, None))
+        Ok((self.handle(agent_id, call, kernel).await?, None))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rs(path: &str, offset: u64, length: Option<u64>) -> verbs::ReadStream {
+        verbs::ReadStream {
+            path: path.into(),
+            offset,
+            length,
+        }
+    }
 
     #[test]
     fn index_is_the_team_page_with_the_shim_in_its_head() {
@@ -201,17 +218,17 @@ mod tests {
 
     #[test]
     fn read_stream_serves_index_in_chunks_and_refuses_other_paths() {
-        let (head, body) = read_stream(&json!({"path": "index.html", "length": 10}));
+        let (head, body) = read_stream(&rs("index.html", 0, Some(10)));
         assert_eq!(body.unwrap().len(), 10);
         assert_eq!(head["eof"], json!(false));
         assert_eq!(head["next_offset"], json!(10));
-        let (head, body) = read_stream(&json!({"path": "/index.html", "offset": 10}));
+        let (head, body) = read_stream(&rs("/index.html", 10, None));
         assert_eq!(head["eof"], json!(true));
         assert_eq!(
             body.unwrap().len() as u64,
             head["size"].as_u64().unwrap() - 10
         );
-        let (head, body) = read_stream(&json!({"path": "secret.txt"}));
+        let (head, body) = read_stream(&rs("secret.txt", 0, None));
         assert!(body.is_none());
         assert_eq!(head["reason"], "not_found");
     }
@@ -255,7 +272,7 @@ mod tests {
     }
 
     fn whole(path: &str) -> (Value, Vec<u8>) {
-        let (head, body) = read_stream(&json!({"path": path}));
+        let (head, body) = read_stream(&rs(path, 0, None));
         (head, body.unwrap_or_else(|| panic!("no file {path}")))
     }
 
@@ -277,8 +294,10 @@ mod tests {
         let kernel = Arc::new(Kernel::new());
         let id = AgentId::from(PAGE_ID);
         for verb in ["list", "reflect"] {
+            use fantastic_kernel::verbs::Parse;
+            let call = <verbs::Call as Parse>::parse(PAGE_ID, &json!({"type": verb}), &[]).unwrap();
             let r = PageBundle
-                .handle(&id, &json!({"type": verb}), &kernel)
+                .handle(&id, call, &kernel)
                 .await
                 .unwrap()
                 .unwrap();

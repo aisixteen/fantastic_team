@@ -438,14 +438,14 @@ async fn the_record_is_validated() {
         "default_branch": "main",
     });
     let cases: Vec<(Value, &str)> = vec![
-        (json!({"repo_dir": null}), "missing:"),
+        (json!({"repo_dir": null}), "needs field 'repo_dir'"),
         (json!({"workspace_root": "rel/dir"}), "`workspace_root` must be an absolute path"),
         (
             json!({"remote": "https://bob:hunter2@example.com/r.git"}),
             "team_git: the remote URL carries a user or password — remove it and name a credential store ref in credentials instead",
         ),
         (json!({"author_name": "A"}), "`author_name` and `author_email` go together"),
-        (json!({"timeout_s": 0}), "`timeout_s` must be a positive int"),
+        (json!({"timeout_s": 0}), "timeout_s"),
     ];
     for (over, expect) in cases {
         let mut meta = base.clone();
@@ -458,7 +458,9 @@ async fn the_record_is_validated() {
         }
         let empty = serde_json::Map::new();
         let err = GitConnectorBundle
-            .validate_meta(meta.as_object().unwrap(), &empty)
+            .check_write("create_agent", meta.as_object().unwrap(), &empty, None)
+            .err()
+            .and_then(|r| fantastic_kernel::error_text(&r))
             .unwrap_or_default();
         assert!(err.contains(expect), "expected `{expect}` in `{err}`");
         assert!(!err.contains("hunter2"));

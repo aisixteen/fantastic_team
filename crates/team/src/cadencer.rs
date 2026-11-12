@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
+use fantastic_kernel::bundle::{BundleError, Handler, Reply};
 use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Value};
 use tokio::task::JoinHandle;
@@ -29,6 +29,12 @@ use crate::puller::{KernelPeers, Peers};
 /// The handler module name this bundle registers under.
 pub const HANDLER_MODULE: &str = "team_cadencer.tools";
 const NAME: &str = "team_cadencer";
+/// What the bundle is for: its one short man text; how to call it is rendered from its
+/// declared verbs (`docs`, `reflect`).
+const MAN: &str = "The cadencer: on a cadence each lead gets a short digest of the level directly below it (changes since the last digest, every stall, a heartbeat while work waits), built from the tree a tick gives or from the roles registry's spawned tree.";
+
+pub mod record;
+pub mod verbs;
 const BOARD: &str = "board";
 
 /// One agent in a snapshot of the tree.
@@ -59,13 +65,34 @@ pub(crate) struct Settings {
 }
 
 impl Default for Settings {
+    /// The declared defaults of the record.
     fn default() -> Self {
+        Settings::of_record(&serde_json::Map::new())
+    }
+}
+
+impl Settings {
+    /// The settings a record states, each field as the declaration reads it (the
+    /// record's own value, else the declared default).
+    fn of_record(meta: &serde_json::Map<String, Value>) -> Settings {
+        let get = |k: &str| record::RECORD.get(meta, k);
         Settings {
-            enabled: true,
-            cadence_s: 60,
-            stall_after_s: 300,
-            quiet: true,
-            off: BTreeSet::new(),
+            enabled: get("enabled").and_then(|v| v.as_bool()).unwrap_or_default(),
+            cadence_s: get("cadence").and_then(|v| v.as_u64()).unwrap_or_default(),
+            stall_after_s: get("stall_after")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default(),
+            quiet: get("quiet").and_then(|v| v.as_bool()).unwrap_or_default(),
+            off: meta
+                .get("off")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }
@@ -340,25 +367,43 @@ fn node_from(v: &Value) -> Option<Node> {
     })
 }
 
-fn apply_set(s: &mut Settings, p: &Value) {
-    if let Some(e) = p.get("enabled").and_then(|x| x.as_bool()) {
+impl From<verbs::TreeNode> for Node {
+    fn from(n: verbs::TreeNode) -> Node {
+        Node {
+            id: n.id,
+            parent: n.parent,
+            has_ai: n.has_ai,
+            driver: n.driver,
+            state: n.state,
+            task: n.task,
+            open_inquiry: false,
+            idle_s: n.idle_s,
+            time_on_task_s: n.time_on_task_s,
+            cost: n.cost,
+            cache_hit: n.cache_hit,
+            new_results: n.new_results,
+        }
+    }
+}
+
+fn apply_set(s: &mut Settings, p: &verbs::Set) {
+    if let Some(e) = p.enabled {
         s.enabled = e;
     }
-    if let Some(c) = p.get("cadence").and_then(|x| x.as_u64()) {
+    if let Some(c) = p.cadence {
         s.cadence_s = c;
     }
-    if let Some(c) = p.get("stall_after").and_then(|x| x.as_u64()) {
+    if let Some(c) = p.stall_after {
         s.stall_after_s = c;
     }
-    if let Some(q) = p.get("quiet").and_then(|x| x.as_bool()) {
+    if let Some(q) = p.quiet {
         s.quiet = q;
     }
-    if let Some(lead) = p.get("lead").and_then(|x| x.as_str()) {
-        let on = p.get("on").and_then(|x| x.as_bool()).unwrap_or(true);
-        if on {
+    if let Some(lead) = &p.lead {
+        if p.on {
             s.off.remove(lead);
         } else {
-            s.off.insert(lead.to_string());
+            s.off.insert(lead.clone());
         }
     }
 }
@@ -445,22 +490,10 @@ fn load_from_record(inner: &mut Inner, meta: &serde_json::Map<String, Value>) ->
         inner.groups = groups_from_json(g);
         loaded = true;
     }
-    let mut settings = serde_json::Map::new();
-    for k in ["enabled", "cadence", "stall_after", "quiet"] {
-        if let Some(v) = meta.get(k) {
-            settings.insert(k.to_string(), v.clone());
-            loaded = true;
-        }
-    }
-    apply_set(&mut inner.settings, &Value::Object(settings));
-    if let Some(arr) = meta.get("off").and_then(|v| v.as_array()) {
-        inner.settings.off = arr
-            .iter()
-            .filter_map(|x| x.as_str())
-            .map(String::from)
-            .collect();
-        loaded = true;
-    }
+    loaded |= ["enabled", "cadence", "stall_after", "quiet", "off"]
+        .iter()
+        .any(|k| meta.contains_key(*k));
+    inner.settings = Settings::of_record(meta);
     loaded
 }
 
@@ -700,30 +733,25 @@ fn allowed(inner: &Inner, origin: Option<&str>) -> bool {
     }
 }
 
-fn dispatch(shared: &Arc<Mutex<Inner>>, payload: &Value) -> Value {
-    let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+fn dispatch(shared: &Arc<Mutex<Inner>>, call: verbs::Call) -> Value {
     let mut inner = shared.lock().expect("cadencer state");
-    match t {
-        "configure" => {
-            if let Some(p) = payload.get("parent").and_then(|v| v.as_str()) {
-                inner.parent = Some(p.to_string());
+    match call {
+        verbs::Call::Configure(a) => {
+            if let Some(p) = a.parent {
+                inner.parent = Some(p);
             }
             restart_timer(shared, &mut inner);
             json!({"parent": inner.parent})
         }
-        "tick" => {
-            inner.tree = payload
-                .get("tree")
-                .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(node_from).collect())
-                .unwrap_or_default();
+        verbs::Call::Tick(a) => {
+            inner.tree = a.tree.into_iter().map(Node::from).collect();
             let digests = beat(&mut inner);
             json!({
                 "digests": digests.iter().map(digest_json).collect::<Vec<_>>(),
                 "sent": digests.len(),
             })
         }
-        "set" => {
+        verbs::Call::Set(a) => {
             let seen = fantastic_kernel::current_origin().map(|a| a.as_str().to_string());
             if !allowed(&inner, seen.as_deref()) {
                 return json!({"error": format!(
@@ -732,14 +760,14 @@ fn dispatch(shared: &Arc<Mutex<Inner>>, payload: &Value) -> Value {
                     inner.parent.as_deref().unwrap_or("none")
                 )});
             }
-            apply_set(&mut inner.settings, payload);
+            apply_set(&mut inner.settings, &a);
             let want = (inner.settings.enabled, inner.settings.cadence_s);
             if inner.timer_cfg != Some(want) {
                 restart_timer(shared, &mut inner);
             }
             settings_json(&inner.settings)
         }
-        "status" => {
+        verbs::Call::Status(_) => {
             let now = inner.clock();
             let meter = inner.meter.status(now);
             // The registry's load counts, plus the cadencer's own per-hour figures.
@@ -759,7 +787,7 @@ fn dispatch(shared: &Arc<Mutex<Inner>>, payload: &Value) -> Value {
                 "load": load,
             })
         }
-        other => json!({"error": format!("team_cadencer: unknown type '{other}'")}),
+        verbs::Call::Reflect(_) | verbs::Call::Boot(_) => Value::Null,
     }
 }
 
@@ -793,25 +821,33 @@ fn boot_from_meta(shared: &Arc<Mutex<Inner>>, meta: &serde_json::Map<String, Val
 }
 
 #[async_trait::async_trait]
-impl Bundle for CadencerBundle {
+impl Handler for CadencerBundle {
+    type Call = verbs::Call;
+
     fn name(&self) -> &str {
         NAME
     }
 
-    fn verb_docs(&self) -> Value {
-        json!({
-            "tick": "tick {tree: [{id, parent?, has_ai?, state, task, idle_s, time_on_task_s, cost, cache_hit, new_results}]} → {digests: [{to, lines, text}], sent}",
-            "set": "set {sender, enabled?, cadence?, stall_after?, quiet?, lead?, on?} → settings (sender must be the parent, maintainer, user, the CLI or the team page); persisted in the agent record and restored at boot",
-            "configure": "configure {parent?} → {parent}; parent (kept as cadencer_parent) is persisted in the agent record and restored at boot, and the timer restarts",
-            "boot": "the kernel's lifecycle verb, boot {} → {loaded}: loads the settings from the agent record and restarts the timer when enabled with roles",
-            "status": "status {} → {settings, ticks, last_beat_s, next_beat_s, digests_sent, digest_bytes_per_hour, load}; load is the roles registry's counts (workers busy/idle/stalled per group, tasks held/in_review/done/blocked/queued, done_last_hour) and carries no mode",
-        })
+    fn man(&self) -> &'static str {
+        MAN
+    }
+
+    fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+        verbs::VERBS
+    }
+
+    fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+        verbs::dynamic_verbs(agent)
+    }
+
+    fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+        &record::RECORD
     }
 
     async fn handle(
         &self,
         agent_id: &AgentId,
-        payload: &Value,
+        call: Self::Call,
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         {
@@ -819,33 +855,52 @@ impl Bundle for CadencerBundle {
             g.peers = Some(Arc::new(KernelPeers(kernel.clone())));
             g.kernel = Some(kernel.clone());
         }
-        let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if t == "boot" {
-            crate::declared_views::grant_views(kernel);
-            {
-                let mut g = self.inner.lock().expect("cadencer state");
-                if g.notice.as_ref().is_none_or(|h| h.is_finished()) {
-                    g.notice = Some(crate::team_notice::start(kernel));
+        match call {
+            verbs::Call::Boot(_) => {
+                crate::declared_views::grant_views(kernel);
+                {
+                    let mut g = self.inner.lock().expect("cadencer state");
+                    if g.notice.as_ref().is_none_or(|h| h.is_finished()) {
+                        g.notice = Some(crate::team_notice::start(kernel));
+                    }
                 }
+                Ok(Some(self.restore(agent_id, kernel)))
             }
-            return Ok(Some(self.restore(agent_id, kernel)));
+            verbs::Call::Reflect(_) => Ok(Some(json!({"id": agent_id.as_str(), "sentence": MAN}))),
+            call => {
+                let persists = matches!(call, verbs::Call::Configure(_) | verbs::Call::Set(_));
+                let reply = dispatch(&self.inner, call);
+                if persists && reply.get("error").is_none() {
+                    // The lock is dropped before the record write.
+                    let patch = {
+                        let g = self.inner.lock().expect("cadencer state");
+                        record_patch(&g)
+                    };
+                    let _ = kernel.update(agent_id, patch);
+                }
+                Ok(Some(reply))
+            }
         }
-        let reply = dispatch(&self.inner, payload);
-        if matches!(t, "configure" | "set") && reply.get("error").is_none() {
-            // The lock is dropped before the record write.
-            let patch = {
-                let g = self.inner.lock().expect("cadencer state");
-                record_patch(&g)
-            };
-            let _ = kernel.update(agent_id, patch);
-        }
-        Ok(Some(reply))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The call a test names as JSON, through the agent's own entry, then answered.
+    fn dispatch(shared: &Arc<Mutex<Inner>>, payload: &Value) -> Value {
+        use fantastic_kernel::verbs::Parse;
+        match <verbs::Call as Parse>::parse("cadencer", payload, &[]) {
+            Err(refused) => refused,
+            Ok(call) => super::dispatch(shared, call),
+        }
+    }
+
+    /// A `set` a test names as JSON.
+    fn apply_set(s: &mut Settings, p: &Value) {
+        super::apply_set(s, &serde_json::from_value(p.clone()).expect("a set"));
+    }
 
     fn n(id: &str, parent: Option<&str>, has_ai: bool, state: &str, idle: u64) -> Node {
         Node {
@@ -1061,7 +1116,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn dispatcher_ticks_on_its_own_timer() {
         let b = shared();
-        dispatch(&b, &json!({"type": "set", "sender": "user", "cadence": 60}));
+        dispatch(&b, &json!({"type": "set", "cadence": 60}));
         run_for(180).await;
         assert_eq!(status(&b)["ticks"], 3);
     }
@@ -1071,7 +1126,7 @@ mod tests {
         let b = shared();
         dispatch(
             &b,
-            &json!({"type": "set", "sender": "user", "enabled": false}),
+            &json!({"type": "set", "enabled": false}),
         );
         run_for(600).await;
         let s = status(&b);
@@ -1083,10 +1138,10 @@ mod tests {
     async fn parent_driver_sets_child_cadence_live() {
         let b = shared();
         dispatch(&b, &json!({"type": "configure", "parent": "lead"}));
-        dispatch(&b, &json!({"type": "set", "sender": "user", "cadence": 60}));
+        dispatch(&b, &json!({"type": "set", "cadence": 60}));
         run_for(30).await;
         let before = status(&b)["ticks"].as_u64().unwrap();
-        dispatch(&b, &json!({"type": "set", "sender": "lead", "cadence": 10}));
+        dispatch(&b, &json!({"type": "set", "cadence": 10}));
         run_for(30).await;
         assert_eq!(status(&b)["ticks"].as_u64().unwrap(), before + 3);
     }
@@ -1095,7 +1150,7 @@ mod tests {
     async fn set_refused_from_a_non_parent() {
         let b = shared();
         dispatch(&b, &json!({"type": "configure", "parent": "lead"}));
-        dispatch(&b, &json!({"type": "set", "sender": "user", "cadence": 60}));
+        dispatch(&b, &json!({"type": "set", "cadence": 60}));
         {
             let g = b.lock().unwrap();
             assert!(!allowed(&g, Some("stranger")));
@@ -1138,7 +1193,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn status_reports_last_and_next_beat_and_digests_sent() {
         let b = shared();
-        dispatch(&b, &json!({"type": "set", "sender": "user", "cadence": 60}));
+        dispatch(&b, &json!({"type": "set", "cadence": 60}));
         let first = dispatch(&b, &tick_with(0, "x"));
         let n1 = first["digests"].as_array().unwrap().len() as u64;
         run_for(60).await;
@@ -1246,12 +1301,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_set_that_keeps_the_cadence_keeps_the_phase() {
         let b = shared();
-        dispatch(&b, &json!({"type": "set", "sender": "user", "cadence": 60}));
+        dispatch(&b, &json!({"type": "set", "cadence": 60}));
         run_for(90).await;
         let before = status(&b)["next_beat_s"].clone();
         dispatch(
             &b,
-            &json!({"type": "set", "sender": "user", "quiet": false}),
+            &json!({"type": "set", "quiet": false}),
         );
         assert_eq!(status(&b)["next_beat_s"], before);
     }

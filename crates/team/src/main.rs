@@ -25,10 +25,15 @@ fn main() -> ExitCode {
     };
     // The launcher seeds the folder before the kernel starts; fantastic never seeds.
     if fantastic_tui::starts_kernel(&argv) {
-        if let Err(e) = std::env::current_dir()
-            .map_err(|e| e.to_string())
-            .and_then(|cwd| fantastic_team::hydrate::seed(&cwd).map_err(|e| e.to_string()))
-        {
+        if let Err(e) = fantastic_tui::state_dir_of(&argv).and_then(|state| {
+            // the team folder is where the state folder lives (the current directory
+            // for a state folder that is not `<folder>/.fantastic`)
+            let work = match (state.file_name(), state.parent()) {
+                (Some(n), Some(p)) if n == ".fantastic" => p.to_path_buf(),
+                _ => std::env::current_dir().map_err(|e| e.to_string())?,
+            };
+            fantastic_team::hydrate::seed_at(&state, &work)
+        }) {
             eprintln!("fantastic_team: init failed: {e}");
             return ExitCode::from(1);
         }

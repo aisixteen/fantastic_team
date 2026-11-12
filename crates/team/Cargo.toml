@@ -27,6 +27,7 @@ team-github-connector = { path = "../github_connector" }
 tokio.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_yaml = "0.9"
 regex = "1"
@@ -34,6 +35,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 getrandom = "0.2"
 
 [dev-dependencies]
+fantastic-kernel = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
 wiremock = "=0.6.5"

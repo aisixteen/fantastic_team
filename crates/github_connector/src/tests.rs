@@ -302,10 +302,8 @@ async fn issues_lists_numbers_titles_labels_without_prs() {
     let bad = f
         .call(json!({"type": "issues", "repo": "acme/widgets", "state": "draft"}))
         .await;
-    assert_eq!(
-        bad["error"],
-        "team_github issues: `state` must be open, closed or all"
-    );
+    assert_eq!(bad["reason"], "bad_arg", "{bad}");
+    assert_eq!(bad["arg"], "state", "{bad}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -416,15 +414,13 @@ async fn directive_reflect_and_unknown_verbs() {
         json!({"directive": "Open draft PRs only."})
     );
     let r = f.call(json!({"type": "reflect"})).await;
-    assert_eq!(r["sentence"], crate::SENTENCE);
+    assert_eq!(r["sentence"], crate::MAN);
     assert_eq!(r["repos"], json!(["acme/widgets"]));
     let n = f
         .call(json!({"type": "issue_view", "repo": "acme/widgets", "number": "3"}))
         .await;
-    assert!(n["error"]
-        .as_str()
-        .unwrap()
-        .contains("`number` must be a positive int"));
+    assert_eq!(n["reason"], "bad_arg", "{n}");
+    assert_eq!(n["arg"], "number", "{n}");
     let m = f.call(json!({"type": "nope"})).await;
     assert_eq!(m["reason"], "unhandled");
 }
@@ -660,10 +656,8 @@ async fn label_adds_and_removes() {
     let empty = f
         .call(json!({"type": "label", "repo": "acme/widgets", "number": 3, "add": []}))
         .await;
-    assert!(empty["error"]
-        .as_str()
-        .unwrap()
-        .contains("give `add` and/or `remove`"));
+    assert_eq!(empty["reason"], "bad_arg", "{empty}");
+    assert_eq!(empty["arg"], "add", "{empty}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1023,13 +1017,7 @@ async fn issue_state_rejects_other_state_values() {
         .call(json!({"type": "issue_state", "repo": "acme/widgets", "number": 1, "state": "all"}))
         .await;
     assert_eq!(r["reason"], "bad_arg", "{r}");
-    assert!(
-        r["error"]
-            .as_str()
-            .unwrap()
-            .contains("`state` must be open or closed"),
-        "{r}"
-    );
+    assert_eq!(r["arg"], "state", "{r}");
     assert!(f.gh.received_requests().await.unwrap().is_empty());
 }
 
@@ -1514,10 +1502,7 @@ async fn merge_refuses_rebase_and_unknown_methods_with_no_request() {
             .call(json!({"type": "merge", "repo": "acme/widgets", "number": 7, "method": m}))
             .await;
         assert_eq!(r["reason"], "bad_arg", "{r}");
-        assert!(
-            r["error"].as_str().unwrap().contains("squash or merge"),
-            "{r}"
-        );
+        assert_eq!(r["arg"], "method", "{r}");
     }
     assert!(f.gh.received_requests().await.unwrap().is_empty());
 

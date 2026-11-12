@@ -18,6 +18,12 @@ use crate::puller::{KernelPeers, Peers};
 
 /// The bundle's handler module name.
 pub const HANDLER_MODULE: &str = "team_dispatcher.tools";
+/// What the bundle is for: its one short man text; how to call it is rendered from its
+/// declared verbs (`docs`, `reflect`).
+const MAN: &str = "The main view of the team's web UI: the sidebar (workers per group, their subagents, the team's services), the tree of the team, what to open for a node, and the control of a worker or group. It only reads and asks: no verb assigns work.";
+
+pub mod record;
+pub mod verbs;
 
 /// One worker as the dispatcher shows it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -331,38 +337,22 @@ pub fn open_target(node: &str, kind: &str) -> Value {
     }
 }
 
-/// The only actions the dispatcher sends a node. Anything else is refused here,
-/// before anything is sent.
-pub const CONTROL_ACTIONS: [&str; 3] = ["start", "pause", "stop"];
-
-/// The actions on a worker or a group that the dispatcher carries out itself:
-/// hand a worker a task, add a worker to a group, remove a worker.
-pub const WORKER_ACTIONS: [&str; 3] = ["hand_task", "add_worker", "remove_worker"];
-
 /// `stop` and `remove_worker` need an explicit confirm; without it the answer is a question.
-pub fn control_reply(node: &str, action: &str, confirm: bool) -> Value {
-    if !CONTROL_ACTIONS.contains(&action) && !WORKER_ACTIONS.contains(&action) {
-        return json!({
-            "error": format!("team_dispatcher: unknown control action '{action}'"),
-            "sent": false,
-        });
-    }
-    if node.is_empty() {
-        return json!({"error": "team_dispatcher: control needs a node", "sent": false});
-    }
-    if action == "stop" && !confirm {
+pub fn control_reply(node: &str, action: verbs::ControlAction, confirm: bool) -> Value {
+    use verbs::ControlAction::{RemoveWorker, Stop};
+    if action == Stop && !confirm {
         return json!({
             "question": format!("Stop {node}? Send again with confirm: true."),
             "sent": false,
         });
     }
-    if action == "remove_worker" && !confirm {
+    if action == RemoveWorker && !confirm {
         return json!({
             "question": format!("Remove {node}? Send again with confirm: true."),
             "sent": false,
         });
     }
-    json!({"sent": true, "node": node, "action": action})
+    json!({"sent": true, "node": node, "action": action.as_str()})
 }
 
 /// The groups with `id` added to `group`. An unknown group or an id already in
@@ -602,16 +592,9 @@ fn agent_table(kernel: &fantastic_kernel::Kernel) -> BTreeMap<String, Member> {
         .collect()
 }
 
-/// The workers the page has expanded, from the payload's `expanded` list.
-fn expanded_of(payload: &Value) -> BTreeSet<String> {
-    payload["expanded"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
+/// The workers the page has expanded, from the call's `expanded` list.
+fn expanded_of(expanded: &Option<Vec<String>>) -> BTreeSet<String> {
+    expanded.iter().flatten().cloned().collect()
 }
 
 fn groups_of(meta: &serde_json::Map<String, Value>) -> BTreeMap<String, Vec<String>> {
@@ -723,16 +706,12 @@ async fn add_worker(
     peers: &dyn Peers,
     at: &Membership<'_>,
     group: &str,
-    payload: &Value,
+    asked: (&Option<String>, &Option<String>),
     reply: Value,
 ) -> Value {
     let action = "add_worker";
-    let id = payload["id"].as_str().unwrap_or("").trim().to_string();
-    let template = payload["template"]
-        .as_str()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let id = asked.0.as_deref().unwrap_or("").trim().to_string();
+    let template = asked.1.as_deref().unwrap_or("").trim().to_string();
     if id.is_empty() || template.is_empty() {
         return refused(
             group,
@@ -826,7 +805,7 @@ async fn sidebar_reply(
     groups: &BTreeMap<String, Vec<String>>,
     limit: u64,
     now: u64,
-    payload: &Value,
+    expanded: &Option<Vec<String>>,
 ) -> Value {
     let snap = peers.ask(board, json!({"type": "board"})).await;
     let rows = rows_from(&snap, groups, limit, now);
@@ -843,7 +822,7 @@ async fn sidebar_reply(
     if cad.get("error").is_none() && cad["load"].is_object() {
         load = cad["load"].clone();
     }
-    let mut out = sidebar(team, groups, &rows, &subs, &expanded_of(payload), &load);
+    let mut out = sidebar(team, groups, &rows, &subs, &expanded_of(expanded), &load);
     // The roles registry's count (agents running, and the cap), when the
     // team has a registry and it answers.
     if let Some(roles) = meta.get("roles").and_then(Value::as_str) {
@@ -961,7 +940,7 @@ async fn panel_reply(
                 groups,
                 limit,
                 now,
-                &json!({}),
+                &None,
             )
             .await;
             v::dispatcher_view(&sb)
@@ -988,28 +967,36 @@ async fn panel_reply(
 pub struct DispatcherBundle;
 
 #[async_trait::async_trait]
-impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
+impl fantastic_kernel::bundle::Handler for DispatcherBundle {
+    type Call = verbs::Call;
+
     fn name(&self) -> &str {
         HANDLER_MODULE
     }
 
-    fn verb_docs(&self) -> Value {
-        json!({
-            "sidebar": "sidebar {expanded?: [worker ids]} → per group one flat list: each worker, its subagents expander, and its subagents when expanded; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher|cadencer|puller|git, label}], the team's own agents that exist",
-            "tree": "tree {node?} → the tree of the team or a node, rows with state/task/minutes/cost",
-            "open": "open {node} → the view to open for that node (worker or subagent → full-screen chat; group/team → a dispatcher; a node in the sidebar's services → {view: panel, kind, target, model: {kind, title, summary, sections}} drawn as text in the right pane)",
-            "control": "control {node, action: start|pause|stop|hand_task|add_worker|remove_worker, confirm?, task?, id?, template?} → {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker from the tier named `template` in the roles registry's record (`tiers`), its memory in the store that tier names, and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start). remove_worker {node: worker, confirm} deletes the worker (its rows stay in the store) and drops it from its group",
-        })
+    fn man(&self) -> &'static str {
+        MAN
+    }
+
+    fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+        verbs::VERBS
+    }
+
+    fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+        verbs::dynamic_verbs(agent)
+    }
+
+    fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+        &record::RECORD
     }
 
     async fn handle(
         &self,
         agent_id: &fantastic_kernel::AgentId,
-        payload: &Value,
+        call: Self::Call,
         kernel: &Arc<fantastic_kernel::Kernel>,
     ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
-        let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if t == "boot" {
+        if let verbs::Call::Boot(_) = call {
             crate::declared_views::grant_views(kernel);
             return Ok(None);
         }
@@ -1018,42 +1005,42 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
             .get(agent_id)
             .map(|e| e.meta.read().expect("meta").clone())
             .unwrap_or_default();
-        let board = meta
-            .get("board")
-            .and_then(Value::as_str)
-            .unwrap_or("board")
-            .to_string();
-        let team = meta
-            .get("team")
-            .and_then(Value::as_str)
-            .unwrap_or("team")
-            .to_string();
-        let limit = meta
-            .get("stall_minutes")
-            .and_then(Value::as_u64)
-            .unwrap_or(30);
+        let text = |k: &str| {
+            record::RECORD
+                .get(&meta, k)
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default()
+        };
+        let board = text("board");
+        let team = text("team");
+        let limit = record::RECORD
+            .get(&meta, "stall_minutes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or_default();
         let groups = groups_of(&meta);
         let peers = KernelPeers(kernel.clone());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let out = match t {
-            "tree" => {
-                let node = payload["node"].as_str().unwrap_or(&team).to_string();
+        let out = match call {
+            verbs::Call::Boot(_) => Value::Null,
+            verbs::Call::Reflect(_) => json!({"id": agent_id.as_str(), "sentence": MAN}),
+            verbs::Call::Tree(a) => {
+                let node = a.node.unwrap_or_else(|| team.clone());
                 let rows = rows_of(&peers, &board, &groups, limit, now).await;
                 subtree(&team, &groups, &rows, &node)
             }
-            "sidebar" => {
+            verbs::Call::Sidebar(a) => {
                 let mut out = sidebar_reply(
-                    kernel, &peers, &meta, &board, &team, &groups, limit, now, payload,
+                    kernel, &peers, &meta, &board, &team, &groups, limit, now, &a.expanded,
                 )
                 .await;
                 out["services"] = json!(services_of(kernel, agent_id.as_str(), &board));
                 out
             }
-            "open" => {
-                let node = payload["node"].as_str().unwrap_or("").to_string();
+            verbs::Call::Open(a) => {
+                let node = a.node;
                 let services = services_of(kernel, agent_id.as_str(), &board);
                 if let Some(svc) = services.iter().find(|s| s["id"] == node.as_str()) {
                     let out = panel_reply(
@@ -1080,17 +1067,16 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                 }
                 out
             }
-            "control" => {
-                let node = payload["node"].as_str().unwrap_or("").to_string();
-                let action = payload["action"].as_str().unwrap_or("");
-                let confirm = payload["confirm"].as_bool().unwrap_or(false);
-                let reply = control_reply(&node, action, confirm);
+            verbs::Call::Control(a) => {
+                let node = a.node.clone();
+                let action = a.action;
+                let reply = control_reply(&node, action, a.confirm);
                 if reply["sent"] != json!(true) {
                     return Ok(Some(reply));
                 }
                 match action {
-                    "hand_task" => {
-                        let task = payload["task"].as_str().unwrap_or("").trim().to_string();
+                    verbs::ControlAction::HandTask => {
+                        let task = a.task.as_deref().unwrap_or("").trim().to_string();
                         if task.is_empty() {
                             return Ok(Some(json!({
                                 "error": "team_dispatcher: hand_task needs a task",
@@ -1103,15 +1089,17 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                                 json!({"type": "send", "text": format!("task {task}")}),
                             )
                             .await;
-                        relayed(reply, &node, action, peer)
+                        relayed(reply, &node, action.as_str(), peer)
                     }
-                    "add_worker" => {
+                    verbs::ControlAction::AddWorker => {
                         let at = Membership {
                             me: agent_id.as_str(),
                             roles: meta.get("roles").and_then(Value::as_str),
                             groups: &groups,
                         };
-                        let out = add_worker(kernel, &peers, &at, &node, payload, reply).await;
+                        let out =
+                            add_worker(kernel, &peers, &at, &node, (&a.id, &a.template), reply)
+                                .await;
                         // The new worker may be steered by the dispatcher at once,
                         // like the workers granted at the start (`grant_control`).
                         if out.get("error").is_none() {
@@ -1121,7 +1109,7 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                         }
                         out
                     }
-                    "remove_worker" => {
+                    verbs::ControlAction::RemoveWorker => {
                         let at = Membership {
                             me: agent_id.as_str(),
                             roles: meta.get("roles").and_then(Value::as_str),
@@ -1131,12 +1119,11 @@ impl fantastic_kernel::bundle::Bundle for DispatcherBundle {
                     }
                     _ => {
                         // The node's own answer decides: a refusal or no reply is not "sent".
-                        let peer = peers.ask(&node, json!({"type": action})).await;
-                        relayed(reply, &node, action, peer)
+                        let peer = peers.ask(&node, json!({"type": action.as_str()})).await;
+                        relayed(reply, &node, action.as_str(), peer)
                     }
                 }
             }
-            other => json!({"error": format!("team_dispatcher: unknown type '{other}'")}),
         };
         Ok(Some(out))
     }
@@ -1395,7 +1382,7 @@ mod tests {
 
     #[test]
     fn stop_without_confirm_asks_first() {
-        let r = control_reply("w1", "stop", false);
+        let r = control_reply("w1", verbs::ControlAction::Stop, false);
         assert_eq!(r["sent"], json!(false));
         assert!(r["question"].as_str().is_some());
     }
@@ -1468,16 +1455,11 @@ mod tests {
     }
 
     #[test]
-    fn control_refuses_actions_outside_start_pause_stop() {
-        for action in ["delete_agent", "reflect"] {
-            let r = control_reply("w1", action, true);
-            assert_eq!(r["sent"], json!(false), "{r}");
-            assert!(r["error"].as_str().is_some(), "{r}");
-        }
-        for action in ["start", "pause"] {
+    fn control_sends_start_and_pause_and_stop_with_confirm() {
+        for action in [verbs::ControlAction::Start, verbs::ControlAction::Pause] {
             assert_eq!(control_reply("w1", action, false)["sent"], json!(true));
         }
-        let stop = control_reply("w1", "stop", true);
+        let stop = control_reply("w1", verbs::ControlAction::Stop, true);
         assert_eq!(stop["sent"], json!(true), "{stop}");
         assert_eq!(stop["action"], json!("stop"));
     }
@@ -1498,8 +1480,12 @@ mod tests {
     /// Records every message it gets. It refuses `pause` as an unknown verb.
     struct ProbeBundle;
 
+    fantastic_kernel::stand_in_verbs!(probe_verbs { StartV "start" {}, PauseV "pause" {}, StopV "stop" {}, SendV "send" { text: Option<String> } });
+
     #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Bundle for ProbeBundle {
+    impl fantastic_kernel::bundle::Handler for ProbeBundle {
+        stand_in_body!(probe_verbs);
+
         fn name(&self) -> &str {
             PROBE
         }
@@ -1507,10 +1493,11 @@ mod tests {
         async fn handle(
             &self,
             _agent_id: &fantastic_kernel::AgentId,
-            payload: &Value,
+            call: Self::Call,
             kernel: &Arc<fantastic_kernel::Kernel>,
         ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
         {
+            let payload = &call.payload();
             if payload["type"] == json!("boot") {
                 return Ok(None);
             }
@@ -1566,8 +1553,7 @@ mod tests {
             json!({"type": "control", "node": "probe", "action": "frobnicate"}),
         )
         .await;
-        assert_eq!(out["sent"], json!(false), "{out}");
-        assert!(out["error"].as_str().is_some(), "{out}");
+        assert_eq!(out["reason"], json!("bad_arg"), "{out}");
         assert!(
             seen.lock().unwrap().is_empty(),
             "{:?}",
@@ -1704,22 +1690,25 @@ mod tests {
     }
 
     #[test]
-    fn control_accepts_hand_task_add_and_remove_worker_and_refuses_others() {
-        for action in ["hand_task", "add_worker"] {
+    fn control_accepts_hand_task_add_and_remove_worker() {
+        for action in [
+            verbs::ControlAction::HandTask,
+            verbs::ControlAction::AddWorker,
+        ] {
             assert_eq!(
                 control_reply("w1", action, false)["sent"],
                 json!(true),
-                "{action}"
+                "{action:?}"
             );
         }
-        let r = control_reply("w1", "remove_worker", true);
+        let r = control_reply("w1", verbs::ControlAction::RemoveWorker, true);
         assert_eq!(r["sent"], json!(true), "{r}");
         assert_eq!(r["action"], "remove_worker");
     }
 
     #[test]
     fn remove_worker_without_confirm_asks_first() {
-        let r = control_reply("w1", "remove_worker", false);
+        let r = control_reply("w1", verbs::ControlAction::RemoveWorker, false);
         assert_eq!(r["sent"], json!(false));
         assert!(r["question"].as_str().unwrap().contains("w1"), "{r}");
     }
@@ -1800,8 +1789,8 @@ mod tests {
                 "handler_module": "ram_store.tools"}),
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "roles",
                 "handler_module": "agentic_resources.tools",
-                "tiers": {"t": {"handler_module": "ram_store.tools", "model": "m",
-                    "endpoint": "http://e", "memory_store_id": "memory"}}}),
+                "tiers": {"t": {"handler_module": "ai_chat.tools", "model": "m",
+                    "provider_id": "prov", "memory_store_id": "memory"}}}),
         ] {
             let o = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
             assert!(o[0].result.get("error").is_none(), "{:?}", o[0].result);
@@ -2052,8 +2041,12 @@ mod tests {
     /// A sidebar answers with the cadencer's load (cost per hour) when it replies.
     struct LoadBundle;
 
+    fantastic_kernel::stand_in_verbs!(load_verbs { StatusV "status" {} });
+
     #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Bundle for LoadBundle {
+    impl fantastic_kernel::bundle::Handler for LoadBundle {
+        stand_in_body!(load_verbs);
+
         fn name(&self) -> &str {
             "load_test.tools"
         }
@@ -2061,10 +2054,11 @@ mod tests {
         async fn handle(
             &self,
             _agent_id: &fantastic_kernel::AgentId,
-            payload: &Value,
+            call: Self::Call,
             _kernel: &Arc<fantastic_kernel::Kernel>,
         ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
         {
+            let payload = &call.payload();
             Ok(match payload["type"].as_str() {
                 Some("status") => Some(json!({"load": {
                     "tasks": {"in_review": 2}, "workers": {"stalled": 1},
@@ -2104,8 +2098,12 @@ mod tests {
         reg.register("count_test.tools", CountBundle);
     }
 
+    fantastic_kernel::stand_in_verbs!(count_verbs { GetCountV "get_count" { role: Option<String> } });
+
     #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Bundle for CountBundle {
+    impl fantastic_kernel::bundle::Handler for CountBundle {
+        stand_in_body!(count_verbs);
+
         fn name(&self) -> &str {
             "count_test.tools"
         }
@@ -2113,10 +2111,11 @@ mod tests {
         async fn handle(
             &self,
             agent_id: &fantastic_kernel::AgentId,
-            payload: &Value,
+            call: Self::Call,
             kernel: &Arc<fantastic_kernel::Kernel>,
         ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
         {
+            let payload = &call.payload();
             let fail = kernel
                 .agents
                 .get(agent_id)
@@ -2313,8 +2312,12 @@ mod tests {
         reg.register("roles_board_test.tools", RolesBoard);
     }
 
+    fantastic_kernel::stand_in_verbs!(roles_board_verbs { BoardV "board" {} });
+
     #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Bundle for RolesBoard {
+    impl fantastic_kernel::bundle::Handler for RolesBoard {
+        stand_in_body!(roles_board_verbs);
+
         fn name(&self) -> &str {
             "roles_board_test.tools"
         }
@@ -2322,10 +2325,11 @@ mod tests {
         async fn handle(
             &self,
             agent_id: &fantastic_kernel::AgentId,
-            payload: &Value,
+            call: Self::Call,
             kernel: &Arc<fantastic_kernel::Kernel>,
         ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
         {
+            let payload = &call.payload();
             if payload["type"] != "board" {
                 return Ok(None);
             }
@@ -2451,8 +2455,12 @@ mod tests {
         reg.register("count_test.tools", CountBundle);
     }
 
+    fantastic_kernel::stand_in_verbs!(views_board_verbs { BoardV "board" {} });
+
     #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Bundle for ViewsBoard {
+    impl fantastic_kernel::bundle::Handler for ViewsBoard {
+        stand_in_body!(views_board_verbs);
+
         fn name(&self) -> &str {
             "views_board_test.tools"
         }
@@ -2460,10 +2468,11 @@ mod tests {
         async fn handle(
             &self,
             agent_id: &fantastic_kernel::AgentId,
-            payload: &Value,
+            call: Self::Call,
             kernel: &Arc<fantastic_kernel::Kernel>,
         ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
         {
+            let payload = &call.payload();
             if payload["type"] != "board" {
                 return Ok(None);
             }
@@ -2482,8 +2491,14 @@ mod tests {
     /// A github connector stand-in: answers `reflect` with the `reflect` its meta holds.
     struct StubGithub;
 
+    mod gh_verbs {
+        fantastic_kernel::verbs!();
+    }
+
     #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Bundle for StubGithub {
+    impl fantastic_kernel::bundle::Handler for StubGithub {
+        stand_in_body!(gh_verbs);
+
         fn name(&self) -> &str {
             "team_github.tools"
         }
@@ -2491,11 +2506,11 @@ mod tests {
         async fn handle(
             &self,
             agent_id: &fantastic_kernel::AgentId,
-            payload: &Value,
+            call: Self::Call,
             kernel: &Arc<fantastic_kernel::Kernel>,
         ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
         {
-            if payload["type"] != "reflect" {
+            if !matches!(call, gh_verbs::Call::Reflect(_)) {
                 return Ok(None);
             }
             let m = kernel
@@ -2823,8 +2838,12 @@ mod tests {
         }
     }
 
+    fantastic_kernel::stand_in_verbs!(declared_verbs { StatusV "status" {} });
+
     #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Bundle for StubDeclared {
+    impl fantastic_kernel::bundle::Handler for StubDeclared {
+        stand_in_body!(declared_verbs);
+
         fn name(&self) -> &str {
             self.0
         }
@@ -2832,10 +2851,11 @@ mod tests {
         async fn handle(
             &self,
             agent_id: &fantastic_kernel::AgentId,
-            payload: &Value,
+            call: Self::Call,
             kernel: &Arc<fantastic_kernel::Kernel>,
         ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
         {
+            let payload = &call.payload();
             if payload["type"] == "boot" {
                 return Ok(None);
             }

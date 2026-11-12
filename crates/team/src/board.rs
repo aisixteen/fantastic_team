@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -15,13 +16,19 @@ use crate::puller::{task_file_names, KernelPeers, Peers};
 
 /// The bundle's handler module name.
 pub const HANDLER_MODULE: &str = "team_board.tools";
+/// What the bundle is for: its one short man text; how to call it is rendered from its
+/// declared verbs (`docs`, `reflect`).
+const MAN: &str = "The team's shared picture of the work: it caches the open issues of its repos with their queue state, knows the agents, keeps its own state file in the store and audits the picture. It never assigns.";
+
+pub mod record;
+pub mod verbs;
 /// Failures by one agent before the audit flags it.
 pub const FAIL_LIMIT: u32 = 3;
 /// Where the board keeps its state inside the store.
 const STATE_PATH: &str = "board/state.json";
 
 /// Where a task stands.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     /// Accepted, nobody working on it.
@@ -355,26 +362,28 @@ pub struct BoardCfg {
 fn cfg_of(
     kernel: &Arc<fantastic_kernel::Kernel>,
     id: &fantastic_kernel::AgentId,
-) -> Result<BoardCfg, String> {
+) -> BoardCfg {
     let (meta, repos) = crate::puller::record_and_repos(kernel, id);
     let text = |k: &str| {
-        meta.get(k)
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .filter(|v| !v.trim().is_empty())
+        record::RECORD
+            .get(&meta, k)
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
     };
-    Ok(BoardCfg {
+    BoardCfg {
         repos,
-        github: text("github").ok_or_else(|| "team_board: record needs `github`".to_string())?,
-        store: text("store").ok_or_else(|| "team_board: record needs `store`".to_string())?,
-        ask_to: text("ask_to").unwrap_or_else(|| "user".into()),
-        roles: text("roles"),
-        stale_secs: meta
-            .get("stale_minutes")
+        github: text("github"),
+        store: text("store"),
+        ask_to: text("ask_to"),
+        roles: record::RECORD
+            .get(&meta, "roles")
+            .and_then(|v| v.as_str().map(str::to_string)),
+        stale_secs: record::RECORD
+            .get(&meta, "stale_minutes")
             .and_then(|v| v.as_u64())
-            .unwrap_or(30)
+            .unwrap_or_default()
             * 60,
-    })
+    }
 }
 
 /// Read the board from the store. A missing or unreadable file is an empty board.
@@ -794,61 +803,49 @@ pub async fn roles_tree_rows(
     (rows, load)
 }
 
-async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Value {
+async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, call: verbs::Call) -> Value {
     let now = fantastic_ai_core::helpers::now_secs() as u64;
     let mut board = load(peers, &cfg.store).await;
-    let out = match t {
-        "pull" => {
+    let saves = matches!(
+        call,
+        verbs::Call::Pull(_)
+            | verbs::Call::Report(_)
+            | verbs::Call::Agent(_)
+            | verbs::Call::Ask(_)
+            | verbs::Call::Audit(_)
+    );
+    let out = match call {
+        verbs::Call::Reflect(_) | verbs::Call::Boot(_) => Value::Null,
+        verbs::Call::Pull(_) => {
             let errors = pull(peers, cfg, &mut board, now).await;
             json!({"tasks": board.tasks.len(), "errors": errors})
         }
-        "board" => {
+        verbs::Call::Board(_) => {
             let mut out = board.snapshot();
             if let Some(r) = &cfg.roles {
                 out["roles"] = roles_state(peers, r).await["roles"].clone();
             }
             out
         }
-        "task" => {
-            let id = p["id"].as_str().unwrap_or("");
-            match board.tasks.get(id) {
-                Some(task) => json!(task),
-                None => json!({"error": format!("no task `{id}`")}),
+        verbs::Call::Task(a) => match board.tasks.get(&a.id) {
+            Some(task) => json!(task),
+            None => json!({"error": format!("no task `{}`", a.id)}),
+        },
+        verbs::Call::Report(a) => {
+            match board.report(&a.task, a.status, &a.note, a.pr.as_deref(), &a.author, now) {
+                Ok(()) => json!({"ok": true}),
+                Err(e) => json!({"error": e}),
             }
         }
-        "report" => {
-            let id = p["task"].as_str().unwrap_or("");
-            match p["status"].as_str().and_then(Status::parse) {
-                None => json!({"error": "report needs status pending|in_work|done|failed"}),
-                Some(status) => match board.report(
-                    id,
-                    status,
-                    p["note"].as_str().unwrap_or(""),
-                    p["pr"].as_str(),
-                    p["author"].as_str().unwrap_or("unknown"),
-                    now,
-                ) {
-                    Ok(()) => json!({"ok": true}),
-                    Err(e) => json!({"error": e}),
-                },
-            }
-        }
-        "agent" => {
-            let name = p["name"].as_str().unwrap_or("");
-            board.touch_agent(
-                name,
-                p["state"].as_str().unwrap_or(""),
-                p["cost"].as_f64().unwrap_or(0.0),
-                now,
-            );
+        verbs::Call::Agent(a) => {
+            board.touch_agent(&a.name, &a.state, a.cost, now);
             json!({"ok": true})
         }
-        "ask" => {
-            let to = p["to"].as_str().unwrap_or(cfg.ask_to.as_str());
-            let question = p["question"].as_str().unwrap_or("");
-            ask_recorded(peers, &mut board, to, question, now).await
+        verbs::Call::Ask(a) => {
+            let to = a.to.as_deref().unwrap_or(cfg.ask_to.as_str());
+            ask_recorded(peers, &mut board, to, &a.question, now).await
         }
-        "audit" => {
+        verbs::Call::Audit(_) => {
             let findings = board.audit(now, cfg.stale_secs);
             let mut texts = Vec::new();
             for finding in &findings {
@@ -858,9 +855,8 @@ async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Valu
             }
             json!({"findings": texts})
         }
-        other => json!({"error": format!("team_board: unknown type '{other}'")}),
     };
-    if matches!(t, "pull" | "report" | "agent" | "ask" | "audit") {
+    if saves {
         save(peers, &cfg.store, &board).await;
     }
     out
@@ -871,39 +867,46 @@ async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Valu
 pub struct BoardBundle;
 
 #[async_trait::async_trait]
-impl fantastic_kernel::bundle::Bundle for BoardBundle {
+impl fantastic_kernel::bundle::Handler for BoardBundle {
+    type Call = verbs::Call;
+
     fn name(&self) -> &str {
         HANDLER_MODULE
     }
 
-    fn verb_docs(&self) -> Value {
-        json!({
-            "pull": "pull → {tasks: n, errors: [..]}",
-            "board": "board → {tasks: {pending, in_work, done, failed}, agents: {..}, roles?}; roles (roles mode) = {lead, fleet, tree, agents: [{id, role, state, parent}], tasks: [{id, source, holder, status}]}",
-            "task": "task {id} → the task",
-            "report": "report {task, status, note?, pr?, author?} → {ok}",
-            "agent": "agent {name, state, cost} → {ok}",
-            "ask": "ask {to, question} → the answer, recorded",
-            "audit": "audit → {findings: [..]}, each asked of ask_to",
-        })
+    fn man(&self) -> &'static str {
+        MAN
+    }
+
+    fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+        verbs::VERBS
+    }
+
+    fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+        verbs::dynamic_verbs(agent)
+    }
+
+    fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+        &record::RECORD
     }
 
     async fn handle(
         &self,
         agent_id: &fantastic_kernel::AgentId,
-        payload: &Value,
+        call: Self::Call,
         kernel: &Arc<fantastic_kernel::Kernel>,
     ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
-        let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if t == "boot" {
-            crate::declared_views::grant_views(kernel);
-            return Ok(None);
+        match call {
+            verbs::Call::Boot(_) => {
+                crate::declared_views::grant_views(kernel);
+                Ok(None)
+            }
+            verbs::Call::Reflect(_) => Ok(Some(json!({"id": agent_id.as_str(), "sentence": MAN}))),
+            call => {
+                let cfg = cfg_of(kernel, agent_id);
+                Ok(Some(dispatch(&KernelPeers(kernel.clone()), &cfg, call).await))
+            }
         }
-        let out = match cfg_of(kernel, agent_id) {
-            Err(e) => json!({"error": e}),
-            Ok(cfg) => dispatch(&KernelPeers(kernel.clone()), &cfg, t, payload).await,
-        };
-        Ok(Some(out))
     }
 }
 
@@ -1544,7 +1547,7 @@ mod tests {
     #[tokio::test]
     async fn board_verb_without_roles_keeps_the_old_snapshot() {
         let peers = fake();
-        let got = dispatch(&peers, &cfg(), "board", &json!({})).await;
+        let got = dispatch(&peers, &cfg(), verbs::Call::Board(verbs::Board {})).await;
         assert_eq!(got, Board::default().snapshot());
         assert!(got.get("roles").is_none());
     }
@@ -1554,7 +1557,7 @@ mod tests {
         let peers = roles_peers();
         let mut c = cfg();
         c.roles = Some("roles".into());
-        let got = dispatch(&peers, &c, "board", &json!({})).await;
+        let got = dispatch(&peers, &c, verbs::Call::Board(verbs::Board {})).await;
         assert!(got.get("tasks").is_some());
         assert!(got.get("agents").is_some());
         assert_eq!(got["roles"]["tasks"][0]["id"], "t1");
