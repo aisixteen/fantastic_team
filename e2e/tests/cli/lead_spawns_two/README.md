@@ -11,7 +11,7 @@ under the fixed ids `lead` and `bundles`. The probe writes the test's bundles un
 handler and provider fields) with the lead's model: the spawn names none.
 
 The plug is one script with lanes (`backends/scripted.py`): `main` is the lead, `w1`/`w2` the
-workers (their spawn `task` carries `[lane:w1]`); w2 waits for w1. A worker's last turn is its report to
+workers (the lead's `send` after each spawn carries `[lane:w1]`); w2 waits for w1. A worker's last turn is its report to
 the lead, a plain `send` (#247: no `report` verb; it gives the parent a turn, which answers it) and the lead
 awaits: each report wakes it, and its turn deletes that worker (the send waits until the lead is idle, so a
 worker has no turn after it); the lead's `git log` waits for both lanes; `{{id:1}}` / `{{id:2}}` in its delete calls are the minted ids from the spawn replies.

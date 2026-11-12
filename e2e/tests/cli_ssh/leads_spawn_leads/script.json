@@ -122,8 +122,18 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "sublead",
-     "task": "[lane:s1] Have a worker fix adder.py, then delete it."
+     "bundle": "sublead"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:1}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:s1] Have a worker fix adder.py, then delete it."
     }
    }
   ]
@@ -370,8 +380,19 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "worker",
-     "task": "[lane:w1] Fix adder.py, commit and push."
+     "bundle": "worker"
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:1}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:w1] Fix adder.py, commit and push."
     }
    }
   ],
@@ -406,13 +427,24 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "worker",
-     "task": "[lane:w2] Pull, fix muler.py, commit and push."
+     "bundle": "worker"
     }
    }
   ],
   "lane": "s2",
   "say": "Working on it."
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:1}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:w2] Pull, fix muler.py, commit and push."
+    }
+   }
+  ],
+  "lane": "s2"
  },
  {
   "calls": [

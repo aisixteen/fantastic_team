@@ -40,7 +40,7 @@ TASKS = {
     "single_lead": BROKEN + "Find the bugs yourself, fix them and commit the fix." + " " + COMMIT.strip() + END,
     "lead_spawns_two": (
         BROKEN + "Do not fix it yourself: spawn two workers with the bundle `worker` (`spawn` on `bundles`), "
-        "one for adder.py and one for muler.py, each task naming its file. " + COMMIT +
+        "one for adder.py and one for muler.py, each one then sent (`send`) its task naming its file. " + COMMIT +
         "Tell each worker to commit its fix this way, and: \"send your parent a message when you are done\"." + TELL
         + DELETE + " Check that the test passes at the end." + END),
     "precreated_1_2": (
@@ -55,7 +55,7 @@ TASKS = {
         "test passes." + END),
     "leads_spawn_leads": (
         BROKEN + "Do not fix it yourself: spawn two sub-leads with the bundle `sublead` (`spawn` on `bundles`), "
-        "one for adder.py and one for muler.py, each task naming its file. Each sub-lead spawns one worker "
+        "one for adder.py and one for muler.py, each one then sent (`send`) its task naming its file. Each sub-lead spawns one worker "
         "for its file. " + COMMIT + "Tell them that the worker commits this way, and tell each one: \"send your parent a "
         "message when you are done\"." + TELL + DELETE +
         " Check that the test passes at the end." + END),

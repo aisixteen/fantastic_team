@@ -24,9 +24,10 @@
 //! `spawn` may branch `from` a fork point of an existing agent (`from:{agent, at}`):
 //! the registry forks it (ai_core `fork {at}`). The result is a CLONE with every setting of
 //! the source chat (its bundle is the source's own), its record untouched, beside the
-//! source. That call takes only `from` and `task`: the declaration is a `oneOf` of the two
-//! shapes, so mixing them is refused by the engine. The caller gets control of it and the
-//! registry may send it its task; nothing else is written.
+//! source. That call takes only `from`: the declaration is a `oneOf` of the two
+//! shapes, so mixing them is refused by the engine. The caller gets control of it; nothing
+//! else is written. `spawn` sends nothing and has no task: the caller kick-starts the child
+//! with a plain `send`.
 //!
 //! Verbs: `reflect`, `bundles`, `bundle`, `spawn`, `fleet`, `get_count`.
 
@@ -54,8 +55,9 @@ pub const HANDLER_MODULE: &str = "agentic_resources.tools";
 /// declared verbs (`docs`, `reflect`).
 pub const MAN: &str = "A registry of spawnable bundles (meta bundles): list them, spawn one as a child of the caller and report the agents running on them. A spawnable bundle is a meta bundle whose record carries a directive and its grants; a child runs on its spawner's provider, and the caller controls it.";
 
-/// What a parent holds over every agent it spawns.
-const PARENT_VERBS: [&str; 3] = ["pause", "resume", "stop"];
+/// What a parent holds over every agent it spawns: it controls it and assigns its work
+/// with a plain `send` (spawn itself sends nothing).
+const PARENT_VERBS: [&str; 4] = ["pause", "resume", "stop", "send"];
 
 /// What every spawned agent holds on its parent: it tells it with a message.
 const CHILD_VERBS: [&str; 1] = ["send"];
@@ -220,7 +222,6 @@ async fn spawn_reply(
                 reg,
                 card,
                 caller: &caller,
-                first_message: c.task,
             };
             return spawn_from(kernel, &ctx, &c.from.agent, c.from.at).await;
         }
@@ -238,8 +239,6 @@ async fn spawn_reply(
         Ok(b) => b,
         Err(r) => return r,
     };
-    // the task: a string is the child's first message
-    let first_message: Option<String> = fresh.task.clone();
     let name = fresh.name.clone();
 
     if let Some(refusal) = escalation(kernel, &caller, card) {
@@ -257,7 +256,7 @@ async fn spawn_reply(
         );
     }
     // a tier that names the store the agent keeps its conversation in: the agent may
-    // use it (the other end is opened below, before the first message)
+    // use it (the other end is opened below)
     let store = tier_fields
         .get("memory_store_id")
         .and_then(Value::as_str)
@@ -276,12 +275,6 @@ async fn spawn_reply(
         union(
             &mut callable_by,
             &Map::from_iter([(String::from(c.as_str()), json!(PARENT_VERBS))]),
-        );
-    }
-    if first_message.is_some() {
-        union(
-            &mut callable_by,
-            &Map::from_iter([(String::from(reg.as_str()), json!(["send"]))]),
         );
     }
 
@@ -340,9 +333,6 @@ async fn spawn_reply(
     }
     if let Some(p) = provider_of(&tier_fields) {
         open_provider(kernel, &p, &child);
-    }
-    if let Some(text) = first_message {
-        send_first(kernel, reg, &child, text);
     }
     json!({"id": child, "bundle": bundle, "provider": provider_of(&tier_fields),
            "model": tier_fields.get("model").cloned().unwrap_or(Value::Null)})
@@ -528,61 +518,11 @@ fn open_edges(
     Ok(())
 }
 
-/// The child's parent: its place in the tree.
-fn parent_of(kernel: &Kernel, child: &AgentId) -> Option<String> {
-    let a = kernel.agents.get(child)?;
-    a.value().parent_id.as_ref().map(|p| p.as_str().to_string())
-}
-
-/// The TEAM NOTE after a spawned child's task: the task comes FROM this registry, so
-/// without it a child cannot tell whom to report to. Its parent by id, and the agents
-/// on spawnable bundles under the same parent (its siblings) with their bundles.
-fn team_note(kernel: &Kernel, reg: &AgentId, child: &AgentId) -> String {
-    let Some(parent) = parent_of(kernel, child) else {
-        return String::new();
-    };
-    let siblings: Vec<String> = spawned(kernel)
-        .into_iter()
-        .filter(|s| s.id != *child && parent_of(kernel, &s.id).as_deref() == Some(parent.as_str()))
-        .map(|s| format!("`{}` ({})", s.id.as_str(), s.bundle))
-        .collect();
-    let mut note = format!(
-        "\n\n[team] Your parent is `{parent}`: send it your result when you are done, with \
-         <call name=\"send\"><routing><target_id>{parent}</target_id></routing><payload><type>send</type><text>…</text></payload></call>. \
-         `{}` only delivered this task; it takes no reports.",
-        reg.as_str()
-    );
-    if !siblings.is_empty() {
-        note.push_str(&format!(" Your siblings: {}.", siblings.join(", ")));
-    }
-    note
-}
-
-fn send_first(kernel: &Arc<Kernel>, reg: &AgentId, child: &str, text: String) {
-    let text = format!("{text}{}", team_note(kernel, reg, &AgentId::from(child)));
-    let cid = child.to_string();
-    let _ = kernel.edit_can_call(reg, move |m| {
-        union(m, &Map::from_iter([(String::from(&cid), json!(["send"]))]));
-        true
-    });
-    let k = Arc::clone(kernel);
-    let target = AgentId::from(child);
-    fantastic_kernel::spawn_inherit(async move {
-        let _ = k
-            .send(vec![Item::new(
-                target,
-                json!({"type": "send", "text": text}),
-            )])
-            .await;
-    });
-}
-
 /// Everything `spawn` has settled before it branches from a fork point.
 struct SpawnFrom<'a> {
     reg: &'a AgentId,
     card: &'a Card,
     caller: &'a Option<AgentId>,
-    first_message: Option<String>,
 }
 
 /// The card's grants on tools: literal local agent ids only (not `$registry`, not
@@ -780,7 +720,7 @@ fn fork_ungrant(
 
 /// `spawn {from:{agent, at}}`: `fork {at}` of `src` makes a CLONE of it — same
 /// bundle, same record, same level (beside its source, in the source's store). Nothing is
-/// written over the copy; the caller gets control of it and the registry may send its task.
+/// written over the copy; the caller gets control of it.
 async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64) -> Value {
     let (reg, card) = (c.reg, c.card);
     let src_id = AgentId::from(src);
@@ -831,9 +771,8 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
-    // the caller controls it; the registry may `send` it its task
-    let (caller, first) = (c.caller.clone(), c.first_message.is_some());
-    let r = reg.as_str().to_string();
+    // the caller controls it
+    let caller = c.caller.clone();
     let own = card.callable_by.clone();
     let opened = kernel
         .edit_callable_by(&fork.id, move |m| {
@@ -843,9 +782,6 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
                     m,
                     &Map::from_iter([(String::from(w.as_str()), json!(PARENT_VERBS))]),
                 );
-            }
-            if first {
-                union(m, &Map::from_iter([(String::from(&r), json!(["send"]))]));
             }
             true
         })
@@ -864,9 +800,6 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
         )
         .await;
         return e;
-    }
-    if let Some(text) = c.first_message.clone() {
-        send_first(kernel, reg, &child, text);
     }
     json!({
         "id": child, "bundle": card.name, "model": fm.get("model").cloned().unwrap_or(Value::Null),

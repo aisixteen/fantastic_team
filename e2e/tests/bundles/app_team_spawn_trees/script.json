@@ -5,8 +5,18 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "lead",
-     "task": "[lane:s1] Run a worker, then delete it."
+     "bundle": "lead"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{id:1}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:s1] Run a worker, then delete it."
     }
    }
   ]
@@ -17,8 +27,18 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "project_lead",
-     "task": "[lane:p1] Run a worker, then delete it."
+     "bundle": "project_lead"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{id:2}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:p1] Run a worker, then delete it."
     }
    }
   ]
@@ -64,8 +84,19 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "worker",
-     "task": "[lane:w1] Do nothing."
+     "bundle": "worker"
+    }
+   }
+  ],
+  "lane": "s1"
+ },
+ {
+  "calls": [
+   {
+    "target": "{{id:1}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:w1] Do nothing."
     }
    }
   ],
@@ -100,8 +131,19 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "worker",
-     "task": "[lane:w2] Do nothing."
+     "bundle": "worker"
+    }
+   }
+  ],
+  "lane": "p1"
+ },
+ {
+  "calls": [
+   {
+    "target": "{{id:1}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:w2] Do nothing."
     }
    }
   ],

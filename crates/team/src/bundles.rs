@@ -320,7 +320,8 @@ mod tests {
         assert!(section.contains("<type>spawn</type>"));
         assert!(section.contains("get_count"));
         assert!(section.contains("fleet"));
-        assert!(section.contains("The queue is QUEUE. Your id is the id in your own reflect."));
+        assert!(section.contains("<text>The queue is QUEUE. Your parent is YOUR_ID"));
+        assert!(!section.contains("<task>"));
         assert!(l.contains("Ask `bundles` before starting an agent"));
         let g = card("lead.md").grants;
         assert_eq!(

@@ -19,7 +19,7 @@ test can look at the team while a turn is running.
 
 LANES. Several agents share one plug, and their requests race. A turn may carry
 `"lane": "w1"`: it then belongs to the agent whose FIRST message holds the marker
-`[lane:w1]` (a spawn's `task`, or a `send`'s `text`); turns with no `lane` are lane
+`[lane:w1]` (a `send`'s `text`, the lead's after its spawn); turns with no `lane` are lane
 `main` (an agent whose first message holds no marker). Each lane plays its own turns in
 order, whatever the other lanes do. A turn may carry `"after": ["w1", "w2"]`: the plug
 holds that answer until those lanes have been served every turn, so one agent works

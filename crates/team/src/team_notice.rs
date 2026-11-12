@@ -1,6 +1,6 @@
 //! TEAM NOTICE: when an AI agent (an AI chat, by its handler's base) is added under a
 //! lead, or removed from it, that lead and every AI agent in its subtree get the team's structure (who leads, every member
-//! with its parent and bundle). A spawned agent's task comes from the bundles registry, so
+//! with its parent and bundle). A spawn sends nothing, so
 //! without it a member cannot tell whom it reports to. Only that lead's subtree is told:
 //! the structure of a team is its lead's business, nobody else's.
 //!

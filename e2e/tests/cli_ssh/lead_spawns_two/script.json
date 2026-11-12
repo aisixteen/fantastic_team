@@ -122,8 +122,18 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "worker",
-     "task": "[lane:w1] Fix adder.py, commit and push."
+     "bundle": "worker"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:1}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:w1] Fix adder.py, commit and push."
     }
    }
   ]

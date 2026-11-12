@@ -623,7 +623,7 @@ async fn spawn_grants_parent_pause_resume_stop_both_ends() {
         .as_str()
         .unwrap()
         .to_string();
-    let want = json!(["pause", "resume", "stop"]);
+    let want = json!(["pause", "resume", "stop", "send"]);
     assert_eq!(r.meta(lead)["can_call"][&id], want);
     assert_eq!(r.meta(&id)["callable_by"][lead], want);
     // nothing wider on the child's side: no other caller is let in by the spawn
@@ -638,9 +638,9 @@ async fn spawn_grants_parent_pause_resume_stop_both_ends() {
         let out = r.call(lead, &id, json!({"type": verb})).await;
         assert_eq!(out["verb"], verb, "{out}");
     }
-    // a verb outside the three is refused, and a sibling cannot pause it
+    // a verb outside the four is refused, and a sibling cannot pause it
     assert_eq!(
-        r.call(lead, &id, json!({"type": "send"})).await["reason"],
+        r.call(lead, &id, json!({"type": "history"})).await["reason"],
         "unauthorized"
     );
     assert_eq!(
@@ -650,56 +650,33 @@ async fn spawn_grants_parent_pause_resume_stop_both_ends() {
 }
 
 #[tokio::test]
-async fn spawn_task_string_is_first_message_and_object_refused() {
+async fn spawn_takes_no_task_creates_and_sends_nothing() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
-    // a task object (the old task line) is refused
+    // `task` is not a field of either shape: refused, nothing created
     let before = r.kernel.agents.len();
     let bad = r
-        .spawn_as(
-            lead,
-            json!({"bundle": "writer", "task": {"label": "draft intro"}}),
-        )
+        .spawn_as(lead, json!({"bundle": "writer", "task": "do it"}))
         .await;
     assert_eq!(bad["reason"], "bad_arg", "{bad}");
     assert_eq!(r.kernel.agents.len(), before, "nothing was created");
-    let c = r
-        .spawn_as(lead, json!({"bundle": "writer", "task": "do it"}))
+    // a spawn sends nothing to the child
+    let c = r.spawn_as(lead, json!({"bundle": "writer"})).await;
+    let cid = id_of(&c);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !SENT.lock().unwrap().iter().any(|(a, _)| *a == cid),
+        "the child got no message from the spawn"
+    );
+    // the registry holds no `send` on it; the caller does, and kick-starts it itself
+    assert!(r.meta(&r.reg)["can_call"].get(&cid).is_none());
+    let text = format!("start {cid}");
+    let out = r
+        .call(lead, &cid, json!({"type": "send", "text": text}))
         .await;
-    assert!(r.meta(c["id"].as_str().unwrap()).get("task").is_none());
-    // the string is the child's first message, delivered without holding the spawn
-    let cid = c["id"].as_str().unwrap().to_string();
-    for _ in 0..100 {
-        if SENT.lock().unwrap().iter().any(|(a, t)| {
-            *a == cid
-                && t.starts_with("do it\n\n[team] Your parent is `")
-                && t.contains(&format!("Your parent is `{}`", lead.as_str()))
-        }) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(SENT.lock().unwrap().iter().any(|(a, t)| *a == cid
-        && t.starts_with("do it\n\n[team] Your parent is `")
-        && t.contains(&format!("Your parent is `{}`", lead.as_str()))));
-    // the note tells the child to answer its parent with a plain `send`, never a `report` (team#247)
-    let note = SENT
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|(a, _)| *a == cid)
-        .unwrap()
-        .1
-        .clone();
-    assert!(
-        note.contains("send it your result when you are done"),
-        "{note}"
-    );
-    assert!(
-        note.contains("<call name=\"send\">") && !note.contains("report to it"),
-        "{note}"
-    );
+    assert_eq!(out, json!({"ok": true, "verb": "send"}), "{out}");
+    assert!(got_send(&cid, &text), "the child got the caller's send");
 }
 
 /// Did `who` receive a `send` with `text`? A `send` is answered only once the
@@ -1074,7 +1051,7 @@ async fn spawn_from_makes_a_clone_of_its_source() {
     assert_eq!(level(id), level(&src));
     // the caller controls it and it may tell the caller
     assert_eq!(m["can_call"][lead], json!(["send"]));
-    assert_eq!(m["callable_by"][lead], json!(["pause", "resume", "stop"]));
+    assert_eq!(m["callable_by"][lead], json!(["pause", "resume", "stop", "send"]));
     // the registry admits what the clone holds on it
     assert_eq!(m["can_call"][&r.reg], json!(["bundles"]));
     assert_eq!(r.meta(&r.reg)["callable_by"][id], json!(["bundles"]));
@@ -1110,31 +1087,6 @@ async fn spawn_from_with_a_bundle_is_refused_by_the_declaration() {
     }
     assert!(forks_of(&r, &src).is_empty(), "nothing forked");
     assert_eq!(r.meta(&src), before);
-}
-
-#[tokio::test]
-async fn spawn_from_task_string_is_sent_as_first_message() {
-    let tmp = TempDir::new().unwrap();
-    let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let text = format!("branch task {}", uid(&tmp, "t"));
-    let out = r
-        .spawn_as(
-            &r.callers[0],
-            json!({"from": from(&src, 5), "task": text}),
-        )
-        .await;
-    let id = out["id"].as_str().unwrap().to_string();
-    for _ in 0..100 {
-        if SENT.lock().unwrap().iter().any(|(a, t)| {
-            *a == id
-                && t.starts_with(&text)
-                && t.contains(&format!("Your parent is `{}`", r.callers[0].as_str()))
-        }) {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    panic!("the child never got its first message");
 }
 
 #[tokio::test]
@@ -1204,11 +1156,11 @@ async fn spawn_from_gives_the_parent_pause_resume_stop() {
         .to_string();
     assert_eq!(
         r.meta(lead)["can_call"][&id],
-        json!(["pause", "resume", "stop"])
+        json!(["pause", "resume", "stop", "send"])
     );
     assert_eq!(
         r.meta(&id)["callable_by"][lead],
-        json!(["pause", "resume", "stop"])
+        json!(["pause", "resume", "stop", "send"])
     );
 }
 
@@ -1414,7 +1366,7 @@ async fn spawn_without_reach_gives_exactly_the_parent_verbs() {
     .await;
     notes_tool(&r).await;
     let lead = r.callers[0].clone();
-    let want = json!(["pause", "resume", "stop"]);
+    let want = json!(["pause", "resume", "stop", "send"]);
     let plain = id_of(&r.spawn_as(&lead, json!({"bundle": "reviewer"})).await);
     let forked = id_of(
         &r.spawn_as(&lead, json!({"from": from(&src, 5)}))
@@ -1424,8 +1376,7 @@ async fn spawn_without_reach_gives_exactly_the_parent_verbs() {
         assert_eq!(r.meta(&lead)["can_call"][id], want, "{id}");
         assert_eq!(r.meta(id)["callable_by"][&lead], want, "{id}");
         assert_eq!(
-            r.call(&lead, id, json!({"type": "send", "text": "hi"}))
-                .await["reason"],
+            r.call(&lead, id, json!({"type": "history"})).await["reason"],
             "unauthorized",
             "{id}"
         );
@@ -1535,7 +1486,7 @@ async fn spawn_adds_the_bundles_callable_by_to_the_childs() {
     assert_eq!(cb["$subtree"], json!(["send"]), "{cb}");
     assert_eq!(
         cb[&r.callers[0]],
-        json!(["pause", "resume", "stop"]),
+        json!(["pause", "resume", "stop", "send"]),
         "the spawner keeps its edge: {cb}"
     );
 }
@@ -1600,7 +1551,7 @@ async fn refused_tool_grant_undoes_the_spawn() {
     let lead_cb_before = keys_of(&r, &lead, "callable_by");
     let agents_before = r.kernel.agents.len();
     let out = r
-        .spawn_as(&lead, json!({"bundle": "two", "task": "go"}))
+        .spawn_as(&lead, json!({"bundle": "two"}))
         .await;
     assert_eq!(out["reason"], "grant_failed", "{out}");
     assert_eq!(r.kernel.agents.len(), agents_before, "no child left");
