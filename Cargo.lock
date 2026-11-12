@@ -354,6 +354,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "byteorder-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -510,6 +516,12 @@ dependencies = [
  "serde",
  "windows-link",
 ]
+
+[[package]]
+name = "color_quant"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
 name = "combine"
@@ -1161,29 +1173,36 @@ dependencies = [
 [[package]]
 name = "fantastic-ai-core"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
  "fantastic-kernel",
  "futures-util",
+ "image",
  "libc",
  "regex",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 
 [[package]]
 name = "fantastic-anthropic-backend"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "fantastic-ai-core",
  "fantastic-bundle",
  "fantastic-kernel",
  "futures-util",
  "reqwest 0.12.28",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1191,15 +1210,18 @@ dependencies = [
 [[package]]
 name = "fantastic-bridge"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-ai-core",
  "fantastic-bundle",
+ "fantastic-credential-store",
  "fantastic-io-bridge",
  "fantastic-kernel",
  "futures-util",
  "libc",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite",
@@ -1208,7 +1230,7 @@ dependencies = [
 [[package]]
 name = "fantastic-bundle"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "libc",
  "serde_json",
@@ -1217,10 +1239,12 @@ dependencies = [
 [[package]]
 name = "fantastic-canvas-page"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-kernel",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "zip",
 ]
@@ -1228,12 +1252,14 @@ dependencies = [
 [[package]]
 name = "fantastic-core"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
  "fantastic-file",
  "fantastic-kernel",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "serde_yaml",
 ]
@@ -1241,7 +1267,7 @@ dependencies = [
 [[package]]
 name = "fantastic-credential-store"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -1249,13 +1275,15 @@ dependencies = [
  "fantastic-kernel",
  "keyring",
  "libc",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "fantastic-exec-bridge"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "encoding_rs",
@@ -1267,6 +1295,8 @@ dependencies = [
  "indexmap 2.14.2",
  "libc",
  "nix 0.29.0",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
  "windows-sys 0.61.2",
@@ -1275,7 +1305,7 @@ dependencies = [
 [[package]]
 name = "fantastic-file"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
@@ -1283,6 +1313,8 @@ dependencies = [
  "fantastic-kernel",
  "libc",
  "notify",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",
@@ -1292,7 +1324,7 @@ dependencies = [
 [[package]]
 name = "fantastic-home"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -1301,12 +1333,14 @@ dependencies = [
 [[package]]
 name = "fantastic-io-bridge"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "fantastic-bundle",
  "fantastic-kernel",
  "flate2",
  "httparse",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1314,7 +1348,7 @@ dependencies = [
 [[package]]
 name = "fantastic-kernel"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1323,6 +1357,7 @@ dependencies = [
  "futures-util",
  "libc",
  "regex",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1335,7 +1370,7 @@ dependencies = [
 [[package]]
 name = "fantastic-mcp-client"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1344,6 +1379,8 @@ dependencies = [
  "fantastic-kernel",
  "futures-util",
  "reqwest 0.12.28",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1351,7 +1388,7 @@ dependencies = [
 [[package]]
 name = "fantastic-ollama-backend"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-ai-core",
@@ -1359,6 +1396,8 @@ dependencies = [
  "fantastic-kernel",
  "futures-util",
  "reqwest 0.12.28",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1366,12 +1405,14 @@ dependencies = [
 [[package]]
 name = "fantastic-py-agent"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
  "fantastic-exec-bridge",
  "fantastic-kernel",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1379,11 +1420,13 @@ dependencies = [
 [[package]]
 name = "fantastic-ram-store"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
  "fantastic-kernel",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1391,7 +1434,7 @@ dependencies = [
 [[package]]
 name = "fantastic-responses-backend"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-ai-core",
@@ -1399,19 +1442,8 @@ dependencies = [
  "fantastic-kernel",
  "futures-util",
  "reqwest 0.12.28",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "fantastic-scenario-probes"
-version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
-dependencies = [
- "async-trait",
- "fantastic-bundle",
- "fantastic-kernel",
- "libc",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1419,13 +1451,15 @@ dependencies = [
 [[package]]
 name = "fantastic-scheduler"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
  "fantastic-kernel",
  "futures-util",
  "libc",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1433,12 +1467,15 @@ dependencies = [
 [[package]]
 name = "fantastic-sqlite-store"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
  "fantastic-kernel",
+ "fantastic-ram-store",
  "rusqlite",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1457,6 +1494,7 @@ dependencies = [
  "getrandom 0.2.17",
  "regex",
  "reqwest 0.12.28",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1484,7 +1522,7 @@ dependencies = [
 [[package]]
 name = "fantastic-tui"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1517,6 +1555,7 @@ dependencies = [
  "libc",
  "ratatui",
  "regex",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1533,12 +1572,13 @@ dependencies = [
 [[package]]
 name = "fantastic-user"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-core",
  "fantastic-kernel",
- "fantastic-scenario-probes",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "serde_yaml",
  "tokio",
@@ -1547,10 +1587,12 @@ dependencies = [
 [[package]]
 name = "fantastic-user-home-store"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-kernel",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "sha2",
  "windows-sys 0.61.2",
@@ -1559,7 +1601,7 @@ dependencies = [
 [[package]]
 name = "fantastic-vllm-backend"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-ai-core",
@@ -1567,6 +1609,8 @@ dependencies = [
  "fantastic-kernel",
  "futures-util",
  "reqwest 0.12.28",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",
@@ -1576,7 +1620,7 @@ dependencies = [
 [[package]]
 name = "fantastic-web"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "axum",
@@ -1587,6 +1631,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "tokio",
@@ -1597,10 +1642,12 @@ dependencies = [
 [[package]]
 name = "fantastic-web-mcp"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-kernel",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -1608,12 +1655,14 @@ dependencies = [
 [[package]]
 name = "fantastic-web-ws"
 version = "0.1.0"
-source = "git+https://github.com/aisixteen/fantastic?branch=main#c8c6ad72ebf6147bb06a73b4fc09352b8e94bd60"
+source = "git+https://github.com/aisixteen/fantastic?branch=main#59c701745c958ebece85cf1c146c63ff2b90419a"
 dependencies = [
  "async-trait",
  "fantastic-bundle",
  "fantastic-io-bridge",
  "fantastic-kernel",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
 ]
 
@@ -1983,6 +2032,16 @@ dependencies = [
  "r-efi 6.0.0",
  "rand_core 0.10.1",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "gif"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159"
+dependencies = [
+ "color_quant",
+ "weezl",
 ]
 
 [[package]]
@@ -2470,6 +2529,34 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+]
+
+[[package]]
+name = "image"
+version = "0.25.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
+dependencies = [
+ "bytemuck",
+ "byteorder-lite",
+ "color_quant",
+ "gif",
+ "image-webp",
+ "moxcms",
+ "num-traits",
+ "png",
+ "zune-core",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
 ]
 
 [[package]]
@@ -3055,6 +3142,16 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "moxcms"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
+dependencies = [
+ "num-traits",
+ "pxfm",
 ]
 
 [[package]]
@@ -3930,6 +4027,18 @@ checksum = "200b9ff220857e53e184257720a14553b2f4aa02577d2ed9842d45d4b9654810"
 dependencies = [
  "cc",
 ]
+
+[[package]]
+name = "pxfm"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "quick-error"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quick-xml"
@@ -5431,6 +5540,8 @@ dependencies = [
  "fantastic-bundle",
  "fantastic-core",
  "fantastic-kernel",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -5447,6 +5558,8 @@ dependencies = [
  "fantastic-credential-store",
  "fantastic-kernel",
  "fantastic-ram-store",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -5466,6 +5579,7 @@ dependencies = [
  "rand 0.8.8",
  "reqwest 0.12.28",
  "rsa",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "team-git-connector",
@@ -5484,6 +5598,8 @@ dependencies = [
  "fantastic-core",
  "fantastic-kernel",
  "fantastic-ram-store",
+ "schemars 0.8.22",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -6426,6 +6542,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "weezl"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
 name = "wezterm-bidi"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7219,4 +7341,19 @@ dependencies = [
  "crc32fast",
  "log",
  "simd-adler32",
+]
+
+[[package]]
+name = "zune-core"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b"
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+dependencies = [
+ "zune-core",
 ]

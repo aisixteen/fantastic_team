@@ -65,7 +65,7 @@ Keys go in the credential store, never in a file. This repo does not define prov
 
 ## 5. Minimal config and start
 
-The command line is fantastic's, unchanged: `fantastic_team` is `fantastic` with this repo's bundles added. It runs in the directory it is started in, so `cd` into the team's folder first. There is no config file: a team is agent records (a recipe, `send` with `create_agent`, or a directory that already holds `.fantastic/agents/`). The app makes a lead with the roles registry and the GitHub connector the same way (`crates/team/src/new_team.rs`).
+The command line is fantastic's, unchanged: `fantastic_team` is `fantastic` with this repo's bundles added. It runs in the directory it is started in, so `cd` into the team's folder first. There is no config file: a team is agent records (a recipe, `send` with `create_agent`, or a directory that already holds `.fantastic/agents/`). The app makes a lead with the bundles registry and the GitHub connector the same way (`crates/team/src/new_team.rs`).
 
     cd ./my-team
     ./target/release/fantastic_team --headless

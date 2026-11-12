@@ -251,8 +251,8 @@ def setup_command() -> str:
     """One raw ssh: wait for the remote kernel's socket, then the web host, its leg and the
     canvas's edges, `user`'s grant for the leg, the remote exec agent (it may call the master's
     agents), the work program, and boot `web` (it mounts the leg and listens on the tunnel's port)."""
-    wait = (f"for i in $(seq 150); do [ -S {DIR}/.fantastic/cli/mcp.sock ] && break; sleep 0.2; done && "
-            f"cd {DIR} && [ -S .fantastic/cli/mcp.sock ]")
+    wait = (f"for i in $(seq 150); do [ -f {DIR}/.fantastic/cli/mcp.yaml ] && break; sleep 0.2; done && "
+            f"cd {DIR} && [ -f .fantastic/cli/mcp.yaml ]")
     steps = [wait,
              quiet(remote_send(kernel_item({"type": "create_agent", "id": WEB, "parent_id": "user",
                                             "handler_module": "web.tools", "port": "{{tunnel_port}}"}))),
@@ -523,8 +523,8 @@ def script_lead_spawns_two() -> list[dict]:
     when the script reaches that turn); w2's tools are the box's exec agent: it pulls, fixes muler.py
     and pushes. The lead deletes w2 too."""
     lead = open_turns() + [
-        t({"target": "roles", "type": "spawn", "args": {"role": "worker", "task": "[lane:w1] Fix adder.py, commit and push."}}),
-        t({"target": "roles", "type": "spawn", "args": {"role": "worker"}}),
+        t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker", "task": "[lane:w1] Fix adder.py, commit and push."}}),
+        t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker"}}),
         *check_ins_open("lead"),
         t(AWAIT),  # w1's report (a plain send) wakes the lead: it deletes w1 at once, then hands w2 its work
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}),
@@ -543,8 +543,8 @@ def script_leads_spawn_leads() -> list[dict]:
     that turn); s2 spawns its worker (on the master; its tools are the box's exec agent), which pulls,
     fixes muler.py and pushes; each sub-lead deletes its worker, the lead deletes both sub-leads."""
     lead = open_turns() + [
-        t({"target": "roles", "type": "spawn", "args": {"role": "sublead", "task": "[lane:s1] Have a worker fix adder.py, then delete it."}}),
-        t({"target": "roles", "type": "spawn", "args": {"role": "sublead"}}),
+        t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead", "task": "[lane:s1] Have a worker fix adder.py, then delete it."}}),
+        t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead"}}),
         *check_ins_open("lead"),
         t(work("{{minted:2}}", "s2", "[lane:s2] Have a worker pull, fix muler.py and push, then delete it."),
           after=["s1", "w1"], grant=["{{minted:2}}"]),
@@ -553,10 +553,10 @@ def script_leads_spawn_leads() -> list[dict]:
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:2}}"}}),
         check_ins_close("lead"),
     ] + close_turns()
-    s1 = [t({"target": "roles", "type": "spawn", "args": {"role": "worker", "task": "[lane:w1] Fix adder.py, commit and push."}}, "s1"),
+    s1 = [t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker", "task": "[lane:w1] Fix adder.py, commit and push."}}, "s1"),
           t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}, "s1", after=["w1"]),
           t({"name": "done"}, "s1")]
-    s2 = say_first([t({"target": "roles", "type": "spawn", "args": {"role": "worker", "task": "[lane:w2] Pull, fix muler.py, commit and push."}}, "s2"),
+    s2 = say_first([t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker", "task": "[lane:w2] Pull, fix muler.py, commit and push."}}, "s2"),
                     t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}, "s2", after=["w2"]),
                     t({"name": "done"}, "s2")])
     return (lead + s1 + s2 + fix_turns(ADD, "Fix add", "w1")
@@ -587,8 +587,8 @@ def script_checkins_busy_stuck() -> list[dict]:
     close = close_turns()
     close[-1] = dict(close[-1], say=STUCK_SAY)
     lead = open_turns() + remote + [
-        t({"target": "roles", "type": "spawn", "args": {"role": "sublead", "task": "[lane:s1] Fix adder.py and push; it takes a while."}}),
-        t({"target": "roles", "type": "spawn", "args": {"role": "sublead", "task": "[lane:s2] Wait for a message that never comes."}}),
+        t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead", "task": "[lane:s1] Fix adder.py and push; it takes a while."}}),
+        t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead", "task": "[lane:s2] Wait for a message that never comes."}}),
         *check_ins_open("lead"), *checks, ask(sub2, "stop"),
         t(AWAIT),  # s1's report wakes the lead
         t({"target": "kernel", "type": "delete_agent", "args": {"id": sub1}}),
@@ -901,7 +901,7 @@ class Box:
         """Start the remote kernel in `folder` over ssh, list its records, stop it (SIGTERM, a
         bounded wait). id -> record."""
         start = (f"mkdir -p {folder} && cd {folder} && {{ nohup fantastic_team --headless >> check.log 2>&1 & "
-                 "echo $! > check.pid; } && for i in $(seq 150); do [ -S .fantastic/cli/mcp.sock ] && break; sleep 0.2; done && "
+                 "echo $! > check.pid; } && for i in $(seq 150); do [ -f .fantastic/cli/mcp.yaml ] && break; sleep 0.2; done && "
                  + remote_send(kernel_item({"type": "list_agents"})))
         try:
             out = self.remote.ssh(start, timeout=120).stdout

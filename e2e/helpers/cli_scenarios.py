@@ -2,7 +2,7 @@
 
 A `cli/` test plays one on the scripted model; its `gpu_cli/` twin plays the same on a real model
 (the vllm plug, no script). Both start on the same fleet (record files laid before the first start, `e2e/fleets/`), under
-the same fixed ids and the same role cards, and run the same checks on the result. What differs is
+the same fixed ids and the same bundle cards, and run the same checks on the result. What differs is
 only what the model path is: the scripted test also checks that every scripted turn was served and
 that each lane asked the model (checks about a script); the gpu test hands the lead its task in
 plain words and waits for the lead to answer `done`, and asserts nothing about the model's own path.
@@ -102,21 +102,21 @@ def single_end(ctx, v, label: str, before: dict) -> bool:
 # ---- lead_spawns_two -------------------------------------------------------------------
 
 def spawn_two_start(ctx, v, credentials: bool = False) -> dict:
-    """A lead with the registry and the `worker` card (room for 2). Returns the tree before.
+    """A lead with the registry and the `worker` card. Returns the tree before.
     `credentials`: kept for the callers; a spawned agent takes its spawner's backend, the key ref
     included."""
-    cli.start(ctx, roles=True, bundles=cli.spawn_roles("lead_spawns_two"))
+    cli.start(ctx, registry=True, bundles=cli.spawn_bundles("lead_spawns_two"))
     check_in_leads(ctx, [cli.LEAD])
-    fleet_there(v, ctx, "the lead, its provider (and store) and its roles registry are loaded, under the ids laid",
-                {cli.LEAD: (cli.CHAT, "user"), "roles": ("agentic_resources.tools", cli.LEAD), **provider_there(ctx)})
-    count = ctx.team.send("roles", {"type": "get_count"})["result"]
-    v.check("the registry is on and counts nothing running", count == {"running": 0, "max": 2}, str(count))
+    fleet_there(v, ctx, "the lead, its provider (and store) and its bundles registry are loaded, under the ids laid",
+                {cli.LEAD: (cli.CHAT, "user"), "bundles": ("agentic_resources.tools", cli.LEAD), **provider_there(ctx)})
+    count = ctx.team.send("bundles", {"type": "get_count"})["result"]
+    v.check("the registry is on and counts nothing running", count == {"running": 0}, str(count))
     return cli.tree(ctx.team)
 
 
 def spawns_of(ctx) -> list:
     """The lead's `spawn` calls on the registry, from the team's log (a refused one included)."""
-    return [c for c in team_mod.log_calls(ctx.team.log()) if c == ("roles", "spawn")]
+    return [c for c in team_mod.log_calls(ctx.team.log()) if c == ("bundles", "spawn")]
 
 
 def spawn_two_end(ctx, v, before: dict) -> None:
@@ -126,7 +126,7 @@ def spawn_two_end(ctx, v, before: dict) -> None:
     after = cli.without_new_schedulers(ctx.team, after, before)
     v.check("the records are the ones it started with (a lead's scheduler may stay) (both workers deleted)", after == before,
             f"before {sorted(before)} after {sorted(after)}")
-    count = ctx.team.send("roles", {"type": "get_count"})["result"]
+    count = ctx.team.send("bundles", {"type": "get_count"})["result"]
     v.check("the registry counts nothing running", count["running"] == 0, str(count))
     rows = cli.history_rows(ctx.team, "lead")
     told = [r for r in rows if "[team] The team of `lead` changed" in json.dumps(r)]
@@ -162,11 +162,11 @@ def precreated_end(ctx, v, before: dict) -> None:
 # ---- leads_spawn_leads -----------------------------------------------------------------
 
 def spawn_leads_start(ctx, v, credentials: bool = False) -> dict:
-    """A lead with the registry (room for 4) and the `sublead` and `worker` cards."""
-    cli.start(ctx, roles=True, bundles=cli.spawn_roles("leads_spawn_leads"))
+    """A lead with the registry and the `sublead` and `worker` cards."""
+    cli.start(ctx, registry=True, bundles=cli.spawn_bundles("leads_spawn_leads"))
     check_in_leads(ctx, [cli.LEAD])
-    fleet_there(v, ctx, "the lead, its provider (and store) and its roles registry are loaded, under the ids laid",
-                {cli.LEAD: (cli.CHAT, "user"), "roles": ("agentic_resources.tools", cli.LEAD), **provider_there(ctx)})
+    fleet_there(v, ctx, "the lead, its provider (and store) and its bundles registry are loaded, under the ids laid",
+                {cli.LEAD: (cli.CHAT, "user"), "bundles": ("agentic_resources.tools", cli.LEAD), **provider_there(ctx)})
     return cli.tree(ctx.team)
 
 
@@ -174,7 +174,7 @@ def spawn_leads_end(ctx, v, before: dict) -> None:
     team = ctx.team
     ok, why = cli.solved(ctx.repo)
     v.check("solved (the test passes on HEAD, the fix is committed)", ok, why)
-    spawns = [c for c in team_mod.log_calls(team.log()) if c == ("roles", "spawn")]
+    spawns = [c for c in team_mod.log_calls(team.log()) if c == ("bundles", "spawn")]
     v.check("4 spawns: 2 sub-leads by the lead, 1 worker by each", len(spawns) == 4, str(spawns))
     after = cli.tree(team)
     left = [i for i, a in team.agents().items() if a.get("spawned_by")]
@@ -184,18 +184,18 @@ def spawn_leads_end(ctx, v, before: dict) -> None:
     after = cli.without_new_schedulers(team, after, before)
     v.check("the records are the ones it started with (a lead's scheduler may stay)", after == before,
             f"before {sorted(before)} after {sorted(after)}")
-    count = team.send("roles", {"type": "get_count"})["result"]
+    count = team.send("bundles", {"type": "get_count"})["result"]
     v.check("the registry counts nothing running", count["running"] == 0, str(count))
 
 
 # ---- checkins_busy_stuck (#284) ---------------------------------------------------------
 
 def busy_stuck_start(ctx, v) -> dict:
-    """A lead with the registry (room for 2) and the `sublead` card. Returns the tree before."""
-    cli.start(ctx, roles=True, bundles=cli.roles_dir("checkins_busy_stuck"))
+    """A lead with the registry and the `sublead` card. Returns the tree before."""
+    cli.start(ctx, registry=True, bundles=cli.bundles_dir("checkins_busy_stuck"))
     check_in_leads(ctx, [cli.LEAD])
-    fleet_there(v, ctx, "the lead, its provider (and store) and its roles registry are loaded, under the ids laid",
-                {cli.LEAD: (cli.CHAT, "user"), "roles": ("agentic_resources.tools", cli.LEAD), **provider_there(ctx)})
+    fleet_there(v, ctx, "the lead, its provider (and store) and its bundles registry are loaded, under the ids laid",
+                {cli.LEAD: (cli.CHAT, "user"), "bundles": ("agentic_resources.tools", cli.LEAD), **provider_there(ctx)})
     return cli.tree(ctx.team)
 
 
@@ -230,5 +230,5 @@ def busy_stuck_end(ctx, v, before: dict, report: str = S1_REPORT) -> None:
     tree = cli.without_new_schedulers(team, cli.tree(team), before)
     v.check("the records are the ones it started with (a lead's scheduler may stay) (both sub-leads deleted)", tree == before,
             f"before {sorted(before)} after {sorted(tree)}")
-    count = team.send("roles", {"type": "get_count"})["result"]
+    count = team.send("bundles", {"type": "get_count"})["result"]
     v.check("the registry counts nothing running", count["running"] == 0, str(count))

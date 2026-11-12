@@ -19,8 +19,10 @@ mod api;
 mod app;
 mod callog;
 mod footer;
+mod calls;
 mod push;
-mod verbs;
+pub mod record;
+pub mod verbs;
 
 #[cfg(test)]
 mod tests;
@@ -33,45 +35,26 @@ mod tests_secrets;
 #[cfg(test)]
 mod tests_staleness;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
+use async_trait::async_trait;
 use fantastic_ai_core::helpers::agent_meta;
-use fantastic_ai_core::schema::{self, Field};
-use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
-use fantastic_kernel::refusal::{refusal, with, BAD_ARG, UNHANDLED};
+use fantastic_kernel::bundle::{BundleError, Handler, Reply};
+use fantastic_kernel::refusal::{refusal, with, BAD_ARG};
 use fantastic_kernel::{AgentId, Kernel};
-use serde_json::{json, Map, Value};
-use team_git_connector::text_of;
+use serde_json::{Map, Value};
 
 /// The handler module name this bundle registers under.
 pub const HANDLER_MODULE: &str = "team_github.tools";
 /// The bundle name.
 const NAME: &str = "team_github";
-/// The readme shown by `reflect` and the kernel.
-pub const README: &str = include_str!("readme.md");
-/// One-line sentence of what the agent is.
-pub const SENTENCE: &str = "github connector — a personal token or a GitHub App, bound by configuration (env refs): push via a git agent, draft pull requests, issues, comments, labels and PR status on allowlisted repos; local only without a credential.";
-
-const DEFAULT_API: &str = "https://api.github.com";
+/// What the bundle is for: its one short man text; how to call it is rendered from its
+/// declared verbs (`docs`, `reflect`).
+pub const MAN: &str = "github connector — a personal token or a GitHub App, bound by configuration: push via a git agent, draft pull requests, issues, comments, labels and PR status on allowlisted repos; local only without a credential.";
 
 /// The github connector bundle.
 #[derive(Default)]
 pub struct GithubConnectorBundle;
-
-/// The record schema of a `team_github` agent, as the catalog publishes it.
-pub(crate) fn record_schema() -> &'static Value {
-    static S: OnceLock<Value> = OnceLock::new();
-    S.get_or_init(|| {
-        json!({"fields": [
-            Field::new("app", "map", "{credentials: {store, ref}} — the ref holds `token` (a personal token) or `app_id` + `private_key` (a GitHub App; PEM text or a path to the .pem), bound to api_url's host; no credential = local only").required().json(),
-            Field::new("repos", "list", "the allowlist: [\"owner/name\", …] — every other repo is refused").required().json(),
-            Field::new("api_url", "str", "the GitHub API root (GitHub Enterprise: https://<host>/api/v3)").default(json!(DEFAULT_API)).json(),
-            Field::new("git", "str", "the id of a git connector agent (team_git.tools) whose worktrees push uses").json(),
-            Field::new("directive", "str", "what the lead and workers may do with this connector, and how — returned by the directive verb").required().json(),
-            Field::new("timeout_s", "int", "seconds one GitHub API request may take").default(json!(30)).json(),
-        ]})
-    })
-}
 
 /// The config of the agent, read from its meta at every call.
 pub(crate) struct Cfg {
@@ -105,9 +88,16 @@ pub(crate) fn valid_repo(s: &str) -> bool {
     ok(owner) && ok(name)
 }
 
+/// The text of record field `key`, as the declaration reads it.
+fn field_text(meta: &Map<String, Value>, key: &str) -> Option<String> {
+    record::RECORD
+        .get(meta, key)
+        .and_then(|v| v.as_str().map(str::to_string))
+}
+
 impl GithubConnectorBundle {
-    /// Read the config from the agent's merged meta.
-    pub(crate) fn cfg(meta: &Value) -> Cfg {
+    /// Read the config from the agent's record.
+    pub(crate) fn cfg(meta: &Map<String, Value>) -> Cfg {
         let cred = meta.get("app").and_then(|a| a.get("credentials"));
         let app_cred = (
             cred.and_then(|c| c["store"].as_str())
@@ -128,13 +118,16 @@ impl GithubConnectorBundle {
                         .collect()
                 })
                 .unwrap_or_default(),
-            api_url: text_of(meta, "api_url")
-                .unwrap_or_else(|| DEFAULT_API.into())
+            api_url: field_text(meta, "api_url")
+                .unwrap_or_default()
                 .trim_end_matches('/')
                 .to_string(),
-            git: text_of(meta, "git").filter(|s| !s.is_empty()),
-            directive: text_of(meta, "directive").unwrap_or_default(),
-            timeout_s: meta.get("timeout_s").and_then(|v| v.as_u64()).unwrap_or(30),
+            git: field_text(meta, "git").filter(|s| !s.is_empty()),
+            directive: field_text(meta, "directive").unwrap_or_default(),
+            timeout_s: record::RECORD
+                .get(meta, "timeout_s")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default(),
         }
     }
 }
@@ -146,36 +139,8 @@ pub(crate) fn bad(text: String, arg: &str, value: Value) -> Value {
     r
 }
 
-fn bad_field(field: &str) -> String {
-    format!("team_github: `{field}` must be a non-empty string")
-}
-
-fn validate_app(app: &Value) -> Option<String> {
-    let ok = app.as_object().is_some_and(|o| {
-        o.len() == 1
-            && o.get("credentials").is_some_and(|c| {
-                c.as_object().is_some_and(|c| {
-                    c.get("store")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty())
-                        && c.get("ref")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|s| !s.is_empty())
-                })
-            })
-    });
-    if ok {
-        None
-    } else {
-        Some("team_github: `app` must be {credentials: {store, ref}}".into())
-    }
-}
-
-fn validate_repos(repos: &Value) -> Option<String> {
-    let ok = repos
-        .as_array()
-        .is_some_and(|a| !a.is_empty() && a.iter().all(|r| r.as_str().is_some_and(valid_repo)));
-    if ok {
+fn validate_repos(repos: &[Value]) -> Option<String> {
+    if repos.iter().all(|r| r.as_str().is_some_and(valid_repo)) {
         None
     } else {
         Some("team_github: `repos` must be a non-empty list of \"owner/name\"".into())
@@ -203,94 +168,58 @@ fn validate_api_url(v: &Value) -> Option<String> {
     }
 }
 
-#[async_trait::async_trait]
-impl Bundle for GithubConnectorBundle {
+#[async_trait]
+impl Handler for GithubConnectorBundle {
+    type Call = verbs::Call;
+
     fn name(&self) -> &str {
         NAME
     }
 
-    fn readme(&self) -> Option<&'static str> {
-        Some(README)
+    fn man(&self) -> &'static str {
+        MAN
     }
 
-    fn verb_docs(&self) -> Value {
-        json!({
-            "reflect": "reflect → {id, sentence, repos, api_url, git, directive, recent_calls: [{verb, target, result}] (newest last, at most 50), rate: {limit, remaining, reset}|null, auth: {mode: personal|app|local|invalid, note?}}",
-            "boot": "boot → nothing",
-            "directive": "read this before using the connector → {directive}",
-            "whoami": "whoami → {app: {id, slug, name}} (app) or {user: {login, id}} (personal), plus repos, api_url",
-            "push": "push {repo, branch, path} → {repo, branch, path, pushed}",
-            "pr_create": "pr_create {repo, branch, title, body?} → {repo, number, url, draft, base} (draft only)",
-            "issues": "issues {repo, label?, state?} → {repo, issues: [{number, title, state, labels}]}",
-            "issue_create": "issue_create {repo, title, body, project?} → {repo, number, url, added_to_board} (opened as the app; project = a ProjectV2 node id to add it to)",
-            "issue_state": "issue_state {repo, number, state: open|closed, sender?} → {repo, number, state} (closing an `epic` issue needs sender maintainer)",
-            "issue_view": "issue_view {repo, number} → {repo, number, title, state, labels, body, comments}",
-            "label_events": "label_events {repo, number} → {repo, number, events: [{event, label, actor, created_at}]} (labeled and unlabeled only)",
-            "comment": "comment {repo, number, body} → {repo, number, comment_id, url}",
-            "label": "label {repo, number, add?, remove?} → {repo, number, labels}",
-            "pr_status": "pr_status {repo, number} → {repo, number, state, draft, head_sha, checks, checks_summary, reviews, review_state}",
-            "merge": "merge {repo, number, method?: squash|merge} → {merged, sha, number} (squash by default, never rebase; refuses unless every check on the head commit passed and the base is the default branch; a draft is made ready first)",
-            "staleness": "staleness {versions?: [{repo, branch, commit?}], issue?: {repo, number, source_version?}} → {repos?: [{repo, branch, head, state: same|ahead|diverged|unknown, ahead_by, behind_by, commits: [{sha, subject}] (at most 50), files (at most 100), truncated}], issue?: {repo, number, updated_at, changed: bool|null}} (facts only; no commit = the head only)",
-        })
+    fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+        verbs::VERBS
     }
 
-    fn record_schema(&self) -> Option<Value> {
-        Some(record_schema().clone())
+    fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+        verbs::dynamic_verbs(agent)
     }
 
+    fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+        &record::RECORD
+    }
+
+    /// What the record's declaration cannot say: each repo is `owner/name` and the API
+    /// root is an https URL (or http to loopback).
     fn validate_meta(
         &self,
         meta: &Map<String, Value>,
-        record: &Map<String, Value>,
+        _record: &Map<String, Value>,
     ) -> Option<String> {
-        let get = |k: &str| meta.get(k).filter(|v| !v.is_null());
-        if let Some(v) = get("app") {
-            if let Some(e) = validate_app(v) {
+        if let Some(repos) = meta.get("repos").and_then(Value::as_array) {
+            if let Some(e) = validate_repos(repos) {
                 return Some(e);
             }
         }
-        if let Some(v) = get("repos") {
-            if let Some(e) = validate_repos(v) {
-                return Some(e);
-            }
-        }
-        if let Some(v) = get("api_url") {
+        if let Some(v) = meta.get("api_url").filter(|v| !v.is_null()) {
             if let Some(e) = validate_api_url(v) {
                 return Some(e);
             }
         }
-        for key in ["git", "directive"] {
-            if let Some(v) = get(key) {
-                let ok = v.as_str().is_some_and(|s| !s.trim().is_empty());
-                if !ok {
-                    return Some(bad_field(key));
-                }
-            }
-        }
-        if let Some(v) = get("timeout_s") {
-            let ok = !v.is_boolean() && v.as_u64().is_some_and(|n| n > 0);
-            if !ok {
-                return Some("team_github: `timeout_s` must be a positive int".into());
-            }
-        }
-        schema::validate(record_schema(), NAME, meta, record)
+        None
     }
 
     async fn handle(
         &self,
         agent_id: &AgentId,
-        payload: &Value,
+        call: Self::Call,
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
-        let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let meta = agent_meta(agent_id, kernel);
-        let cfg = Self::cfg(&Value::Object(meta));
-        if t == "boot" {
-            // A fresh process or agent starts with an empty call log.
-            callog::reset(&agent_id.to_string(), &cfg.api_url);
-            return Ok(None);
-        }
-        let out = verbs::dispatch(t, agent_id, payload, kernel, &cfg).await;
+        let cfg = Self::cfg(&agent_meta(agent_id, kernel));
+        let out = calls::dispatch(call, agent_id, kernel, &cfg).await;
         Ok(Some(out))
     }
 }

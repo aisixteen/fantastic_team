@@ -15,7 +15,7 @@ def run(ctx):
         return v.finish()
     played = run_flow.hand_over(ctx, "Start two workers.", lead=pl, upto=3)
     v.check("the scripted lead spawned its two workers", played, f"served {ctx.model.served}")
-    workers = [w["id"] for w in team.send("roles", {"type": "fleet"})["result"].get("roles", {}).get("worker", [])]
+    workers = [w["id"] for w in team.send("bundles", {"type": "fleet"})["result"].get("bundles", {}).get("worker", [])]
     v.check("the registry's fleet lists two workers", len(workers) == 2, str(workers))
 
     r = team.send("cadencer", {"type": "set", "cadence": 2})

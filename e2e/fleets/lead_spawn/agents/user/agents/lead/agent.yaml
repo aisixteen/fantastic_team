@@ -10,7 +10,7 @@ can_call:
   worker_exec: "*"
   "$subtree": "*"
   kernel_state: [delete_agent, docs, create_agent]
-  roles: [roles, role, spawn, get_count, fleet]
+  bundles: [bundles, bundle, spawn, get_count, fleet]
 callable_by:
   "$self": "*"
   "$parent": "*"

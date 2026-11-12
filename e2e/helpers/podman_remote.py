@@ -454,7 +454,7 @@ def smoke() -> int:
             # (fantastic's host guard), and a client of the local end sends `127.0.0.1:<local>`
             n = free_port()
             r.ssh("mkdir -p w && cd w && { nohup fantastic_team --headless > team.log 2>&1 & echo $! > team.pid; } "
-                  "&& for i in $(seq 100); do [ -S .fantastic/cli/mcp.sock ] && exit 0; sleep 0.2; done; exit 1")
+                  "&& for i in $(seq 100); do [ -f .fantastic/cli/mcp.yaml ] && exit 0; sleep 0.2; done; exit 1")
             send = lambda item: r.ssh("cd w && fantastic_team send " + shq(item)).stdout
             out = send(json.dumps({"target": "kernel", "payload": {
                 "type": "create_agent", "id": "web", "parent_id": "user", "handler_module": "web.tools",

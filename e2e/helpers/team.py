@@ -2,8 +2,8 @@
 
 The binary is fantastic's command line, run in the run folder (fantastic has no `--dir`:
 it works in the directory it is started in): `--headless` by default, `webui --port N`
-for the web. Everything it is told goes through `fantastic_team send '<item>'` (attach-only, over
-`.fantastic/cli/mcp.sock`): `create_agent` and `update_agent` on the root. A test's agents are record files
+for the web. Everything it is told goes through `fantastic_team send '<item>'` (attach-only, over the
+loopback port that `.fantastic/cli/mcp.yaml` names: `{pid, port, token}`, private to the user): `create_agent` and `update_agent` on the root. A test's agents are record files
 under `e2e/fleets/` (named by `fleet:` in its `test.yaml`), laid into `<run>/.fantastic/` before the first
 start (`lay_fleet`); the older tests' fleets are record files too (`helpers/stock.py` keeps only their own steps).
 """
@@ -20,7 +20,7 @@ import time
 import urllib.error
 import urllib.request
 
-SOCK = os.path.join(".fantastic", "cli", "mcp.sock")
+ENDPOINT = os.path.join(".fantastic", "cli", "mcp.yaml")
 HEADLESS = ("--headless",)  # no screen, no port; the default start
 
 
@@ -103,6 +103,8 @@ class Team:
         extra = list(map(str, extra_args))
         self.port = int(extra[extra.index("--port") + 1]) if "--port" in extra else None
         log = open(self.log_path, "wb")
+        if os.path.exists(os.path.join(self.dir, ENDPOINT)):  # a killed run's stale file
+            os.remove(os.path.join(self.dir, ENDPOINT))
         self.proc = subprocess.Popen(self.argv(extra), env=self.env,
                                      stdout=log, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL, cwd=self.dir)
@@ -110,13 +112,13 @@ class Team:
         while time.time() < end:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"team binary exited early ({self.proc.returncode}):\n{self.log()}")
-            if os.path.exists(os.path.join(self.dir, SOCK)):
+            if os.path.exists(os.path.join(self.dir, ENDPOINT)):
                 # what a test preseeds into a memory store (RAM) again on every start
                 for again in getattr(self, "on_start", []):
                     again(self)
                 return
             time.sleep(0.2)
-        raise RuntimeError(f"team binary did not open {SOCK} in {wait_s}s:\n{self.log()}")
+        raise RuntimeError(f"team binary did not write {ENDPOINT} in {wait_s}s:\n{self.log()}")
 
     def agents(self) -> dict:
         """Every agent record, by id (`list_agents` on the kernel)."""

@@ -37,8 +37,9 @@ async fn setup() {
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("FANTASTIC_HOME", home.path());
         let scratch = tempfile::tempdir().unwrap();
-        fantastic_tui::seed_dir(scratch.path()).unwrap();
-        let k = fantastic_tui::boot_kernel(scratch.path(), &[], None, None)
+        let state = scratch.path().join(".fantastic");
+        fantastic_tui::seed_dir(&state).unwrap();
+        let k = fantastic_tui::boot_kernel(&state, scratch.path(), &[], None, None)
             .await
             .unwrap();
         fantastic_tui::stop_kernel(&k).await;
@@ -95,9 +96,11 @@ impl Booted {
 pub async fn boot_at(dir: &Path, seed: Seed, extras: &[Extra], web_port: Option<u16>) -> Booted {
     setup().await;
     match &seed {
-        Seed::Stock => fantastic_tui::seed_dir(dir).map(|_| ()),
+        Seed::Stock => fantastic_tui::seed_dir(&dir.join(".fantastic")).map(|_| ()),
         Seed::Team => fantastic_team::hydrate::seed(dir).map(|_| ()),
-        Seed::Text(t) => fantastic_tui::seed_dir_with(dir, &[t.as_str()]).map(|_| ()),
+        Seed::Text(t) => {
+            fantastic_tui::seed_dir_with(&dir.join(".fantastic"), &[t.as_str()]).map(|_| ())
+        }
     }
     .unwrap_or_else(|e| panic!("seed {}: {e}", dir.display()));
     let web = if dir.join(".fantastic/agents/web/agent.yaml").exists() {
@@ -107,7 +110,7 @@ pub async fn boot_at(dir: &Path, seed: Seed, extras: &[Extra], web_port: Option<
     };
     let mut all: Vec<Extra> = vec![fantastic_team::register_team];
     all.extend_from_slice(extras);
-    let kernel = fantastic_tui::boot_kernel(dir, &all, web_port, None)
+    let kernel = fantastic_tui::boot_kernel(&dir.join(".fantastic"), dir, &all, web_port, None)
         .await
         .unwrap_or_else(|e| panic!("boot {}: {e}", dir.display()));
     Booted {

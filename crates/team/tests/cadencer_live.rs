@@ -92,7 +92,7 @@ async fn configure_survives_restart() {
     let set = call(
         &kernel,
         "cad",
-        json!({"type": "set", "sender": "lead", "cadence": 9}),
+        json!({"type": "set", "cadence": 9}),
     )
     .await;
     assert!(set.get("error").is_none(), "set from parent refused: {set}");

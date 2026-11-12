@@ -28,6 +28,10 @@ pub const BLUEPRINT: &str = include_str!("../blueprint.yaml");
 /// every machine (an absolute path), so the first run fills it in.
 const WORK_PLACEHOLDER: &str = "@work";
 
+/// The page's `read_stream` as its record declares it: one source in code
+/// ([`crate::page::read_stream_declared`]), filled where the blueprint says so.
+const READ_STREAM_PLACEHOLDER: &str = "@read_stream";
+
 /// The blueprint with the first run's placeholders of `dir` filled in. `@root` stays: the
 /// seed writer resolves it.
 fn filled(text: &str, dir: &Path) -> Result<Value, String> {
@@ -42,6 +46,9 @@ fn fill(v: &mut Value, dir: &Path) {
             *s = crate::worker_exec::work_dir(dir)
                 .to_string_lossy()
                 .into_owned();
+        }
+        Value::String(s) if s == READ_STREAM_PLACEHOLDER => {
+            *v = crate::page::read_stream_declared()["read_stream"].clone();
         }
         Value::Array(a) => a.iter_mut().for_each(|x| fill(x, dir)),
         Value::Object(o) => {
@@ -66,19 +73,24 @@ pub fn blueprint_text(dir: &Path) -> Result<String, String> {
     serde_yaml::to_string(&doc).map_err(|e| format!("blueprint: {e}"))
 }
 
-/// FIRST RUN: write the team's agents into a fresh `dir` after fantastic's stock tree
-/// (`fantastic_tui::seed_dir_with`). Returns whether it wrote: `.fantastic` already there
-/// means nothing is written.
-pub fn seed(dir: &Path) -> Result<bool, String> {
-    // the stock roles are the kernel's own (embedded, `crate::roles::register`): nothing
+/// FIRST RUN: write the team's agents into the state folder `state` after fantastic's stock
+/// tree (`fantastic_tui::seed_dir_with`); `work` is the team folder the blueprint's work dir
+/// is in. Returns whether it wrote: a state folder already there means nothing is written.
+pub fn seed_at(state: &Path, work: &Path) -> Result<bool, String> {
+    // the stock bundles are the kernel's own (embedded, `crate::bundles::register`): nothing
     // of them is written here
-    fantastic_tui::seed_dir_with(dir, &[&blueprint_text(dir)?])
+    fantastic_tui::seed_dir_with(state, &[&blueprint_text(work)?])
+}
+
+/// [`seed_at`] for a team folder `dir`: its state folder is `dir/.fantastic`.
+pub fn seed(dir: &Path) -> Result<bool, String> {
+    seed_at(&dir.join(".fantastic"), dir)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::new_team::{GITHUB, LEAD, ROLES, WORKER_EXEC, WORKER_FILES};
+    use crate::new_team::{GITHUB, LEAD, BUNDLES, WORKER_EXEC, WORKER_FILES};
     use crate::page::{PAGE_ID, WEB_ID, WS_ID};
     use crate::test_boot::{boot_at, Seed};
     use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
@@ -90,7 +102,7 @@ mod tests {
         (LEAD, "user"),
         (GITHUB, LEAD),
         ("github_credentials", LEAD),
-        (ROLES, LEAD),
+        (BUNDLES, LEAD),
         (WORKER_EXEC, LEAD),
         (WORKER_FILES, LEAD),
         (WEB_ID, DEFAULT_ROOT_ID),
@@ -161,16 +173,16 @@ mod tests {
         assert!(!blueprint_text(dir).unwrap().contains(WORK_PLACEHOLDER));
     }
 
-    /// The page's verb doc has one source in code (`page::READ_STREAM_DOC`) and is written
-    /// in the blueprint as it is: the yaml needs no fill for it.
+    /// The page's declared `read_stream` has one source in code
+    /// (`page::read_stream_declared`); the blueprint names it with a placeholder.
     #[test]
-    fn the_blueprints_page_verb_doc_is_the_pages_own() {
+    fn the_blueprints_page_verb_is_the_pages_own() {
         let doc = declared(Path::new("/team"));
         assert_eq!(
-            rec_in(&doc, PAGE_ID)["verbs"]["read_stream"],
-            crate::page::READ_STREAM_DOC
+            rec_in(&doc, PAGE_ID)["verbs"],
+            crate::page::read_stream_declared()
         );
-        assert!(!BLUEPRINT.contains("@read_stream"));
+        assert!(BLUEPRINT.contains("@read_stream"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -181,15 +193,15 @@ mod tests {
         let doc = declared(Path::new("/team"));
         let mut out = Vec::new();
         walk(&doc["agents"], DEFAULT_ROOT_ID, &mut out);
-        // a record of a role bundle (`lead`) runs on that bundle's base
-        let roles: Vec<&str> = crate::roles::ALL.iter().map(|(n, _)| *n).collect();
+        // a record of a bundle (`lead`) runs on that bundle's base
+        let bundles: Vec<&str> = crate::bundles::ALL.iter().map(|(n, _)| *n).collect();
         let mut modules: Vec<String> = out
             .iter()
             .map(|(_, _, r)| r["handler_module"].as_str().unwrap().to_string())
-            .filter(|m| !roles.contains(&m.as_str()))
+            .filter(|m| !bundles.contains(&m.as_str()))
             .collect();
-        for (name, text) in crate::roles::ALL {
-            modules.push(crate::roles::parse_card(text, name).unwrap().base);
+        for (name, text) in crate::bundles::ALL {
+            modules.push(crate::bundles::parse_card(text, name).unwrap().base);
         }
         let missing: Vec<&String> = modules.iter().filter(|m| reg.get(m).is_none()).collect();
         assert!(missing.is_empty(), "not registered: {missing:?}");
@@ -214,8 +226,8 @@ mod tests {
         let mut out = Vec::new();
         walk(&doc["agents"], DEFAULT_ROOT_ID, &mut out);
         let ids: Vec<&str> = out.iter().map(|(i, _, _)| *i).collect();
-        for (file, text) in crate::roles::ALL {
-            let c = crate::roles::parse_card(text, file).unwrap();
+        for (file, text) in crate::bundles::ALL {
+            let c = crate::bundles::parse_card(text, file).unwrap();
             for tool in c.grants.keys() {
                 // a `$` key is a token (`$subtree`: the lead's own scheduler), not a tool
                 let known = tool.starts_with('$')
@@ -343,8 +355,8 @@ mod tests {
             json!(crate::new_team::LEAD_ROOT_VERBS)
         );
         assert_eq!(
-            lead["can_call"]["roles"],
-            json!(crate::new_team::LEAD_ROLES_VERBS)
+            lead["can_call"]["bundles"],
+            json!(crate::new_team::LEAD_BUNDLES_VERBS)
         );
         assert_eq!(
             disk_record(dir.path(), WEB_ID)["can_call"][PAGE_ID],
@@ -425,7 +437,7 @@ mod tests {
         assert!(!on_disk(dir.path(), WORKER_EXEC).exists());
         assert!(!stock.exists());
         // the rest of the team is as it was
-        for id in [LEAD, GITHUB, ROLES, WORKER_FILES, WEB_ID, PAGE_ID, WS_ID] {
+        for id in [LEAD, GITHUB, BUNDLES, WORKER_FILES, WEB_ID, PAGE_ID, WS_ID] {
             assert!(live.contains_key(id), "{id}");
         }
     }
@@ -531,7 +543,7 @@ mod tests {
             .unwrap()
         };
         let memory = on("user/agents/memory/agent.yaml");
-        assert_eq!(memory["callable_by"]["roles"], "*");
+        assert_eq!(memory["callable_by"]["bundles"], "*");
         assert!(
             memory["callable_by"].get("user").is_some(),
             "the stock grant stays: {memory}"
@@ -556,11 +568,11 @@ mod tests {
             )
         };
         let doc = declared(dir.path());
-        for (caller, callee) in [(ROLES, "memory"), (GITHUB, "credentials"), (WS_ID, "user")] {
+        for (caller, callee) in [(BUNDLES, "memory"), (GITHUB, "credentials"), (WS_ID, "user")] {
             let can = &rec_in(&doc, caller)["can_call"][callee];
             assert!(!can.is_null(), "{caller} declares can_call {callee}");
         }
-        for (who, verb) in [(ROLES, "read")] {
+        for (who, verb) in [(BUNDLES, "read")] {
             admitted(
                 &as_caller(&k, who, "memory", json!({"type": verb})).await,
                 &format!("{who} -> memory {verb}"),
@@ -583,7 +595,7 @@ mod tests {
             let r = as_caller(&k, who, target, json!({"type": verb})).await;
             assert_eq!(r["reason"], "unauthorized", "{who} -> {target} {verb}: {r}");
         }
-        assert_eq!(live("memory")["callable_by"]["roles"], "*");
+        assert_eq!(live("memory")["callable_by"]["bundles"], "*");
         assert!(page_verbs(&live("user")["callable_by"]["team_ws"]));
         // a boot made nothing of its own
         assert!(!k
@@ -601,7 +613,7 @@ mod tests {
         let before = tree_of(dir.path());
         let again = boot_and_stop(dir.path()).await;
         assert_eq!(tree_of(dir.path()), before);
-        assert_eq!(again["memory"]["callable_by"]["roles"], "*");
+        assert_eq!(again["memory"]["callable_by"]["bundles"], "*");
         assert!(page_verbs(&again["user"]["callable_by"]["team_ws"]));
         let pending2: Value = serde_yaml::from_str(
             &std::fs::read_to_string(dir.path().join(".fantastic/cli/grants.yaml")).unwrap(),

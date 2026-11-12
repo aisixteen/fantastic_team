@@ -32,10 +32,14 @@
 
 #![deny(missing_docs)]
 
+pub mod record;
+pub mod verbs;
+
 use async_trait::async_trait;
 use fantastic_bundle::py_repr;
-use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
-use fantastic_kernel::refusal::{self, bad, missing};
+use verbs::{ForkFrom, Holder, State, Usage, Version};
+use fantastic_kernel::bundle::{BundleError, Handler, Reply};
+use fantastic_kernel::refusal::{self, missing};
 use fantastic_kernel::{current_origin, Agent, AgentId, Item, Kernel};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -44,11 +48,9 @@ use std::sync::Arc;
 /// `handler_module` key under which this bundle registers.
 pub const HANDLER_MODULE: &str = "task_registry.tools";
 
-/// readme.md auto-seeded into the agent's dir on creation.
-pub const README: &str = include_str!("readme.md");
-
-/// The states a task takes.
-pub const STATES: [&str; 6] = ["waiting", "running", "blocked", "done", "failed", "paused"];
+/// What the bundle is for: its one short man text; how to call it is rendered from its
+/// declared verbs (`docs`, `reflect`).
+pub const MAN: &str = "A registry of tasks: who holds each one and where it came from. It makes no outbound call; it keeps its tables in the store agent its record names.";
 
 /// How many rows one store read asks for.
 const PAGE: u64 = 500;
@@ -58,19 +60,6 @@ const PAGE: u64 = 500;
 #[derive(Default)]
 pub struct TaskRegistryBundle {
     locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-}
-
-fn verb_docs_json() -> Value {
-    json!({
-        "reflect": "Identity and whether the registry is enabled (has a task_store_id). No args.",
-        "add": "args: id:str (req), source:str (req, opaque: gh:o/r#12, jira:KEY-5, ...), parent:str? (a task id), update_to:str? (default source), holder:str|{subtree:str}? (an existing agent), status:str? (default waiting), versions:[{repo,branch,commit}]? (opaque strings, one per repo the task touches), source_version:str? (opaque), fork_from:{agent,mark}? (opaque). Refused `exists` (id taken), `not_found` (parent or holder). Returns the entry.",
-        "assign": "args: id:str (req), holder:str|{subtree:str} (req; an existing agent id, or a subtree named by its root agent). versions:[{repo,branch,commit}]?, source_version:str?, fork_from:{agent,mark}? (each, when given, replaces the entry's value; `versions: []` clears it). Only a task nobody holds; else `already_held`. Returns the entry.",
-        "reassign": "args: id:str (req), holder:str|{subtree:str} (req), versions?, source_version?, fork_from? (as `assign`). Only a held task; else `not_held`. Agent to agent, to a subtree and back; every step is kept in history {from, to, by, at}, plus the entry's non-empty versions, source_version and fork_from as set by that step. Returns the entry.",
-        "status": "args: id:str (req), status:waiting|running|blocked|done|failed|paused?, versions?, source_version?, fork_from? (as `assign`). At least one of status and the three facts is required, else `missing_arg` for status. The lead's way to update the facts. Returns the entry.",
-        "report": "args: id:str (req), from:str? (an agent id; default you), state:str?, result:any?, usage:{input_tokens,cache_read_tokens,cache_write_tokens,output_tokens}? (non-negative integers, missing keys count 0). Records the task's last report {from, state, result, at, usage}; a usage also becomes the entry's `usage` (the last one per task; a report without usage keeps it). `from` must be you or one of your descendants, else `not_in_subtree`. Returns the entry.",
-        "list": "args: parent:str?, holder:str|{subtree:str}?, status:str?, ids:[str]? (only these tasks; an id that is not a task is `not_found`). Returns {tasks:[entry], usage:{input_tokens,cache_read_tokens,cache_write_tokens,output_tokens}} sorted by id; usage is the sum of the returned tasks' last usage (none counts 0).",
-        "get": "args: id:str (req). Returns the entry plus children (the ids of the tasks whose parent it is); an unknown id is `not_found`.",
-    })
 }
 
 // ── helpers ─────────────────────────────────────────────────────────
@@ -83,126 +72,35 @@ fn agent_of(kernel: &Kernel, id: &AgentId) -> Option<Arc<Agent>> {
     kernel.agents.get(id).map(|e| Arc::clone(&e))
 }
 
-/// A required non-empty string arg.
-fn str_arg<'a>(verb: &str, payload: &'a Value, arg: &str) -> Result<&'a str, Value> {
-    match payload.get(arg) {
-        None | Some(Value::Null) => Err(missing(verb, arg)),
-        Some(Value::String(s)) if !s.is_empty() => Ok(s),
-        Some(_) => Err(bad(verb, arg, "a non-empty string")),
-    }
-}
-
-/// An optional non-empty string arg.
-fn opt_str<'a>(verb: &str, payload: &'a Value, arg: &str) -> Result<Option<&'a str>, Value> {
-    match payload.get(arg) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) if !s.is_empty() => Ok(Some(s)),
-        Some(_) => Err(bad(verb, arg, "a non-empty string")),
-    }
-}
-
-/// An optional `versions`: a list of `{repo, branch, commit}`, all non-empty strings.
-fn versions_arg(verb: &str, payload: &Value) -> Result<Option<Value>, Value> {
-    const WANT: &str = "a list of {repo, branch, commit} strings";
-    let v = match payload.get("versions") {
-        None | Some(Value::Null) => return Ok(None),
-        Some(v) => v,
-    };
-    let Some(list) = v.as_array() else {
-        return Err(bad(verb, "versions", WANT));
-    };
-    for item in list {
-        let ok = item.as_object().is_some_and(|m| {
-            m.len() == 3
-                && ["repo", "branch", "commit"].iter().all(|k| {
-                    m.get(*k)
-                        .and_then(Value::as_str)
-                        .is_some_and(|s| !s.is_empty())
-                })
-        });
-        if !ok {
-            return Err(bad(verb, "versions", WANT));
-        }
-    }
-    Ok(Some(v.clone()))
-}
-
-/// An optional `fork_from`: `{agent, mark}`, both non-empty strings (opaque).
-fn fork_from_arg(verb: &str, payload: &Value) -> Result<Option<Value>, Value> {
-    let v = match payload.get("fork_from") {
-        None | Some(Value::Null) => return Ok(None),
-        Some(v) => v,
-    };
-    let ok = v.as_object().is_some_and(|m| {
-        m.len() == 2
-            && ["agent", "mark"].iter().all(|k| {
-                m.get(*k)
-                    .and_then(Value::as_str)
-                    .is_some_and(|s| !s.is_empty())
-            })
-    });
-    if ok {
-        Ok(Some(v.clone()))
-    } else {
-        Err(bad(verb, "fork_from", "an {agent, mark} object of strings"))
-    }
-}
-
 /// The three recorded facts of a write verb: (versions, source_version, fork_from).
 type Facts = (Option<Value>, Option<String>, Option<Value>);
 
-fn facts_arg(verb: &str, payload: &Value) -> Result<Facts, Value> {
-    Ok((
-        versions_arg(verb, payload)?,
-        opt_str(verb, payload, "source_version")?.map(str::to_string),
-        fork_from_arg(verb, payload)?,
-    ))
+fn facts_of(
+    versions: Option<Vec<Version>>,
+    source_version: Option<String>,
+    fork_from: Option<ForkFrom>,
+) -> Facts {
+    (
+        versions.map(|v| json!(v)),
+        source_version,
+        fork_from.map(|f| json!(f)),
+    )
 }
 
-/// An optional `usage`: token counts, a subset of [`fantastic_ai_core::USAGE_KEYS`], each a non-negative
-/// integer. Stored with all four keys (missing ones 0).
-fn usage_arg(payload: &Value) -> Result<Option<Value>, Value> {
-    const WANT: &str = "an object of non-negative integer token counts \
-                        (input_tokens, cache_read_tokens, cache_write_tokens, output_tokens)";
-    let m = match payload.get("usage") {
-        None | Some(Value::Null) => return Ok(None),
-        Some(Value::Object(m)) => m,
-        Some(_) => return Err(bad("report", "usage", WANT)),
-    };
-    if m.keys()
-        .any(|k| !fantastic_ai_core::USAGE_KEYS.contains(&k.as_str()))
-    {
-        return Err(bad("report", "usage", WANT));
-    }
-    let mut out = Map::new();
-    for k in fantastic_ai_core::USAGE_KEYS {
-        let n = match m.get(k) {
-            None => 0,
-            Some(v) => v.as_u64().ok_or_else(|| bad("report", "usage", WANT))?,
-        };
-        out.insert(k.to_string(), json!(n));
-    }
-    Ok(Some(Value::Object(out)))
+/// A `usage`, stored with all four keys ([`fantastic_ai_core::USAGE_KEYS`]).
+fn usage_value(u: &Usage) -> Value {
+    json!({
+        "input_tokens": u.input_tokens,
+        "cache_read_tokens": u.cache_read_tokens,
+        "cache_write_tokens": u.cache_write_tokens,
+        "output_tokens": u.output_tokens,
+    })
 }
 
-fn state_arg(verb: &str, arg: &str, v: &str) -> Result<(), Value> {
-    if STATES.contains(&v) {
-        Ok(())
-    } else {
-        Err(bad(verb, arg, &format!("one of {}", STATES.join("|"))))
-    }
-}
-
-/// A holder: an agent id, or `{subtree: <root agent id>}`. It must name an existing
-/// agent. Returns the holder as stored.
-fn holder_arg(kernel: &Kernel, verb: &str, v: &Value) -> Result<Value, Value> {
-    let (id, out) = match v {
-        Value::String(s) if !s.is_empty() => (s.as_str(), v.clone()),
-        Value::Object(m) if m.len() == 1 => match m.get("subtree") {
-            Some(Value::String(s)) if !s.is_empty() => (s.as_str(), v.clone()),
-            _ => return Err(bad(verb, "holder", "an agent id or {subtree: agent id}")),
-        },
-        _ => return Err(bad(verb, "holder", "an agent id or {subtree: agent id}")),
+/// A holder must name an existing agent (for a subtree, its root). Returns the holder as stored.
+fn holder_arg(kernel: &Kernel, verb: &str, h: &Holder) -> Result<Value, Value> {
+    let id = match h {
+        Holder::Agent(s) | Holder::Subtree { subtree: s } => s.as_str(),
     };
     if agent_of(kernel, &AgentId::from(id)).is_none() {
         return Err(refusal::refusal(
@@ -210,7 +108,7 @@ fn holder_arg(kernel: &Kernel, verb: &str, v: &Value) -> Result<Value, Value> {
             format!("{verb}: holder {} is not an agent", py_repr(id)),
         ));
     }
-    Ok(out)
+    Ok(json!(h))
 }
 
 fn not_found_task(verb: &str, id: &str) -> Value {
@@ -343,74 +241,76 @@ impl TaskRegistryBundle {
 }
 
 #[async_trait]
-impl Bundle for TaskRegistryBundle {
+impl Handler for TaskRegistryBundle {
+    type Call = verbs::Call;
+
     fn name(&self) -> &str {
         "task_registry"
     }
 
-    fn verb_docs(&self) -> Value {
-        verb_docs_json()
+    fn man(&self) -> &'static str {
+        MAN
     }
 
-    fn readme(&self) -> Option<&'static str> {
-        Some(README)
+    fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+        verbs::VERBS
+    }
+
+    fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+        verbs::dynamic_verbs(agent)
+    }
+
+    fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+        &record::RECORD
     }
 
     async fn handle(
         &self,
         agent_id: &AgentId,
-        payload: &Value,
+        call: Self::Call,
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
-        let raw = payload.get("type").unwrap_or(&Value::Null);
-        let verb = raw.as_str().unwrap_or("");
         let Some(me) = agent_of(kernel, agent_id) else {
             return Ok(None);
         };
         let meta = meta_of(&me);
         let store = store_id(&meta);
-        let reply = match verb {
-            "boot" | "shutdown" => return Ok(None),
-            "reflect" => json!({
+        if let verbs::Call::Reflect(_) = call {
+            return Ok(Some(json!({
                 "id": agent_id.as_str(),
-                "sentence": "A registry of tasks: who holds each one and where it came from.",
+                "sentence": MAN,
                 "enabled": store.is_some(),
-            }),
-            _ if store.is_none() => refusal::refusal_hint(
+            })));
+        }
+        let Some(store) = store else {
+            return Ok(Some(refusal::refusal_hint(
                 refusal::DISABLED,
                 "task_registry is disabled: the record has no task_store_id".to_string(),
                 "set task_store_id on the record",
-            ),
-            "list" | "get" => {
-                let store = store.unwrap_or_default();
-                match verb {
-                    "list" => list_reply(kernel, &store, payload).await,
-                    _ => get_reply(kernel, &store, payload).await,
-                }
-            }
-            "add" | "assign" | "reassign" | "status" | "report" => {
-                let store = store.unwrap_or_default();
+            )));
+        };
+        let reply = match call {
+            verbs::Call::Reflect(_) => Value::Null,
+            verbs::Call::List(a) => flat(list_inner(kernel, &store, a).await),
+            verbs::Call::Get(a) => flat(get_inner(kernel, &store, &a.id).await),
+            write => {
                 let lock = self.lock_of(agent_id);
                 let _held = lock.lock().await;
                 let caller = current_origin();
-                match verb {
-                    "add" => add_reply(kernel, &store, &caller, payload).await,
-                    "assign" => assign_reply(kernel, &store, &caller, payload, false).await,
-                    "reassign" => assign_reply(kernel, &store, &caller, payload, true).await,
-                    "status" => status_reply(kernel, &store, payload).await,
-                    _ => report_reply(kernel, &store, &caller, payload).await,
+                match write {
+                    verbs::Call::Add(a) => flat(add_inner(kernel, &store, &caller, a).await),
+                    verbs::Call::Assign(a) => {
+                        let f = facts_of(a.versions, a.source_version, a.fork_from);
+                        flat(assign_inner(kernel, &store, &caller, &a.id, a.holder, f, false).await)
+                    }
+                    verbs::Call::Reassign(a) => {
+                        let f = facts_of(a.versions, a.source_version, a.fork_from);
+                        flat(assign_inner(kernel, &store, &caller, &a.id, a.holder, f, true).await)
+                    }
+                    verbs::Call::Status(a) => flat(status_inner(kernel, &store, a).await),
+                    verbs::Call::Report(a) => flat(report_inner(kernel, &store, &caller, a).await),
+                    _ => Value::Null,
                 }
-            }
-            _ => {
-                let mut r = refusal::refusal(
-                    refusal::UNHANDLED,
-                    format!(
-                        "task_registry: unknown type {}",
-                        fantastic_bundle::py_repr_value(raw)
-                    ),
-                );
-                refusal::with(&mut r, "verb", raw.clone());
-                r
             }
         };
         Ok(Some(reply))
@@ -424,30 +324,19 @@ fn flat(r: Result<Value, Value>) -> Value {
     r.unwrap_or_else(|e| e)
 }
 
-async fn add_reply(
-    kernel: &Arc<Kernel>,
-    store: &str,
-    caller: &Option<AgentId>,
-    payload: &Value,
-) -> Value {
-    flat(add_inner(kernel, store, caller, payload).await)
-}
-
 async fn add_inner(
     kernel: &Arc<Kernel>,
     store: &str,
     caller: &Option<AgentId>,
-    payload: &Value,
+    a: verbs::Add,
 ) -> Result<Value, Value> {
-    let id = str_arg("add", payload, "id")?;
-    let source = str_arg("add", payload, "source")?;
-    let parent = opt_str("add", payload, "parent")?;
-    let update_to = opt_str("add", payload, "update_to")?.unwrap_or(source);
-    let status = opt_str("add", payload, "status")?.unwrap_or("waiting");
-    state_arg("add", "status", status)?;
-    let facts = facts_arg("add", payload)?;
-    let holder = match payload.get("holder") {
-        None | Some(Value::Null) => Value::Null,
+    let (id, source) = (a.id.as_str(), a.source.as_str());
+    let parent = a.parent.as_deref();
+    let update_to = a.update_to.as_deref().unwrap_or(source);
+    let status = a.status.as_str();
+    let facts = facts_of(a.versions, a.source_version, a.fork_from);
+    let holder = match &a.holder {
+        None => Value::Null,
         Some(h) => holder_arg(kernel, "add", h)?,
     };
     let tasks = load(kernel, store, None).await?;
@@ -476,30 +365,17 @@ async fn add_inner(
     Ok(entry)
 }
 
-async fn assign_reply(
-    kernel: &Arc<Kernel>,
-    store: &str,
-    caller: &Option<AgentId>,
-    payload: &Value,
-    re: bool,
-) -> Value {
-    flat(assign_inner(kernel, store, caller, payload, re).await)
-}
-
 async fn assign_inner(
     kernel: &Arc<Kernel>,
     store: &str,
     caller: &Option<AgentId>,
-    payload: &Value,
+    id: &str,
+    holder: Holder,
+    facts: Facts,
     re: bool,
 ) -> Result<Value, Value> {
     let verb = if re { "reassign" } else { "assign" };
-    let id = str_arg(verb, payload, "id")?;
-    let facts = facts_arg(verb, payload)?;
-    let to = match payload.get("holder") {
-        None | Some(Value::Null) => return Err(missing(verb, "holder")),
-        Some(h) => holder_arg(kernel, verb, h)?,
-    };
+    let to = holder_arg(kernel, verb, &holder)?;
     let mut entry = load(kernel, store, Some(id))
         .await?
         .remove(id)
@@ -534,21 +410,17 @@ async fn assign_inner(
     Ok(entry)
 }
 
-async fn status_reply(kernel: &Arc<Kernel>, store: &str, payload: &Value) -> Value {
-    flat(status_inner(kernel, store, payload).await)
-}
-
-async fn status_inner(kernel: &Arc<Kernel>, store: &str, payload: &Value) -> Result<Value, Value> {
-    let id = str_arg("status", payload, "id")?;
-    let facts = facts_arg("status", payload)?;
-    let has_fact = facts.0.is_some() || facts.1.is_some() || facts.2.is_some();
-    let status = if has_fact {
-        opt_str("status", payload, "status")?
-    } else {
-        Some(str_arg("status", payload, "status")?)
-    };
-    if let Some(s) = status {
-        state_arg("status", "status", s)?;
+async fn status_inner(
+    kernel: &Arc<Kernel>,
+    store: &str,
+    a: verbs::Status,
+) -> Result<Value, Value> {
+    let id = a.id.as_str();
+    let status = a.status.map(State::as_str);
+    let facts = facts_of(a.versions, a.source_version, a.fork_from);
+    // at least one of the state and the three facts
+    if status.is_none() && facts.0.is_none() && facts.1.is_none() && facts.2.is_none() {
+        return Err(missing("status", "status"));
     }
     let mut entry = load(kernel, store, Some(id))
         .await?
@@ -562,29 +434,17 @@ async fn status_inner(kernel: &Arc<Kernel>, store: &str, payload: &Value) -> Res
     Ok(entry)
 }
 
-async fn report_reply(
-    kernel: &Arc<Kernel>,
-    store: &str,
-    caller: &Option<AgentId>,
-    payload: &Value,
-) -> Value {
-    flat(report_inner(kernel, store, caller, payload).await)
-}
-
 async fn report_inner(
     kernel: &Arc<Kernel>,
     store: &str,
     caller: &Option<AgentId>,
-    payload: &Value,
+    a: verbs::Report,
 ) -> Result<Value, Value> {
-    let id = str_arg("report", payload, "id")?;
-    let state = opt_str("report", payload, "state")?;
-    if let Some(s) = state {
-        state_arg("report", "state", s)?;
-    }
-    let result = payload.get("result").cloned().unwrap_or(Value::Null);
-    let usage = usage_arg(payload)?;
-    let from = match opt_str("report", payload, "from")? {
+    let id = a.id.as_str();
+    let state = a.state.map(State::as_str);
+    let result = a.result.unwrap_or(Value::Null);
+    let usage = a.usage.as_ref().map(usage_value);
+    let from = match a.from.as_deref() {
         Some(f) => Some(AgentId::from(f)),
         None => caller.clone(),
     };
@@ -627,24 +487,16 @@ async fn report_inner(
     Ok(entry)
 }
 
-async fn list_reply(kernel: &Arc<Kernel>, store: &str, payload: &Value) -> Value {
-    flat(list_inner(kernel, store, payload).await)
-}
-
-async fn list_inner(kernel: &Arc<Kernel>, store: &str, payload: &Value) -> Result<Value, Value> {
-    let parent = opt_str("list", payload, "parent")?;
-    let status = opt_str("list", payload, "status")?;
-    let holder = payload.get("holder").filter(|h| !h.is_null());
-    let ids: Option<Vec<&str>> = match payload.get("ids") {
-        None | Some(Value::Null) => None,
-        Some(Value::Array(a)) => Some(
-            a.iter()
-                .map(|v| v.as_str().filter(|s| !s.is_empty()))
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| bad("list", "ids", "a list of non-empty task ids"))?,
-        ),
-        Some(_) => return Err(bad("list", "ids", "a list of non-empty task ids")),
-    };
+async fn list_inner(
+    kernel: &Arc<Kernel>,
+    store: &str,
+    a: verbs::List,
+) -> Result<Value, Value> {
+    let parent = a.parent.as_deref();
+    let status = a.status.map(State::as_str);
+    let holder = a.holder.as_ref().map(|h| json!(h));
+    let holder = holder.as_ref();
+    let ids: Option<Vec<&str>> = a.ids.as_ref().map(|v| v.iter().map(String::as_str).collect());
     let tasks = load(kernel, store, None).await?;
     if let Some(ids) = &ids {
         if let Some(unknown) = ids.iter().find(|i| !tasks.contains_key(**i)) {
@@ -672,12 +524,7 @@ async fn list_inner(kernel: &Arc<Kernel>, store: &str, payload: &Value) -> Resul
     Ok(json!({"tasks": out, "usage": sum}))
 }
 
-async fn get_reply(kernel: &Arc<Kernel>, store: &str, payload: &Value) -> Value {
-    flat(get_inner(kernel, store, payload).await)
-}
-
-async fn get_inner(kernel: &Arc<Kernel>, store: &str, payload: &Value) -> Result<Value, Value> {
-    let id = str_arg("get", payload, "id")?;
+async fn get_inner(kernel: &Arc<Kernel>, store: &str, id: &str) -> Result<Value, Value> {
     let tasks = load(kernel, store, None).await?;
     let mut entry = tasks
         .get(id)

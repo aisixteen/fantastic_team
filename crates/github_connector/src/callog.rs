@@ -35,20 +35,32 @@ fn key(id: &str, api_url: &str) -> String {
 }
 
 /// The target a caller named, read from the request and never from the reply.
-pub(crate) fn target_of(p: &Value) -> String {
+pub(crate) fn target_of(call: &crate::verbs::Call) -> String {
+    use crate::verbs::Call;
     // `staleness` names its repos inside `versions` or `issue`: log the first
-    let nested = p
-        .get("versions")
-        .and_then(|v| v.get(0))
-        .or_else(|| p.get("issue"))
-        .and_then(|v| v.get("repo"));
-    let repo = p
-        .get("repo")
-        .or(nested)
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let (repo, number): (&str, Option<u64>) = match call {
+        Call::PrCreate(a) => (&a.repo, None),
+        Call::Issues(a) => (&a.repo, None),
+        Call::IssueCreate(a) => (&a.repo, None),
+        Call::ProjectFieldSet(a) => (&a.repo, None),
+        Call::ReadFile(a) => (&a.repo, None),
+        Call::IssueView(a) => (&a.repo, Some(a.number)),
+        Call::IssueEdit(a) => (&a.repo, Some(a.number)),
+        Call::IssueState(a) => (&a.repo, Some(a.number)),
+        Call::LabelEvents(a) => (&a.repo, Some(a.number)),
+        Call::Comment(a) => (&a.repo, Some(a.number)),
+        Call::Label(a) => (&a.repo, Some(a.number)),
+        Call::PrStatus(a) => (&a.repo, Some(a.number)),
+        Call::Merge(a) => (&a.repo, Some(a.number)),
+        Call::Staleness(a) => match (a.versions.as_ref().and_then(|v| v.first()), &a.issue) {
+            (Some(v), _) => (&v.repo, None),
+            (None, Some(i)) => (&i.repo, None),
+            (None, None) => ("", None),
+        },
+        _ => ("", None),
+    };
     let repo: String = repo.chars().take(100).collect();
-    match p.get("number").and_then(|v| v.as_u64()) {
+    match number {
         Some(n) if !repo.is_empty() => format!("{repo}#{n}"),
         _ => repo,
     }

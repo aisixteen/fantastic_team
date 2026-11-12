@@ -3,10 +3,10 @@
   "say": "Starting worker 1 of 2.",
   "calls": [
    {
-    "target": "roles",
+    "target": "bundles",
     "type": "spawn",
     "args": {
-     "role": "worker"
+     "bundle": "worker"
     }
    }
   ]
@@ -15,10 +15,10 @@
   "say": "Starting worker 2 of 2.",
   "calls": [
    {
-    "target": "roles",
+    "target": "bundles",
     "type": "spawn",
     "args": {
-     "role": "worker"
+     "bundle": "worker"
     }
    }
   ]

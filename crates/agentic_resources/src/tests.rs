@@ -15,20 +15,50 @@ static PAUSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new())
 
 struct CallerBundle;
 
+fantastic_kernel::stand_in_verbs!(caller_verbs {
+    SendV "send" { text: Option<String> },
+    HistoryV "history" {},
+    PauseV "pause" {},
+    ResumeV "resume" {},
+    StopV "stop" {},
+    ReadV "read" {},
+    WriteV "write" {},
+});
+
+/// The `Handler` boilerplate of a stand-in: its name, verbs and an open record.
+macro_rules! stand_in {
+    ($ty:ty, $name:literal, $verbs:ident) => {
+        type Call = $verbs::Call;
+        fn name(&self) -> &str {
+            $name
+        }
+        fn man(&self) -> &'static str {
+            "A test stand-in."
+        }
+        fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+            $verbs::VERBS
+        }
+        fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+            $verbs::dynamic_verbs(agent)
+        }
+        fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+            fantastic_kernel::fixture_record!()
+        }
+    };
+}
+
 #[async_trait]
-impl Bundle for CallerBundle {
-    fn name(&self) -> &str {
-        "caller"
-    }
+impl Handler for CallerBundle {
+    stand_in!(CallerBundle, "caller", caller_verbs);
     async fn handle(
         &self,
         agent_id: &AgentId,
-        payload: &Value,
+        call: Self::Call,
         _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
+        let payload = call.payload();
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         match verb {
-            "boot" | "shutdown" => Ok(None),
             "reflect" => Ok(Some(
                 json!({"id": agent_id.as_str(), "sentence": "a caller"}),
             )),
@@ -54,17 +84,25 @@ impl Bundle for CallerBundle {
 /// is refused `cuts_turn`, 98 `no_such_row`.
 struct ForkBundle;
 
+fantastic_kernel::stand_in_verbs!(fork_verbs {
+    SendV "send" { text: Option<String> },
+    HistoryV "history" {},
+    PauseV "pause" {},
+    ResumeV "resume" {},
+    StopV "stop" {},
+    ForkV "fork" { at: i64 },
+});
+
 #[async_trait]
-impl Bundle for ForkBundle {
-    fn name(&self) -> &str {
-        "forkable"
-    }
+impl Handler for ForkBundle {
+    stand_in!(ForkBundle, "forkable", fork_verbs);
     async fn handle(
         &self,
         agent_id: &AgentId,
-        payload: &Value,
+        call: Self::Call,
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
+        let payload = &call.payload();
         let verb = payload.get("type").and_then(Value::as_str).unwrap_or("");
         if verb == "send" {
             let text = payload["text"].as_str().unwrap_or("").to_string();
@@ -73,8 +111,11 @@ impl Bundle for ForkBundle {
                 .push((agent_id.as_str().to_string(), text));
             return Ok(Some(json!({"ok": true, "verb": "send"})));
         }
+        if verb == "pause" {
+            PAUSED.lock().unwrap().push(agent_id.as_str().to_string());
+        }
         if verb != "fork" {
-            return Ok(None);
+            return Ok(Some(json!({"ok": true, "verb": verb})));
         }
         let at = payload["at"].as_i64().unwrap_or(0);
         let refuse = |reason: &str| {
@@ -95,16 +136,22 @@ impl Bundle for ForkBundle {
             meta.remove(k);
         }
         meta.insert("forked_from".into(), json!(agent_id.as_str()));
-        meta.insert("handler_module".into(), json!("forkable.tools"));
-        meta.insert(
-            "parent_id".into(),
-            json!(src.parent_id.as_ref().map_or("kernel", |p| p.as_str())),
-        );
-        meta.insert("type".into(), json!("create_agent"));
         let root = kernel.root().unwrap();
-        let made =
-            fantastic_kernel::lifecycle::create_from_payload(kernel, &root, &Value::Object(meta))
-                .await;
+        let made = fantastic_kernel::lifecycle::create_agent(
+            kernel,
+            &root,
+            fantastic_kernel::declared::kernel::CreateAgent {
+                handler_module: src.handler_module.clone().unwrap_or_default(),
+                parent_id: src
+                    .parent_id
+                    .as_ref()
+                    .map_or("kernel", |p| p.as_str())
+                    .to_string(),
+                id: None,
+                fields: meta,
+            },
+        )
+        .await;
         let id = made["id"].clone();
         Ok(Some(json!({"id": id, "copied": 3, "at": at})))
     }
@@ -114,15 +161,15 @@ impl Bundle for ForkBundle {
 /// `refuse_grants` (stands for a bundle whose `validate_meta` says no).
 struct PickyBundle;
 
+fantastic_kernel::stand_in_verbs!(picky_verbs { PingV "ping" {} });
+
 #[async_trait]
-impl Bundle for PickyBundle {
-    fn name(&self) -> &str {
-        "picky"
-    }
+impl Handler for PickyBundle {
+    stand_in!(PickyBundle, "picky", picky_verbs);
     async fn handle(
         &self,
         _agent_id: &AgentId,
-        _payload: &Value,
+        _call: Self::Call,
         _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         Ok(None)
@@ -137,15 +184,15 @@ impl Bundle for PickyBundle {
     }
 }
 
-const WRITER: &str = "---\nname: writer\npurpose: Writes the first draft of a text.\nmodel: from-the-card\ngrants:\n  $registry: [roles]\n  notes: [read]\n---\nYou write clearly and briefly.\n";
+const WRITER: &str = "---\nname: writer\npurpose: Writes the first draft of a text.\nmodel: from-the-card\ngrants:\n  $registry: [bundles]\n  notes: [read]\n---\nYou write clearly and briefly.\n";
 const REVIEWER: &str =
     "---\nname: reviewer\npurpose: Reads a draft and says what to fix.\n---\nYou review drafts.\n";
 /// fantastic's generic lead card, as a folder card (the registry ships none).
 const PROJECT_LEAD: &str = include_str!("../testdata/project_lead.md");
-const SUBLEAD: &str = "---\nname: sublead\npurpose: Runs a branch of the work.\ngrants:\n  $registry: [roles, spawn, get_count]\n  notes: [read]\n---\nYou run one branch.\n";
+const SUBLEAD: &str = "---\nname: sublead\npurpose: Runs a branch of the work.\ngrants:\n  $registry: [bundles, spawn, get_count]\n  notes: [read]\n---\nYou run one branch.\n";
 
-/// The role texts of these tests (a `---` yaml header: `name`, `purpose`, `grants`; then
-/// the directive) loaded as what roles are now: META BUNDLES over `caller.tools`, their
+/// The card texts of these tests (a `---` yaml header: `name`, `purpose`, `grants`; then
+/// the directive) loaded as what spawnable bundles are: META BUNDLES over `caller.tools`, their
 /// directive and grants in `record`. A text that does not parse is a bundle that failed
 /// to load (listed with its error).
 fn write_cards(kernel: &Kernel, cards: &[(&str, &str)]) {
@@ -175,7 +222,7 @@ fn write_cards(kernel: &Kernel, cards: &[(&str, &str)]) {
         }
         kernel.bundles.register_meta(
             &name,
-            json!({"name": name, "handler_module": name, "base": "caller.tools",
+            json!({"name": name, "handler_module": name, "base": "forkable.tools",
                    "sentence": head["purpose"], "record": record}),
         );
     }
@@ -221,7 +268,9 @@ async fn send(kernel: &Arc<Kernel>, target: &str, payload: Value) -> Value {
 async fn create(kernel: &Arc<Kernel>, payload: Value) -> Value {
     let mut p = payload;
     p["type"] = json!("create_agent");
-    p["parent_id"] = json!("kernel");
+    if p.get("parent_id").is_none() {
+        p["parent_id"] = json!("kernel");
+    }
     let r = send(kernel, "kernel_state", p).await;
     assert!(r.get("error").is_none(), "create: {r}");
     r
@@ -293,9 +342,9 @@ impl Rig {
     fn meta(&self, id: &str) -> Map<String, Value> {
         meta_of(&self.kernel.agents.get(&AgentId::from(id)).unwrap())
     }
-    async fn count(&self, role: Option<&str>) -> Value {
-        match role {
-            Some(r) => self.op(json!({"type": "get_count", "role": r})).await,
+    async fn count(&self, bundle: Option<&str>) -> Value {
+        match bundle {
+            Some(r) => self.op(json!({"type": "get_count", "bundle": r})).await,
             None => self.op(json!({"type": "get_count"})).await,
         }
     }
@@ -308,10 +357,10 @@ fn id_of(v: &Value) -> String {
         .to_string()
 }
 
-// ── roles ───────────────────────────────────────────────────────────
+// ── bundles ───────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn roles_lists_every_card_with_purpose() {
+async fn bundles_lists_every_card_with_purpose() {
     let tmp = TempDir::new().unwrap();
     let r = rig(
         &tmp,
@@ -323,9 +372,9 @@ async fn roles_lists_every_card_with_purpose() {
         ],
     )
     .await;
-    let out = r.op(json!({"type": "roles"})).await;
-    let roles = out["roles"].as_array().unwrap();
-    let find = |n: &str| roles.iter().find(|x| x["name"] == n).cloned();
+    let out = r.op(json!({"type": "bundles"})).await;
+    let listed = out["bundles"].as_array().unwrap();
+    let find = |n: &str| listed.iter().find(|x| x["name"] == n).cloned();
     assert_eq!(
         find("writer").unwrap()["purpose"],
         "Writes the first draft of a text."
@@ -336,7 +385,7 @@ async fn roles_lists_every_card_with_purpose() {
     );
     assert!(find("project_lead").is_none(), "no card is built in: {out}");
     assert_eq!(out["errors"], json!(["card bad.md: missing header"]));
-    // a bundle loaded later is a role added
+    // a bundle loaded later is a bundle added
     write_cards(
         &r.kernel,
         &[(
@@ -344,8 +393,8 @@ async fn roles_lists_every_card_with_purpose() {
             "---\nname: extra\npurpose: Added later.\n---\nd\n",
         )],
     );
-    let again = r.op(json!({"type": "roles"})).await;
-    assert!(again["roles"]
+    let again = r.op(json!({"type": "bundles"})).await;
+    assert!(again["bundles"]
         .as_array()
         .unwrap()
         .iter()
@@ -353,18 +402,18 @@ async fn roles_lists_every_card_with_purpose() {
 }
 
 #[tokio::test]
-async fn role_returns_full_card_and_unknown_is_not_found() {
+async fn bundle_returns_full_card_and_unknown_is_not_found() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &[], &[("writer.md", WRITER)]).await;
-    let c = r.op(json!({"type": "role", "name": "writer"})).await;
+    let c = r.op(json!({"type": "bundle", "name": "writer"})).await;
     assert_eq!(c["name"], "writer");
     assert!(
         c.get("tier").is_none(),
-        "a role names no model and no tier: {c}"
+        "a bundle names no model and no tier: {c}"
     );
     assert_eq!(c["directive"], "You write clearly and briefly.");
     assert_eq!(c["grants"]["notes"], json!(["read"]));
-    let n = r.op(json!({"type": "role", "name": "ghost"})).await;
+    let n = r.op(json!({"type": "bundle", "name": "ghost"})).await;
     assert_eq!(n["reason"], "not_found", "{n}");
 }
 
@@ -376,9 +425,9 @@ async fn spawn_creates_child_with_directive_grants_on_the_spawners_backend() {
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
     let out = r
-        .spawn_as(lead, json!({"role": "writer", "name": "scribe"}))
+        .spawn_as(lead, json!({"bundle": "writer", "name": "scribe"}))
         .await;
-    assert_eq!(out["role"], "writer", "{out}");
+    assert_eq!(out["bundle"], "writer", "{out}");
     assert_eq!(
         out["model"], "m1",
         "the spawner's model when the spawn names none"
@@ -396,7 +445,7 @@ async fn spawn_creates_child_with_directive_grants_on_the_spawners_backend() {
         m.get("system_prompt").is_none_or(Value::is_null),
         "the default system block stays in force: {m:?}"
     );
-    assert_eq!(m["model"], "m1", "the spawner's model; a role names none");
+    assert_eq!(m["model"], "m1", "the spawner's model; a bundle names none");
     assert_eq!(m["provider_id"], "prov", "the spawner's provider");
     assert!(
         m.get("endpoint").is_none(),
@@ -405,17 +454,15 @@ async fn spawn_creates_child_with_directive_grants_on_the_spawners_backend() {
     assert_eq!(
         a.handler_module.as_deref(),
         Some("writer"),
-        "an instance of the role bundle (on caller.tools)"
+        "an instance of the bundle (on caller.tools)"
     );
     assert!(
         r.kernel.bundles.get("writer").is_some(),
         "which runs its base's code"
     );
-    assert_eq!(m["spawned_by"], json!(r.reg));
-    assert_eq!(m["role"], "writer");
-    assert_eq!(m["name"], "scribe");
+    assert_eq!(m["display_name"], "scribe");
     assert_eq!(m["can_call"]["notes"], json!(["read"]));
-    assert_eq!(m["can_call"][&r.reg], json!(["roles"]));
+    assert_eq!(m["can_call"][&r.reg], json!(["bundles"]));
     assert_eq!(
         m["can_call"][lead],
         json!(["send"]),
@@ -438,7 +485,7 @@ async fn spawn_opens_the_spawners_memory_store_to_the_child() {
     patch.insert("memory_store_id".to_string(), json!(mem));
     r.kernel
         .update(&AgentId::from(r.callers[0].as_str()), patch);
-    let id = r.spawn_as(&r.callers[0], json!({"role": "writer"})).await["id"]
+    let id = r.spawn_as(&r.callers[0], json!({"bundle": "writer"})).await["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -459,7 +506,7 @@ async fn spawn_runs_the_model_the_spawner_names() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let out = r
-        .spawn_as(&r.callers[0], json!({"role": "writer", "model": "m2"}))
+        .spawn_as(&r.callers[0], json!({"bundle": "writer", "model": "m2"}))
         .await;
     assert_eq!(out["model"], "m2", "{out}");
     let id = id_of(&out);
@@ -470,113 +517,9 @@ async fn spawn_runs_the_model_the_spawner_names() {
         "on the spawner's provider"
     );
     let bad = r
-        .spawn_as(&r.callers[0], json!({"role": "writer", "model": 5}))
+        .spawn_as(&r.callers[0], json!({"bundle": "writer", "model": 5}))
         .await;
     assert_eq!(bad["reason"], "bad_arg", "{bad}");
-}
-
-#[tokio::test]
-async fn per_role_limit_refuses_past_cap() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(
-        &tmp,
-        &["lead"],
-        &[("writer.md", WRITER), ("reviewer.md", REVIEWER)],
-    )
-    .await;
-    let lead = &r.callers[0];
-    assert_eq!(
-        r.op(json!({"type": "set_limit", "role": "writer", "max": 2}))
-            .await["ok"],
-        true
-    );
-    for _ in 0..2 {
-        assert!(r
-            .spawn_as(lead, json!({"role": "writer"}))
-            .await
-            .get("id")
-            .is_some());
-    }
-    let out = r.spawn_as(lead, json!({"role": "writer"})).await;
-    assert_eq!(out["reason"], "limit", "{out}");
-    assert_eq!(out["scope"], "role");
-    assert_eq!(out["role"], "writer");
-    assert_eq!(out["running"], 2);
-    assert_eq!(out["max"], 2);
-    assert!(out["error"].as_str().unwrap().contains("writer"));
-    // another role is not capped
-    assert!(r
-        .spawn_as(lead, json!({"role": "reviewer"}))
-        .await
-        .get("id")
-        .is_some());
-}
-
-#[tokio::test]
-async fn total_limit_refuses_past_cap() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(
-        &tmp,
-        &["lead"],
-        &[("writer.md", WRITER), ("reviewer.md", REVIEWER)],
-    )
-    .await;
-    let lead = &r.callers[0];
-    r.op(json!({"type": "set_limit", "max": 2})).await;
-    assert!(r
-        .spawn_as(lead, json!({"role": "writer"}))
-        .await
-        .get("id")
-        .is_some());
-    assert!(r
-        .spawn_as(lead, json!({"role": "reviewer"}))
-        .await
-        .get("id")
-        .is_some());
-    let out = r.spawn_as(lead, json!({"role": "writer"})).await;
-    assert_eq!(out["reason"], "limit", "{out}");
-    assert_eq!(out["scope"], "total");
-    assert_eq!(
-        (out["running"].clone(), out["max"].clone()),
-        (json!(2), json!(2))
-    );
-    assert_eq!(r.count(None).await, json!({"running": 2, "max": 2}));
-}
-
-#[tokio::test]
-async fn set_limit_null_clears() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let lead = &r.callers[0];
-    r.op(json!({"type": "set_limit", "role": "writer", "max": 1}))
-        .await;
-    r.spawn_as(lead, json!({"role": "writer"})).await;
-    assert_eq!(
-        r.spawn_as(lead, json!({"role": "writer"})).await["reason"],
-        "limit"
-    );
-    assert_eq!(
-        r.op(json!({"type": "set_limit", "role": "writer", "max": null}))
-            .await["ok"],
-        true
-    );
-    assert_eq!(
-        r.count(Some("writer")).await,
-        json!({"running": 1, "max": null})
-    );
-    assert!(r
-        .spawn_as(lead, json!({"role": "writer"}))
-        .await
-        .get("id")
-        .is_some());
-    for bad in [json!(-1), json!(1.5), json!("2"), json!(true)] {
-        let out = r.op(json!({"type": "set_limit", "max": bad})).await;
-        assert_eq!(out["reason"], "bad_arg", "{bad}: {out}");
-    }
-    assert_eq!(
-        r.op(json!({"type": "set_limit"})).await["reason"],
-        "missing_arg"
-    );
 }
 
 #[tokio::test]
@@ -584,17 +527,12 @@ async fn get_count_after_spawn_delete_restart() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
-    r.op(json!({"type": "set_limit", "role": "writer", "max": 5}))
-        .await;
-    let a = r.spawn_as(lead, json!({"role": "writer"})).await["id"]
+    let a = r.spawn_as(lead, json!({"bundle": "writer"})).await["id"]
         .as_str()
         .unwrap()
         .to_string();
-    r.spawn_as(lead, json!({"role": "writer"})).await;
-    assert_eq!(
-        r.count(Some("writer")).await,
-        json!({"running": 2, "max": 5})
-    );
+    r.spawn_as(lead, json!({"bundle": "writer"})).await;
+    assert_eq!(r.count(Some("writer")).await, json!({"running": 2}));
     let gone = send(
         &r.kernel,
         "kernel_state",
@@ -615,12 +553,8 @@ async fn get_count_after_spawn_delete_restart() {
         ],
     ); // the bundles load before the tree
     k2.load(state).unwrap();
-    let after = send(&k2, &r.reg, json!({"type": "get_count", "role": "writer"})).await;
-    assert_eq!(
-        after,
-        json!({"running": 1, "max": 5}),
-        "rebuilt from the records"
-    );
+    let after = send(&k2, &r.reg, json!({"type": "get_count", "bundle": "writer"})).await;
+    assert_eq!(after, json!({"running": 1}), "rebuilt from the records");
     assert_eq!(
         send(&k2, &r.reg, json!({"type": "get_count"})).await["running"],
         1
@@ -628,7 +562,7 @@ async fn get_count_after_spawn_delete_restart() {
 }
 
 #[tokio::test]
-async fn fleet_groups_by_role_with_ids() {
+async fn fleet_groups_by_bundle_with_ids() {
     let tmp = TempDir::new().unwrap();
     let r = rig(
         &tmp,
@@ -637,17 +571,17 @@ async fn fleet_groups_by_role_with_ids() {
     )
     .await;
     let lead = &r.callers[0];
-    let w1 = r.spawn_as(lead, json!({"role": "writer"})).await["id"].clone();
-    let w2 = r.spawn_as(lead, json!({"role": "writer"})).await["id"].clone();
-    let v1 = r.spawn_as(lead, json!({"role": "reviewer"})).await["id"].clone();
+    let w1 = r.spawn_as(lead, json!({"bundle": "writer"})).await["id"].clone();
+    let w2 = r.spawn_as(lead, json!({"bundle": "writer"})).await["id"].clone();
+    let v1 = r.spawn_as(lead, json!({"bundle": "reviewer"})).await["id"].clone();
     create(
         &r.kernel,
-        json!({"handler_module": "caller.tools", "id": uid(&tmp, "stray"), "role": "writer"}),
+        json!({"handler_module": "caller.tools", "id": uid(&tmp, "stray")}),
     )
     .await;
     let f = r.op(json!({"type": "fleet"})).await;
-    let ids = |role: &str| -> Vec<Value> {
-        let mut v: Vec<Value> = f["roles"][role]
+    let ids = |bundle: &str| -> Vec<Value> {
+        let mut v: Vec<Value> = f["bundles"][bundle]
             .as_array()
             .unwrap()
             .iter()
@@ -661,21 +595,21 @@ async fn fleet_groups_by_role_with_ids() {
     assert_eq!(ids("writer"), want, "the stray agent is not listed: {f}");
     assert_eq!(ids("reviewer"), vec![v1]);
     assert_eq!(
-        f["roles"]["writer"][0],
-        json!({"id": f["roles"]["writer"][0]["id"].clone()})
+        f["bundles"]["writer"][0],
+        json!({"id": f["bundles"]["writer"][0]["id"].clone()})
     );
 }
 
 #[tokio::test]
-async fn a_kernel_with_no_bundles_lists_no_roles() {
+async fn a_kernel_with_no_bundles_lists_no_bundles() {
     let tmp = TempDir::new().unwrap();
     let id = uid(&tmp, "ar");
-    // the roles are the kernel's meta bundles (none here)
+    // the spawnable bundles are the kernel's meta bundles (none here)
     let kernel = Arc::new(new_kernel());
     root_of(&kernel, &tmp);
     create(&kernel, json!({"handler_module": HANDLER_MODULE, "id": id})).await;
-    let out = send(&kernel, &id, json!({"type": "roles"})).await;
-    assert_eq!(out, json!({"roles": [], "errors": []}), "{out}");
+    let out = send(&kernel, &id, json!({"type": "bundles"})).await;
+    assert_eq!(out, json!({"bundles": [], "errors": []}), "{out}");
 }
 
 // ── the extended surface ────────────────────────────────────────────
@@ -685,7 +619,7 @@ async fn spawn_grants_parent_pause_resume_stop_both_ends() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead", "sib"], &[("writer.md", REVIEWER)]).await;
     let (lead, sib) = (&r.callers[0], &r.callers[1]);
-    let id = r.spawn_as(lead, json!({"role": "reviewer"})).await["id"]
+    let id = r.spawn_as(lead, json!({"bundle": "reviewer"})).await["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -725,13 +659,13 @@ async fn spawn_task_string_is_first_message_and_object_refused() {
     let bad = r
         .spawn_as(
             lead,
-            json!({"role": "writer", "task": {"label": "draft intro"}}),
+            json!({"bundle": "writer", "task": {"label": "draft intro"}}),
         )
         .await;
     assert_eq!(bad["reason"], "bad_arg", "{bad}");
     assert_eq!(r.kernel.agents.len(), before, "nothing was created");
     let c = r
-        .spawn_as(lead, json!({"role": "writer", "task": "do it"}))
+        .spawn_as(lead, json!({"bundle": "writer", "task": "do it"}))
         .await;
     assert!(r.meta(c["id"].as_str().unwrap()).get("task").is_none());
     // the string is the child's first message, delivered without holding the spawn
@@ -782,7 +716,7 @@ async fn spawned_child_sends_its_parent_and_starts_the_parents_turn() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead", "other"], &[("writer.md", WRITER)]).await;
     let (lead, other) = (&r.callers[0], &r.callers[1]);
-    let id = id_of(&r.spawn_as(lead, json!({"role": "writer"})).await);
+    let id = id_of(&r.spawn_as(lead, json!({"bundle": "writer"})).await);
     // both ends of the edge child -> parent, `send` only
     assert_eq!(r.meta(&id)["can_call"][lead], json!(["send"]));
     assert_eq!(r.meta(lead)["callable_by"][&id], json!(["send"]));
@@ -819,11 +753,11 @@ async fn spawn_from_child_sends_the_spawner() {
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = r.callers[0].clone();
     let id = id_of(
-        &r.spawn_as(&lead, json!({"role": "writer", "from": from(&src, 5)}))
+        &r.spawn_as(&lead, json!({"bundle": "writer", "from": from(&src, 5)}))
             .await,
     );
-    // the fork sits beside its source, but tells the agent that spawned it
-    assert_ne!(
+    // the clone sits beside its source, which is the spawner's child
+    assert_eq!(
         r.kernel
             .agents
             .get(&AgentId::from(id.as_str()))
@@ -888,8 +822,8 @@ async fn child_to_parent_send_is_merged_never_overwritten() {
             })
             .unwrap();
         }));
-    let a = id_of(&r.spawn_as(&lead, json!({"role": "writer"})).await);
-    let b = id_of(&r.spawn_as(&lead, json!({"role": "writer"})).await);
+    let a = id_of(&r.spawn_as(&lead, json!({"bundle": "writer"})).await);
+    let b = id_of(&r.spawn_as(&lead, json!({"bundle": "writer"})).await);
     for id in [&a, &b] {
         assert_eq!(r.meta(id)["can_call"][&lead], json!(["history", "send"]));
         assert_eq!(r.meta(&lead)["callable_by"][id], json!(["history", "send"]));
@@ -906,7 +840,7 @@ async fn operator_spawn_opens_no_edge_to_a_parent() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &[], &[("reviewer.md", REVIEWER)]).await;
     let id = id_of(
-        &r.op(json!({"type": "spawn", "role": "reviewer", "provider": "prov", "model": "m1"}))
+        &r.op(json!({"type": "spawn", "bundle": "reviewer", "provider": "prov", "model": "m1"}))
             .await,
     );
     // no caller: the child's parent is the registry, which takes no message; it may
@@ -917,61 +851,6 @@ async fn operator_spawn_opens_no_edge_to_a_parent() {
 }
 
 #[tokio::test]
-async fn delegated_limits_bound_subtree() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(
-        &tmp,
-        &["boss"],
-        &[("writer.md", WRITER), ("sublead.md", SUBLEAD)],
-    )
-    .await;
-    let boss = &r.callers[0];
-    let sub = r
-        .spawn_as(boss, json!({"role": "sublead", "limits": {"total": 2}}))
-        .await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(r.meta(&sub)["limits"], json!({"total": 2}));
-    // more than it was given is refused; the sub-lead's own slot is not its to hand on
-    let big = r
-        .spawn_as(&sub, json!({"role": "sublead", "limits": {"total": 5}}))
-        .await;
-    assert_eq!(
-        (big["reason"].clone(), big["scope"].clone()),
-        (json!("limit"), json!("request")),
-        "{big}"
-    );
-    let ok = r
-        .spawn_as(&sub, json!({"role": "sublead", "limits": {"total": 1}}))
-        .await;
-    assert!(ok.get("id").is_some(), "{ok}");
-    assert!(r
-        .spawn_as(&sub, json!({"role": "writer"}))
-        .await
-        .get("id")
-        .is_some());
-    let third = r.spawn_as(&sub, json!({"role": "writer"})).await;
-    assert_eq!(third["reason"], "limit", "{third}");
-    assert_eq!(third["scope"], "subtree_total");
-    assert_eq!(
-        (third["running"].clone(), third["max"].clone()),
-        (json!(2), json!(2))
-    );
-    // the deepest sub-lead was given 1: it cannot spawn past that either, and the
-    // ancestors' quota is the bound of the whole subtree
-    let deep = ok["id"].as_str().unwrap();
-    let blocked = r.spawn_as(deep, json!({"role": "writer"})).await;
-    assert_eq!(blocked["reason"], "limit", "{blocked}");
-    // the boss itself carries no quota
-    assert!(r
-        .spawn_as(boss, json!({"role": "writer"}))
-        .await
-        .get("id")
-        .is_some());
-}
-
-#[tokio::test]
 async fn done_frees_nothing_only_the_spawners_delete_agent_does() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
@@ -979,7 +858,7 @@ async fn done_frees_nothing_only_the_spawners_delete_agent_does() {
     let before = r.kernel.agents.len();
     let mut ids = vec![];
     for _ in 0..2 {
-        let id = r.spawn_as(lead, json!({"role": "writer"})).await["id"]
+        let id = r.spawn_as(lead, json!({"bundle": "writer"})).await["id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -1011,23 +890,16 @@ async fn get_count_counts_every_spawned_agent() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
-    r.op(json!({"type": "set_limit", "max": 2})).await;
-    let a = r.spawn_as(lead, json!({"role": "writer"})).await["id"]
+    let a = r.spawn_as(lead, json!({"bundle": "writer"})).await["id"]
         .as_str()
         .unwrap()
         .to_string();
-    r.spawn_as(lead, json!({"role": "writer"})).await;
-    assert_eq!(r.count(None).await, json!({"running": 2, "max": 2}));
-    let third = r.spawn_as(lead, json!({"role": "writer"})).await;
-    assert_eq!(third["reason"], "limit", "{third}");
+    r.spawn_as(lead, json!({"bundle": "writer"})).await;
+    assert_eq!(r.count(None).await, json!({"running": 2}));
     // a done message to the parent frees nothing; only delete_agent does
     r.call(&a, lead, json!({"type": "send", "text": "done"}))
         .await;
     assert_eq!(r.count(None).await["running"], 2);
-    assert_eq!(
-        r.spawn_as(lead, json!({"role": "writer"})).await["reason"],
-        "limit"
-    );
     let gone = send(
         &r.kernel,
         "kernel_state",
@@ -1036,11 +908,6 @@ async fn get_count_counts_every_spawned_agent() {
     .await;
     assert_eq!(gone["deleted"], true);
     assert_eq!(r.count(None).await["running"], 1);
-    assert!(r
-        .spawn_as(lead, json!({"role": "writer"}))
-        .await
-        .get("id")
-        .is_some());
 }
 
 #[tokio::test]
@@ -1048,11 +915,11 @@ async fn no_auto_cleanup_on_done() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
-    let a = r.spawn_as(lead, json!({"role": "writer"})).await["id"]
+    let a = r.spawn_as(lead, json!({"bundle": "writer"})).await["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let b = r.spawn_as(lead, json!({"role": "writer"})).await["id"]
+    let b = r.spawn_as(lead, json!({"bundle": "writer"})).await["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1065,15 +932,11 @@ async fn no_auto_cleanup_on_done() {
     }
     assert_eq!(r.kernel.agents.len(), before, "nothing was deleted");
     let m = r.meta(&a);
-    assert_eq!(
-        (m["spawned_by"].clone(), m["role"].clone()),
-        (json!(r.reg), json!("writer"))
-    );
     assert!(m.get("task").is_none());
     assert_eq!(r.count(None).await["running"], 2, "the count stays");
     let f = r.op(json!({"type": "fleet"})).await;
     assert_eq!(
-        f["roles"]["writer"].as_array().unwrap().len(),
+        f["bundles"]["writer"].as_array().unwrap().len(),
         2,
         "still listed: {f}"
     );
@@ -1092,27 +955,27 @@ async fn no_auto_cleanup_on_done() {
 async fn no_card_is_built_in() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["boss"], &[]).await;
-    let c = r.op(json!({"type": "role", "name": "project_lead"})).await;
+    let c = r.op(json!({"type": "bundle", "name": "project_lead"})).await;
     assert_eq!(c["reason"], "not_found", "{c}");
     let out = r
-        .spawn_as(&r.callers[0], json!({"role": "project_lead"}))
+        .spawn_as(&r.callers[0], json!({"bundle": "project_lead"}))
         .await;
     assert!(out.get("id").is_none(), "{out}");
-    // a lead card in a folder is a role like any other
+    // a lead card in a folder is a spawnable bundle like any other
     let tmp2 = TempDir::new().unwrap();
     let lead = rig(&tmp2, &["boss"], &[("project_lead.md", PROJECT_LEAD)]).await;
     let c = lead
-        .op(json!({"type": "role", "name": "project_lead"}))
+        .op(json!({"type": "bundle", "name": "project_lead"}))
         .await;
     let grants = c["grants"][REGISTRY_TOKEN]
         .as_array()
         .unwrap_or_else(|| panic!("{c}"))
         .clone();
-    for v in ["roles", "role", "spawn", "get_count", "fleet"] {
+    for v in ["bundles", "bundle", "spawn", "get_count", "fleet"] {
         assert!(grants.contains(&json!(v)), "grants {v}");
     }
     assert!(lead
-        .spawn_as(&lead.callers[0], json!({"role": "project_lead"}))
+        .spawn_as(&lead.callers[0], json!({"bundle": "project_lead"}))
         .await
         .get("id")
         .is_some());
@@ -1125,15 +988,16 @@ async fn no_card_is_built_in() {
 async fn fork_rig(tmp: &TempDir, callers: &[&str], cards: &[(&str, &str)]) -> (Rig, String) {
     let r = rig(tmp, callers, cards).await;
     let src = uid(tmp, "src");
+    // the source runs on the first card's bundle: a clone is of its own bundle
+    let bundle = cards[0].0.trim_end_matches(".md");
     create(
         &r.kernel,
-        json!({"handler_module": "forkable.tools", "id": src,
+        json!({"handler_module": bundle, "id": src, "parent_id": r.callers[0],
                "system_prompt": "SOURCE PROMPT", "model": "src-model",
                "memory_store_id": "src_store",
-               "can_call": {"src_store": "*", "secret_agent": "*"},
-               "spawned_by": "stale_reg", "role": "old_role", "tier": "old",
-               "task": {"label": "old task", "state": "done", "waits_on": [], "result": null},
-               "limits": {"total": 9}, "lead": "stale_lead"}),
+               "can_call": {"src_store": "*", "secret_agent": "*", r.reg.clone(): ["bundles"]},
+               "tier": "old",
+               "task": {"label": "old task", "state": "done", "waits_on": [], "result": null}}),
     )
     .await;
     for c in &r.callers {
@@ -1171,119 +1035,73 @@ fn from(src: &str, at: i64) -> Value {
 }
 
 #[tokio::test]
-async fn spawn_from_forks_and_applies_the_role_card() {
+async fn spawn_from_makes_a_clone_of_its_source() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
     let out = r
-        .spawn_as(lead, json!({"role": "writer", "from": from(&src, 5)}))
+        .spawn_as(lead, json!({"bundle": "writer", "from": from(&src, 5)}))
         .await;
-    assert_eq!(out["role"], "writer", "{out}");
-    assert_eq!(out["model"], "m1", "the spawner's model");
+    assert_eq!(out["bundle"], "writer", "{out}");
+    assert_eq!(out["model"], "src-model", "the clone's own model: the source's");
     assert_eq!(out["from"], from(&src, 5));
     assert_eq!(out["copied"], 3);
     let id = out["id"].as_str().unwrap();
     assert_eq!(forks_of(&r, &src), [id], "made by fork");
+    // the record is the source's, apart from what makes it another agent
+    let rest = |who: &str| {
+        let mut m = r.meta(who);
+        for k in ["id", "forked_from", "can_call", "callable_by"] {
+            m.remove(k);
+        }
+        m
+    };
+    assert_eq!(rest(id), rest(&src));
     let m = r.meta(id);
-    assert_eq!(m["post_system_prompt"], "You write clearly and briefly.");
-    assert!(
-        m.get("system_prompt").is_none_or(Value::is_null),
-        "the default system block stays in force: {m:?}"
-    );
-    assert_eq!(m["role"], "writer");
-    assert_eq!(
-        m["bundle"], "writer",
-        "the fork names the role bundle it took"
-    );
-    assert_eq!(m["spawned_by"], json!(r.reg));
-    assert_eq!(m["model"], "m1", "the spawner's model, not the source's");
-    assert_eq!(m["lead"], json!(lead));
-    assert_eq!(m["can_call"]["notes"], json!(["read"]));
-    assert_eq!(m["can_call"][&r.reg], json!(["roles"]));
-    assert_eq!(
-        r.meta(&r.reg)["callable_by"][id],
-        json!(["roles"]),
-        "the registry admits what the card grants on it"
-    );
-    assert_eq!(
-        m["can_call"][lead],
-        json!(["send"]),
-        "it may tell the spawner"
-    );
-    // the name is applied when given
-    let named = r
-        .spawn_as(
-            lead,
-            json!({"role": "writer", "from": from(&src, 5), "name": "scribe"}),
-        )
-        .await;
-    assert_eq!(r.meta(named["id"].as_str().unwrap())["name"], "scribe");
+    assert_eq!(m["system_prompt"], "SOURCE PROMPT", "nothing written over it");
+    assert_eq!(m["task"]["label"], "old task");
+    assert_eq!(m["can_call"]["src_store"], "*");
+    assert_eq!(m["can_call"]["secret_agent"], "*");
+    // it sits at the source's level
+    let level = |who: &str| {
+        r.kernel
+            .agents
+            .get(&AgentId::from(who))
+            .unwrap()
+            .parent_id
+            .clone()
+    };
+    assert_eq!(level(id), level(&src));
+    // the caller controls it and it may tell the caller
+    assert_eq!(m["can_call"][lead], json!(["send"]));
+    assert_eq!(m["callable_by"][lead], json!(["pause", "resume", "stop"]));
+    // the registry admits what the clone holds on it
+    assert_eq!(m["can_call"][&r.reg], json!(["bundles"]));
+    assert_eq!(r.meta(&r.reg)["callable_by"][id], json!(["bundles"]));
+    // the source is untouched
+    assert_eq!(r.meta(&src)["task"]["label"], "old task");
 }
 
 #[tokio::test]
-async fn spawn_from_keeps_the_source_store_and_drops_its_other_grants() {
+async fn spawn_from_refuses_another_bundle() {
     let tmp = TempDir::new().unwrap();
-    let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let id = r
+    let (r, src) = fork_rig(
+        &tmp,
+        &["lead"],
+        &[("writer.md", WRITER), ("reviewer.md", REVIEWER)],
+    )
+    .await;
+    let before = r.meta(&src);
+    let out = r
         .spawn_as(
             &r.callers[0],
-            json!({"role": "writer", "from": from(&src, 5)}),
+            json!({"bundle": "reviewer", "from": from(&src, 5)}),
         )
-        .await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let m = r.meta(&id);
-    assert_eq!(m["memory_store_id"], "src_store", "the source's own");
-    assert_eq!(m["can_call"]["src_store"], "*");
-    assert!(
-        m["can_call"].get("secret_agent").is_none(),
-        "{}",
-        m["can_call"]
-    );
-    let keys: Vec<&String> = m["can_call"].as_object().unwrap().keys().collect();
-    assert_eq!(
-        keys.len(),
-        5,
-        "store, notes, registry, the spawner, its provider: {keys:?}"
-    );
-    assert_eq!(m["can_call"][&r.callers[0]], json!(["send"]));
-}
-
-#[tokio::test]
-async fn spawn_from_drops_the_copied_task_and_overwrites_limits() {
-    let tmp = TempDir::new().unwrap();
-    let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let lead = &r.callers[0];
-    let bare = r
-        .spawn_as(lead, json!({"role": "writer", "from": from(&src, 5)}))
-        .await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let m = r.meta(&bare);
-    assert!(
-        m.get("task").is_none(),
-        "the source's task is dropped: {m:?}"
-    );
-    assert!(m.get("limits").is_none(), "{m:?}");
-    let given = r
-        .spawn_as(
-            lead,
-            json!({"role": "writer", "from": from(&src, 5),
-                   "limits": {"per_role": 1}}),
-        )
-        .await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let m = r.meta(&given);
-    assert!(m.get("task").is_none(), "{m:?}");
-    assert_eq!(m["limits"], json!({"per_role": 1}));
-    assert_eq!(m["role"], "writer", "never the source's role");
-    // the source itself is untouched
-    assert_eq!(r.meta(&src)["task"]["label"], "old task");
-    assert_eq!(r.meta(&src)["limits"], json!({"total": 9}));
+        .await;
+    assert_shape(&out, "bad_arg");
+    assert!(out["error"].as_str().unwrap().contains("writer"), "{out}");
+    assert!(forks_of(&r, &src).is_empty(), "nothing forked");
+    assert_eq!(r.meta(&src), before);
 }
 
 #[tokio::test]
@@ -1294,7 +1112,7 @@ async fn spawn_from_task_string_is_sent_as_first_message() {
     let out = r
         .spawn_as(
             &r.callers[0],
-            json!({"role": "writer", "from": from(&src, 5), "task": text}),
+            json!({"bundle": "writer", "from": from(&src, 5), "task": text}),
         )
         .await;
     let id = out["id"].as_str().unwrap().to_string();
@@ -1318,38 +1136,26 @@ async fn spawn_from_passes_fork_refusals_through() {
     let lead = &r.callers[0];
     for (at, reason) in [(99, "cuts_turn"), (98, "no_such_row")] {
         let out = r
-            .spawn_as(lead, json!({"role": "writer", "from": from(&src, at)}))
+            .spawn_as(lead, json!({"bundle": "writer", "from": from(&src, at)}))
             .await;
         assert_eq!(out["reason"], reason, "{out}");
         assert_eq!(out["at"], at);
         assert_eq!(out["hint"], "a hint");
         assert!(out["error"].as_str().unwrap().starts_with("fork:"), "{out}");
         assert!(forks_of(&r, &src).is_empty());
-        assert_eq!(r.op(json!({"type": "fleet"})).await["roles"], json!({}));
-        assert_eq!(r.count(None).await["running"], 0);
+        assert_eq!(
+            r.op(json!({"type": "fleet"})).await["bundles"]["writer"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "only the source runs"
+        );
+        assert_eq!(r.count(None).await["running"], 1);
         let reg = r.meta(&r.reg);
         assert!(reg["can_call"].get(&src).is_none(), "no leftover grant");
         assert!(r.meta(&src)["callable_by"].get(&r.reg).is_none());
     }
-}
-
-#[tokio::test]
-async fn spawn_from_respects_limits_before_forking() {
-    let tmp = TempDir::new().unwrap();
-    let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let lead = &r.callers[0];
-    r.op(json!({"type": "set_limit", "role": "writer", "max": 1}))
-        .await;
-    let first = r
-        .spawn_as(lead, json!({"role": "writer", "from": from(&src, 5)}))
-        .await;
-    assert!(first.get("id").is_some(), "{first}");
-    let out = r
-        .spawn_as(lead, json!({"role": "writer", "from": from(&src, 5)}))
-        .await;
-    assert_eq!(out["reason"], "limit", "{out}");
-    assert_eq!(out["scope"], "role");
-    assert_eq!(forks_of(&r, &src).len(), 1, "fork was not called again");
 }
 
 #[tokio::test]
@@ -1362,7 +1168,7 @@ async fn spawn_from_requires_the_caller_to_hold_fork() {
         .edit_can_call(&AgentId::from(other.as_str()), |m| m.remove(&src).is_some())
         .unwrap();
     let out = r
-        .spawn_as(&other, json!({"role": "writer", "from": from(&src, 5)}))
+        .spawn_as(&other, json!({"bundle": "writer", "from": from(&src, 5)}))
         .await;
     assert_eq!(out["reason"], "not_allowed", "{out}");
     assert!(
@@ -1372,7 +1178,7 @@ async fn spawn_from_requires_the_caller_to_hold_fork() {
     assert!(forks_of(&r, &src).is_empty());
     assert!(r.meta(&r.reg)["can_call"].get(&src).is_none());
     let ok = r
-        .spawn_as(&lead, json!({"role": "writer", "from": from(&src, 5)}))
+        .spawn_as(&lead, json!({"bundle": "writer", "from": from(&src, 5)}))
         .await;
     assert!(ok.get("id").is_some(), "{ok}");
 }
@@ -1383,7 +1189,7 @@ async fn spawn_from_gives_the_parent_pause_resume_stop() {
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
     let id = r
-        .spawn_as(lead, json!({"role": "writer", "from": from(&src, 5)}))
+        .spawn_as(lead, json!({"bundle": "writer", "from": from(&src, 5)}))
         .await["id"]
         .as_str()
         .unwrap()
@@ -1399,19 +1205,16 @@ async fn spawn_from_gives_the_parent_pause_resume_stop() {
 }
 
 #[tokio::test]
-async fn spawn_from_counts_in_fleet_and_get_count_and_survives_restart() {
+async fn spawn_from_survives_restart_beside_its_source_and_delete_removes_it() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
     let id = r
-        .spawn_as(lead, json!({"role": "writer", "from": from(&src, 5)}))
+        .spawn_as(lead, json!({"bundle": "writer", "from": from(&src, 5)}))
         .await["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let f = r.op(json!({"type": "fleet"})).await;
-    assert_eq!(f["roles"]["writer"], json!([{"id": id}]));
-    assert_eq!(r.count(Some("writer")).await["running"], 1);
     let state = r.kernel.save();
     let k2 = Arc::new(new_kernel());
     write_cards(
@@ -1423,8 +1226,22 @@ async fn spawn_from_counts_in_fleet_and_get_count_and_survives_restart() {
         ],
     ); // the bundles load before the tree
     k2.load(state).unwrap();
-    let after = send(&k2, &r.reg, json!({"type": "get_count", "role": "writer"})).await;
-    assert_eq!(after["running"], 1, "rebuilt from the records");
+    assert_eq!(
+        k2.agents
+            .get(&AgentId::from(id.as_str()))
+            .unwrap()
+            .parent_id
+            .as_ref()
+            .map(|p| p.as_str().to_string()),
+        r.kernel
+            .agents
+            .get(&AgentId::from(src.as_str()))
+            .unwrap()
+            .parent_id
+            .as_ref()
+            .map(|p| p.as_str().to_string()),
+        "rebuilt from the records, beside its source"
+    );
     let gone = send(
         &r.kernel,
         "kernel_state",
@@ -1432,38 +1249,7 @@ async fn spawn_from_counts_in_fleet_and_get_count_and_survives_restart() {
     )
     .await;
     assert_eq!(gone["deleted"], true, "{gone}");
-    assert_eq!(r.count(Some("writer")).await["running"], 0);
-}
-
-#[tokio::test]
-async fn spawn_from_counts_against_the_leads_subtree_quota() {
-    let tmp = TempDir::new().unwrap();
-    let (r, src) = fork_rig(
-        &tmp,
-        &["boss"],
-        &[("writer.md", WRITER), ("sublead.md", SUBLEAD)],
-    )
-    .await;
-    let sub = r
-        .spawn_as(
-            &r.callers[0],
-            json!({"role": "sublead", "limits": {"total": 1}}),
-        )
-        .await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    grant_fork(&r, &sub, &src);
-    let first = r
-        .spawn_as(&sub, json!({"role": "writer", "from": from(&src, 5)}))
-        .await;
-    assert!(first.get("id").is_some(), "{first}");
-    let second = r
-        .spawn_as(&sub, json!({"role": "writer", "from": from(&src, 5)}))
-        .await;
-    assert_eq!(second["reason"], "limit", "{second}");
-    assert_eq!(second["scope"], "subtree_total", "{second}");
-    assert_eq!(forks_of(&r, &src).len(), 1);
+    assert!(!r.kernel.agents.contains_key(&AgentId::from(id.as_str())));
 }
 
 #[tokio::test]
@@ -1479,20 +1265,20 @@ async fn spawn_from_bad_shape_refused() {
         json!({"agent": "", "at": 1}),
     ] {
         let out = r
-            .spawn_as(lead, json!({"role": "writer", "from": bad_from}))
+            .spawn_as(lead, json!({"bundle": "writer", "from": bad_from}))
             .await;
         assert!(
-            out["error"].as_str().unwrap_or("").contains("from"),
+            ["bad_arg", "missing_arg"].contains(&out["reason"].as_str().unwrap_or("")),
             "{bad_from}: {out}"
         );
-        assert!(out["error"]
-            .as_str()
-            .unwrap()
-            .contains("{agent:str, at:int}"));
+        assert!(
+            out["arg"].as_str().unwrap_or("").starts_with("from"),
+            "{bad_from}: {out}"
+        );
     }
     assert!(forks_of(&r, &src).is_empty());
     // without `from` a spawn is unchanged
-    let plain = r.spawn_as(lead, json!({"role": "writer"})).await;
+    let plain = r.spawn_as(lead, json!({"bundle": "writer"})).await;
     assert!(
         plain.get("id").is_some() && plain.get("from").is_none(),
         "{plain}"
@@ -1536,9 +1322,11 @@ fn reach(r: &Rig, holders: &[String]) {
 /// What `lead` may do on `child`, through the kernel's gate.
 async fn reaches(r: &Rig, lead: &str, child: &str) {
     for verb in ["send", "history", "pause", "resume", "stop"] {
-        let out = r
-            .call(lead, child, json!({"type": verb, "text": "hi"}))
-            .await;
+        let mut call = json!({"type": verb});
+        if verb == "send" {
+            call["text"] = json!("hi");
+        }
+        let out = r.call(lead, child, call).await;
         assert!(
             out.get("error").is_none() && out.get("reason").is_none(),
             "{lead} {verb} on {child}: {out}"
@@ -1552,7 +1340,7 @@ async fn spawn_under_reach_keeps_the_spawners_star() {
     let r = rig(&tmp, &["lead"], &[("reviewer.md", REVIEWER)]).await;
     let lead = r.callers[0].clone();
     reach(&r, std::slice::from_ref(&lead));
-    let id = id_of(&r.spawn_as(&lead, json!({"role": "reviewer"})).await);
+    let id = id_of(&r.spawn_as(&lead, json!({"bundle": "reviewer"})).await);
     assert_eq!(r.meta(&lead)["can_call"][&id], json!("*"));
     assert_eq!(r.meta(&id)["callable_by"][&lead], json!("*"));
     reaches(&r, &lead, &id).await;
@@ -1565,7 +1353,7 @@ async fn spawn_from_under_reach_keeps_the_spawners_star() {
     let lead = r.callers[0].clone();
     reach(&r, std::slice::from_ref(&lead));
     let id = id_of(
-        &r.spawn_as(&lead, json!({"role": "writer", "from": from(&src, 5)}))
+        &r.spawn_as(&lead, json!({"bundle": "writer", "from": from(&src, 5)}))
             .await,
     );
     assert_eq!(r.meta(&lead)["can_call"][&id], json!("*"));
@@ -1600,7 +1388,7 @@ async fn spawn_merges_verbs_the_spawner_already_holds() {
             })
             .unwrap();
         }));
-    let id = id_of(&r.spawn_as(&lead, json!({"role": "reviewer"})).await);
+    let id = id_of(&r.spawn_as(&lead, json!({"bundle": "reviewer"})).await);
     assert_eq!(
         r.meta(&lead)["can_call"][&id],
         json!(["send", "history", "pause", "resume", "stop"])
@@ -1619,9 +1407,9 @@ async fn spawn_without_reach_gives_exactly_the_parent_verbs() {
     notes_tool(&r).await;
     let lead = r.callers[0].clone();
     let want = json!(["pause", "resume", "stop"]);
-    let plain = id_of(&r.spawn_as(&lead, json!({"role": "reviewer"})).await);
+    let plain = id_of(&r.spawn_as(&lead, json!({"bundle": "reviewer"})).await);
     let forked = id_of(
-        &r.spawn_as(&lead, json!({"role": "writer", "from": from(&src, 5)}))
+        &r.spawn_as(&lead, json!({"bundle": "writer", "from": from(&src, 5)}))
             .await,
     );
     for id in [&plain, &forked] {
@@ -1638,7 +1426,7 @@ async fn spawn_without_reach_gives_exactly_the_parent_verbs() {
 
 // ── the card's tool grants (#436) ───────────────────────────────────
 
-const WIDE: &str = "---\nname: wide\npurpose: Reads and writes notes.\ngrants:\n  $registry: [roles]\n  notes: [read, write]\n---\nYou write.\n";
+const WIDE: &str = "---\nname: wide\npurpose: Reads and writes notes.\ngrants:\n  $registry: [bundles]\n  notes: [read, write]\n---\nYou write.\n";
 const STAR: &str =
     "---\nname: star\npurpose: Anything on notes.\ngrants:\n  notes: \"*\"\n---\nYou do all.\n";
 
@@ -1676,7 +1464,7 @@ async fn spawn_opens_the_cards_tool_grants_on_both_ends() {
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     notes_tool(&r).await;
     let before = keys_of(&r, "notes", "callable_by");
-    let id = id_of(&r.spawn_as(&r.callers[0], json!({"role": "writer"})).await);
+    let id = id_of(&r.spawn_as(&r.callers[0], json!({"bundle": "writer"})).await);
     assert_eq!(r.meta(&id)["can_call"]["notes"], json!(["read"]));
     assert_eq!(r.meta("notes")["callable_by"][&id], json!(["read"]));
     let mut want = before;
@@ -1694,7 +1482,7 @@ async fn spawned_worker_calls_the_granted_tool_without_directive_setup() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     notes_tool(&r).await;
-    let id = id_of(&r.spawn_as(&r.callers[0], json!({"role": "writer"})).await);
+    let id = id_of(&r.spawn_as(&r.callers[0], json!({"bundle": "writer"})).await);
     let ok = r.call(&id, "notes", json!({"type": "read"})).await;
     assert_eq!(ok["verb"], "read", "{ok}");
     let no = r.call(&id, "notes", json!({"type": "write"})).await;
@@ -1702,23 +1490,23 @@ async fn spawned_worker_calls_the_granted_tool_without_directive_setup() {
 }
 
 #[tokio::test]
-async fn spawn_from_opens_the_cards_tool_grants_on_both_ends() {
+async fn spawn_from_opens_the_tool_grants_on_both_ends() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     notes_tool(&r).await;
-    hold(&r, &src, "notes", json!("*"));
+    hold(&r, &src, "notes", json!(["read"]));
     let before = keys_of(&r, "notes", "callable_by");
     let id = id_of(
         &r.spawn_as(
             &r.callers[0],
-            json!({"role": "writer", "from": from(&src, 5)}),
+            json!({"bundle": "writer", "from": from(&src, 5)}),
         )
         .await,
     );
     assert_eq!(
         r.meta(&id)["can_call"]["notes"],
         json!(["read"]),
-        "not wider than the card"
+        "the clone holds what its source holds"
     );
     assert_eq!(r.meta("notes")["callable_by"][&id], json!(["read"]));
     let mut want = before;
@@ -1727,14 +1515,14 @@ async fn spawn_from_opens_the_cards_tool_grants_on_both_ends() {
     assert_eq!(keys_of(&r, "notes", "callable_by"), want);
 }
 
-/// A lead role whose bundle admits its own subtree's `send` (the scheduler it makes wakes it).
+/// A lead bundle whose bundle admits its own subtree's `send` (the scheduler it makes wakes it).
 const WAKEABLE: &str = "---\nname: wakeable\npurpose: Runs agents and checks on them.\ncallable_by:\n  $subtree: [send]\n---\nYou check in.\n";
 
 #[tokio::test]
 async fn spawn_adds_the_bundles_callable_by_to_the_childs() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("wakeable.md", WAKEABLE)]).await;
-    let id = id_of(&r.spawn_as(&r.callers[0], json!({"role": "wakeable"})).await);
+    let id = id_of(&r.spawn_as(&r.callers[0], json!({"bundle": "wakeable"})).await);
     let cb = &r.meta(&id)["callable_by"];
     assert_eq!(cb["$subtree"], json!(["send"]), "{cb}");
     assert_eq!(
@@ -1751,7 +1539,7 @@ async fn spawn_from_adds_the_bundles_callable_by_to_the_childs() {
     let id = id_of(
         &r.spawn_as(
             &r.callers[0],
-            json!({"role": "wakeable", "from": from(&src, 5)}),
+            json!({"bundle": "wakeable", "from": from(&src, 5)}),
         )
         .await,
     );
@@ -1763,12 +1551,12 @@ async fn spawn_tool_grant_with_star_verbs_keeps_star() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("star.md", STAR), ("writer.md", WRITER)]).await;
     notes_tool(&r).await;
-    let a = id_of(&r.spawn_as(&r.callers[0], json!({"role": "star"})).await);
-    let b = id_of(&r.spawn_as(&r.callers[0], json!({"role": "star"})).await);
+    let a = id_of(&r.spawn_as(&r.callers[0], json!({"bundle": "star"})).await);
+    let b = id_of(&r.spawn_as(&r.callers[0], json!({"bundle": "star"})).await);
     assert_eq!(r.meta("notes")["callable_by"][&a], json!("*"));
     assert_eq!(r.meta("notes")["callable_by"][&b], json!("*"));
     // a grant already there is merged into, never duplicated
-    let w = id_of(&r.spawn_as(&r.callers[0], json!({"role": "writer"})).await);
+    let w = id_of(&r.spawn_as(&r.callers[0], json!({"bundle": "writer"})).await);
     assert_eq!(r.meta("notes")["callable_by"][&w], json!(["read"]));
     assert_eq!(r.meta("notes")["callable_by"][&a], json!("*"));
 }
@@ -1777,7 +1565,7 @@ async fn spawn_tool_grant_with_star_verbs_keeps_star() {
 async fn spawn_without_the_tool_agent_still_spawns() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let id = id_of(&r.spawn_as(&r.callers[0], json!({"role": "writer"})).await);
+    let id = id_of(&r.spawn_as(&r.callers[0], json!({"bundle": "writer"})).await);
     assert_eq!(r.meta(&id)["can_call"]["notes"], json!(["read"]));
     assert!(r.kernel.agents.get(&AgentId::from("notes")).is_none());
 }
@@ -1787,7 +1575,7 @@ async fn refused_tool_grant_undoes_the_spawn() {
     let tmp = TempDir::new().unwrap();
     let picky = uid(&tmp, "zpicky");
     let card = format!(
-        "---\nname: two\npurpose: Two tools.\ngrants:\n  $registry: [roles]\n  notes: [read]\n  {picky}: [read]\n---\nx\n"
+        "---\nname: two\npurpose: Two tools.\ngrants:\n  $registry: [bundles]\n  notes: [read]\n  {picky}: [read]\n---\nx\n"
     );
     let r = rig(&tmp, &["lead"], &[("two.md", card.as_str())]).await;
     let lead = r.callers[0].clone();
@@ -1804,11 +1592,11 @@ async fn refused_tool_grant_undoes_the_spawn() {
     let lead_cb_before = keys_of(&r, &lead, "callable_by");
     let agents_before = r.kernel.agents.len();
     let out = r
-        .spawn_as(&lead, json!({"role": "two", "task": "go"}))
+        .spawn_as(&lead, json!({"bundle": "two", "task": "go"}))
         .await;
     assert_eq!(out["reason"], "grant_failed", "{out}");
     assert_eq!(r.kernel.agents.len(), agents_before, "no child left");
-    assert_eq!(r.op(json!({"type": "fleet"})).await["roles"], json!({}));
+    assert_eq!(r.op(json!({"type": "fleet"})).await["bundles"], json!({}));
     assert_eq!(r.count(None).await["running"], 0);
     assert_eq!(
         r.meta("notes")["callable_by"],
@@ -1833,7 +1621,7 @@ async fn spawn_refuses_a_grant_the_spawner_does_not_hold() {
     hold(&r, &lead, "notes", json!(["read"]));
     let notes_before = r.meta("notes")["callable_by"].clone();
     let n = r.kernel.agents.len();
-    let out = r.spawn_as(&lead, json!({"role": "wide"})).await;
+    let out = r.spawn_as(&lead, json!({"bundle": "wide"})).await;
     assert_eq!(out["reason"], "not_allowed", "{out}");
     let why = out["error"].as_str().unwrap();
     assert!(
@@ -1842,7 +1630,7 @@ async fn spawn_refuses_a_grant_the_spawner_does_not_hold() {
     );
     assert_eq!(r.kernel.agents.len(), n, "nothing created");
     assert_eq!(r.meta("notes")["callable_by"], notes_before);
-    assert_eq!(r.op(json!({"type": "fleet"})).await["roles"], json!({}));
+    assert_eq!(r.op(json!({"type": "fleet"})).await["bundles"], json!({}));
 }
 
 #[tokio::test]
@@ -1851,7 +1639,7 @@ async fn spawn_refuses_star_grant_when_spawner_holds_only_verbs() {
     let r = rig(&tmp, &["lead"], &[("star.md", STAR)]).await;
     notes_tool(&r).await;
     hold(&r, &r.callers[0], "notes", json!(["read"]));
-    let out = r.spawn_as(&r.callers[0], json!({"role": "star"})).await;
+    let out = r.spawn_as(&r.callers[0], json!({"bundle": "star"})).await;
     assert_eq!(out["reason"], "not_allowed", "{out}");
 }
 
@@ -1865,7 +1653,7 @@ async fn spawn_refuses_a_tool_the_spawner_has_no_grant_on() {
             m.remove("notes").is_some()
         })
         .unwrap();
-    let out = r.spawn_as(&r.callers[0], json!({"role": "writer"})).await;
+    let out = r.spawn_as(&r.callers[0], json!({"bundle": "writer"})).await;
     assert_eq!(out["reason"], "not_allowed", "{out}");
 }
 
@@ -1878,7 +1666,7 @@ async fn spawn_from_refuses_escalation_before_forking() {
     let out = r
         .spawn_as(
             &r.callers[0],
-            json!({"role": "wide", "from": from(&src, 5)}),
+            json!({"bundle": "wide", "from": from(&src, 5)}),
         )
         .await;
     assert_eq!(out["reason"], "not_allowed", "{out}");
@@ -1891,7 +1679,7 @@ async fn operator_spawn_has_no_escalation_check() {
     let r = rig(&tmp, &[], &[("wide.md", WIDE)]).await;
     notes_tool(&r).await;
     let id = id_of(
-        &r.op(json!({"type": "spawn", "role": "wide", "provider": "prov", "model": "m1"}))
+        &r.op(json!({"type": "spawn", "bundle": "wide", "provider": "prov", "model": "m1"}))
             .await,
     );
     assert_eq!(r.meta(&id)["can_call"]["notes"], json!(["read", "write"]));
@@ -1902,33 +1690,12 @@ async fn operator_spawn_has_no_escalation_check() {
 }
 
 #[tokio::test]
-async fn subleads_cannot_hand_on_more_than_they_hold() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(
-        &tmp,
-        &["lead"],
-        &[
-            ("sublead.md", SUBLEAD),
-            ("wide.md", WIDE),
-            ("writer.md", WRITER),
-        ],
-    )
-    .await;
-    notes_tool(&r).await;
-    let sub = id_of(&r.spawn_as(&r.callers[0], json!({"role": "sublead"})).await);
-    let no = r.spawn_as(&sub, json!({"role": "wide"})).await;
-    assert_eq!(no["reason"], "not_allowed", "{no}");
-    let ok = r.spawn_as(&sub, json!({"role": "writer"})).await;
-    assert!(ok.get("id").is_some(), "{ok}");
-}
-
-#[tokio::test]
 async fn registry_token_grants_are_not_escalation_checked() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("project_lead.md", PROJECT_LEAD)]).await;
     let lead = r.callers[0].clone();
     hold(&r, &lead, &r.reg, json!(["spawn"]));
-    let out = r.spawn_as(&lead, json!({"role": "project_lead"})).await;
+    let out = r.spawn_as(&lead, json!({"bundle": "project_lead"})).await;
     assert!(out.get("id").is_some(), "{out}");
 }
 
@@ -1938,8 +1705,8 @@ fn paused_ids() -> Vec<String> {
     PAUSED.lock().unwrap().clone()
 }
 
-async fn spawn_id(r: &Rig, who: &str, role: &str) -> String {
-    let out = r.spawn_as(who, json!({"role": role})).await;
+async fn spawn_id(r: &Rig, who: &str, bundle: &str) -> String {
+    let out = r.spawn_as(who, json!({"bundle": bundle})).await;
     out["id"]
         .as_str()
         .unwrap_or_else(|| panic!("{out}"))
@@ -1967,24 +1734,6 @@ async fn get_count_counts_all_existing_agents() {
 }
 
 #[tokio::test]
-async fn paused_agent_keeps_its_slot_and_spawn_is_refused() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let lead = &r.callers[0];
-    r.op(json!({"type": "set_limit", "max": 2})).await;
-    let a = spawn_id(&r, lead, "writer").await;
-    spawn_id(&r, lead, "writer").await;
-    r.call(lead, &a, json!({"type": "pause"})).await;
-    let third = r.spawn_as(lead, json!({"role": "writer"})).await;
-    assert_eq!(third["reason"], "limit", "{third}");
-    assert_eq!(third["scope"], "total");
-    assert_eq!(
-        (third["running"].clone(), third["max"].clone()),
-        (json!(2), json!(2))
-    );
-}
-
-#[tokio::test]
 async fn done_message_does_not_pause_the_sender() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
@@ -2003,76 +1752,7 @@ async fn done_message_does_not_pause_the_sender() {
     );
     assert_eq!(r.count(None).await["running"], 1);
     let f = r.op(json!({"type": "fleet"})).await;
-    assert_eq!(f["roles"]["writer"].as_array().unwrap().len(), 1, "{f}");
-}
-
-#[tokio::test]
-async fn delete_agent_is_the_only_way_to_free_a_slot() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let lead = &r.callers[0];
-    r.op(json!({"type": "set_limit", "max": 2})).await;
-    let a = spawn_id(&r, lead, "writer").await;
-    spawn_id(&r, lead, "writer").await;
-    r.call(lead, &a, json!({"type": "pause"})).await;
-    r.call(&a, lead, json!({"type": "send", "text": "done"}))
-        .await;
-    assert_eq!(
-        r.spawn_as(lead, json!({"role": "writer"})).await["reason"],
-        "limit"
-    );
-    send(
-        &r.kernel,
-        "kernel_state",
-        json!({"type": "delete_agent", "id": a}),
-    )
-    .await;
-    assert_eq!(r.count(None).await["running"], 1);
-    assert!(r
-        .spawn_as(lead, json!({"role": "writer"}))
-        .await
-        .get("id")
-        .is_some());
-    assert_eq!(r.count(None).await["running"], 2);
-}
-
-#[tokio::test]
-async fn delegated_quota_counts_paused_and_done_agents() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(
-        &tmp,
-        &["boss"],
-        &[("writer.md", WRITER), ("sublead.md", SUBLEAD)],
-    )
-    .await;
-    let boss = &r.callers[0];
-    // total quota 1: a paused sub-agent keeps the only slot
-    let sub = r
-        .spawn_as(boss, json!({"role": "sublead", "limits": {"total": 1}}))
-        .await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let w = spawn_id(&r, &sub, "writer").await;
-    r.call(boss, &w, json!({"type": "pause"})).await;
-    let no = r.spawn_as(&sub, json!({"role": "writer"})).await;
-    assert_eq!(no["reason"], "limit", "{no}");
-    assert_eq!(no["scope"], "subtree_total");
-    // per-role quota: a done sub-agent keeps its role slot
-    let sub2 = r
-        .spawn_as(boss, json!({"role": "sublead", "limits": {"per_role": 1}}))
-        .await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let w2 = spawn_id(&r, &sub2, "writer").await;
-    let told = r
-        .call(&w2, &sub2, json!({"type": "send", "text": "done"}))
-        .await;
-    assert_eq!(told["verb"], "send", "{told}");
-    let no2 = r.spawn_as(&sub2, json!({"role": "writer"})).await;
-    assert_eq!(no2["reason"], "limit", "{no2}");
-    assert_eq!(no2["scope"], "subtree_role");
+    assert_eq!(f["bundles"]["writer"].as_array().unwrap().len(), 1, "{f}");
 }
 
 #[tokio::test]
@@ -2082,8 +1762,8 @@ async fn the_registry_is_let_in_only_for_what_the_card_grants() {
     let lead = &r.callers[0];
     let a = spawn_id(&r, lead, "writer").await;
     // the registry is let in only for what the card grants on it
-    assert_eq!(r.meta(&a)["can_call"][&r.reg], json!(["roles"]));
-    assert_eq!(r.meta(&r.reg)["callable_by"][&a], json!(["roles"]));
+    assert_eq!(r.meta(&a)["can_call"][&r.reg], json!(["bundles"]));
+    assert_eq!(r.meta(&r.reg)["callable_by"][&a], json!(["bundles"]));
 }
 
 // ── the refusal shape: `error` is a sentence, `reason` is the code ──────────
@@ -2097,80 +1777,13 @@ fn assert_shape(out: &Value, code: &str) {
 }
 
 #[tokio::test]
-async fn limit_refusal_error_is_a_sentence_reason_is_limit() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let lead = &r.callers[0];
-    r.op(json!({"type": "set_limit", "role": "writer", "max": 1}))
-        .await;
-    r.spawn_as(lead, json!({"role": "writer"})).await;
-    let out = r.spawn_as(lead, json!({"role": "writer"})).await;
-    assert_shape(&out, "limit");
-    assert!(out["error"].as_str().unwrap().contains("is at its limit"));
-    assert_ne!(out["error"], "limit");
-    assert!(!out["hint"].as_str().unwrap().is_empty(), "{out}");
-    assert_eq!(out["scope"], "role");
-    assert_eq!(out["role"], "writer");
-    assert_eq!(out["running"], 1);
-    assert_eq!(out["max"], 1);
-}
-
-#[tokio::test]
-async fn limit_refusal_total_and_subtree_scopes_keep_extras() {
-    let tmp = TempDir::new().unwrap();
-    let r = rig(
-        &tmp,
-        &["boss"],
-        &[("writer.md", WRITER), ("sublead.md", SUBLEAD)],
-    )
-    .await;
-    let boss = &r.callers[0];
-    // total
-    r.op(json!({"type": "set_limit", "max": 1})).await;
-    r.spawn_as(boss, json!({"role": "writer"})).await;
-    let total = r.spawn_as(boss, json!({"role": "writer"})).await;
-    assert_shape(&total, "limit");
-    assert_eq!(total["scope"], "total");
-    assert!(total.get("lead").is_none(), "{total}");
-    r.op(json!({"type": "set_limit", "max": null})).await;
-    // request: more than the sub-lead was given
-    let sub = id_of(
-        &r.spawn_as(boss, json!({"role": "sublead", "limits": {"total": 2}}))
-            .await,
-    );
-    let req = r
-        .spawn_as(&sub, json!({"role": "sublead", "limits": {"total": 5}}))
-        .await;
-    assert_shape(&req, "limit");
-    assert_eq!(req["scope"], "request");
-    assert_eq!(req["lead"], sub.as_str());
-    // subtree_total
-    r.spawn_as(&sub, json!({"role": "writer"})).await;
-    r.spawn_as(&sub, json!({"role": "writer"})).await;
-    let st = r.spawn_as(&sub, json!({"role": "writer"})).await;
-    assert_shape(&st, "limit");
-    assert_eq!(st["scope"], "subtree_total");
-    assert_eq!(st["lead"], sub.as_str());
-    // subtree_role
-    let sub2 = id_of(
-        &r.spawn_as(boss, json!({"role": "sublead", "limits": {"per_role": 1}}))
-            .await,
-    );
-    r.spawn_as(&sub2, json!({"role": "writer"})).await;
-    let sr = r.spawn_as(&sub2, json!({"role": "writer"})).await;
-    assert_shape(&sr, "limit");
-    assert_eq!(sr["scope"], "subtree_role");
-    assert_eq!(sr["lead"], sub2.as_str());
-}
-
-#[tokio::test]
 async fn not_allowed_refusal_reason_is_code() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("wide.md", WIDE)]).await;
     notes_tool(&r).await;
     let lead = r.callers[0].clone();
     hold(&r, &lead, "notes", json!(["read"]));
-    let out = r.spawn_as(&lead, json!({"role": "wide"})).await;
+    let out = r.spawn_as(&lead, json!({"bundle": "wide"})).await;
     assert_shape(&out, "not_allowed");
     let why = out["error"].as_str().unwrap();
     assert!(
@@ -2189,7 +1802,7 @@ async fn fork_not_allowed_refusal_reason_is_code() {
         .edit_can_call(&AgentId::from(other.as_str()), |m| m.remove(&src).is_some())
         .unwrap();
     let out = r
-        .spawn_as(&other, json!({"role": "writer", "from": from(&src, 5)}))
+        .spawn_as(&other, json!({"bundle": "writer", "from": from(&src, 5)}))
         .await;
     assert_shape(&out, "not_allowed");
     assert!(out["error"].as_str().unwrap().contains("fork"), "{out}");
@@ -2200,7 +1813,7 @@ async fn grant_failed_refusal_reason_is_code() {
     let tmp = TempDir::new().unwrap();
     let picky = uid(&tmp, "zpicky");
     let card = format!(
-        "---\nname: two\npurpose: Two tools.\ngrants:\n  $registry: [roles]\n  notes: [read]\n  {picky}: [read]\n---\nx\n"
+        "---\nname: two\npurpose: Two tools.\ngrants:\n  $registry: [bundles]\n  notes: [read]\n  {picky}: [read]\n---\nx\n"
     );
     let r = rig(&tmp, &["lead"], &[("two.md", card.as_str())]).await;
     let lead = r.callers[0].clone();
@@ -2212,7 +1825,7 @@ async fn grant_failed_refusal_reason_is_code() {
     .await;
     hold(&r, &lead, &picky, json!("*"));
     let before = r.kernel.agents.len();
-    let out = r.spawn_as(&lead, json!({"role": "two"})).await;
+    let out = r.spawn_as(&lead, json!({"bundle": "two"})).await;
     assert_shape(&out, "grant_failed");
     assert!(
         out["error"].as_str().unwrap().starts_with("spawn:"),

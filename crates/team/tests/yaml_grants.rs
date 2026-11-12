@@ -180,7 +180,7 @@ const PAGE_USER_VERBS: [&str; 2] = ["inquiries", "answer_inquiry"];
 /// The callee-side grants the yaml declares, on the live records.
 async fn assert_the_declared_grants(site: &Site) {
     let memory = site.record("memory").await;
-    has_grant(&memory, "callable_by", "roles", json!("*"));
+    has_grant(&memory, "callable_by", "bundles", json!("*"));
     // the stock grants stay next to them, and the lead's end (fantastic's own reach)
     has_grant(&memory, "callable_by", "user", json!(["*"]));
     has_grant(&memory, "callable_by", "lead", json!(["*"]));

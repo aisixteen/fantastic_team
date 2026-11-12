@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -15,13 +16,19 @@ use crate::puller::{task_file_names, KernelPeers, Peers};
 
 /// The bundle's handler module name.
 pub const HANDLER_MODULE: &str = "team_board.tools";
+/// What the bundle is for: its one short man text; how to call it is rendered from its
+/// declared verbs (`docs`, `reflect`).
+const MAN: &str = "The team's shared picture of the work: it caches the open issues of its repos with their queue state, knows the agents, keeps its own state file in the store and audits the picture. It never assigns.";
+
+pub mod record;
+pub mod verbs;
 /// Failures by one agent before the audit flags it.
 pub const FAIL_LIMIT: u32 = 3;
 /// Where the board keeps its state inside the store.
 const STATE_PATH: &str = "board/state.json";
 
 /// Where a task stands.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     /// Accepted, nobody working on it.
@@ -347,34 +354,36 @@ pub struct BoardCfg {
     pub ask_to: String,
     /// Seconds without activity before a claim is stale.
     pub stale_secs: u64,
-    /// The roles registry's id (`roles:`): the board then adds the `roles` section to its
+    /// The bundles registry's id (`bundles:`): the board then adds the `bundles` section to its
     /// `board` reply. None when the record names none.
-    pub roles: Option<String>,
+    pub bundles: Option<String>,
 }
 
 fn cfg_of(
     kernel: &Arc<fantastic_kernel::Kernel>,
     id: &fantastic_kernel::AgentId,
-) -> Result<BoardCfg, String> {
+) -> BoardCfg {
     let (meta, repos) = crate::puller::record_and_repos(kernel, id);
     let text = |k: &str| {
-        meta.get(k)
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .filter(|v| !v.trim().is_empty())
+        record::RECORD
+            .get(&meta, k)
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
     };
-    Ok(BoardCfg {
+    BoardCfg {
         repos,
-        github: text("github").ok_or_else(|| "team_board: record needs `github`".to_string())?,
-        store: text("store").ok_or_else(|| "team_board: record needs `store`".to_string())?,
-        ask_to: text("ask_to").unwrap_or_else(|| "user".into()),
-        roles: text("roles"),
-        stale_secs: meta
-            .get("stale_minutes")
+        github: text("github"),
+        store: text("store"),
+        ask_to: text("ask_to"),
+        bundles: record::RECORD
+            .get(&meta, "bundles")
+            .and_then(|v| v.as_str().map(str::to_string)),
+        stale_secs: record::RECORD
+            .get(&meta, "stale_minutes")
             .and_then(|v| v.as_u64())
-            .unwrap_or(30)
+            .unwrap_or_default()
             * 60,
-    })
+    }
 }
 
 /// Read the board from the store. A missing or unreadable file is an empty board.
@@ -512,12 +521,12 @@ fn holds(holder: &Value, id: &str, ancestors: &[String]) -> bool {
     }
 }
 
-/// Give `node` and everything below it a role and a state; push each descendant onto `flat`.
+/// Give `node` and everything below it a bundle and a state; push each descendant onto `flat`.
 fn annotate(
     node: &Value,
     parent: Option<&str>,
     ancestors: &mut Vec<String>,
-    roles: &BTreeMap<String, String>,
+    bundles: &BTreeMap<String, String>,
     tasks: &[Value],
     flat: &mut Vec<Value>,
 ) -> Value {
@@ -527,20 +536,20 @@ fn annotate(
         .filter(|t| holds(&t["holder"], &id, ancestors))
         .filter_map(|t| t["status"].as_str())
         .collect();
-    let role = roles.get(&id).cloned().unwrap_or_default();
+    let bundle = bundles.get(&id).cloned().unwrap_or_default();
     let state = state_of(&held);
     let mut out = node.clone();
-    out["role"] = json!(role);
+    out["bundle"] = json!(bundle);
     out["state"] = json!(state);
     if let Some(p) = parent {
-        flat.push(json!({"id": id, "role": role, "state": state, "parent": p}));
+        flat.push(json!({"id": id, "bundle": bundle, "state": state, "parent": p}));
     }
     ancestors.push(id.clone());
     let kids: Vec<Value> = node["children"]
         .as_array()
         .map(|c| {
             c.iter()
-                .map(|k| annotate(k, Some(&id), ancestors, roles, tasks, flat))
+                .map(|k| annotate(k, Some(&id), ancestors, bundles, tasks, flat))
                 .collect()
         })
         .unwrap_or_default();
@@ -549,20 +558,20 @@ fn annotate(
     out
 }
 
-/// The roles-mode section of the board from the registries' replies: `fleet` (the roles
+/// The bundles-mode section of the board from the registries' replies: `fleet` (the bundles
 /// registry's `fleet`), `count` (its `get_count`, passed through as it answers), `tree`
 /// (the `reflect` node of the project_lead) and `tasks` (the task_registry's `list`).
 /// An error reply leaves its part empty or null.
-pub fn roles_view(fleet: &Value, count: &Value, tree: &Value, tasks: &Value) -> Value {
-    let mut roles = BTreeMap::new();
+pub fn bundles_view(fleet: &Value, count: &Value, tree: &Value, tasks: &Value) -> Value {
+    let mut bundles = BTreeMap::new();
     let mut lead: Option<String> = None;
-    if let Some(m) = fleet.get("roles").and_then(Value::as_object) {
-        for (role, list) in m {
+    if let Some(m) = fleet.get("bundles").and_then(Value::as_object) {
+        for (bundle, list) in m {
             for e in list.as_array().into_iter().flatten() {
                 let id = e.as_str().or_else(|| e["id"].as_str());
                 if let Some(id) = id {
-                    roles.insert(id.to_string(), role.clone());
-                    if role == "project_lead" && lead.is_none() {
+                    bundles.insert(id.to_string(), bundle.clone());
+                    if bundle == "project_lead" && lead.is_none() {
                         lead = Some(id.to_string());
                     }
                 }
@@ -576,7 +585,7 @@ pub fn roles_view(fleet: &Value, count: &Value, tree: &Value, tasks: &Value) -> 
         .unwrap_or_default();
     let mut agents = Vec::new();
     let tree = if tree.get("id").is_some() {
-        annotate(tree, None, &mut Vec::new(), &roles, &rows, &mut agents)
+        annotate(tree, None, &mut Vec::new(), &bundles, &rows, &mut agents)
     } else {
         Value::Null
     };
@@ -586,7 +595,7 @@ pub fn roles_view(fleet: &Value, count: &Value, tree: &Value, tasks: &Value) -> 
             json!({"id": t["id"], "source": t["source"], "holder": t["holder"], "status": t["status"]})
         })
         .collect();
-    json!({"roles": {
+    json!({"bundles": {
         "lead": lead,
         "fleet": dispatcher::fleet_of(count),
         "tree": tree,
@@ -605,14 +614,14 @@ fn find_node(tree: &Value, id: &str) -> Option<Value> {
     list.iter().find_map(|n| find_node(n, id))
 }
 
-/// The four registry reads of roles mode, through the public verbs only: the roles
+/// The four registry reads of bundles mode, through the public verbs only: the bundles
 /// registry's `fleet` and `get_count`, the root's `reflect` of the project_lead's branch
 /// and the task registry's `list`. A peer that errors leaves its part an error value
 /// (or `Null` for the tree); nothing panics. Returns `(fleet, count, tree, tasks)`.
-async fn roles_reads(peers: &dyn Peers, roles: &str) -> (Value, Value, Value, Value) {
-    let fleet = peers.ask(roles, json!({"type": "fleet"})).await;
-    let count = peers.ask(roles, json!({"type": "get_count"})).await;
-    let lead = fleet["roles"]["project_lead"]
+async fn bundles_reads(peers: &dyn Peers, bundles: &str) -> (Value, Value, Value, Value) {
+    let fleet = peers.ask(bundles, json!({"type": "fleet"})).await;
+    let count = peers.ask(bundles, json!({"type": "get_count"})).await;
+    let lead = fleet["bundles"]["project_lead"]
         .as_array()
         .and_then(|l| l.first())
         .and_then(|e| e.as_str().or_else(|| e["id"].as_str()))
@@ -633,12 +642,12 @@ async fn roles_reads(peers: &dyn Peers, roles: &str) -> (Value, Value, Value, Va
     (fleet, count, tree, tasks)
 }
 
-/// Read the roles-mode state through the public verbs only: the roles registry's `fleet`
+/// Read the bundles-mode state through the public verbs only: the bundles registry's `fleet`
 /// and `get_count`, the root's `reflect` of the project_lead's branch and the task
 /// registry's `list`. A peer that errors leaves its part empty; nothing panics.
-pub async fn roles_state(peers: &dyn Peers, roles: &str) -> Value {
-    let (fleet, count, tree, tasks) = roles_reads(peers, roles).await;
-    roles_view(&fleet, &count, &tree, &tasks)
+pub async fn bundles_state(peers: &dyn Peers, bundles: &str) -> Value {
+    let (fleet, count, tree, tasks) = bundles_reads(peers, bundles).await;
+    bundles_view(&fleet, &count, &tree, &tasks)
 }
 
 /// The newest `at` (seconds) a task shows: over its history entries and its report.
@@ -670,7 +679,7 @@ fn task_since(t: &Value) -> Option<f64> {
 /// ancestor) is `busy` with that task, and idles for `now` minus the newest `at` of the
 /// task's history and report; one holding a paused task is `paused`; one whose tasks
 /// are all done is `done`; the rest are `idle`. No tree, no rows.
-pub fn roles_rows(tree: &Value, tasks: &Value, now: u64) -> Vec<Value> {
+pub fn bundles_rows(tree: &Value, tasks: &Value, now: u64) -> Vec<Value> {
     let rows: &[Value] = tasks
         .get("tasks")
         .and_then(Value::as_array)
@@ -743,10 +752,10 @@ fn rows_of(
     ancestors.pop();
 }
 
-/// The `load` object of roles mode:
+/// The `load` object of bundles mode:
 /// the agents below the project_lead busy, idle and stalled, and the registry's tasks
 /// by status, with `queued` the waiting ones, so the quiet heartbeat can fire.
-pub fn roles_load(rows: &[Value], tasks: &Value, stall_after_s: u64) -> Value {
+pub fn bundles_load(rows: &[Value], tasks: &Value, stall_after_s: u64) -> Value {
     let workers: Vec<&Value> = rows.iter().filter(|r| !r["parent"].is_null()).collect();
     let busy = workers.iter().filter(|r| r["state"] == "busy").count();
     let idle = workers.iter().filter(|r| r["state"] == "idle").count();
@@ -779,76 +788,64 @@ pub fn roles_load(rows: &[Value], tasks: &Value, stall_after_s: u64) -> Value {
     })
 }
 
-/// The spawned tree for the cadencer: the rows ([`roles_rows`]) and the load
-/// ([`roles_load`]), read through [`roles_reads`] (public verbs only; no spawned agent
+/// The spawned tree for the cadencer: the rows ([`bundles_rows`]) and the load
+/// ([`bundles_load`]), read through [`bundles_reads`] (public verbs only; no spawned agent
 /// is called). A peer that errors gives no rows.
-pub async fn roles_tree_rows(
+pub async fn bundles_tree_rows(
     peers: &dyn Peers,
-    roles: &str,
+    bundles: &str,
     now: u64,
     stall_after_s: u64,
 ) -> (Vec<Value>, Value) {
-    let (_, _, tree, tasks) = roles_reads(peers, roles).await;
-    let rows = roles_rows(&tree, &tasks, now);
-    let load = roles_load(&rows, &tasks, stall_after_s);
+    let (_, _, tree, tasks) = bundles_reads(peers, bundles).await;
+    let rows = bundles_rows(&tree, &tasks, now);
+    let load = bundles_load(&rows, &tasks, stall_after_s);
     (rows, load)
 }
 
-async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Value {
+async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, call: verbs::Call) -> Value {
     let now = fantastic_ai_core::helpers::now_secs() as u64;
     let mut board = load(peers, &cfg.store).await;
-    let out = match t {
-        "pull" => {
+    let saves = matches!(
+        call,
+        verbs::Call::Pull(_)
+            | verbs::Call::Report(_)
+            | verbs::Call::Agent(_)
+            | verbs::Call::Ask(_)
+            | verbs::Call::Audit(_)
+    );
+    let out = match call {
+        verbs::Call::Reflect(_) | verbs::Call::Boot(_) => Value::Null,
+        verbs::Call::Pull(_) => {
             let errors = pull(peers, cfg, &mut board, now).await;
             json!({"tasks": board.tasks.len(), "errors": errors})
         }
-        "board" => {
+        verbs::Call::Board(_) => {
             let mut out = board.snapshot();
-            if let Some(r) = &cfg.roles {
-                out["roles"] = roles_state(peers, r).await["roles"].clone();
+            if let Some(r) = &cfg.bundles {
+                out["bundles"] = bundles_state(peers, r).await["bundles"].clone();
             }
             out
         }
-        "task" => {
-            let id = p["id"].as_str().unwrap_or("");
-            match board.tasks.get(id) {
-                Some(task) => json!(task),
-                None => json!({"error": format!("no task `{id}`")}),
+        verbs::Call::Task(a) => match board.tasks.get(&a.id) {
+            Some(task) => json!(task),
+            None => json!({"error": format!("no task `{}`", a.id)}),
+        },
+        verbs::Call::Report(a) => {
+            match board.report(&a.task, a.status, &a.note, a.pr.as_deref(), &a.author, now) {
+                Ok(()) => json!({"ok": true}),
+                Err(e) => json!({"error": e}),
             }
         }
-        "report" => {
-            let id = p["task"].as_str().unwrap_or("");
-            match p["status"].as_str().and_then(Status::parse) {
-                None => json!({"error": "report needs status pending|in_work|done|failed"}),
-                Some(status) => match board.report(
-                    id,
-                    status,
-                    p["note"].as_str().unwrap_or(""),
-                    p["pr"].as_str(),
-                    p["author"].as_str().unwrap_or("unknown"),
-                    now,
-                ) {
-                    Ok(()) => json!({"ok": true}),
-                    Err(e) => json!({"error": e}),
-                },
-            }
-        }
-        "agent" => {
-            let name = p["name"].as_str().unwrap_or("");
-            board.touch_agent(
-                name,
-                p["state"].as_str().unwrap_or(""),
-                p["cost"].as_f64().unwrap_or(0.0),
-                now,
-            );
+        verbs::Call::Agent(a) => {
+            board.touch_agent(&a.name, &a.state, a.cost, now);
             json!({"ok": true})
         }
-        "ask" => {
-            let to = p["to"].as_str().unwrap_or(cfg.ask_to.as_str());
-            let question = p["question"].as_str().unwrap_or("");
-            ask_recorded(peers, &mut board, to, question, now).await
+        verbs::Call::Ask(a) => {
+            let to = a.to.as_deref().unwrap_or(cfg.ask_to.as_str());
+            ask_recorded(peers, &mut board, to, &a.question, now).await
         }
-        "audit" => {
+        verbs::Call::Audit(_) => {
             let findings = board.audit(now, cfg.stale_secs);
             let mut texts = Vec::new();
             for finding in &findings {
@@ -858,9 +855,8 @@ async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Valu
             }
             json!({"findings": texts})
         }
-        other => json!({"error": format!("team_board: unknown type '{other}'")}),
     };
-    if matches!(t, "pull" | "report" | "agent" | "ask" | "audit") {
+    if saves {
         save(peers, &cfg.store, &board).await;
     }
     out
@@ -871,39 +867,46 @@ async fn dispatch(peers: &dyn Peers, cfg: &BoardCfg, t: &str, p: &Value) -> Valu
 pub struct BoardBundle;
 
 #[async_trait::async_trait]
-impl fantastic_kernel::bundle::Bundle for BoardBundle {
+impl fantastic_kernel::bundle::Handler for BoardBundle {
+    type Call = verbs::Call;
+
     fn name(&self) -> &str {
         HANDLER_MODULE
     }
 
-    fn verb_docs(&self) -> Value {
-        json!({
-            "pull": "pull → {tasks: n, errors: [..]}",
-            "board": "board → {tasks: {pending, in_work, done, failed}, agents: {..}, roles?}; roles (roles mode) = {lead, fleet, tree, agents: [{id, role, state, parent}], tasks: [{id, source, holder, status}]}",
-            "task": "task {id} → the task",
-            "report": "report {task, status, note?, pr?, author?} → {ok}",
-            "agent": "agent {name, state, cost} → {ok}",
-            "ask": "ask {to, question} → the answer, recorded",
-            "audit": "audit → {findings: [..]}, each asked of ask_to",
-        })
+    fn man(&self) -> &'static str {
+        MAN
+    }
+
+    fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+        verbs::VERBS
+    }
+
+    fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+        verbs::dynamic_verbs(agent)
+    }
+
+    fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+        &record::RECORD
     }
 
     async fn handle(
         &self,
         agent_id: &fantastic_kernel::AgentId,
-        payload: &Value,
+        call: Self::Call,
         kernel: &Arc<fantastic_kernel::Kernel>,
     ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError> {
-        let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if t == "boot" {
-            crate::declared_views::grant_views(kernel);
-            return Ok(None);
+        match call {
+            verbs::Call::Boot(_) => {
+                crate::declared_views::grant_views(kernel);
+                Ok(None)
+            }
+            verbs::Call::Reflect(_) => Ok(Some(json!({"id": agent_id.as_str(), "sentence": MAN}))),
+            call => {
+                let cfg = cfg_of(kernel, agent_id);
+                Ok(Some(dispatch(&KernelPeers(kernel.clone()), &cfg, call).await))
+            }
         }
-        let out = match cfg_of(kernel, agent_id) {
-            Err(e) => json!({"error": e}),
-            Ok(cfg) => dispatch(&KernelPeers(kernel.clone()), &cfg, t, payload).await,
-        };
-        Ok(Some(out))
     }
 }
 
@@ -966,7 +969,7 @@ mod tests {
             store: "store".into(),
             ask_to: "user".into(),
             stale_secs: 1800,
-            roles: None,
+            bundles: None,
         }
     }
 
@@ -1214,10 +1217,10 @@ mod tests {
         assert!(reg.get(HANDLER_MODULE).is_some());
     }
 
-    // ---- roles mode (#193) ----
+    // ---- bundles mode (#193) ----
 
-    /// A scripted roles registry, kernel reflect and task registry; records every call.
-    struct RolesPeers {
+    /// A scripted bundles registry, kernel reflect and task registry; records every call.
+    struct BundlesPeers {
         fleet: Value,
         count: Value,
         reflect: Value,
@@ -1226,12 +1229,12 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Peers for RolesPeers {
+    impl Peers for BundlesPeers {
         async fn ask(&self, to: &str, p: Value) -> Value {
             self.calls.lock().unwrap().push((to.to_string(), p.clone()));
             match (to, p["type"].as_str().unwrap_or("")) {
-                ("roles", "fleet") => self.fleet.clone(),
-                ("roles", "get_count") => self.count.clone(),
+                ("bundles", "fleet") => self.fleet.clone(),
+                ("bundles", "get_count") => self.count.clone(),
                 ("kernel", "reflect") => self.reflect.clone(),
                 ("tasks", "list") => self.tasks.clone(),
                 ("store", "read") => json!({"error": "not found"}),
@@ -1240,10 +1243,10 @@ mod tests {
         }
     }
 
-    fn roles_peers() -> RolesPeers {
-        RolesPeers {
-            fleet: json!({"roles": {"project_lead": [{"id": "pl"}], "worker": [{"id": "w1"}, {"id": "w2"}]}}),
-            count: json!({"running": 3, "max": 5}),
+    fn bundles_peers() -> BundlesPeers {
+        BundlesPeers {
+            fleet: json!({"bundles": {"project_lead": [{"id": "pl"}], "worker": [{"id": "w1"}, {"id": "w2"}]}}),
+            count: json!({"running": 3}),
             reflect: json!({"tree": [{"id": "pl", "children": [{"id": "w1", "children": []}, {"id": "w2", "children": []}]}]}),
             tasks: json!({"tasks": [
                 {"id": "t1", "source": "issue 7", "holder": "w1", "status": "running", "history": []}
@@ -1253,7 +1256,7 @@ mod tests {
     }
 
     fn fleet_pl() -> Value {
-        json!({"roles": {"project_lead": [{"id": "pl"}], "worker": [{"id": "w1"}, {"id": "w2"}]}})
+        json!({"bundles": {"project_lead": [{"id": "pl"}], "worker": [{"id": "w1"}, {"id": "w2"}]}})
     }
 
     fn tree_pl() -> Value {
@@ -1263,7 +1266,7 @@ mod tests {
     }
 
     fn state_of_agent(v: &Value, id: &str) -> Value {
-        v["roles"]["agents"]
+        v["bundles"]["agents"]
             .as_array()
             .unwrap()
             .iter()
@@ -1273,24 +1276,24 @@ mod tests {
     }
 
     #[test]
-    fn roles_view_lists_the_tree_below_the_project_lead_with_roles() {
-        let v = roles_view(&fleet_pl(), &json!({}), &tree_pl(), &json!({"tasks": []}));
-        assert_eq!(v["roles"]["lead"], "pl");
-        assert_eq!(v["roles"]["tree"]["id"], "pl");
-        assert_eq!(v["roles"]["tree"]["role"], "project_lead");
-        assert_eq!(v["roles"]["tree"]["children"][0]["role"], "worker");
-        let agents = v["roles"]["agents"].as_array().unwrap();
+    fn bundles_view_lists_the_tree_below_the_project_lead_with_bundles() {
+        let v = bundles_view(&fleet_pl(), &json!({}), &tree_pl(), &json!({"tasks": []}));
+        assert_eq!(v["bundles"]["lead"], "pl");
+        assert_eq!(v["bundles"]["tree"]["id"], "pl");
+        assert_eq!(v["bundles"]["tree"]["bundle"], "project_lead");
+        assert_eq!(v["bundles"]["tree"]["children"][0]["bundle"], "worker");
+        let agents = v["bundles"]["agents"].as_array().unwrap();
         assert_eq!(agents.len(), 2, "the lead is the root, not listed again");
         for id in ["w1", "w2"] {
             let a = agents.iter().find(|a| a["id"] == id).unwrap();
-            assert_eq!(a["role"], "worker");
+            assert_eq!(a["bundle"], "worker");
             assert_eq!(a["parent"], "pl");
         }
     }
 
     #[test]
-    fn roles_view_agent_state_comes_from_its_tasks() {
-        let fleet = json!({"roles": {"project_lead": [{"id": "pl"}], "worker": [
+    fn bundles_view_agent_state_comes_from_its_tasks() {
+        let fleet = json!({"bundles": {"project_lead": [{"id": "pl"}], "worker": [
             {"id": "w1"}, {"id": "w2"}, {"id": "w3"}, {"id": "w4"}]}});
         let tree = json!({"id": "pl", "children": [
             {"id": "w1", "children": []}, {"id": "w2", "children": []},
@@ -1300,7 +1303,7 @@ mod tests {
             {"id": "b", "source": "s", "holder": "w2", "status": "paused"},
             {"id": "c", "source": "s", "holder": "w3", "status": "done"}
         ]});
-        let v = roles_view(&fleet, &json!({}), &tree, &tasks);
+        let v = bundles_view(&fleet, &json!({}), &tree, &tasks);
         assert_eq!(state_of_agent(&v, "w1"), "active");
         assert_eq!(state_of_agent(&v, "w2"), "paused");
         assert_eq!(state_of_agent(&v, "w3"), "done");
@@ -1308,28 +1311,28 @@ mod tests {
     }
 
     #[test]
-    fn roles_view_subtree_holder_covers_descendants() {
+    fn bundles_view_subtree_holder_covers_descendants() {
         let tree = json!({"id": "pl", "children": [
             {"id": "sub", "children": [{"id": "kid", "children": []}]},
             {"id": "other", "children": []}]});
         let tasks = json!({"tasks": [
             {"id": "a", "source": "s", "holder": {"subtree": "sub"}, "status": "paused"}
         ]});
-        let v = roles_view(&json!({}), &json!({}), &tree, &tasks);
+        let v = bundles_view(&json!({}), &json!({}), &tree, &tasks);
         assert_eq!(state_of_agent(&v, "sub"), "paused");
         assert_eq!(state_of_agent(&v, "kid"), "paused");
         assert_eq!(state_of_agent(&v, "other"), "active");
     }
 
     #[test]
-    fn roles_view_lists_tasks_with_source_holder_status() {
+    fn bundles_view_lists_tasks_with_source_holder_status() {
         let tasks = json!({"tasks": [
             {"id": "t1", "source": "issue 7", "holder": "w1", "status": "running", "history": [1]},
             {"id": "t2", "source": "chat", "holder": {"subtree": "sub"}, "status": "waiting", "history": []}
         ]});
-        let v = roles_view(&fleet_pl(), &json!({}), &tree_pl(), &tasks);
+        let v = bundles_view(&fleet_pl(), &json!({}), &tree_pl(), &tasks);
         assert_eq!(
-            v["roles"]["tasks"],
+            v["bundles"]["tasks"],
             json!([
                 {"id": "t1", "source": "issue 7", "holder": "w1", "status": "running"},
                 {"id": "t2", "source": "chat", "holder": {"subtree": "sub"}, "status": "waiting"}
@@ -1338,27 +1341,27 @@ mod tests {
     }
 
     #[test]
-    fn roles_view_fleet_is_the_registrys_count_as_is() {
-        let v = roles_view(
+    fn bundles_view_fleet_is_the_registrys_count_as_is() {
+        let v = bundles_view(
             &json!({}),
-            &json!({"running": 3, "max": 5}),
+            &json!({"running": 3}),
             &Value::Null,
             &json!({}),
         );
-        assert_eq!(v["roles"]["fleet"], json!({"running": 3, "max": 5}));
-        let v = roles_view(
+        assert_eq!(v["bundles"]["fleet"], json!({"running": 3}));
+        let v = bundles_view(
             &json!({}),
             &json!({"error": "no"}),
             &Value::Null,
             &json!({}),
         );
-        assert!(v["roles"]["fleet"].is_null());
+        assert!(v["bundles"]["fleet"].is_null());
     }
 
     #[tokio::test]
-    async fn roles_state_reads_through_public_verbs() {
-        let peers = roles_peers();
-        let v = roles_state(&peers, "roles").await;
+    async fn bundles_state_reads_through_public_verbs() {
+        let peers = bundles_peers();
+        let v = bundles_state(&peers, "bundles").await;
         let calls: Vec<(String, String)> = peers
             .calls
             .lock()
@@ -1367,8 +1370,8 @@ mod tests {
             .map(|(to, p)| (to.clone(), p["type"].as_str().unwrap_or("").to_string()))
             .collect();
         let want = [
-            ("roles", "fleet"),
-            ("roles", "get_count"),
+            ("bundles", "fleet"),
+            ("bundles", "get_count"),
             ("kernel", "reflect"),
             ("tasks", "list"),
         ];
@@ -1382,9 +1385,9 @@ mod tests {
             peers.calls.lock().unwrap()[2].1["show_subtrees"],
             json!(["pl"])
         );
-        assert_eq!(v["roles"]["tree"]["id"], "pl");
-        assert_eq!(v["roles"]["fleet"], json!({"running": 3, "max": 5}));
-        assert_eq!(v["roles"]["tasks"][0]["id"], "t1");
+        assert_eq!(v["bundles"]["tree"]["id"], "pl");
+        assert_eq!(v["bundles"]["fleet"], json!({"running": 3}));
+        assert_eq!(v["bundles"]["tasks"][0]["id"], "t1");
     }
 
     fn row_of<'a>(rows: &'a [Value], id: &str) -> &'a Value {
@@ -1398,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn roles_rows_has_the_feed_shape() {
+    fn bundles_rows_has_the_feed_shape() {
         let tree = json!({"id": "pl", "children": [
             {"id": "sub", "children": [{"id": "w1", "children": []}]},
             {"id": "w2", "children": []}]});
@@ -1407,7 +1410,7 @@ mod tests {
              "history": history(900.0), "report": {"from": "w1", "at": 940.0}},
             {"id": "t2", "source": "s", "holder": "w2", "status": "waiting", "history": history(990.0)}
         ]});
-        let rows = roles_rows(&tree, &tasks, 1000);
+        let rows = bundles_rows(&tree, &tasks, 1000);
         assert_eq!(rows.len(), 4);
         let pl = row_of(&rows, "pl");
         assert!(pl["parent"].is_null());
@@ -1427,14 +1430,14 @@ mod tests {
     }
 
     #[test]
-    fn roles_rows_subtree_holder_marks_descendants_busy() {
+    fn bundles_rows_subtree_holder_marks_descendants_busy() {
         let tree = json!({"id": "pl", "children": [
             {"id": "sub", "children": [{"id": "kid", "children": []}]},
             {"id": "other", "children": []}]});
         let tasks = json!({"tasks": [
             {"id": "a", "source": "s", "holder": {"subtree": "sub"}, "status": "running", "history": history(500.0)}
         ]});
-        let rows = roles_rows(&tree, &tasks, 600);
+        let rows = bundles_rows(&tree, &tasks, 600);
         assert_eq!(row_of(&rows, "sub")["state"], "busy");
         assert_eq!(row_of(&rows, "kid")["state"], "busy");
         assert_eq!(row_of(&rows, "kid")["task"], "a");
@@ -1443,13 +1446,13 @@ mod tests {
     }
 
     #[test]
-    fn roles_rows_idle_agent_without_task_is_idle_not_stalled() {
+    fn bundles_rows_idle_agent_without_task_is_idle_not_stalled() {
         let tree = json!({"id": "pl", "children": [
             {"id": "w1", "children": []}, {"id": "w2", "children": []}]});
         let tasks = json!({"tasks": [
             {"id": "a", "source": "s", "holder": "w2", "status": "done", "history": history(1.0)}
         ]});
-        let rows = roles_rows(&tree, &tasks, 100_000);
+        let rows = bundles_rows(&tree, &tasks, 100_000);
         let w1 = row_of(&rows, "w1");
         assert_eq!(
             (w1["state"].as_str(), w1["task"].as_str()),
@@ -1458,21 +1461,21 @@ mod tests {
         assert_eq!(w1["idle_s"], 0);
         assert_eq!(row_of(&rows, "w2")["state"], "done");
         assert_eq!(row_of(&rows, "w2")["task"], "");
-        let load = roles_load(&rows, &tasks, 300);
+        let load = bundles_load(&rows, &tasks, 300);
         assert_eq!(load["workers"]["stalled"], 0);
         assert_eq!(load["workers"]["idle"], 1);
     }
 
     #[test]
-    fn roles_load_counts_queued_and_stalled() {
+    fn bundles_load_counts_queued_and_stalled() {
         let tree = json!({"id": "pl", "children": [{"id": "w1", "children": []}]});
         let tasks = json!({"tasks": [
             {"id": "a", "source": "s", "holder": "w1", "status": "running", "history": history(0.0)},
             {"id": "b", "source": "s", "holder": null, "status": "waiting", "history": []},
             {"id": "c", "source": "s", "holder": null, "status": "waiting", "history": []}
         ]});
-        let rows = roles_rows(&tree, &tasks, 1000);
-        let load = roles_load(&rows, &tasks, 300);
+        let rows = bundles_rows(&tree, &tasks, 1000);
+        let load = bundles_load(&rows, &tasks, 300);
         assert_eq!(load["tasks"]["queued"], 2);
         assert_eq!(load["tasks"]["held"], 1);
         assert_eq!(load["workers"]["busy"], 1);
@@ -1480,9 +1483,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn roles_tree_rows_reads_the_public_verbs_only() {
-        let peers = roles_peers();
-        let (rows, load) = roles_tree_rows(&peers, "roles", 1000, 300).await;
+    async fn bundles_tree_rows_reads_the_public_verbs_only() {
+        let peers = bundles_peers();
+        let (rows, load) = bundles_tree_rows(&peers, "bundles", 1000, 300).await;
         assert_eq!(rows.len(), 3);
         assert_eq!(load["workers"]["busy"], 1);
         let calls: Vec<String> = peers
@@ -1495,8 +1498,8 @@ mod tests {
         assert_eq!(
             calls,
             [
-                "roles:fleet",
-                "roles:get_count",
+                "bundles:fleet",
+                "bundles:get_count",
                 "kernel:reflect",
                 "tasks:list"
             ]
@@ -1504,35 +1507,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn roles_tree_rows_survives_peer_errors() {
+    async fn bundles_tree_rows_survives_peer_errors() {
         let e = json!({"error": "down"});
-        let peers = RolesPeers {
+        let peers = BundlesPeers {
             fleet: e.clone(),
             count: e.clone(),
             reflect: e.clone(),
             tasks: e,
             calls: Mutex::new(Vec::new()),
         };
-        let (rows, load) = roles_tree_rows(&peers, "roles", 1000, 300).await;
+        let (rows, load) = bundles_tree_rows(&peers, "bundles", 1000, 300).await;
         assert!(rows.is_empty());
         assert_eq!(load["tasks"]["queued"], 0);
     }
 
     #[tokio::test]
-    async fn roles_state_survives_errors() {
+    async fn bundles_state_survives_errors() {
         let e = json!({"error": "down"});
-        let peers = RolesPeers {
+        let peers = BundlesPeers {
             fleet: e.clone(),
             count: e.clone(),
             reflect: e.clone(),
             tasks: e,
             calls: Mutex::new(Vec::new()),
         };
-        let v = roles_state(&peers, "roles").await;
-        assert!(v["roles"]["tree"].is_null());
-        assert!(v["roles"]["lead"].is_null());
-        assert_eq!(v["roles"]["agents"], json!([]));
-        assert_eq!(v["roles"]["tasks"], json!([]));
+        let v = bundles_state(&peers, "bundles").await;
+        assert!(v["bundles"]["tree"].is_null());
+        assert!(v["bundles"]["lead"].is_null());
+        assert_eq!(v["bundles"]["agents"], json!([]));
+        assert_eq!(v["bundles"]["tasks"], json!([]));
     }
 
     fn fake() -> Fake {
@@ -1542,37 +1545,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn board_verb_without_roles_keeps_the_old_snapshot() {
+    async fn board_verb_without_bundles_keeps_the_old_snapshot() {
         let peers = fake();
-        let got = dispatch(&peers, &cfg(), "board", &json!({})).await;
+        let got = dispatch(&peers, &cfg(), verbs::Call::Board(verbs::Board {})).await;
         assert_eq!(got, Board::default().snapshot());
-        assert!(got.get("roles").is_none());
+        assert!(got.get("bundles").is_none());
     }
 
     #[tokio::test]
-    async fn board_verb_with_roles_adds_the_roles_section_and_keeps_the_old_keys() {
-        let peers = roles_peers();
+    async fn board_verb_with_bundles_adds_the_bundles_section_and_keeps_the_old_keys() {
+        let peers = bundles_peers();
         let mut c = cfg();
-        c.roles = Some("roles".into());
-        let got = dispatch(&peers, &c, "board", &json!({})).await;
+        c.bundles = Some("bundles".into());
+        let got = dispatch(&peers, &c, verbs::Call::Board(verbs::Board {})).await;
         assert!(got.get("tasks").is_some());
         assert!(got.get("agents").is_some());
-        assert_eq!(got["roles"]["tasks"][0]["id"], "t1");
-        assert_eq!(got["roles"]["agents"].as_array().unwrap().len(), 2);
+        assert_eq!(got["bundles"]["tasks"][0]["id"], "t1");
+        assert_eq!(got["bundles"]["agents"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
-    async fn cfg_of_reads_roles_from_the_board_record() {
+    async fn cfg_of_reads_bundles_from_the_board_record() {
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
         let mut answers = Vec::new();
-        for (id, roles) in [("board_r", Some("roles")), ("board_n", None)] {
+        for (id, bundles) in [("board_r", Some("bundles")), ("board_n", None)] {
             let mut rec = json!({
                 "type": "create_agent", "id": id, "parent_id": "kernel_state",
                 "handler_module": HANDLER_MODULE, "github": "gh", "store": "store"
             });
-            if let Some(r) = roles {
-                rec["roles"] = json!(r);
+            if let Some(r) = bundles {
+                rec["bundles"] = json!(r);
             }
             let made = kernel
                 .send(vec![fantastic_kernel::Item::new("kernel", rec)])
@@ -1590,8 +1593,8 @@ mod tests {
                 .await;
             answers.push(got[0].result.clone());
         }
-        assert!(answers[0].get("roles").is_some(), "{}", answers[0]);
-        assert!(answers[1].get("roles").is_none(), "{}", answers[1]);
+        assert!(answers[0].get("bundles").is_some(), "{}", answers[0]);
+        assert!(answers[1].get("bundles").is_none(), "{}", answers[1]);
         kernel.stop().await;
     }
 }

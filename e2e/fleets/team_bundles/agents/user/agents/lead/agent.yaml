@@ -1,0 +1,24 @@
+id: lead
+handler_module: ai_chat.tools
+provider_id: provider
+model: "{{model_name}}"
+memory_store_id: memory
+can_call:
+  "$self": "*"
+  provider: [complete, watch]
+  "$subtree": "*"
+  memory: "*"
+  credentials: "*"
+  worker_exec: "*"
+  worker_files: "*"
+  queue: "*"
+  git: "*"
+  github: "*"
+  bundles: [bundles, bundle, spawn, get_count, fleet]
+  kernel_state: [await_set, await_cancel, create_agent, delete_agent]
+  canvas_page: [new_canvas]
+  board: [board]
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  cadencer: [send]

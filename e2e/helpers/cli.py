@@ -137,7 +137,7 @@ FLEETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 
 
 def lay_bundles(ctx, srcs) -> list[str]:
-    """Copy the role bundles (folders of `<role>/bundle.yaml`) into the team's `.fantastic/bundles/`;
+    """Copy the bundles (folders of `<bundle>/bundle.yaml`) into the team's `.fantastic/bundles/`;
     the kernel reads them at boot. Without check-ins (`check_ins_on`) a sub-lead bundle's check-ins
     paragraph goes. Returns the bundle names."""
     dst = os.path.join(ctx.work, ".fantastic", "bundles")
@@ -155,19 +155,19 @@ def lay_bundles(ctx, srcs) -> list[str]:
     return names
 
 
-def start(ctx, extra_args=team_mod.HEADLESS, roles: bool = False, sub: str | None = None,
+def start(ctx, extra_args=team_mod.HEADLESS, registry: bool = False, sub: str | None = None,
           env: dict | None = None, bundles: str | list[str] | None = None, fleet: str = "fleet"):
     """Start the team binary as fantastic's CLI, in the run folder (or its `sub` folder, for a
     test that runs twice), on the fleet its `test.yaml` names (`fleet:`; `fleet_<name>` for a second team folder, named by
     `fleet`): the layers' record files are laid in `.fantastic/` before the first start, and every agent laid must be loaded after it.
-    `roles` turns on the `agentic_resources` bundle (`FANTASTIC_AGENTIC_RESOURCES=1`); `bundles`: the
-    role bundle folders (or one) the scenario's roles registry offers, copied to `.fantastic/bundles/`.
+    `bundles` turns on the `agentic_resources` bundle (`FANTASTIC_AGENTIC_RESOURCES=1`); `bundles`: the
+    bundle folders (or one) the scenario's bundles registry offers, copied to `.fantastic/bundles/`.
     `env`: more variables for the kernel (a credential store's `env` backend reads its values from
     them). Returns the Team; `ctx.repo` is the fixture."""
     keys = run_flow.fake_keys(ctx)
     ctx.secrets = keys
     env = {"E2E_MODEL_KEY": keys["model_key"], **(env or {})}
-    if roles:
+    if registry:
         env["FANTASTIC_AGENTIC_RESOURCES"] = "1"
     ctx.work = os.path.join(ctx.run_dir, sub) if sub else ctx.run_dir
     os.makedirs(ctx.work, exist_ok=True)
@@ -331,19 +331,19 @@ def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool 
 TESTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests")
 
 
-def roles_dir(name: str) -> str:
-    """The role bundles of the cli test `name` (`<role>/bundle.yaml` each): the gpu twin of a
+def bundles_dir(name: str) -> str:
+    """The bundles of the cli test `name` (`<bundle>/bundle.yaml` each): the gpu twin of a
     test reads the same ones."""
     return os.path.join(TESTS, "cli", name, "bundles")
 
 
-SPAWN_ROLES = os.path.join(TESTS, "cli", "spawn_bundles")  # the `worker` and `remote_worker` cards both spawn scenarios use
+SPAWN_BUNDLES = os.path.join(TESTS, "cli", "spawn_bundles")  # the `worker` and `remote_worker` cards both spawn scenarios use
 
 
-def spawn_roles(name: str) -> list[str]:
-    """The role bundles of a spawn scenario `name`: the shared worker cards, then the scenario's own."""
-    own = roles_dir(name)
-    return [SPAWN_ROLES] + ([own] if os.path.isdir(own) else [])
+def spawn_bundles(name: str) -> list[str]:
+    """The bundles of a spawn scenario `name`: the shared worker cards, then the scenario's own."""
+    own = bundles_dir(name)
+    return [SPAWN_BUNDLES] + ([own] if os.path.isdir(own) else [])
 
 
 def model_credentials(ctx) -> dict | None:

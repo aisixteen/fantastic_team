@@ -30,6 +30,7 @@ fantastic-exec-bridge = { git = "https://github.com/aisixteen/fantastic", branch
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
+schemars = { version = "0.8", features = ["preserve_order"] }
 fantastic-ai-core = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-core = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-credential-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }

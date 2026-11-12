@@ -5,4 +5,4 @@ admins: [kernel]
 callable_by:
   user: "*"
   lead: "*"
-  roles: "*"
+  bundles: "*"

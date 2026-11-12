@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use fantastic_kernel::bundle::{Bundle, BundleError, Reply};
+use fantastic_kernel::bundle::{BundleError, Handler, Reply};
 use fantastic_kernel::{AgentId, Kernel};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -15,6 +15,12 @@ use serde_json::{json, Value};
 /// The handler module name this bundle registers under.
 pub const HANDLER_MODULE: &str = "team_worker_view.tools";
 const NAME: &str = "team_worker_view";
+/// What the bundle is for: its one short man text; how to call it is rendered from its
+/// declared verbs (`docs`, `reflect`).
+const MAN: &str = "A worker's view: one list of cells per worker (task card, files, output, preview on top, the worker's locked chat last), and the cycle through the workers of its group.";
+
+pub mod record;
+pub mod verbs;
 /// The layout of fantastic's canvas this view uses (canvas | mobile).
 pub const LAYOUT: &str = "mobile";
 /// The group a view joins when `open` names none.
@@ -104,10 +110,6 @@ pub(crate) fn cycle(views: &BTreeMap<String, View>, worker: &str, step: isize) -
     Some(members[(i + step).rem_euclid(n) as usize].to_string())
 }
 
-fn arg<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
-    p.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty())
-}
-
 /// The worker view bundle. Holds one view per worker id.
 #[derive(Default)]
 pub struct WorkerViewBundle {
@@ -115,75 +117,75 @@ pub struct WorkerViewBundle {
 }
 
 #[async_trait::async_trait]
-impl Bundle for WorkerViewBundle {
+impl Handler for WorkerViewBundle {
+    type Call = verbs::Call;
+
     fn name(&self) -> &str {
         NAME
     }
 
-    fn verb_docs(&self) -> Value {
-        json!({
-            "boot": "No-op; the kernel sends it at start.",
-            "open": "open {worker, group?} → view (creates it, or returns the existing one)",
-            "cells": "cells {worker} → {cells} (the default cell set)",
-            "place": "place {worker, cell: {kind, label}} → view (adds a cell to the top part)",
-            "next": "next {worker} → {worker} (the next worker in its group)",
-            "prev": "prev {worker} → {worker} (the previous worker in its group)",
-        })
+    fn man(&self) -> &'static str {
+        MAN
+    }
+
+    fn verbs(&self) -> &'static [fantastic_kernel::Verb] {
+        verbs::VERBS
+    }
+
+    fn dynamic_verbs(&self, agent: &fantastic_kernel::Agent) -> Vec<fantastic_kernel::DynVerb> {
+        verbs::dynamic_verbs(agent)
+    }
+
+    fn record(&self) -> &'static fantastic_kernel::RecordDecl {
+        &record::RECORD
     }
 
     async fn handle(
         &self,
-        _agent_id: &AgentId,
-        payload: &Value,
+        agent_id: &AgentId,
+        call: Self::Call,
         _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
-        let t = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if t == "boot" {
-            return Ok(Some(json!({})));
-        }
         let mut views = self.views.lock().expect("worker view state");
-        let out = match t {
-            "open" => match arg(payload, "worker") {
-                None => json!({"error": "open needs worker"}),
-                Some(w) => {
-                    let group = arg(payload, "group").unwrap_or(DEFAULT_GROUP).to_string();
-                    let view = views.entry(w.to_string()).or_insert_with(|| View {
-                        worker: w.to_string(),
-                        group,
-                        layout: LAYOUT.to_string(),
-                        cells: default_cells(w),
-                    });
-                    json!(view)
+        let out = match call {
+            verbs::Call::Reflect(_) => json!({"id": agent_id.as_str(), "sentence": MAN}),
+            verbs::Call::Open(a) => {
+                let group = a.group.unwrap_or_else(|| DEFAULT_GROUP.to_string());
+                let view = views.entry(a.worker.clone()).or_insert_with(|| View {
+                    worker: a.worker.clone(),
+                    group,
+                    layout: LAYOUT.to_string(),
+                    cells: default_cells(&a.worker),
+                });
+                json!(view)
+            }
+            verbs::Call::Cells(a) => json!({"cells": default_cells(&a.worker)}),
+            verbs::Call::Place(a) => match views.get_mut(&a.worker) {
+                None => json!({"error": format!("no view for '{}'; open it first", a.worker)}),
+                Some(view) => {
+                    let cell = Cell {
+                        kind: a.cell.kind,
+                        label: a.cell.label,
+                        target: a.cell.target,
+                        locked: a.cell.locked,
+                    };
+                    match place(view, cell) {
+                        Ok(()) => json!(view),
+                        Err(e) => json!({"error": e}),
+                    }
                 }
             },
-            "cells" => match arg(payload, "worker") {
-                None => json!({"error": "cells needs worker"}),
-                Some(w) => json!({"cells": default_cells(w)}),
-            },
-            "place" => {
-                let worker = arg(payload, "worker").unwrap_or("");
-                match (views.get_mut(worker), payload.get("cell")) {
-                    (None, _) => json!({"error": format!("no view for '{worker}'; open it first")}),
-                    (Some(_), None) => json!({"error": "place needs cell"}),
-                    (Some(view), Some(c)) => match serde_json::from_value::<Cell>(c.clone()) {
-                        Err(e) => json!({"error": format!("bad cell: {e}")}),
-                        Ok(cell) => match place(view, cell) {
-                            Ok(()) => json!(view),
-                            Err(e) => json!({"error": e}),
-                        },
-                    },
-                }
-            }
-            "next" | "prev" => {
-                let step = if t == "next" { 1 } else { -1 };
-                match arg(payload, "worker").and_then(|w| cycle(&views, w, step)) {
-                    Some(w) => json!({"worker": w}),
-                    None => json!({"error": "no view in this group for that worker"}),
-                }
-            }
-            other => json!({"error": format!("team_worker_view: unknown type '{other}'")}),
+            verbs::Call::Next(a) => cycled(&views, &a.worker, 1),
+            verbs::Call::Prev(a) => cycled(&views, &a.worker, -1),
         };
         Ok(Some(out))
+    }
+}
+
+fn cycled(views: &BTreeMap<String, View>, worker: &str, step: isize) -> Value {
+    match cycle(views, worker, step) {
+        Some(w) => json!({"worker": w}),
+        None => json!({"error": "no view in this group for that worker"}),
     }
 }
 
@@ -192,36 +194,37 @@ mod tests {
     use super::*;
 
     async fn send(b: &WorkerViewBundle, p: Value) -> Value {
+        use fantastic_kernel::verbs::Parse;
         let kernel = Arc::new(Kernel::new());
-        b.handle(&AgentId::from("worker_view"), &p, &kernel)
-            .await
-            .unwrap()
-            .unwrap()
+        match <verbs::Call as Parse>::parse("worker_view", &p, &[]) {
+            Err(refused) => refused,
+            Ok(call) => b
+                .handle(&AgentId::from("worker_view"), call, &kernel)
+                .await
+                .unwrap()
+                .unwrap(),
+        }
     }
 
     #[tokio::test]
-    async fn worker_view_answers_boot_with_no_error() {
-        let r = send(&WorkerViewBundle::default(), json!({"type": "boot"})).await;
-        assert!(r.get("error").is_none(), "{r}");
-    }
-
-    #[tokio::test]
-    async fn worker_view_boot_leaves_the_views_untouched() {
+    async fn worker_view_open_is_idempotent_through_the_entry() {
         let b = WorkerViewBundle::default();
         let before = send(&b, json!({"type": "open", "worker": "w1"})).await;
-        send(&b, json!({"type": "boot"})).await;
         let after = send(&b, json!({"type": "open", "worker": "w1"})).await;
         assert_eq!(before, after);
         assert_eq!(b.views.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
-    async fn worker_view_unknown_verb_still_errors() {
+    async fn worker_view_unknown_verb_is_refused_by_the_entry() {
         let r = send(&WorkerViewBundle::default(), json!({"type": "nope"})).await;
-        assert!(
-            r["error"].as_str().unwrap().contains("unknown type 'nope'"),
-            "{r}"
-        );
+        assert_eq!(r["reason"], "unhandled", "{r}");
+    }
+
+    #[tokio::test]
+    async fn worker_view_refuses_a_call_without_its_worker() {
+        let r = send(&WorkerViewBundle::default(), json!({"type": "open"})).await;
+        assert_eq!(r["reason"], "missing_arg", "{r}");
     }
 
     fn view(worker: &str, group: &str) -> View {

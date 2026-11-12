@@ -6,7 +6,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::tests::{fx, mock_app, requests_to, token, Fx};
-use crate::verbs::{issue_facts, summarize_compare};
+use crate::calls::{issue_facts, summarize_compare};
 
 const HEAD: &str = "9999999999999999999999999999999999999999";
 const OLD: &str = "1111111111111111111111111111111111111111";
@@ -282,14 +282,15 @@ async fn staleness_needs_versions_or_issue() {
     assert_eq!(r["reason"], "missing_arg", "{r}");
     let r = f.call(ask(json!([]))).await;
     assert_eq!(r["reason"], "missing_arg", "{r}");
+    // an item missing a field is refused naming its path (fantastic#656)
     let r = f.call(ask(json!([{"repo": "acme/widgets"}]))).await;
-    assert_eq!(r["reason"], "bad_arg", "{r}");
-    assert!(r["error"].as_str().unwrap().contains("branch"), "{r}");
+    assert_eq!(r["reason"], "missing_arg", "{r}");
+    assert_eq!(r["arg"], "versions[0].branch", "{r}");
     let r = f
         .call(json!({"type": "staleness", "issue": {"repo": "acme/widgets"}}))
         .await;
-    assert_eq!(r["reason"], "bad_arg", "{r}");
-    assert!(r["error"].as_str().unwrap().contains("number"), "{r}");
+    assert_eq!(r["reason"], "missing_arg", "{r}");
+    assert!(r["arg"].as_str().unwrap().contains("number"), "{r}");
     assert!(f.gh.received_requests().await.unwrap().is_empty());
 }
 

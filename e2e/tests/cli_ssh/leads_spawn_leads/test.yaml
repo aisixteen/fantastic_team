@@ -1,5 +1,5 @@
 costs: free
 timeout: 420
 plug: scripted
-fleet: stock cli_base lead_spawn_ssh roles_4 provider_{{provider_shape}} cadencer
+fleet: stock cli_base lead_spawn_ssh bundles provider_{{provider_shape}} cadencer
 duration: 14

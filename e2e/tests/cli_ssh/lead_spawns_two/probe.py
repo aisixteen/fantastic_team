@@ -1,4 +1,4 @@
-"""cli_ssh/lead_spawns_two: the lead spawns w1 and w2 on the local roles registry (the master; the box
+"""cli_ssh/lead_spawns_two: the lead spawns w1 and w2 on the local bundles registry (the master; the box
 holds tools only). w1 fixes adder.py, pushes and reports to the lead with a plain send (the lead deletes it as soon as it has read that). The remote agent (the work program in the box) sends w2
 its work and watches it, over the bridge (w2 is minted by the spawn: the operator opens it to the leg when
 the script reaches that turn): w2's turn runs on the master, its stream comes back to the box, its tools are
@@ -25,13 +25,13 @@ def run(ctx):
                 f"served {ctx.model.served} of {len(ctx.model.turns)}")
         ok, why = cli.solved(ctx.repo)
         v.check("solved in the local clone (the test passes on HEAD, the fix is committed)", ok, why)
-        spawns = [c for c in team_mod.log_calls(ctx.team.log()) if c == ("roles", "spawn")]
+        spawns = [c for c in team_mod.log_calls(ctx.team.log()) if c == ("bundles", "spawn")]
         v.check("the lead spawned 2 workers, both here", len(spawns) == 2, str(spawns))
         after = cli.tree(ctx.team)
         after = cli.without_new_schedulers(ctx.team, after, before)
         v.check("the records are the ones it started with (a lead's scheduler may stay) (both workers and the bridge deleted)", after == before,
                 f"before {sorted(before)} after {sorted(after)}")
-        count = ctx.team.send("roles", {"type": "get_count"})["result"]
+        count = ctx.team.send("bundles", {"type": "get_count"})["result"]
         v.check("the registry counts nothing running", count["running"] == 0, str(count))
         v.check("each worker asked the model, both on the master (w1, and w2 for the remote)",
                 {"w1", "w2"} <= set(ctx.model.request_lanes), str(set(ctx.model.request_lanes)))

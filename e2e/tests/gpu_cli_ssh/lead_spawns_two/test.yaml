@@ -1,5 +1,5 @@
 costs: gpu
 timeout: 3600
 plug: vllm
-fleet: stock cli_base lead_spawn_gpu_ssh roles_2 provider_{{provider_shape}} cadencer
+fleet: stock cli_base lead_spawn_gpu_ssh bundles provider_{{provider_shape}} cadencer
 serial: true  # the one shared vLLM server (the RTX 6000): its capacity is the limit, not the cores; runs alone after the lanes

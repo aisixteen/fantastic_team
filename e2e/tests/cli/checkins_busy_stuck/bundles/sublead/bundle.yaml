@@ -1,4 +1,4 @@
-# The `sublead` role: a meta bundle over the AI agent (`ai_chat.tools`): grants and a directive only.
+# The `sublead` bundle: a meta bundle over the AI agent (`ai_chat.tools`): grants and a directive only.
 # No provider and no model here: they are the chat's own fields (`provider_id`, `model`), set at spawn.
 base: ai_chat.tools
 sentence: Does the task it is given and reports to its parent with a message.
@@ -6,9 +6,9 @@ record:
   can_call:
     $self: '*'
     $subtree: [schedule, unschedule, list, pause, resume, tick_now, history]
-    roles:
-    - roles
-    - role
+    bundles:
+    - bundles
+    - bundle
     - spawn
     - get_count
     - fleet

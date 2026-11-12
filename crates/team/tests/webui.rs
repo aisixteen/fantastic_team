@@ -327,7 +327,7 @@ fn a_kernel_already_running_here_refuses_webui() {
     let o = run_to_end(dir.path(), &["webui", "--port", &other.to_string()]);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
     assert!(
-        text(&o.stderr).contains("already running in this directory"),
+        text(&o.stderr).contains("already running on this state folder"),
         "{}",
         text(&o.stderr)
     );

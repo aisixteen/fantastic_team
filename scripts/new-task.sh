@@ -10,7 +10,7 @@
 #   -->
 # The task file is for whatever agents the caller made: the team creates no coding agent by
 # default. See the README ("Configure") for a worker made with
-# `create_agent`, and crates/team/src/new_team.rs for the app's lead and roles registry.
+# `create_agent`, and crates/team/src/new_team.rs for the app's lead and bundles registry.
 # TITLE, KIND, DATE and SLUG are filled by the generator; AUTHOR is $USER unless --set AUTHOR=….
 set -eu
 LC_ALL=C
@@ -58,7 +58,7 @@ check() {
 case $1 in
     -h | --help)
         echo "$USAGE"
-        echo "The task file is for the agents you made; see the README examples (one worker, or roles)."
+        echo "The task file is for the agents you made; see the README examples (one worker, or bundles)."
         exit 0 ;;
     --list)
         for k in $(kinds); do

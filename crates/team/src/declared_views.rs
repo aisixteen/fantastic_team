@@ -558,10 +558,9 @@ mod tests {
         let booted = boot_at(dir.path(), Seed::Stock, &[], None).await;
         let reg = &booted.bundles;
         for d in decls() {
-            let docs = reg
+            let bundle = reg
                 .get(d.handler_module)
-                .unwrap_or_else(|| panic!("{} is not registered", d.handler_module))
-                .verb_docs();
+                .unwrap_or_else(|| panic!("{} is not registered", d.handler_module));
             for s in &d.sections {
                 assert!(
                     !writes.contains(&s.verb) && !s.verb.starts_with("worktree_") && s.verb != "*",
@@ -570,7 +569,7 @@ mod tests {
                     s.verb
                 );
                 assert!(
-                    s.verb == "reflect" || docs.get(s.verb).is_some(),
+                    s.verb == "reflect" || bundle.verbs().iter().any(|v| v.name == s.verb),
                     "{}: `{}` is not a verb of {}",
                     d.kind,
                     s.verb,

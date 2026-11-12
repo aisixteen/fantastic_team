@@ -1,5 +1,5 @@
 """cli_ssh/checkins_busy_stuck (#284): the ssh twin of `cli/checkins_busy_stuck`. The lead fixes muler.py in the
-box itself (through the bridge) and pushes, then spawns two sub-leads on the local roles registry. s1 stays
+box itself (through the bridge) and pushes, then spawns two sub-leads on the local bundles registry. s1 stays
 generating (a slow first turn) across the lead's two check-ins, then pulls, fixes adder.py, pushes and reports
 with a plain send; s2 is idle with no new row across both. The lead leaves s1 alone and stops s2, deletes
 both and says `task failed: …`. The wiring and the shared checks are `helpers/ssh_twins.py`'s; the outcome

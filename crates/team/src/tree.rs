@@ -24,8 +24,8 @@ pub const WORKER_VIEW_ID: &str = "worker_view";
 pub const BOARD_ID: &str = "board";
 /// The cadencer agent.
 pub const CADENCER_ID: &str = "cadencer";
-/// The roles registry's conventional agent id.
-pub const ROLES_ID: &str = "roles";
+/// The bundles registry's conventional agent id.
+pub const BUNDLES_ID: &str = "bundles";
 /// The task registry's conventional agent id (`task_registry`, crates/task_registry).
 pub const TASKS_ID: &str = "tasks";
 /// The kernel verbs the dispatcher may call on the root to add and remove a worker
@@ -233,12 +233,12 @@ pub fn grant_store(kernel: &Arc<Kernel>, store: &str, agent: &str) -> Result<(),
         .map_err(|e| format!("store grant for `{agent}`: {e}"))
 }
 
-/// The ids the roles registry's `fleet` lists under `project_lead` and `lead`: the
+/// The ids the bundles registry's `fleet` lists under `project_lead` and `lead`: the
 /// agents that get a digest. Pure; an error reply or any other shape gives none.
 pub fn digest_leads(fleet: &Value) -> Vec<String> {
     let mut out = Vec::new();
-    for role in ["project_lead", "lead"] {
-        for e in fleet["roles"][role].as_array().into_iter().flatten() {
+    for bundle in ["project_lead", "lead"] {
+        for e in fleet["bundles"][bundle].as_array().into_iter().flatten() {
             if let Some(id) = e.as_str().or_else(|| e["id"].as_str()) {
                 if !out.iter().any(|o| o == id) {
                     out.push(id.to_string());
@@ -286,10 +286,10 @@ pub fn grant_digest_targets(kernel: &Arc<Kernel>, ids: &[String], verbs: &[&str]
     granted
 }
 
-/// [`grant_digest_targets`] for the leads the roles registry `roles_id` lists now.
-pub async fn grant_fleet_digest_targets(kernel: &Arc<Kernel>, roles_id: &str) -> usize {
+/// [`grant_digest_targets`] for the leads the bundles registry `bundles_id` lists now.
+pub async fn grant_fleet_digest_targets(kernel: &Arc<Kernel>, bundles_id: &str) -> usize {
     let outs = kernel
-        .send(vec![Item::new(roles_id, json!({"type": "fleet"}))])
+        .send(vec![Item::new(bundles_id, json!({"type": "fleet"}))])
         .await;
     let fleet = outs
         .first()
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn digest_leads_lists_project_leads_and_leads_only() {
-        let fleet = json!({"roles": {
+        let fleet = json!({"bundles": {
             "project_lead": [{"id": "pl"}], "lead": [{"id": "sub"}, "sub2"],
             "worker": [{"id": "w1"}]}});
         assert_eq!(digest_leads(&fleet), ["pl", "sub", "sub2"]);
@@ -325,7 +325,7 @@ mod tests {
                 "handler_module": "ram_store.tools", "callable_by": {"$self": "*", "$parent": "*"}});
             kernel.send(vec![Item::new(DEFAULT_ROOT_ID, mk)]).await;
         }
-        let fleet = json!({"roles": {"project_lead": [{"id": "pl"}], "lead": [{"id": "sub"}, {"id": "gone"}],
+        let fleet = json!({"bundles": {"project_lead": [{"id": "pl"}], "lead": [{"id": "sub"}, {"id": "gone"}],
             "worker": [{"id": "w1"}]}});
         let ids = digest_leads(&fleet);
         assert_eq!(

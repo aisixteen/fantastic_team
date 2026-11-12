@@ -1,4 +1,4 @@
-"""gpu_cli/lead_spawns_two: the lead spawns two workers through the roles registry, they solve the fixture
+"""gpu_cli/lead_spawns_two: the lead spawns two workers through the bundles registry, they solve the fixture
 (one file each), the lead deletes them.
 The steps and the outcome checks are `helpers/cli_scenarios.py`'s, the same as `cli/lead_spawns_two`; no script.
 The workers' tier carries the model's credential ref (they need the door's key, if there is one)."""

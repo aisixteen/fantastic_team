@@ -130,23 +130,23 @@ pub fn queue_view(board: &Value, now: u64) -> Value {
     )
 }
 
-/// The board: in roles mode the lead's agent tree and the registry's tasks; without
-/// `roles` the board's own agents and the task counts by state.
+/// The board: in bundles mode the lead's agent tree and the registry's tasks; without
+/// `bundles` the board's own agents and the task counts by state.
 pub fn board_view(board: &Value) -> Value {
-    if board["roles"].is_object() {
-        let roles = &board["roles"];
-        let agents: Vec<Vec<String>> = agent_list(roles)
+    if board["bundles"].is_object() {
+        let bundles = &board["bundles"];
+        let agents: Vec<Vec<String>> = agent_list(bundles)
             .iter()
             .map(|a| {
                 let pad = "  ".repeat(a["indent"].as_u64().unwrap_or(0) as usize);
                 vec![
                     format!("{pad}{}", text(&a["label"])),
-                    or_dash(text(&a["role"])),
+                    or_dash(text(&a["bundle"])),
                     or_dash(text(&a["state"])),
                 ]
             })
             .collect();
-        let plan = plan_of(roles);
+        let plan = plan_of(bundles);
         let tasks: Vec<Vec<String>> = plan["tasks"]
             .as_array()
             .into_iter()
@@ -161,20 +161,16 @@ pub fn board_view(board: &Value) -> Value {
             })
             .collect();
         let mut summary = vec![format!("{} agents, {} tasks", agents.len(), tasks.len())];
-        let f = &roles["fleet"];
+        let f = &bundles["fleet"];
         if let Some(r) = f["running"].as_u64() {
-            let max = f["max"]
-                .as_u64()
-                .map(|m| m.to_string())
-                .unwrap_or_else(|| "no cap".into());
-            summary.push(format!("fleet {r}/{max} running"));
+            summary.push(format!("fleet {r} running"));
         }
         return model(
             "board",
             "Board",
             summary,
             vec![
-                section("agents", &["agent", "role", "state"], agents),
+                section("agents", &["agent", "bundle", "state"], agents),
                 section("tasks", &["id", "source", "holder", "status"], tasks),
             ],
         );
@@ -393,11 +389,7 @@ pub fn dispatcher_view(sidebar: &Value) -> Value {
     )];
     let f = &sidebar["fleet"];
     if let Some(r) = f["running"].as_u64() {
-        let max = f["max"]
-            .as_u64()
-            .map(|m| m.to_string())
-            .unwrap_or_else(|| "no cap".into());
-        summary.push(format!("agents {r}/{max}"));
+        summary.push(format!("agents {r}"));
     }
     model(
         "dispatcher",
@@ -494,21 +486,21 @@ mod tests {
         assert!(!names(&m).iter().any(|n| n.contains("fail")));
     }
 
-    fn roles_board() -> Value {
-        json!({"tasks": {}, "agents": {}, "roles": {
+    fn bundles_board() -> Value {
+        json!({"tasks": {}, "agents": {}, "bundles": {
             "lead": "lead",
-            "fleet": {"running": 2, "max": 5},
-            "tree": {"id": "lead", "role": "project_lead", "state": "active", "children": [
-                {"id": "c1", "role": "coder", "state": "active", "children": [
-                    {"id": "c2", "role": "reviewer", "state": "active", "children": []}]}]},
+            "fleet": {"running": 2},
+            "tree": {"id": "lead", "bundle": "project_lead", "state": "active", "children": [
+                {"id": "c1", "bundle": "coder", "state": "active", "children": [
+                    {"id": "c2", "bundle": "reviewer", "state": "active", "children": []}]}]},
             "agents": [],
             "tasks": [{"id": "t1", "source": "o/r#1", "holder": "c1", "status": "claimed"},
                       {"id": "t2", "source": "o/r#2", "holder": {"subtree": "c1"}, "status": "open"}]}})
     }
 
     #[test]
-    fn board_view_roles_mode_lists_agent_tree_and_registry_tasks() {
-        let m = board_view(&roles_board());
+    fn board_view_bundles_mode_lists_agent_tree_and_registry_tasks() {
+        let m = board_view(&bundles_board());
         assert_eq!(names(&m), ["agents", "tasks"]);
         assert_eq!(
             rows(&m, 0),
@@ -525,11 +517,11 @@ mod tests {
                 row(&["t2", "o/r#2", "subtree:c1", "open"]),
             ]
         );
-        assert!(m["summary"].to_string().contains("fleet 2/5 running"));
+        assert!(m["summary"].to_string().contains("fleet 2 running"));
     }
 
     #[test]
-    fn board_view_without_roles_shows_agents_and_status_counts() {
+    fn board_view_without_bundles_shows_agents_and_status_counts() {
         let board = json!({
             "tasks": {"pending": [{"id": "a"}], "in_work": [], "done": [{"id": "b"}, {"id": "c"}], "failed": []},
             "agents": {"w1": {"state": "coding", "cost": 1.5}}});
@@ -666,11 +658,11 @@ mod tests {
                 {"kind": "worker", "id": "w2", "state": "idle", "task": null, "minutes": null},
                 {"kind": "worker", "id": "w3", "state": "stalled 40 min", "task": "o/r#2", "minutes": 40}]}],
             "ungrouped": [],
-            "fleet": {"running": 3, "max": 10}})
+            "fleet": {"running": 3}})
     }
 
     #[test]
-    fn dispatcher_view_lists_workers_lanes_and_running_over_max() {
+    fn dispatcher_view_lists_workers_lanes_and_running() {
         let m = dispatcher_view(&sidebar());
         assert_eq!(names(&m), ["workers", "lanes"]);
         assert_eq!(rows(&m, 0)[0], row(&["w1", "busy", "o/r#1", "4 min"]));
@@ -679,7 +671,7 @@ mod tests {
             rows(&m, 1),
             vec![row(&["a", "3", "1 busy, 1 idle, 1 stalled"])]
         );
-        assert!(m["summary"].to_string().contains("agents 3/10"));
+        assert!(m["summary"].to_string().contains("agents 3"));
     }
 
     #[test]

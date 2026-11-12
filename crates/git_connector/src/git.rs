@@ -13,7 +13,8 @@ use fantastic_kernel::{AgentId, Kernel};
 use serde_json::{json, Value};
 
 use crate::paths::{canon, inside_root, is_worktree_of, not_worktree};
-use crate::{bad, missing_arg, Cfg, NAME, URL_CREDS};
+use crate::verbs::{Commit, DiffStat, Push, Status, WorktreeAdd, WorktreeRemove};
+use crate::{bad, Cfg, NAME, URL_CREDS};
 
 /// A token read from the credential store. It has no `Debug`, `Display` or
 /// `Serialize`, so it cannot be printed by accident.
@@ -116,14 +117,6 @@ fn finish(r: Result<Value, Value>, auth: Option<&Auth>) -> Result<Value, Value> 
             scrub(&mut v, auth);
             Err(v)
         }
-    }
-}
-
-/// A non-empty string argument of the payload, or the `missing` refusal.
-pub fn str_arg<'a>(p: &'a Value, verb: &str, name: &str) -> Result<&'a str, Value> {
-    match p.get(name).and_then(|v| v.as_str()) {
-        Some(t) if !t.is_empty() => Ok(t),
-        _ => Err(missing_arg(verb, name)),
     }
 }
 
@@ -359,11 +352,11 @@ async fn check_branch(cfg: &Cfg, verb: &str, branch: &str) -> Result<(), Value> 
 }
 
 /// Make a worktree `path` on `branch` from `base`.
-pub(crate) async fn worktree_add(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
+pub(crate) async fn worktree_add(cfg: &Cfg, a: &WorktreeAdd) -> Result<Value, Value> {
     const V: &str = "worktree_add";
-    let raw = str_arg(p, V, "path")?;
-    let branch = str_arg(p, V, "branch")?;
-    let base = str_arg(p, V, "base")?;
+    let raw = a.path.as_str();
+    let branch = a.branch.as_str();
+    let base = a.base.as_str();
     dash(V, "branch", branch)?;
     dash(V, "base", base)?;
     if cfg.default_root {
@@ -394,9 +387,9 @@ pub(crate) async fn worktree_add(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
 }
 
 /// Remove a worktree, never forcing.
-pub(crate) async fn worktree_remove(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
+pub(crate) async fn worktree_remove(cfg: &Cfg, a: &WorktreeRemove) -> Result<Value, Value> {
     const V: &str = "worktree_remove";
-    let raw = str_arg(p, V, "path")?;
+    let raw = a.path.as_str();
     let path = gate(cfg, V, raw).await?;
     let target = s(&path);
     run(
@@ -426,25 +419,18 @@ fn valid_trailer(t: &str) -> bool {
 }
 
 /// Stage everything and commit with sign-off, the author, and any trailers.
-pub(crate) async fn commit(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
+pub(crate) async fn commit(cfg: &Cfg, a: &Commit) -> Result<Value, Value> {
     const V: &str = "commit";
-    let raw = str_arg(p, V, "path")?;
-    let message = str_arg(p, V, "message")?;
+    let raw = a.path.as_str();
+    let message = a.message.as_str();
     let path = gate(cfg, V, raw).await?;
-    let trailers: Vec<String> = match p.get("trailers") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(items)) => {
-            let mut out = Vec::new();
-            for item in items {
-                match item.as_str() {
-                    Some(t) if valid_trailer(t) => out.push(t.to_string()),
-                    _ => return Err(bad(TRAILER.to_string(), "trailers", json!(TRAILER))),
-                }
-            }
-            out
+    let mut trailers: Vec<String> = Vec::new();
+    for t in a.trailers.iter().flatten() {
+        if !valid_trailer(t) {
+            return Err(bad(TRAILER.to_string(), "trailers", json!(TRAILER)));
         }
-        Some(_) => return Err(bad(TRAILER.to_string(), "trailers", json!(TRAILER))),
-    };
+        trailers.push(t.clone());
+    }
     let target = s(&path);
     run(cfg, &path, &[], &["add", "-A"], None, V).await?;
     let st = run(cfg, &path, &[], &["status", "--porcelain"], None, V).await?;
@@ -477,15 +463,12 @@ pub(crate) async fn commit(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
 
 /// The push checks, in order: force, branch name, protected branch, the path
 /// inside the root and a real worktree. Returns the branch and the worktree.
-pub async fn check_push(cfg: &Cfg, p: &Value) -> Result<(String, PathBuf), Value> {
+pub async fn check_push(cfg: &Cfg, a: &Push) -> Result<(String, PathBuf), Value> {
     const V: &str = "push";
-    if p.get("force")
-        .map(fantastic_bundle::py_truthy)
-        .unwrap_or(false)
-    {
+    if a.force == Some(true) {
         return Err(bad(FORCE.to_string(), "force", json!(true)));
     }
-    let branch = str_arg(p, V, "branch")?;
+    let branch = a.branch.as_str();
     if branch.starts_with('+') {
         return Err(bad(FORCE.to_string(), "force", json!(true)));
     }
@@ -505,20 +488,20 @@ pub async fn check_push(cfg: &Cfg, p: &Value) -> Result<(String, PathBuf), Value
     }
     dash(V, "branch", branch)?;
     check_branch(cfg, V, branch).await?;
-    let raw = str_arg(p, V, "path")?;
+    let raw = a.path.as_str();
     let path = gate(cfg, V, raw).await?;
     Ok((branch.to_string(), path))
 }
 
 async fn push_inner(
     cfg: &Cfg,
-    p: &Value,
+    a: &Push,
     id: &AgentId,
     kernel: &Arc<Kernel>,
     slot: &mut Option<Auth>,
 ) -> Result<Value, Value> {
     const V: &str = "push";
-    let (branch, path) = check_push(cfg, p).await?;
+    let (branch, path) = check_push(cfg, a).await?;
     let url = remote_url(cfg).await?;
     if rewrites_url(&path, &url).await {
         return Err(bad(REWRITES.to_string(), "remote", json!("[url withheld]")));
@@ -541,12 +524,12 @@ async fn push_inner(
 /// Push a work branch to the record's remote. Never forces; refuses the default branch.
 pub(crate) async fn push(
     cfg: &Cfg,
-    p: &Value,
+    a: &Push,
     id: &AgentId,
     kernel: &Arc<Kernel>,
 ) -> Result<Value, Value> {
     let mut slot: Option<Auth> = None;
-    let r = push_inner(cfg, p, id, kernel, &mut slot).await;
+    let r = push_inner(cfg, a, id, kernel, &mut slot).await;
     finish(r, slot.as_ref())
 }
 
@@ -600,11 +583,11 @@ pub(crate) async fn fetch(cfg: &Cfg, id: &AgentId, kernel: &Arc<Kernel>) -> Resu
 }
 
 /// Show the diffstat of a worktree against `base`, or against HEAD.
-pub(crate) async fn diff_stat(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
+pub(crate) async fn diff_stat(cfg: &Cfg, a: &DiffStat) -> Result<Value, Value> {
     const V: &str = "diff_stat";
-    let raw = str_arg(p, V, "path")?;
+    let raw = a.path.as_str();
     let path = gate(cfg, V, raw).await?;
-    let (against, args): (String, Vec<String>) = match p.get("base").and_then(|v| v.as_str()) {
+    let (against, args): (String, Vec<String>) = match a.base.as_deref() {
         Some(b) if !b.is_empty() => {
             dash(V, "base", b)?;
             (
@@ -623,9 +606,9 @@ pub(crate) async fn diff_stat(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
 }
 
 /// The worktree's branch, whether it is clean, and its changed entries.
-pub(crate) async fn status(cfg: &Cfg, p: &Value) -> Result<Value, Value> {
+pub(crate) async fn status(cfg: &Cfg, a: &Status) -> Result<Value, Value> {
     const V: &str = "status";
-    let raw = str_arg(p, V, "path")?;
+    let raw = a.path.as_str();
     let path = gate(cfg, V, raw).await?;
     let out = run(
         cfg,

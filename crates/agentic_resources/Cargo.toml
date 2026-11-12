@@ -4,7 +4,7 @@ name = "team-agentic-resources"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "A generic roles registry: role cards, spawn, fleet, per-role and total limits (off by default). Moved from fantastic (fantastic-agentic-resources)."
+description = "A generic bundles registry: spawnable meta bundles, spawn, fleet. Moved from fantastic (fantastic-agentic-resources)."
 
 [dependencies]
 fantastic-bundle.workspace = true
@@ -12,9 +12,12 @@ fantastic-kernel.workspace = true
 fantastic-ai-core.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
+serde.workspace = true
+schemars.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+fantastic-kernel = { workspace = true, features = ["test-support"] }
 fantastic-core.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros"] }

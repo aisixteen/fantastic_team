@@ -2,10 +2,10 @@
  {
   "calls": [
    {
-    "target": "roles",
+    "target": "bundles",
     "type": "spawn",
     "args": {
-     "role": "sublead",
+     "bundle": "sublead",
      "task": "[lane:s1] Have a worker fix adder.py, then delete it."
     }
    }
@@ -14,10 +14,10 @@
  {
   "calls": [
    {
-    "target": "roles",
+    "target": "bundles",
     "type": "spawn",
     "args": {
-     "role": "sublead",
+     "bundle": "sublead",
      "task": "[lane:s2] Have a worker fix muler.py, then delete it."
     }
    }
@@ -110,10 +110,10 @@
  {
   "calls": [
    {
-    "target": "roles",
+    "target": "bundles",
     "type": "spawn",
     "args": {
-     "role": "worker",
+     "bundle": "worker",
      "task": "[lane:w1] Fix adder.py and commit."
     }
    }
@@ -146,10 +146,10 @@
  {
   "calls": [
    {
-    "target": "roles",
+    "target": "bundles",
     "type": "spawn",
     "args": {
-     "role": "worker",
+     "bundle": "worker",
      "task": "[lane:w2] Fix muler.py and commit."
     }
    }
