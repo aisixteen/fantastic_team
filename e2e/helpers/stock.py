@@ -5,8 +5,8 @@ file and no blueprint. A test names its fleet in its `test.yaml` (`fleet: <layer
 of `e2e/fleets/` and the test's own `fleet/` folder are copied into the run folder's `.fantastic/`
 before the first start (`cli.lay_test_fleet`), so the kernel loads the lead, the credential store,
 the worker's exec and files, the connectors, the puller, the board, the dispatcher, the cadencer, the
-roles registry and the team page from record files, under the fixed ids the product's code and the
-role cards name. The tests that run on the product's own seed (`seeded=True`) name no fleet.
+bundles registry and the team page from record files, under the fixed ids the product's code and the
+bundle cards name. The tests that run on the product's own seed (`seeded=True`) name no fleet.
 
 Nothing here makes an agent but what a scenario does as one of its own steps.
 """
@@ -33,13 +33,13 @@ def make_credentials(ctx, team) -> None:
                               backend="env", refs=refs))
 
 
-# ---- role bundles, the project lead, the page ---------------------------------------------
+# ---- bundles, the project lead, the page ---------------------------------------------
 
 REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-def lay_role_bundles(work: str, src: str | None = None) -> list[str]:
-    """Copy the repo's role bundles (`crates/team/bundles/<role>/bundle.yaml`), or those of `src`,
+def lay_bundle_bundles(work: str, src: str | None = None) -> list[str]:
+    """Copy the repo's bundles (`crates/team/bundles/<bundle>/bundle.yaml`), or those of `src`,
     into `<work>/.fantastic/bundles/` before the first start: the kernel reads them at boot, as a
     first run writes them. Returns the names."""
     import shutil
@@ -51,12 +51,12 @@ def lay_role_bundles(work: str, src: str | None = None) -> list[str]:
     return names
 
 
-def roles_served(team) -> bool:
-    """Does the team's `roles` registry list exactly the role bundles of the repo
-    (`crates/team/bundles/`), with no load error? The roles are compiled in and no card is written
+def bundles_served(team) -> bool:
+    """Does the team's `bundles` registry list exactly the bundles of the repo
+    (`crates/team/bundles/`), with no load error? The bundles are compiled in and no card is written
     to the folder."""
-    reply = team.send("roles", {"type": "roles"}).get("result") or {}
-    names = sorted(r["name"] for r in reply.get("roles", []))
+    reply = team.send("bundles", {"type": "bundles"}).get("result") or {}
+    names = sorted(r["name"] for r in reply.get("bundles", []))
     return names == sorted(os.listdir(os.path.join(REPO_DIR, "crates", "team", "bundles"))) and reply.get("errors") == []
 
 
@@ -71,15 +71,15 @@ def operator_holds(team, targets: dict) -> None:
 
 
 def spawn_project_lead(ctx, team) -> dict:
-    """The registry's spawned tree is rooted at the `project_lead` (what the cadencer digests, in roles
+    """The registry's spawned tree is rooted at the `project_lead` (what the cadencer digests, in bundles
     mode): the team gets its provider (the scripted model, under the lead) and the operator spawns
     one naming it. A spawner grants only what it holds, so the operator holds what the card grants
     first. A child takes its memory store from its spawner and the operator has none, so the
     spawned lead gets the team's store here, before its first message (its workers copy it).
     Returns the spawn's result (`id`, ...)."""
-    operator_holds(team, {"github": "*", "roles": "*", "kernel_state": "*", "canvas_page": ["new_canvas"]})
+    operator_holds(team, {"github": "*", "bundles": "*", "kernel_state": "*", "canvas_page": ["new_canvas"]})
     cli.add_provider(ctx, ctx.lead)
-    made = team.send("roles", {"type": "spawn", "role": "project_lead", "provider": cli.PROVIDER,
+    made = team.send("bundles", {"type": "spawn", "bundle": "project_lead", "provider": cli.PROVIDER,
                                "model": ctx.vars["model_name"]})["result"]
     if made.get("id"):
         update(team, made["id"], memory_store_id="memory")
@@ -91,7 +91,7 @@ def serve_webui(team, port: int, wait_s: float = 30.0) -> None:
     """Stop the headless team and start it again with the `webui --port N` word (#224), which puts
     the port on the `web` host its fleet laid; wait until the page is served."""
     team.stop()
-    sock = os.path.join(team.dir, T.SOCK)
+    sock = os.path.join(team.dir, T.ENDPOINT)
     if os.path.exists(sock):
         os.remove(sock)
     team.start(extra_args=["webui", "--port", port])
@@ -111,7 +111,7 @@ def boot(ctx, env: dict | None = None, *, extra_args=None, seeded: bool = False,
     """Start the team binary as fantastic's CLI in the run folder. A test whose `test.yaml` names a
     `fleet:` has its agents as record files, laid in `.fantastic/` before the first start
     (`cli.lay_test_fleet`; the folders `work/wt`, `work/tasks`, `sandbox/home` its tools use are made
-    first, and with `cards` the repo's role bundles are copied to `.fantastic/bundles/`): the kernel
+    first, and with `cards` the repo's bundles are copied to `.fantastic/bundles/`): the kernel
     loads them at boot and every agent laid must be there after it. A `seeded` test names no fleet: the
     product's seed (`webui --port` on a never-used folder) makes the team's fixed agents, and only the
     credential store is made with `send`. Sets `ctx.team`, `ctx.lead`, `ctx.work`; returns the Team."""
@@ -131,7 +131,7 @@ def boot(ctx, env: dict | None = None, *, extra_args=None, seeded: bool = False,
         for d in ("work/wt", "work/tasks", "sandbox/home"):
             os.makedirs(os.path.join(ctx.work, d), exist_ok=True)
         if cards:
-            lay_role_bundles(ctx.work)
+            lay_bundle_bundles(ctx.work)
         laid = cli.lay_test_fleet(ctx)
     ctx.team = team = T.Team(ctx.binary, ctx.work, env)
     default = ctx.model.ai_record().get("model")

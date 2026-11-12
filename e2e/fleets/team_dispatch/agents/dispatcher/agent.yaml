@@ -4,13 +4,13 @@ groups:
   g: [w1]
 team: lead
 board: board
-roles: roles
+bundles: bundles
 can_call:
   "$self": "*"
   worker_view: "*"
   kernel_state: [create_agent, update_agent, delete_agent]
   cadencer: [status]
-  roles: [get_count]
+  bundles: [get_count]
   github: [reflect]
 callable_by:
   "$self": "*"

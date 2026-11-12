@@ -1,4 +1,4 @@
-"""lead_spawns_two: the lead spawns two workers through the roles registry, they solve the
+"""lead_spawns_two: the lead spawns two workers through the bundles registry, they solve the
 fixture (one file each), the lead deletes them. Lanes keep the one scripted plug in order:
 w1 works, then w2 (`after`), then the lead's own held turn. The steps and the outcome checks are
 `helpers/cli_scenarios.py`'s (the gpu twin uses them too); the lanes are this test's own."""

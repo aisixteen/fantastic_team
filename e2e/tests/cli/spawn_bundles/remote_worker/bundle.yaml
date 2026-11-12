@@ -1,4 +1,4 @@
-# The `remote_worker` role: a worker whose workspace is the remote box. It holds no local exec, only
+# The `remote_worker` bundle: a worker whose workspace is the remote box. It holds no local exec, only
 # `forward` on the bridge `remote`, so its commands can only run there.
 base: ai_chat.tools
 sentence: Fixes the file its task names in the remote workspace, through the bridge; commits and pushes there.

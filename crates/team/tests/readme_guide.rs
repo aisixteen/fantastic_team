@@ -82,13 +82,12 @@ async fn every_record_field_the_readme_names_is_read_by_the_code() {
             "README example uses the record field `{key}`, which the code does not read"
         );
     }
-    // the roles registry's own fields: a registry made from the README block, in a team
-    // whose kernel holds the stock roles (embedded), lists the six roles and holds the limit
-    let reg = record_block(&text, "limits:");
+    // the bundles registry: made in a team whose kernel holds the stock bundles (embedded),
+    // it lists the six bundles
     let dir = tempfile::TempDir::new().unwrap();
-    let mut record = reg.as_object().unwrap().clone();
+    let mut record = serde_json::Map::new();
     record.insert("type".into(), "create_agent".into());
-    record.insert("id".into(), "roles".into());
+    record.insert("id".into(), "bundles".into());
     record.insert("parent_id".into(), "kernel".into());
     record.insert("handler_module".into(), "agentic_resources.tools".into());
     {
@@ -98,27 +97,16 @@ async fn every_record_field_the_readme_names_is_read_by_the_code() {
             .send(vec![Item::new("kernel", serde_json::Value::Object(record))])
             .await;
         assert!(made[0].result.get("error").is_none(), "{}", made[0].result);
-        let roles = kernel
+        let bundles = kernel
             .send(vec![Item::new(
-                "roles",
-                serde_json::json!({"type": "roles"}),
+                "bundles",
+                serde_json::json!({"type": "bundles"}),
             )])
             .await;
-        let names = roles[0].result.to_string();
+        let names = bundles[0].result.to_string();
         for card in ["worker", "lead", "project_lead", "issue_keeper"] {
             assert!(names.contains(card), "{card} not listed: {names}");
         }
-        let count = kernel
-            .send(vec![Item::new(
-                "roles",
-                serde_json::json!({"type": "get_count"}),
-            )])
-            .await;
-        assert!(
-            count[0].result.to_string().contains('3'),
-            "the README's total limit is not read: {}",
-            count[0].result
-        );
         kernel.stop().await;
     }
 }

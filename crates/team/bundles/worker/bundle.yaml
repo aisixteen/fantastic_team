@@ -1,4 +1,4 @@
-# The `worker` role: a meta bundle over the AI agent (`ai_chat.tools`): grants and a directive only.
+# The `worker` bundle: a meta bundle over the AI agent (`ai_chat.tools`): grants and a directive only.
 # No provider and no model here: they are the chat's own fields (`provider_id`, `model`), set at spawn.
 base: ai_chat.tools
 sentence: Carries out tasks from the queue, one at a time, and hands each back.
@@ -19,15 +19,15 @@ record:
 
     ## How the system works
 
-    The team is a set of agents with fixed ids. You call only what your role bundle grants; the rest is listed so you know what exists.
+    The team is a set of agents with fixed ids. You call only what your bundle grants; the rest is listed so you know what exists.
 
     - `lead`: the main lead. The person chats with it. It starts the sub-leads and the workers.
-    - `roles`: the roles registry. `roles` lists the roles that can be started (the role bundles: `reflect` on the kernel with `bundles: all` lists the same), `get_count` the room left, `spawn` starts an agent from a role bundle, `fleet` lists who runs.
+    - `bundles`: the bundles registry. `bundles` lists the bundles that can be started (the bundles: `reflect` on the kernel with `bundles: all` lists the same), `get_count` the room left, `spawn` starts an agent from a bundle, `fleet` lists who runs.
     - `tasks`, `queue`, `board`: the task registry (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`), the queue and the cache of the open issues and pull requests (`board`). They are not there at the start: a lead makes one, under that id, when it judges it useful.
     - `worker_exec`: runs a worker's commands in a sandbox that holds no credentials. `worker_files`: reads and writes the work folder.
     - `kernel_state`: the kernel's root. It makes and removes agents (`create_agent`, `delete_agent`) and waits for them (`await_set`).
 
-    Who starts and who deletes. An agent is started with `spawn` on `roles` and is a child of the agent that spawned it; only a role whose bundle grants `spawn` starts others. The agent that spawned an agent deletes it when its work is done (`delete_agent`). That is the spawner's own decision: nothing cleans up for it, and it never deletes an agent it did not spawn. A spawned agent may `send` its parent (the agent that spawned it; your `can_call` names it): send your parent a message when you are done, and that message starts your parent's next turn.
+    Who starts and who deletes. An agent is started with `spawn` on `bundles` and is a child of the agent that spawned it; only a bundle whose bundle grants `spawn` starts others. The agent that spawned an agent deletes it when its work is done (`delete_agent`). That is the spawner's own decision: nothing cleans up for it, and it never deletes an agent it did not spawn. A spawned agent may `send` its parent (the agent that spawned it; your `can_call` names it): send your parent a message when you are done, and that message starts your parent's next turn.
 
     Keys. A key reaches every agent on its own: there is nothing to grant or to ask for. You never read, copy or print a key. If you need one you do not hold, say so in your report.
 

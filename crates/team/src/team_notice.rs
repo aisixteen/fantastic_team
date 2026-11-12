@@ -1,6 +1,6 @@
 //! TEAM NOTICE: when an AI agent (an AI chat, by its handler's base) is added under a
 //! lead, or removed from it, that lead and every AI agent in its subtree get the team's structure (who leads, every member
-//! with its parent and role). A spawned agent's task comes from the roles registry, so
+//! with its parent and bundle). A spawned agent's task comes from the bundles registry, so
 //! without it a member cannot tell whom it reports to. Only that lead's subtree is told:
 //! the structure of a team is its lead's business, nobody else's.
 //!
@@ -27,7 +27,7 @@ pub(crate) enum Change {
     Removed { id: String },
 }
 
-/// Whether a handler is an AI chat: the handler, or the base its role resolves to, is
+/// Whether a handler is an AI chat: the handler, or the base its bundle resolves to, is
 /// `ai_chat.tools`. A provider is another bundle and takes no message.
 fn is_chat(kernel: &Kernel, handler: Option<&str>) -> bool {
     handler.is_some_and(|h| {
@@ -70,7 +70,7 @@ pub(crate) fn leads_of(
     leads
 }
 
-/// A member of a team: its id, its parent and its role (empty when it has none).
+/// A member of a team: its id, its parent and its bundle (its `handler_module`).
 pub(crate) type Member = (String, String, String);
 
 /// The AI agents in `lead`'s subtree (the lead itself not included).
@@ -91,20 +91,13 @@ pub(crate) fn members(kernel: &Kernel, lead: &str) -> Vec<Member> {
                 .as_ref()
                 .map(|p| p.0.clone())
                 .unwrap_or_default();
-            let role = a
-                .value()
-                .record()
-                .meta
-                .get("role")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            Some((id, parent, role))
+            let bundle = a.value().handler_module.clone().unwrap_or_default();
+            Some((id, parent, bundle))
         })
         .collect()
 }
 
-/// The notice text: who leads the team, and each member with its parent and role.
+/// The notice text: who leads the team, and each member with its parent and bundle.
 pub(crate) fn message(lead: &str, members: &[Member], why: &str) -> String {
     let mut s = format!(
         "[team] The team of `{lead}` {why}. `{lead}` leads it. Report to your parent (below) \
@@ -113,13 +106,13 @@ pub(crate) fn message(lead: &str, members: &[Member], why: &str) -> String {
     if members.is_empty() {
         s.push_str(" none");
     }
-    for (id, parent, role) in members {
-        let role = if role.is_empty() {
+    for (id, parent, bundle) in members {
+        let bundle = if bundle.is_empty() {
             String::new()
         } else {
-            format!(" ({role})")
+            format!(" ({bundle})")
         };
-        s.push_str(&format!("\n- `{id}`{role}, parent `{parent}`"));
+        s.push_str(&format!("\n- `{id}`{bundle}, parent `{parent}`"));
     }
     s
 }
@@ -266,12 +259,12 @@ mod tests {
     }
 
     #[test]
-    fn message_names_the_lead_and_each_member_with_parent_and_role() {
+    fn message_names_the_lead_and_each_member_with_parent_and_bundle() {
         let m = message(
             "lead",
             &[
                 ("w1".into(), "lead".into(), "worker".into()),
-                ("w2".into(), "w1".into(), String::new()),
+                ("w2".into(), "w1".into(), "ai_chat.tools".into()),
             ],
             "changed",
         );
@@ -280,7 +273,7 @@ mod tests {
             "{m}"
         );
         assert!(m.contains("\n- `w1` (worker), parent `lead`"), "{m}");
-        assert!(m.contains("\n- `w2`, parent `w1`"), "{m}");
+        assert!(m.contains("\n- `w2` (ai_chat.tools), parent `w1`"), "{m}");
         assert!(message("x", &[], "booted up").starts_with("[team] The team of `x` booted up."));
         assert!(message("x", &[], "changed").ends_with("Members: none"));
     }
@@ -301,19 +294,14 @@ mod tests {
     async fn tree() -> (tempfile::TempDir, Booted) {
         let dir = tempfile::tempdir().unwrap();
         let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
-        for (id, parent, ai, role) in [
-            ("L", DEFAULT_ROOT_ID, true, ""),
-            ("a", "L", true, "worker"),
-            ("t", "L", false, ""),
-            ("c", "a", true, ""),
-            ("M", DEFAULT_ROOT_ID, true, ""),
-            ("x", "M", true, ""),
+        for (id, parent, handler) in [
+            ("L", DEFAULT_ROOT_ID, "ai_chat.tools"),
+            ("a", "L", "worker"),
+            ("t", "L", "ram_store.tools"),
+            ("c", "a", "ai_chat.tools"),
+            ("M", DEFAULT_ROOT_ID, "ai_chat.tools"),
+            ("x", "M", "ai_chat.tools"),
         ] {
-            let handler = if ai {
-                "ai_chat.tools"
-            } else {
-                "ram_store.tools"
-            };
             let mk = json!({"type": "create_agent", "id": id, "parent_id": parent, "handler_module": handler,
                 "callable_by": {"$self": "*", "$parent": "*"}});
             let r = kernel
@@ -322,12 +310,6 @@ mod tests {
                 .remove(0)
                 .result;
             assert!(r.get("error").is_none(), "{id}: {r}");
-            if !role.is_empty() {
-                // the roles registry stamps `role` on the agents it spawns after the create
-                let mut stamp = serde_json::Map::new();
-                stamp.insert("role".into(), json!(role));
-                kernel.update(&fantastic_kernel::AgentId::from(id), stamp);
-            }
         }
         (dir, kernel)
     }
@@ -342,7 +324,8 @@ mod tests {
             "the lead, then its AI members; not the tool, not M's team"
         );
         assert!(
-            text.contains("`a` (worker), parent `L`") && text.contains("`c`, parent `a`"),
+            text.contains("`a` (worker), parent `L`")
+                && text.contains("`c` (ai_chat.tools), parent `a`"),
             "{text}"
         );
         assert!(!text.contains("`x`") && !text.contains("`t`"), "{text}");
@@ -400,7 +383,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn an_agent_on_a_role_over_the_chat_is_a_member() {
+    async fn an_agent_on_a_bundle_over_the_chat_is_a_member() {
         let (_dir, k) = tree().await;
         let mk = json!({"type": "create_agent", "id": "r", "parent_id": "L", "handler_module": "worker",
             "callable_by": {"$self": "*", "$parent": "*"}});

@@ -1,5 +1,5 @@
-# The `remote_sublead` role: the sublead for the remote workspace, which may also `forward` on the
-# bridge `remote` (its worker is a `remote_worker`). Otherwise the `sublead` role.
+# The `remote_sublead` bundle: the sublead for the remote workspace, which may also `forward` on the
+# bridge `remote` (its worker is a `remote_worker`). Otherwise the `sublead` bundle.
 # No provider and no model here: they are the chat's own fields (`provider_id`, `model`), set at spawn.
 base: ai_chat.tools
 sentence: Has one remote_worker fix the file its task names in the remote workspace, then deletes the worker.
@@ -7,9 +7,9 @@ record:
   can_call:
     $self: '*'
     $subtree: [schedule, unschedule, list, pause, resume, tick_now, history]
-    roles:
-    - roles
-    - role
+    bundles:
+    - bundles
+    - bundle
     - spawn
     - get_count
     - fleet
@@ -24,7 +24,7 @@ record:
   callable_by:
     $subtree: [send]
   post_system_prompt: |
-    You are a sub-lead for the remote workspace. Spawn one worker with role `remote_worker` for the file your task names, wait for it to finish, delete the
+    You are a sub-lead for the remote workspace. Spawn one worker with bundle `remote_worker` for the file your task names, wait for it to finish, delete the
     worker with delete_agent, send your parent a message when you are done, and end your run. Delete only
     what you spawned.
 

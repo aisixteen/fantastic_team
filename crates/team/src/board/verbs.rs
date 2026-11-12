@@ -15,7 +15,7 @@ pub struct Boot {}
 #[serde(deny_unknown_fields)]
 pub struct Pull {}
 
-/// The board. Returns {tasks: {pending, in_work, done, failed}, agents: {..}, roles?}; roles (roles mode) = {lead, fleet, tree, agents: [{id, role, state, parent}], tasks: [{id, source, holder, status}]}.
+/// The board. Returns {tasks: {pending, in_work, done, failed}, agents: {..}, bundles?}; bundles (bundles mode) = {lead, fleet, tree, agents: [{id, bundle, state, parent}], tasks: [{id, source, holder, status}]}.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Board {}

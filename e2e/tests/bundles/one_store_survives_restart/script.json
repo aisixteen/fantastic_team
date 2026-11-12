@@ -1,0 +1,35 @@
+[
+ {
+  "say": "Starting a worker.",
+  "calls": [
+   {
+    "target": "bundles",
+    "type": "spawn",
+    "args": {
+     "bundle": "worker"
+    }
+   }
+  ]
+ },
+ {
+  "say": "Recording the issue I hand out.",
+  "calls": [
+   {
+    "target": "tasks",
+    "type": "add",
+    "args": {
+     "id": "acme/widgets#1",
+     "source": "gh:acme/widgets#1",
+     "holder": "lead"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ }
+]

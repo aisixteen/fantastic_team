@@ -1,4 +1,4 @@
-# THE TEAM'S FIXED AGENTS, with the ids the role cards and the page name, their config and
+# THE TEAM'S FIXED AGENTS, with the ids the bundle cards and the page name, their config and
 # their grants. Compiled into the binary (like fantastic's own `src/tui/blueprint.yaml`) and
 # written ONCE, at the first run: `fantastic_tui::seed_dir_with` writes it after fantastic's
 # stock tree, ids as written. Disk position is the parent (nesting under `agents:`); no
@@ -19,10 +19,10 @@
 #
 #   <root>
 #   +-- user                 (stock; parent entry)
-#   |   +-- lead             the main lead (the `lead` role bundle), the agent the person chats with
+#   |   +-- lead             the main lead (the `lead` bundle), the agent the person chats with
 #   |       +-- github         the GitHub connector
 #   |       +-- github_credentials  the connector's GitHub credential (GH_TOKEN, env ref)
-#   |       +-- roles          the roles registry
+#   |       +-- bundles          the bundles registry
 #   |       +-- worker_exec    the worker's restricted exec
 #   |       +-- worker_files   the worker's file bridge on the work folder
 #   +-- web                  the web host
@@ -46,7 +46,7 @@ agents:
     - answer_inquiry
   agents:
   - id: lead
-    # the lead is an AI chat (the `lead` role, base `ai_chat.tools`). It names no provider: the
+    # the lead is an AI chat (the `lead` bundle, base `ai_chat.tools`). It names no provider: the
     # binary knows none. The user adds a provider agent (its record in the team's yaml, or
     # `create_agent`) and sets the lead's `provider_id` (and `model`, or the provider's
     # default); until then a turn is refused naming `provider_id`. Every chat the lead spawns
@@ -72,9 +72,9 @@ agents:
       - await_cancel
       - create_agent
       - delete_agent
-      roles:
-      - roles
-      - role
+      bundles:
+      - bundles
+      - bundle
       - spawn
       - get_count
       - fleet
@@ -119,12 +119,8 @@ agents:
         $self: '*'
         github:
         - get
-    - id: roles
+    - id: bundles
       handler_module: agentic_resources.tools
-      limits:
-        total: 3
-        per_role:
-          worker: 2
       can_call:
         $self: '*'
         memory: '*'
@@ -132,8 +128,8 @@ agents:
         $self: '*'
         $parent: '*'
         lead:
-        - roles
-        - role
+        - bundles
+        - bundle
         - spawn
         - get_count
         - fleet
@@ -202,7 +198,7 @@ agents:
 # grants stay, these are unioned in.
 - id: memory
   callable_by:
-    roles: '*'
+    bundles: '*'
 - id: credentials
   callable_by:
     github: '*'

@@ -41,9 +41,9 @@ pub struct Record {
     /// The agent that drives the cadencer (`parent` is a reserved record key).
     #[schemars(length(min = 1))]
     pub cadencer_parent: Option<String>,
-    /// The roles registry agent (roles mode): the digest tree is read from it.
+    /// The bundles registry agent (bundles mode): the digest tree is read from it.
     #[schemars(length(min = 1))]
-    pub roles: Option<String>,
+    pub bundles: Option<String>,
 }
 
 fn enabled() -> bool {

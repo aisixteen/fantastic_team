@@ -9,7 +9,7 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct Boot {}
 
-/// Per group one flat list: each worker, its subagents expander, and its subagents when expanded; with a roles registry the reply also has fleet {running, max}, the registry's get_count, and (roles mode) agents, the lead first then its tree depth-first [{id, role, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher|cadencer|puller|git, label}], the team's own agents that exist.
+/// Per group one flat list: each worker, its subagents expander, and its subagents when expanded; with a bundles registry the reply also has fleet {running, max}, the registry's get_count, and (bundles mode) agents, the lead first then its tree depth-first [{id, bundle, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher|cadencer|puller|git, label}], the team's own agents that exist.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Sidebar {
@@ -68,7 +68,7 @@ impl ControlAction {
     }
 }
 
-/// Act on a node. Returns {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker from the tier named `template` in the roles registry's record (`tiers`), its memory in the store that tier names, and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start). remove_worker {node: worker, confirm} deletes the worker (its rows stay in the store) and drops it from its group.
+/// Act on a node. Returns {sent, error?} (or a question for stop and remove_worker without confirm); the node's refusal or no reply is sent: false with its error. hand_task {node: worker, task} sends the worker `task <task>`. add_worker {node: group, id, template} makes the worker from the tier named `template` in the bundles registry's record (`tiers`), its memory in the store that tier names, and lists it in the group (the dispatcher may send, stop, start and pause it at once; its chat grant follows at the next start). remove_worker {node: worker, confirm} deletes the worker (its rows stay in the store) and drops it from its group.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Control {

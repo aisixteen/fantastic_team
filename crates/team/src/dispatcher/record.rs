@@ -17,9 +17,9 @@ pub struct Record {
     #[serde(default = "stall_minutes")]
     #[schemars(range(min = 1))]
     pub stall_minutes: u64,
-    /// The roles registry agent (roles mode).
+    /// The bundles registry agent (bundles mode).
     #[schemars(length(min = 1))]
-    pub roles: Option<String>,
+    pub bundles: Option<String>,
     /// The groups: group name → its workers' ids.
     pub groups: Option<std::collections::BTreeMap<String, Vec<String>>>,
 }

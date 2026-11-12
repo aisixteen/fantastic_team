@@ -39,7 +39,7 @@ TELL = (" A spawned agent may `send` its parent (the agent that spawned it), and
 TASKS = {
     "single_lead": BROKEN + "Find the bugs yourself, fix them and commit the fix." + " " + COMMIT.strip() + END,
     "lead_spawns_two": (
-        BROKEN + "Do not fix it yourself: spawn two workers with the role `worker` (`spawn` on `roles`), "
+        BROKEN + "Do not fix it yourself: spawn two workers with the bundle `worker` (`spawn` on `bundles`), "
         "one for adder.py and one for muler.py, each task naming its file. " + COMMIT +
         "Tell each worker to commit its fix this way, and: \"send your parent a message when you are done\"." + TELL
         + DELETE + " Check that the test passes at the end." + END),
@@ -54,7 +54,7 @@ TASKS = {
         "Tell them to pass on that the fix is committed this way. Wait for both answers, then check that the "
         "test passes." + END),
     "leads_spawn_leads": (
-        BROKEN + "Do not fix it yourself: spawn two sub-leads with the role `sublead` (`spawn` on `roles`), "
+        BROKEN + "Do not fix it yourself: spawn two sub-leads with the bundle `sublead` (`spawn` on `bundles`), "
         "one for adder.py and one for muler.py, each task naming its file. Each sub-lead spawns one worker "
         "for its file. " + COMMIT + "Tell them that the worker commits this way, and tell each one: \"send your parent a "
         "message when you are done\"." + TELL + DELETE +
@@ -140,7 +140,7 @@ def wait_booted(ctx, watch: "Lead", wait_s: float = 60.0) -> None:
 def hand_task(ctx, lead: str, text: str) -> threading.Thread:
     """Send the lead its task in the background (a real model takes minutes); the team's reply, or
     the error, lands in `ctx.kicked`. With `E2E_WORKER_MODEL` the task names the model to spawn
-    each with (a role names none, the spawner says which): workers that one, sub-leads the lead's."""
+    each with (a bundle names none, the spawner says which): workers that one, sub-leads the lead's."""
     if cli.worker_model():  # leads on the lead's model, workers on the workers'
         text += (f" Spawn every worker with `model` {cli.worker_model()}, and every sub-lead with `model` "
                  f"{ctx.model.model_name}.")

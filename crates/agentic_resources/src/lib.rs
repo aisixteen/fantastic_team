@@ -1,21 +1,19 @@
-//! `agentic_resources` — a generic registry of agent ROLES.
+//! `agentic_resources` — a generic registry of spawnable BUNDLES.
 //!
-//! A role is a META BUNDLE (`roles`): a fantastic `bundles/<name>/bundle.yaml` with a
+//! A spawnable bundle is a META BUNDLE: a fantastic `bundles/<name>/bundle.yaml` with a
 //! `base`, its directive (`record.post_system_prompt`) and its grants
-//! (`record.can_call`), and no model. The registry lists them (`roles`, `role`),
-//! creates an agent from one (`spawn`), reports who it spawned (`fleet`) and caps how
-//! many run (`set_limit`, `get_count`).
+//! (`record.can_call`), and no model. The registry lists them (`bundles`, `bundle`),
+//! creates an agent from one (`spawn`) and reports the agents that run on them (`fleet`,
+//! `get_count`).
 //!
 //! The child runs on its SPAWNER's backend (its handler and provider fields), with the
 //! `model` the spawner names in `spawn` (its own when it names none): the spawner says
-//! which model, from its own job prompt. Config is the registry's own record:
-//! `limits` (`{total?, per_role?: {role: n}}`, kept by `set_limit`).
+//! which model, from its own job prompt.
 //!
-//! NOTHING is counted in memory. Every spawned agent carries `spawned_by` (this
-//! registry) and `role`, so `fleet` and `get_count` are read off the records: a
-//! delete lowers the count and a restart rebuilds it. `running` counts
-//! EVERY spawned agent that still exists, so a slot frees only on
-//! `delete_agent`. The task tree is not kept here: that is `task_registry`.
+//! NOTHING is counted or marked. An agent is its name and its bundle (`handler_module`),
+//! so `fleet` and `get_count` read the tree: every agent whose bundle is a spawnable
+//! meta bundle. A delete lowers the count and a restart rebuilds it. There are no
+//! limits. The task tree is not kept here: that is `task_registry`.
 //!
 //! A spawned agent tells its parent with plain `send`: `spawn` opens the edge
 //! child -> parent (`send`, both ends), so the message starts the parent's next turn.
@@ -24,15 +22,14 @@
 //! `delete_agent` is the only way out.
 //!
 //! `spawn` may branch `from` a fork point of an existing agent (`from:{agent, at}`):
-//! the registry forks it (ai_core `fork {at}`) and applies the role over the copy.
+//! the registry forks it (ai_core `fork {at}`) and applies the bundle's card over the copy.
 //!
-//! Verbs: `reflect`, `roles`, `role`, `spawn`,
-//! `fleet`, `set_limit`, `get_count`.
+//! Verbs: `reflect`, `bundles`, `bundle`, `spawn`, `fleet`, `get_count`.
 
 #![deny(missing_docs)]
 
 pub mod record;
-pub mod roles;
+pub mod cards;
 pub mod verbs;
 
 use async_trait::async_trait;
@@ -41,7 +38,7 @@ use fantastic_kernel::bundle::{BundleError, Handler, Reply};
 use fantastic_kernel::grants::union;
 use fantastic_kernel::refusal;
 use fantastic_kernel::{current_origin, Agent, AgentId, Item, Kernel};
-use roles::{Card, REGISTRY_TOKEN};
+use cards::{Card, REGISTRY_TOKEN};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -51,7 +48,7 @@ pub const HANDLER_MODULE: &str = "agentic_resources.tools";
 
 /// What the bundle is for: its one short man text; how to call it is rendered from its
 /// declared verbs (`docs`, `reflect`).
-pub const MAN: &str = "A registry of agent roles (meta bundles): list them, spawn one as a child of the caller, report the fleet it spawned and cap how many run. A role is a meta bundle whose record carries a directive and its grants; a child runs on its spawner's provider, and the caller controls it.";
+pub const MAN: &str = "A registry of spawnable bundles (meta bundles): list them, spawn one as a child of the caller and report the agents running on them. A spawnable bundle is a meta bundle whose record carries a directive and its grants; a child runs on its spawner's provider, and the caller controls it.";
 
 /// What a parent holds over every agent it spawns.
 const PARENT_VERBS: [&str; 3] = ["pause", "resume", "stop"];
@@ -72,37 +69,24 @@ fn agent_of(kernel: &Kernel, id: &AgentId) -> Option<Arc<Agent>> {
     kernel.agents.get(id).map(|e| Arc::clone(&e))
 }
 
-/// One agent this registry spawned.
+/// One agent running on a spawnable bundle.
 struct Spawned {
     id: AgentId,
-    role: String,
-    /// The lead that spawned it `from` a fork point (it sits beside its source, so
-    /// the tree alone would not put it under that lead's quota).
-    lead: Option<String>,
+    bundle: String,
 }
 
-/// Is `s` in `lead`'s subtree: below it in the tree, or spawned by it `from` a fork?
-fn below_lead(kernel: &Kernel, s: &Spawned, lead: &AgentId) -> bool {
-    s.lead.as_deref() == Some(lead.as_str())
-        || kernel
-            .ancestor_ids(agent_of(kernel, &s.id).as_deref())
-            .contains(lead.as_str())
-}
-
-fn spawned(kernel: &Kernel, reg: &AgentId) -> Vec<Spawned> {
+/// Every agent whose bundle (`handler_module`) is one of the kernel's spawnable meta
+/// bundles, by id.
+fn spawned(kernel: &Kernel) -> Vec<Spawned> {
+    let names: Vec<String> = cards::of(kernel).into_iter().map(|c| c.name).collect();
     let mut out: Vec<Spawned> = kernel
         .agents
         .iter()
         .filter_map(|e| {
-            let m = meta_of(e.value());
-            (m.get("spawned_by").and_then(Value::as_str) == Some(reg.as_str())).then(|| Spawned {
+            let bundle = e.value().handler_module.clone()?;
+            names.contains(&bundle).then(|| Spawned {
                 id: e.value().id.clone(),
-                role: m
-                    .get("role")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-                lead: m.get("lead").and_then(Value::as_str).map(str::to_string),
+                bundle,
             })
         })
         .collect();
@@ -110,53 +94,7 @@ fn spawned(kernel: &Kernel, reg: &AgentId) -> Vec<Spawned> {
     out
 }
 
-/// Every id above `id`, nearest first.
-fn ancestors(kernel: &Kernel, id: &AgentId) -> Vec<AgentId> {
-    let mut out = Vec::new();
-    let mut cur = agent_of(kernel, id).and_then(|a| a.parent_id.clone());
-    while let Some(p) = cur {
-        cur = agent_of(kernel, &p).and_then(|a| a.parent_id.clone());
-        out.push(p);
-    }
-    out
-}
-
-fn cap(limits: &Value, role: Option<&str>) -> Option<u64> {
-    match role {
-        Some(r) => limits.get("per_role")?.get(r)?.as_u64(),
-        None => limits.get("total")?.as_u64(),
-    }
-}
-
-fn limit_refusal(scope: &str, role: &str, running: usize, max: u64, who: Option<&str>) -> Value {
-    let what = match scope {
-        "role" => format!("role {} is at its limit", py_repr(role)),
-        "total" => "all roles together are at the limit".to_string(),
-        "request" => format!(
-            "the limits asked for exceed {}'s remaining quota",
-            who.unwrap_or("the caller")
-        ),
-        _ => format!(
-            "{}'s delegated quota is used up",
-            who.unwrap_or("the caller")
-        ),
-    };
-    let mut r = refusal::refusal_hint(
-        refusal::LIMIT,
-        format!("{what} ({running} running, max {max})"),
-        "wait for one to finish or delete one, or raise it with set_limit",
-    );
-    refusal::with(&mut r, "scope", json!(scope));
-    refusal::with(&mut r, "role", json!(role));
-    refusal::with(&mut r, "running", json!(running));
-    refusal::with(&mut r, "max", json!(max));
-    if let Some(w) = who {
-        refusal::with(&mut r, "lead", json!(w));
-    }
-    r
-}
-
-/// The roles, and the bundles that failed to load (their errors).
+/// The spawnable bundles, and the bundles that failed to load (their errors).
 fn cards_of(kernel: &Kernel) -> (Vec<Card>, Vec<String>) {
     let errors = kernel
         .bundles
@@ -164,10 +102,10 @@ fn cards_of(kernel: &Kernel) -> (Vec<Card>, Vec<String>) {
         .iter()
         .filter_map(|r| r.get("error").and_then(Value::as_str).map(str::to_string))
         .collect();
-    (roles::of(kernel), errors)
+    (cards::of(kernel), errors)
 }
 
-fn roles_list(cards: &[Card]) -> Value {
+fn bundles_list(cards: &[Card]) -> Value {
     Value::Array(
         cards
             .iter()
@@ -211,25 +149,24 @@ impl Handler for AgenticResourcesBundle {
         let Some(me) = agent_of(kernel, agent_id) else {
             return Ok(None);
         };
-        let meta = meta_of(&me);
+        let _ = me;
         let reply = match call {
             verbs::Call::Reflect(_) => {
                 let names: Vec<String> = cards_of(kernel).0.into_iter().map(|c| c.name).collect();
                 json!({
                     "id": agent_id.as_str(),
                     "sentence": MAN,
-                    "enabled": true, "roles": names,
+                    "enabled": true, "bundles": names,
                 })
             }
-            verbs::Call::Roles(_) => {
+            verbs::Call::Bundles(_) => {
                 let (cards, errors) = cards_of(kernel);
-                json!({"roles": roles_list(&cards), "errors": errors})
+                json!({"bundles": bundles_list(&cards), "errors": errors})
             }
-            verbs::Call::Role(a) => role_reply(kernel, &a.name),
-            verbs::Call::Spawn(a) => spawn_reply(agent_id, &meta, a, kernel).await,
-            verbs::Call::Fleet(_) => fleet_reply(agent_id, kernel),
-            verbs::Call::SetLimit(a) => set_limit_reply(agent_id, &meta, a, kernel),
-            verbs::Call::GetCount(a) => get_count_reply(agent_id, &meta, a.role.as_deref(), kernel),
+            verbs::Call::Bundle(a) => bundle_reply(kernel, &a.name),
+            verbs::Call::Spawn(a) => spawn_reply(agent_id, a, kernel).await,
+            verbs::Call::Fleet(_) => fleet_reply(kernel),
+            verbs::Call::GetCount(a) => get_count_reply(kernel, a.bundle.as_deref()),
         };
         Ok(Some(reply))
     }
@@ -237,29 +174,28 @@ impl Handler for AgenticResourcesBundle {
 
 // ── verbs ───────────────────────────────────────────────────────────
 
-fn role_reply(kernel: &Kernel, name: &str) -> Value {
+fn bundle_reply(kernel: &Kernel, name: &str) -> Value {
     let (cards, _) = cards_of(kernel);
     match cards.iter().find(|c| c.name == name) {
         Some(c) => c.to_value(),
         None => refusal::refusal(
             refusal::NOT_FOUND,
-            format!("role {} not found", py_repr(name)),
+            format!("bundle {} not found", py_repr(name)),
         ),
     }
 }
 
 async fn spawn_reply(
     reg: &AgentId,
-    meta: &Map<String, Value>,
     a: verbs::Spawn,
     kernel: &Arc<Kernel>,
 ) -> Value {
-    let role = a.role.as_str();
+    let bundle = a.bundle.as_str();
     let (cards, _) = cards_of(kernel);
-    let Some(card) = cards.iter().find(|c| c.name == role) else {
+    let Some(card) = cards.iter().find(|c| c.name == bundle) else {
         return refusal::refusal(
             refusal::NOT_FOUND,
-            format!("role {} not found", py_repr(role)),
+            format!("bundle {} not found", py_repr(bundle)),
         );
     };
     // the chat: on the spawner's provider (or the one named), with the model named (or the spawner's)
@@ -269,14 +205,6 @@ async fn spawn_reply(
     };
     // the task: a string is the child's first message
     let first_message: Option<String> = a.task.clone();
-    let mut delegated = Map::new();
-    if let Some(l) = &a.limits {
-        for (k, v) in [("total", l.total), ("per_role", l.per_role)] {
-            if let Some(n) = v {
-                delegated.insert(k.to_string(), json!(n));
-            }
-        }
-    }
     let name = a.name.clone();
     // `from`: branch the new agent off a fork point of an existing one
     let from: Option<(String, i64)> = a.from.as_ref().map(|f| (f.agent.clone(), f.at));
@@ -286,89 +214,6 @@ async fn spawn_reply(
         return refusal;
     }
     let parent = caller.clone().unwrap_or_else(|| reg.clone());
-    let all = spawned(kernel, reg);
-    let limits = meta.get("limits").cloned().unwrap_or(Value::Null);
-
-    // the registry's caps: per role, then in total
-    let in_role = all.iter().filter(|s| s.role == role).count();
-    if let Some(max) = cap(&limits, Some(role)) {
-        if in_role as u64 >= max {
-            return limit_refusal("role", role, in_role, max, None);
-        }
-    }
-    let total = all.len();
-    if let Some(max) = cap(&limits, None) {
-        if total as u64 >= max {
-            return limit_refusal("total", role, total, max, None);
-        }
-    }
-    // delegated quotas: the caller and every lead above it
-    let mut chain = vec![parent.clone()];
-    chain.extend(ancestors(kernel, &parent));
-    for lead in &chain {
-        let Some(la) = agent_of(kernel, lead) else {
-            continue;
-        };
-        let lm = meta_of(&la);
-        if lm.get("spawned_by").and_then(Value::as_str) != Some(reg.as_str()) {
-            continue;
-        }
-        let Some(q) = lm.get("limits") else { continue };
-        let below: Vec<&Spawned> = all.iter().filter(|s| below_lead(kernel, s, lead)).collect();
-        if let Some(max) = cap(q, None) {
-            if below.len() as u64 >= max {
-                return limit_refusal("subtree_total", role, below.len(), max, Some(lead.as_str()));
-            }
-        }
-        if let Some(max) = q.get("per_role").and_then(Value::as_u64) {
-            let n = below.iter().filter(|s| s.role == role).count();
-            if n as u64 >= max {
-                return limit_refusal("subtree_role", role, n, max, Some(lead.as_str()));
-            }
-        }
-    }
-    // what the caller may hand on: its remaining quota, less the sub-lead's own slot
-    if !delegated.is_empty() && caller.is_some() {
-        if let Some(q) = agent_of(kernel, &parent)
-            .map(|a| meta_of(&a))
-            .filter(|m| m.get("spawned_by").and_then(Value::as_str) == Some(reg.as_str()))
-            .and_then(|m| m.get("limits").cloned())
-        {
-            let used = all
-                .iter()
-                .filter(|s| below_lead(kernel, s, &parent))
-                .count() as u64;
-            if let (Some(want), Some(max)) = (
-                delegated.get("total").and_then(Value::as_u64),
-                cap(&q, None),
-            ) {
-                let left = max.saturating_sub(used).saturating_sub(1);
-                if want > left {
-                    return limit_refusal(
-                        "request",
-                        role,
-                        want as usize,
-                        left,
-                        Some(parent.as_str()),
-                    );
-                }
-            }
-            if let (Some(want), Some(max)) = (
-                delegated.get("per_role").and_then(Value::as_u64),
-                q.get("per_role").and_then(Value::as_u64),
-            ) {
-                if want > max {
-                    return limit_refusal(
-                        "request",
-                        role,
-                        want as usize,
-                        max,
-                        Some(parent.as_str()),
-                    );
-                }
-            }
-        }
-    }
 
     if let Some((src, at)) = from {
         let ctx = SpawnFrom {
@@ -376,7 +221,6 @@ async fn spawn_reply(
             card,
             tier_fields: &tier_fields,
             caller: &caller,
-            delegated: &delegated,
             name: &name,
             first_message,
         };
@@ -421,8 +265,8 @@ async fn spawn_reply(
         );
     }
 
-    // the agent is created as an instance of the role bundle, whose fields (its directive
-    // among them) lie under these; the registry's own bookkeeping fields follow it
+    // the agent is created as an instance of the bundle, whose fields (its directive
+    // among them) lie under these
     let mut fields = Map::new();
     for (k, v) in &tier_fields {
         fields.insert(k.clone(), v.clone());
@@ -439,7 +283,7 @@ async fn spawn_reply(
         kernel,
         &root,
         fantastic_kernel::declared::kernel::CreateAgent {
-            handler_module: role.to_string(),
+            handler_module: bundle.to_string(),
             parent_id: parent.as_str().to_string(),
             id: None,
             fields,
@@ -449,14 +293,6 @@ async fn spawn_reply(
     let Some(child) = made.get("id").and_then(Value::as_str).map(str::to_string) else {
         return made;
     };
-    let mut book = Map::new();
-    book.insert("spawned_by".to_string(), json!(reg.as_str()));
-    book.insert("role".to_string(), json!(role));
-    if !delegated.is_empty() {
-        book.insert("limits".to_string(), Value::Object(delegated));
-    }
-    kernel.update(&AgentId::from(child.as_str()), book);
-
     // the registry hears what the card grants on it; the parent controls its subtree
     let store_id = store
         .clone()
@@ -488,7 +324,7 @@ async fn spawn_reply(
     if let Some(text) = first_message {
         send_first(kernel, reg, &child, text);
     }
-    json!({"id": child, "role": role, "provider": provider_of(&tier_fields),
+    json!({"id": child, "bundle": bundle, "provider": provider_of(&tier_fields),
            "model": tier_fields.get("model").cloned().unwrap_or(Value::Null)})
 }
 
@@ -504,7 +340,7 @@ const CHAT_FIELDS: [&str; 4] = [
 /// The verbs a chat calls on its provider.
 const PROVIDER_VERBS: [&str; 2] = ["complete", "watch"];
 
-/// The child's chat record: an AI chat (its role bundle's base, `ai_chat.tools`) that
+/// The child's chat record: an AI chat (its bundle's base, `ai_chat.tools`) that
 /// completes through `provider_id` on `model`. `provider` and `model` in the spawn name
 /// them; absent, the spawner's own (an AI spawner is a chat with a `provider_id`); no
 /// `model` anywhere, the provider's default. A caller that is no chat (the operator, a
@@ -672,30 +508,23 @@ fn open_edges(
     Ok(())
 }
 
-/// A string task: let the registry `send` and send it, DETACHED, as the registry
-/// (a spawn answers at once, it never waits for the child's turn to end).
-/// The child's parent: the lead that spawned it `from` a fork point (it sits beside its
-/// source), else its place in the tree.
+/// The child's parent: its place in the tree.
 fn parent_of(kernel: &Kernel, child: &AgentId) -> Option<String> {
     let a = kernel.agents.get(child)?;
-    let m = meta_of(a.value());
-    m.get("lead")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or_else(|| a.value().parent_id.as_ref().map(|p| p.as_str().to_string()))
+    a.value().parent_id.as_ref().map(|p| p.as_str().to_string())
 }
 
 /// The TEAM NOTE after a spawned child's task: the task comes FROM this registry, so
 /// without it a child cannot tell whom to report to. Its parent by id, and the agents
-/// this registry spawned for the same parent (its siblings) with their roles.
+/// on spawnable bundles under the same parent (its siblings) with their bundles.
 fn team_note(kernel: &Kernel, reg: &AgentId, child: &AgentId) -> String {
     let Some(parent) = parent_of(kernel, child) else {
         return String::new();
     };
-    let siblings: Vec<String> = spawned(kernel, reg)
+    let siblings: Vec<String> = spawned(kernel)
         .into_iter()
         .filter(|s| s.id != *child && parent_of(kernel, &s.id).as_deref() == Some(parent.as_str()))
-        .map(|s| format!("`{}` ({})", s.id.as_str(), s.role))
+        .map(|s| format!("`{}` ({})", s.id.as_str(), s.bundle))
         .collect();
     let mut note = format!(
         "\n\n[team] Your parent is `{parent}`: send it your result when you are done, with \
@@ -734,7 +563,6 @@ struct SpawnFrom<'a> {
     card: &'a Card,
     tier_fields: &'a Map<String, Value>,
     caller: &'a Option<AgentId>,
-    delegated: &'a Map<String, Value>,
     name: &'a Option<String>,
     first_message: Option<String>,
 }
@@ -787,7 +615,7 @@ fn escalation(kernel: &Kernel, caller: &Option<AgentId>, card: &Card) -> Option<
                 return Some(refusal::refusal_hint(
                     refusal::NOT_ALLOWED,
                     format!(
-                        "spawn: {who} may not grant {} on {} (role {})",
+                        "spawn: {who} may not grant {} on {} (bundle {})",
                         py_repr(verb),
                         py_repr(&tool),
                         py_repr(&card.name)
@@ -932,9 +760,9 @@ fn fork_ungrant(
     let _ = kernel.edit_callable_by(src, move |m| put(m, &r, &old));
 }
 
-/// `spawn {role, from:{agent, at}}`: `fork {at}` of `src` makes the agent (it sits
-/// beside its source, in the source's store); the role card and the
-/// limits are then applied over the copy like any spawn.
+/// `spawn {bundle, from:{agent, at}}`: `fork {at}` of `src` makes the agent (it sits
+/// beside its source, in the source's store); the bundle's card is then applied over
+/// the copy like any spawn.
 async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64) -> Value {
     let (reg, card) = (c.reg, c.card);
     let src_id = AgentId::from(src);
@@ -972,7 +800,7 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
         return out;
     };
 
-    // the copy is the source's whole record: overwrite what the role decides, drop the rest
+    // the copy is the source's whole record: overwrite what the bundle decides, drop the rest
     let fm = meta_of(&fork);
     let store = fm
         .get("memory_store_id")
@@ -1009,11 +837,9 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
     // a fork drops the source's own prompt (null clears it) so the default block is in force,
     // and takes the card's directive after it, as a spawn does
     patch.insert("system_prompt".to_string(), Value::Null);
-    // the fork keeps its source's backend and takes the role bundle's fields (its
+    // the fork keeps its source's backend and takes the bundle's fields (its
     // directive among them); `bundle` names the kind, so a reload reaches it too
     patch.insert("post_system_prompt".to_string(), json!(card.directive));
-    patch.insert("spawned_by".to_string(), json!(reg.as_str()));
-    patch.insert("role".to_string(), json!(card.name));
     patch.insert("can_call".to_string(), Value::Object(can_call));
     if let Some(n) = c.name {
         patch.insert("display_name".to_string(), json!(n));
@@ -1021,17 +847,6 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
     let mut cleared: Vec<&str> = Vec::new();
     // a task line copied from the source record is dropped
     cleared.push("task");
-    if c.delegated.is_empty() {
-        cleared.push("limits");
-    } else {
-        patch.insert("limits".to_string(), Value::Object(c.delegated.clone()));
-    }
-    match c.caller {
-        Some(who) => {
-            patch.insert("lead".to_string(), json!(who.as_str()));
-        }
-        None => cleared.push("lead"),
-    }
     {
         let mut m = fork.meta.write().expect("meta poisoned");
         for k in &cleared {
@@ -1078,76 +893,28 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
         send_first(kernel, reg, &child, text);
     }
     json!({
-        "id": child, "role": card.name, "model": c.tier_fields.get("model").cloned().unwrap_or(Value::Null),
+        "id": child, "bundle": card.name, "model": c.tier_fields.get("model").cloned().unwrap_or(Value::Null),
         "from": {"agent": src, "at": at}, "copied": copied,
     })
 }
 
-fn fleet_reply(reg: &AgentId, kernel: &Kernel) -> Value {
-    let mut roles: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    for s in spawned(kernel, reg) {
-        roles
-            .entry(s.role)
+fn fleet_reply(kernel: &Kernel) -> Value {
+    let mut bundles: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for s in spawned(kernel) {
+        bundles
+            .entry(s.bundle)
             .or_default()
             .push(json!({"id": s.id.as_str()}));
     }
-    json!({"roles": roles})
+    json!({"bundles": bundles})
 }
 
-fn set_limit_reply(
-    reg: &AgentId,
-    meta: &Map<String, Value>,
-    a: verbs::SetLimit,
-    kernel: &Kernel,
-) -> Value {
-    let (role, max) = (a.role, a.max);
-    let mut limits = meta
-        .get("limits")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    match (&role, max) {
-        (None, Some(n)) => {
-            limits.insert("total".to_string(), json!(n));
-        }
-        (None, None) => {
-            limits.remove("total");
-        }
-        (Some(r), m) => {
-            let mut per = limits
-                .get("per_role")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            match m {
-                Some(n) => per.insert(r.clone(), json!(n)),
-                None => per.remove(r),
-            };
-            if per.is_empty() {
-                limits.remove("per_role");
-            } else {
-                limits.insert("per_role".to_string(), Value::Object(per));
-            }
-        }
-    }
-    let mut patch = Map::new();
-    patch.insert("limits".to_string(), Value::Object(limits));
-    kernel.update(reg, patch);
-    json!({"ok": true, "role": role, "max": max})
-}
-
-fn get_count_reply(
-    reg: &AgentId,
-    meta: &Map<String, Value>,
-    role: Option<&str>,
-    kernel: &Kernel,
-) -> Value {
-    let running = spawned(kernel, reg)
+fn get_count_reply(kernel: &Kernel, bundle: Option<&str>) -> Value {
+    let running = spawned(kernel)
         .iter()
-        .filter(|s| role.is_none_or(|r| s.role == r))
+        .filter(|s| bundle.is_none_or(|b| s.bundle == b))
         .count();
-    let max = meta.get("limits").and_then(|l| cap(l, role));
-    json!({"running": running, "max": max})
+    json!({"running": running})
 }
 
 #[cfg(test)]

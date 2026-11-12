@@ -2,10 +2,10 @@
  {
   "calls": [
    {
-    "target": "roles",
+    "target": "bundles",
     "type": "spawn",
     "args": {
-     "role": "worker",
+     "bundle": "worker",
      "task": "[lane:w1] Fix adder.py and commit."
     }
    }
@@ -14,10 +14,10 @@
  {
   "calls": [
    {
-    "target": "roles",
+    "target": "bundles",
     "type": "spawn",
     "args": {
-     "role": "worker",
+     "bundle": "worker",
      "task": "[lane:w2] Fix muler.py and commit."
     }
    }

@@ -31,7 +31,7 @@ pub const HANDLER_MODULE: &str = "team_cadencer.tools";
 const NAME: &str = "team_cadencer";
 /// What the bundle is for: its one short man text; how to call it is rendered from its
 /// declared verbs (`docs`, `reflect`).
-const MAN: &str = "The cadencer: on a cadence each lead gets a short digest of the level directly below it (changes since the last digest, every stall, a heartbeat while work waits), built from the tree a tick gives or from the roles registry's spawned tree.";
+const MAN: &str = "The cadencer: on a cadence each lead gets a short digest of the level directly below it (changes since the last digest, every stall, a heartbeat while work waits), built from the tree a tick gives or from the bundles registry's spawned tree.";
 
 pub mod record;
 pub mod verbs;
@@ -478,8 +478,8 @@ fn record_patch(inner: &Inner) -> serde_json::Map<String, Value> {
 /// of them was present.
 fn load_from_record(inner: &mut Inner, meta: &serde_json::Map<String, Value>) -> bool {
     let mut loaded = false;
-    if let Some(r) = meta.get("roles").and_then(|v| v.as_str()) {
-        inner.roles = Some(r.to_string());
+    if let Some(r) = meta.get("bundles").and_then(|v| v.as_str()) {
+        inner.bundles = Some(r.to_string());
         loaded = true;
     }
     if let Some(p) = meta.get("cadencer_parent").and_then(|v| v.as_str()) {
@@ -512,8 +512,8 @@ struct Inner {
     delivery_errors: u64,
     meter: CostMeter,
     peers: Option<Arc<dyn Peers>>,
-    /// The roles registry (roles mode): the digest tree is the spawned tree, read from it.
-    roles: Option<String>,
+    /// The bundles registry (bundles mode): the digest tree is the spawned tree, read from it.
+    bundles: Option<String>,
     /// The kernel, for the grants to the spawned leads (set with the peers).
     kernel: Option<Arc<Kernel>>,
     /// The groups' own settings (the record's `group_settings`), by group name.
@@ -523,7 +523,7 @@ struct Inner {
     /// The clock second of each lead's last digest.
     last_digest_s: BTreeMap<String, u64>,
     timer_cfg: Option<(bool, u64)>,
-    /// The roles registry's `load` object from the last read (`Null` when none came).
+    /// The bundles registry's `load` object from the last read (`Null` when none came).
     load: Value,
     /// The clock's zero, set at first use. Per cadencer, so one cadencer's
     /// clock never depends on another's (tokio paused time differs per test).
@@ -616,22 +616,22 @@ fn beat(inner: &mut Inner) -> Vec<Digest> {
     digests
 }
 
-/// The spawned tree (roles mode) as nodes, with its load: the registries' reads
-/// through the public verbs ([`crate::board::roles_tree_rows`]), and the `status` of
+/// The spawned tree (bundles mode) as nodes, with its load: the registries' reads
+/// through the public verbs ([`crate::board::bundles_tree_rows`]), and the `status` of
 /// each lead, whose `inquiry_from` says an inquiry is open on it. `None` when the
 /// project_lead's branch could not be read, so the last tree stays.
-async fn read_roles(
+async fn read_bundles(
     peers: &dyn Peers,
-    roles: &str,
+    bundles: &str,
     stall_after_s: u64,
 ) -> Option<(Vec<Node>, Value)> {
     let now = fantastic_ai_core::helpers::now_secs() as u64;
-    let (rows, load) = crate::board::roles_tree_rows(peers, roles, now, stall_after_s).await;
+    let (rows, load) = crate::board::bundles_tree_rows(peers, bundles, now, stall_after_s).await;
     if rows.is_empty() {
         return None;
     }
     let mut nodes: Vec<Node> = rows.iter().filter_map(node_from).collect();
-    let fleet = peers.ask(roles, json!({"type": "fleet"})).await;
+    let fleet = peers.ask(bundles, json!({"type": "fleet"})).await;
     for lead in crate::tree::digest_leads(&fleet) {
         if let Some(n) = nodes.iter_mut().find(|n| n.id == lead) {
             let st = peers.ask(&lead, json!({"type": "status"})).await;
@@ -667,24 +667,24 @@ async fn deliver(shared: &Arc<Mutex<Inner>>, peers: Option<Arc<dyn Peers>>, dige
 }
 
 /// One timer beat: refresh the tree from the spawned agents, build the digests and send them.
-/// In roles mode the cadencer is first let `send` to the leads the registry lists now,
+/// In bundles mode the cadencer is first let `send` to the leads the registry lists now,
 /// so a project_lead spawned after the start gets its digest too.
 async fn beat_once(shared: &Arc<Mutex<Inner>>) {
-    let (peers, roles, kernel, stall_after_s) = {
+    let (peers, bundles, kernel, stall_after_s) = {
         let g = shared.lock().expect("cadencer state");
         (
             g.peers.clone(),
-            g.roles.clone(),
+            g.bundles.clone(),
             g.kernel.clone(),
             g.settings.stall_after_s,
         )
     };
     if let Some(p) = peers.as_ref() {
-        if let (Some(k), Some(r)) = (kernel.as_ref(), roles.as_deref()) {
+        if let (Some(k), Some(r)) = (kernel.as_ref(), bundles.as_deref()) {
             crate::tree::grant_fleet_digest_targets(k, r).await;
         }
-        if let Some(r) = roles.as_deref() {
-            if let Some((tree, load)) = read_roles(p.as_ref(), r, stall_after_s).await {
+        if let Some(r) = bundles.as_deref() {
+            if let Some((tree, load)) = read_bundles(p.as_ref(), r, stall_after_s).await {
                 let mut g = shared.lock().expect("cadencer state");
                 g.tree = tree;
                 g.load = load;
@@ -799,7 +799,7 @@ pub struct CadencerBundle {
 
 impl CadencerBundle {
     /// Boot: load the saved keys from the agent record, then restart the timer
-    /// when it is enabled and has roles.
+    /// when it is enabled and has bundles.
     fn restore(&self, agent_id: &AgentId, kernel: &Arc<Kernel>) -> Value {
         let meta = kernel
             .resolve_target(agent_id.as_str())
@@ -809,12 +809,12 @@ impl CadencerBundle {
     }
 }
 
-/// Load the saved keys and restart the timer when it is enabled with roles.
+/// Load the saved keys and restart the timer when it is enabled with bundles.
 /// Returns true when the record had any of them.
 fn boot_from_meta(shared: &Arc<Mutex<Inner>>, meta: &serde_json::Map<String, Value>) -> bool {
     let mut g = shared.lock().expect("cadencer state");
     let loaded = load_from_record(&mut g, meta);
-    if g.settings.enabled && g.roles.is_some() {
+    if g.settings.enabled && g.bundles.is_some() {
         restart_timer(shared, &mut g);
     }
     loaded
@@ -1347,7 +1347,7 @@ mod tests {
         let mut meta = serde_json::Map::new();
         meta.insert("enabled".into(), json!(true));
         meta.insert("cadence".into(), json!(5));
-        meta.insert("roles".into(), json!("roles"));
+        meta.insert("bundles".into(), json!("bundles"));
         assert!(boot_from_meta(&b, &meta));
         assert!(!status(&b)["next_beat_s"].is_null());
     }
@@ -1713,20 +1713,20 @@ mod tests {
     }
 
     #[test]
-    fn roles_key_loads_from_the_record() {
+    fn bundles_key_loads_from_the_record() {
         let mut meta = serde_json::Map::new();
-        meta.insert("roles".into(), json!("roles"));
+        meta.insert("bundles".into(), json!("bundles"));
         let mut b = Inner::default();
         assert!(load_from_record(&mut b, &meta));
-        assert_eq!(b.roles.as_deref(), Some("roles"));
+        assert_eq!(b.bundles.as_deref(), Some("bundles"));
     }
 
     #[tokio::test(start_paused = true)]
-    async fn timer_starts_with_roles() {
+    async fn timer_starts_with_bundles() {
         let b = shared();
         let mut meta = serde_json::Map::new();
         meta.insert("enabled".into(), json!(true));
-        meta.insert("roles".into(), json!("roles"));
+        meta.insert("bundles".into(), json!("bundles"));
         assert!(boot_from_meta(&b, &meta));
         assert!(!status(&b)["next_beat_s"].is_null());
         // Switched off at creation: no timer.
@@ -1745,7 +1745,7 @@ mod tests {
 
     /// The registries of a spawned team, scripted: project_lead `pl` with a sub-lead
     /// `sub` (child `w1`) and workers `w2`, `w3`; it records every `send`.
-    struct RolesPeers {
+    struct BundlesPeers {
         tasks: Value,
         /// The `status` reply of an id; any other id answers no open inquiry.
         statuses: Mutex<BTreeMap<String, Value>>,
@@ -1753,9 +1753,9 @@ mod tests {
         sent: Mutex<Vec<(String, String)>>,
     }
 
-    impl RolesPeers {
+    impl BundlesPeers {
         fn new(tasks: Value) -> Arc<Self> {
-            Arc::new(RolesPeers {
+            Arc::new(BundlesPeers {
                 tasks,
                 statuses: Mutex::new(BTreeMap::new()),
                 asked: Mutex::new(Vec::new()),
@@ -1774,15 +1774,15 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Peers for RolesPeers {
+    impl Peers for BundlesPeers {
         async fn ask(&self, to: &str, p: Value) -> Value {
             let t = p["type"].as_str().unwrap_or("").to_string();
             self.asked.lock().unwrap().push((to.to_string(), t.clone()));
             match (to, t.as_str()) {
-                ("roles", "fleet") => json!({"roles": {
+                ("bundles", "fleet") => json!({"bundles": {
                     "project_lead": [{"id": "pl"}], "lead": [{"id": "sub"}],
                     "worker": [{"id": "w1"}, {"id": "w2"}, {"id": "w3"}]}}),
-                ("roles", "get_count") => json!({"running": 5, "max": 8}),
+                ("bundles", "get_count") => json!({"running": 5}),
                 ("kernel", "reflect") => json!({"tree": [{"id": "pl", "children": [
                     {"id": "sub", "children": [{"id": "w1", "children": []}]},
                     {"id": "w2", "children": []},
@@ -1807,12 +1807,12 @@ mod tests {
         }
     }
 
-    fn roles_inner(peers: Arc<RolesPeers>) -> Arc<Mutex<Inner>> {
+    fn bundles_inner(peers: Arc<BundlesPeers>) -> Arc<Mutex<Inner>> {
         let b = shared();
         {
             let mut g = b.lock().unwrap();
             g.peers = Some(peers);
-            g.roles = Some("roles".into());
+            g.bundles = Some("bundles".into());
         }
         b
     }
@@ -1823,10 +1823,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn roles_beat_digests_the_project_lead_and_sub_leads() {
+    async fn bundles_beat_digests_the_project_lead_and_sub_leads() {
         let peers =
-            RolesPeers::new(json!({"tasks": [running("t1", "w1", 5.0), running("t2", "w2", 5.0)]}));
-        let b = roles_inner(peers.clone());
+            BundlesPeers::new(json!({"tasks": [running("t1", "w1", 5.0), running("t2", "w2", 5.0)]}));
+        let b = bundles_inner(peers.clone());
         beat_once(&b).await;
         let pl = peers.sent_to("pl").join("\n");
         assert!(
@@ -1843,13 +1843,13 @@ mod tests {
 
     #[tokio::test]
     async fn open_inquiry_comes_from_the_status_of_the_leads() {
-        let peers = RolesPeers::new(json!({"tasks": []}));
+        let peers = BundlesPeers::new(json!({"tasks": []}));
         peers
             .statuses
             .lock()
             .unwrap()
             .insert("sub".into(), json!({"inquiry_from": ["operator"]}));
-        let (nodes, _) = read_roles(peers.as_ref(), "roles", 300)
+        let (nodes, _) = read_bundles(peers.as_ref(), "bundles", 300)
             .await
             .expect("the tree");
         let open = |id: &str| nodes.iter().find(|n| n.id == id).unwrap().open_inquiry;
@@ -1868,13 +1868,13 @@ mod tests {
 
     #[tokio::test]
     async fn an_error_or_missing_inquiry_from_is_no_open_inquiry() {
-        let peers = RolesPeers::new(json!({"tasks": []}));
+        let peers = BundlesPeers::new(json!({"tasks": []}));
         {
             let mut st = peers.statuses.lock().unwrap();
             st.insert("pl".into(), json!({"error": "not granted"}));
             st.insert("sub".into(), json!({}));
         }
-        let (nodes, _) = read_roles(peers.as_ref(), "roles", 300)
+        let (nodes, _) = read_bundles(peers.as_ref(), "bundles", 300)
             .await
             .expect("the tree");
         for id in ["pl", "sub"] {
@@ -1884,10 +1884,10 @@ mod tests {
 
     #[tokio::test]
     async fn stalled_spawned_agent_is_flagged_in_its_leads_digest() {
-        let peers = RolesPeers::new(
+        let peers = BundlesPeers::new(
             json!({"tasks": [running("t1", "w1", 1000.0), running("t2", "w2", 5.0)]}),
         );
-        let b = roles_inner(peers.clone());
+        let b = bundles_inner(peers.clone());
         beat_once(&b).await;
         let sub = peers.sent_to("sub").join("\n");
         assert!(sub.contains("w1:") && sub.contains("STALLED"), "{sub}");
@@ -1902,15 +1902,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn roles_heartbeat_when_idle_and_queued() {
+    async fn bundles_heartbeat_when_idle_and_queued() {
         // `sub` and `w3` hold nothing (two idle children of `pl`); a waiting task with
         // no holder is queued work.
         let waiting =
             json!({"id": "q1", "source": "s", "holder": null, "status": "waiting", "history": []});
-        let peers = RolesPeers::new(
+        let peers = BundlesPeers::new(
             json!({"tasks": [running("t1", "w1", 5.0), running("t2", "w2", 5.0), waiting]}),
         );
-        let b = roles_inner(peers.clone());
+        let b = bundles_inner(peers.clone());
         beat_once(&b).await;
         let first = peers.sent_to("pl");
         assert!(first.iter().all(|t| !t.contains("heartbeat")), "{first:?}");

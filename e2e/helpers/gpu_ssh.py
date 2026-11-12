@@ -43,7 +43,7 @@ def wiring(ctx, box: T.Box, backends=()) -> str:
         "THE WIRING, step by step: "
         f"(1) With `start`, run ssh with `-o ExitOnForwardFailure=yes -L {vals['tunnel_port']}:127.0.0.1:"
         f"{vals['tunnel_port']}` and the remote command `{start}`: the tunnel and the remote kernel, in one job. "
-        "(2) In the box (`ssh ... '<command>'`, in `~/w` once `~/w/.fantastic/cli/mcp.sock` exists), use "
+        "(2) In the box (`ssh ... '<command>'`, in `~/w` once `~/w/.fantastic/cli/mcp.yaml` exists), use "
         "`fantastic_team send '<json item>'` to make, on the remote kernel: `{\"target\":\"kernel\",\"payload\":"
         f"{{\"type\":\"create_agent\",\"id\":\"{T.WEB}\",\"parent_id\":\"user\",\"handler_module\":\"web.tools\","
         f"\"port\":{vals['tunnel_port']}}}}}`; the socket leg `{T.LEG}` under it (`web_ws.tools`, "
@@ -96,18 +96,18 @@ TASKS = {
         f"push), whose commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the work. "
         "Read `w2`'s `history`. " + gpu.COMMIT + "Tell them to pass it on."),
     "lead_spawns_two": (
-        gpu.BROKEN + "Spawn two workers here (`spawn` on `roles`): `w1` for adder.py, role `worker`, with that task, "
-        "and one for the remote workspace, role `remote_worker` (it has no local exec), with no task. Open the second to the leg (step 5), then have the remote "
+        gpu.BROKEN + "Spawn two workers here (`spawn` on `bundles`): `w1` for adder.py, bundle `worker`, with that task, "
+        "and one for the remote workspace, bundle `remote_worker` (it has no local exec), with no task. Open the second to the leg (step 5), then have the remote "
         "ask it (the work program): the work is to pull, fix muler.py, commit and push in the remote workspace, "
         f"where its commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the work. "
         "Each commits and pushes. " + gpu.COMMIT + gpu.DELETE),
     "leads_spawn_leads": (
-        gpu.BROKEN + "Spawn two sub-leads here (`spawn` on `roles`): one for adder.py, role `sublead`, with that task, "
-        "and one for the remote workspace, role `remote_sublead`, with no task. Open the second to the leg (step 5), then have the remote "
+        gpu.BROKEN + "Spawn two sub-leads here (`spawn` on `bundles`): one for adder.py, bundle `sublead`, with that task, "
+        "and one for the remote workspace, bundle `remote_sublead`, with no task. Open the second to the leg (step 5), then have the remote "
         "ask it (the work program): the work is to have a worker pull, fix muler.py, commit and push in the remote "
         f"workspace, whose commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the "
         "work, for the sub-lead to pass on to its worker word for word. Each sub-lead spawns one worker (the remote "
-        "sub-lead's with role `remote_worker`, which has no local exec), and deletes it when done. " + gpu.COMMIT + gpu.DELETE),
+        "sub-lead's with bundle `remote_worker`, which has no local exec), and deletes it when done. " + gpu.COMMIT + gpu.DELETE),
 }
 
 
@@ -122,10 +122,10 @@ def spawn_run(ctx, name: str):
     v = Verdict(f"gpu_cli_ssh/{name}")
     require(ctx)
     with T.Box(ctx) as box:
-        cli.start(ctx, roles=True, bundles=cli.spawn_roles(name))
+        cli.start(ctx, registry=True, bundles=cli.spawn_bundles(name))
         S.check_in_leads(ctx, [cli.LEAD])
-        S.fleet_there(v, ctx, "the lead, its provider (and store) and its roles registry are loaded, under the ids laid",
-                      {cli.LEAD: (cli.CHAT, "user"), "roles": ("agentic_resources.tools", cli.LEAD), **S.provider_there(ctx)})
+        S.fleet_there(v, ctx, "the lead, its provider (and store) and its bundles registry are loaded, under the ids laid",
+                      {cli.LEAD: (cli.CHAT, "user"), "bundles": ("agentic_resources.tools", cli.LEAD), **S.provider_there(ctx)})
         before = cli.tree(ctx.team)
         box.publish()
         watch = play(ctx, v, "lead", wiring(ctx, box) + TASKS[name])
@@ -140,7 +140,7 @@ def spawn_run(ctx, name: str):
         after = cli.without_new_schedulers(ctx.team, after, before)
         v.check("the records are the ones it started with (a lead's scheduler may stay)", after == before,
                 f"before {sorted(before)} after {sorted(after)}")
-        v.check("something was spawned", ("roles", "spawn") in team_mod.log_calls(ctx.team.log()))
+        v.check("something was spawned", ("bundles", "spawn") in team_mod.log_calls(ctx.team.log()))
         box.end(v)
         gpu.report(ctx, watch)
     box.removed(v)

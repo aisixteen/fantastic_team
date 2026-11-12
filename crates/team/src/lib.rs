@@ -48,15 +48,15 @@ pub mod worker_exec;
 /// This repo's bundles, added to the registry of fantastic's shell AFTER its
 /// stock set (an `fantastic_tui::Extra`): the git and github connectors. The
 /// worker exec restriction ([`worker_exec`]) and the config ([`config`]) are records,
-/// not bundles; the roles ([`roles`]) are META bundles (yaml over an AI backend, no
-/// code) that the roles registry (`agentic_resources.tools`, crates/agentic_resources)
+/// not bundles; the bundles ([`bundles`]) are META bundles (yaml over an AI backend, no
+/// code) that the bundles registry (`agentic_resources.tools`, crates/agentic_resources)
 /// spawns from; the task registry (`task_registry.tools`,
 /// crates/task_registry) is inert in a team whose registry record has no
 /// `task_store_id`.
 pub fn register_team(reg: &mut BundleRegistry) {
-    // the stock roles, meta bundles over `ai_chat.tools`, which fantastic's stock set registers before this extra (a team's folder may override them)
-    if let Err(e) = roles::register(reg) {
-        eprintln!("team: a stock role did not register: {e}");
+    // the stock bundles, meta bundles over `ai_chat.tools`, which fantastic's stock set registers before this extra (a team's folder may override them)
+    if let Err(e) = bundles::register(reg) {
+        eprintln!("team: a stock bundle did not register: {e}");
     }
     reg.register(
         team_git_connector::HANDLER_MODULE,
@@ -93,7 +93,7 @@ pub fn register_team(reg: &mut BundleRegistry) {
 /// `main_with` as its readme section.
 pub const AI_README: &str = include_str!("../../../docs/ai-readme.md");
 
-pub mod roles;
+pub mod bundles;
 
 #[cfg(test)]
 extern crate self as fantastic_team;

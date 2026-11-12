@@ -1,12 +1,12 @@
 # cli/lead_spawns_two
 
-A lead with a roles registry (`agentic_resources`, switched on by
-`FANTASTIC_AGENTIC_RESOURCES=1`; the role bundle `tests/cli/spawn_bundles/worker/bundle.yaml`, shared with `leads_spawn_leads`) spawns two workers.
+A lead with a bundles registry (`agentic_resources`, switched on by
+`FANTASTIC_AGENTIC_RESOURCES=1`; the bundle `tests/cli/spawn_bundles/worker/bundle.yaml`, shared with `leads_spawn_leads`) spawns two workers.
 They solve the shared fixture, one bug each (`adder.py`, `muler.py`) with a commit apiece, and the
 lead deletes each with `delete_agent` as soon as it has reported (#264, lead-side: the registry frees nothing on its own).
 
-Start: the lead and its roles registry laid as record files before the first start of `--headless`,
-under the fixed ids `lead` and `roles`. The probe writes the test's role bundles under the team's
+Start: the lead and its bundles registry laid as record files before the first start of `--headless`,
+under the fixed ids `lead` and `bundles`. The probe writes the test's bundles under the team's
 `.fantastic/bundles/` and loads them (`reload_bundle`). A spawned worker runs on the lead's backend (its
 handler and provider fields) with the lead's model: the spawn names none.
 

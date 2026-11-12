@@ -162,7 +162,7 @@ class Ctx:
 
     def boot_team(self, env_extra: dict[str, str] | None = None, **kw) -> team_mod.Team:
         """Start the stock team (`helpers/stock.py`): fantastic's CLI in the run folder on the fleet
-        the test's `test.yaml` names (`fleet:`); `cards=True` copies the repo's role bundles first."""
+        the test's `test.yaml` names (`fleet:`); `cards=True` copies the repo's bundles first."""
         return stock_mod.boot(self, env_extra, **kw)
 
 
@@ -1257,7 +1257,7 @@ def selftest_team_args(v: Verdict) -> None:
         stub = os.path.join(tmp, "stub")
         with open(stub, "w") as f:
             f.write("#!/bin/sh\nprintf '%s\\n' \"$@\" > argv.txt\npwd > cwd.txt\nmkdir -p .fantastic/cli\n"
-                    ": > .fantastic/cli/mcp.sock\nexec sleep 20\n")
+                    ": > .fantastic/cli/mcp.yaml\nexec sleep 20\n")
         os.chmod(stub, 0o755)
         t = team_mod.Team(stub, tmp, {})
         t.start(wait_s=10, extra_args=["webui", "--port", 18080])
@@ -1267,7 +1267,7 @@ def selftest_team_args(v: Verdict) -> None:
         v.check("it runs in the run folder (fantastic has no --dir)",
                 os.path.realpath(open(os.path.join(tmp, "cwd.txt")).read().strip()) == os.path.realpath(tmp))
         t.stop()
-        os.remove(os.path.join(tmp, ".fantastic", "cli", "mcp.sock"))
+        os.remove(os.path.join(tmp, ".fantastic", "cli", "mcp.yaml"))
         t.start(wait_s=10)
         argv = open(os.path.join(tmp, "argv.txt")).read().split("\n")[:-1]
         v.check("Team.start with no extra_args is [--headless] only, and clears the port",
@@ -1489,7 +1489,7 @@ def selftest_lanes(v: Verdict) -> None:
                 L.muted_line({"name": "g/m", "muted": "#616: why"}) == "g/m (muted #616: why)")
         v.check("test.yaml's muted scenarios are the two #616 ones and none other",
                 {n: t["muted"].split(":")[0] for n, t in by.items() if t["muted"]}
-                == {"ui/worker_view_opens": "#616", "roles/project_lead_plans_and_runs_issues": "#616"},
+                == {"ui/worker_view_opens": "#616", "bundles/project_lead_plans_and_runs_issues": "#616"},
                 str({n: t["muted"] for n, t in by.items() if t["muted"]}))
         os.makedirs(os.path.dirname(L.log_path(tmp, "x/y")))
         with open(L.log_path(tmp, "x/y"), "w") as f:
@@ -1689,7 +1689,7 @@ def selftest_podman_remote(v: Verdict) -> None:
 
 def selftest_ssh_twins(v: Verdict) -> None:
     """The ssh twins (#242) without Podman: the scripts match their builders, every placeholder is
-    bound, the plug's late binding and minted ids, the role cards' quoting, the gpu twins' plain-words
+    bound, the plug's late binding and minted ids, the bundle cards' quoting, the gpu twins' plain-words
     wiring, and the fixture published to a git server the local clone pushes to with no token in
     a command."""
     T = ssh_twins
@@ -1725,7 +1725,7 @@ def selftest_ssh_twins(v: Verdict) -> None:
     v.check("bind fills it", m.bind(b="2").turns == ["1 2"], str(m.turns))
     v.check("{{minted:N}} is the Nth distinct minted id, other <id> tags skipped",
             m.resolve_ids("{{minted:1}} {{minted:2}}",
-                          "<id>w2</id><id>anthropic_backend_0a1b2c</id><id>roles</id><id>anthropic_backend_0a1b2c</id>"
+                          "<id>w2</id><id>anthropic_backend_0a1b2c</id><id>bundles</id><id>anthropic_backend_0a1b2c</id>"
                           "<id>129</id><id>anthropic_backend_ffee00</id>") == "anthropic_backend_0a1b2c anthropic_backend_ffee00")
     v.check("the remote kernel starts in the tunnel's ssh session, its pid kept",
             T.kernel_start_command() == "mkdir -p w && cd w && echo $$ > team.pid && "

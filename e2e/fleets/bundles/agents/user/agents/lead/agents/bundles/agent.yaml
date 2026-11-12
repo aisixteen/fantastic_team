@@ -1,0 +1,9 @@
+id: bundles
+handler_module: agentic_resources.tools
+can_call:
+  "$self": "*"
+  memory: "*"
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  lead: [bundles, bundle, spawn, get_count, fleet]

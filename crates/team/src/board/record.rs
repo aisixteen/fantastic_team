@@ -17,9 +17,9 @@ pub struct Record {
     #[serde(default = "ask_to")]
     #[schemars(length(min = 1), regex(pattern = r"\S"))]
     pub ask_to: String,
-    /// The roles registry agent (roles mode): the board then also shows its tree.
+    /// The bundles registry agent (bundles mode): the board then also shows its tree.
     #[schemars(length(min = 1), regex(pattern = r"\S"))]
-    pub roles: Option<String>,
+    pub bundles: Option<String>,
     /// Minutes without movement before the audit calls a task stale.
     #[serde(default = "stale_minutes")]
     #[schemars(range(min = 1))]

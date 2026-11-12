@@ -1,7 +1,7 @@
 # gpu_cli/leads_spawn_leads
 
-The gpu twin of `cli/leads_spawn_leads` (#237): a lead with a roles registry (room for 4) and the cards
-`sublead` and `worker` (`cli/leads_spawn_leads/roles/`) is asked, in plain words, to fix the failing test
+The gpu twin of `cli/leads_spawn_leads` (#237): a lead with a bundles registry and the cards
+`sublead` and `worker` (`cli/leads_spawn_leads/bundles/`) is asked, in plain words, to fix the failing test
 through two sub-leads, each of which spawns one worker; whoever spawns an agent deletes it. A real model
 answers; there is no script.
 

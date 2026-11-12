@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// Load the settings from the agent record and restart the timer when it is enabled with roles; grant the team's views what the cadencer's agents need. Returns {loaded}.
+/// Load the settings from the agent record and restart the timer when it is enabled with bundles; grant the team's views what the cadencer's agents need. Returns {loaded}.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Boot {}
@@ -89,7 +89,7 @@ pub struct Configure {
     pub parent: Option<String>,
 }
 
-/// The cadencer's state. Returns {settings, ticks, last_beat_s, next_beat_s, digests_sent, digest_bytes_per_hour, load}; load is the roles registry's counts (workers busy/idle/stalled per group, tasks held/in_review/done/blocked/queued, done_last_hour) and carries no mode.
+/// The cadencer's state. Returns {settings, ticks, last_beat_s, next_beat_s, digests_sent, digest_bytes_per_hour, load}; load is the bundles registry's counts (workers busy/idle/stalled per group, tasks held/in_review/done/blocked/queued, done_last_hour) and carries no mode.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Status {}

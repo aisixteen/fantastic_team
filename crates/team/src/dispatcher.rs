@@ -250,7 +250,7 @@ fn worker_items(
 
 /// The sidebar: per group one flat ordered list, and the workers under no group
 /// in one more. Subagents start collapsed; `expanded` names the open workers.
-/// `load` is the roles registry's `load` object (`Null` when none came). The team gets `load`
+/// `load` is the bundles registry's `load` object (`Null` when none came). The team gets `load`
 /// {tasks, done_last_hour} when one came, plus the cadencer's
 /// `digest_bytes_per_hour` when `load` carries it,
 /// and `waiting` {prs, stalled}: the PRs waiting for approval and the stalled
@@ -303,14 +303,14 @@ pub fn sidebar(
     out
 }
 
-/// The sidebar's `fleet` {running, max} from a registry's `get_count` reply: none when the
-/// reply is an error or lacks a count. `max` is null when the registry has no cap.
+/// The sidebar's `fleet` {running} from a registry's `get_count` reply: none when the
+/// reply is an error or lacks a count.
 pub fn fleet_of(count: &Value) -> Option<Value> {
     if count.get("error").is_some() {
         return None;
     }
     let running = count.get("running")?.as_u64()?;
-    Some(json!({"running": running, "max": count.get("max").cloned().unwrap_or(Value::Null)}))
+    Some(json!({"running": running}))
 }
 
 /// The full-screen chat for one agent (a worker or a subagent). The chat targets
@@ -460,25 +460,25 @@ fn rows_from(
 /// How many levels the page indents an agent row at most.
 pub const INDENT_CAP: usize = 4;
 
-/// The agents of roles mode as one flat depth-first list for the page, from the board's
-/// `roles` section: the lead first (`lead: true`, label "Lead"), then every node of the
-/// tree in its child order. Each item is {id, role, state, depth, indent, guides, lead,
+/// The agents of bundles mode as one flat depth-first list for the page, from the board's
+/// `bundles` section: the lead first (`lead: true`, label "Lead"), then every node of the
+/// tree in its child order. Each item is {id, bundle, state, depth, indent, guides, lead,
 /// label, has_children}; `indent` and `guides` stop at [`INDENT_CAP`], `depth` keeps counting. With no
 /// tree but a lead id, just the lead; with neither, nothing.
-pub fn agent_list(roles: &Value) -> Vec<Value> {
+pub fn agent_list(bundles: &Value) -> Vec<Value> {
     fn item(node: &Value, depth: usize, lead: bool) -> Value {
         let id = node["id"].as_str().unwrap_or("");
-        let role = node["role"].as_str().unwrap_or("");
+        let bundle = node["bundle"].as_str().unwrap_or("");
         let state = node["state"].as_str().unwrap_or("active");
         let indent = depth.min(INDENT_CAP);
         let label = if lead {
             "Lead"
-        } else if role.is_empty() {
+        } else if bundle.is_empty() {
             id
         } else {
-            role
+            bundle
         };
-        json!({"id": id, "role": role, "state": state, "depth": depth, "indent": indent,
+        json!({"id": id, "bundle": bundle, "state": state, "depth": depth, "indent": indent,
             "guides": indent, "lead": lead, "label": label})
     }
     fn walk(node: &Value, depth: usize, out: &mut Vec<Value>) {
@@ -487,15 +487,15 @@ pub fn agent_list(roles: &Value) -> Vec<Value> {
             walk(k, depth + 1, out);
         }
     }
-    let lead = roles["lead"].as_str().filter(|l| !l.is_empty());
-    let tree = &roles["tree"];
+    let lead = bundles["lead"].as_str().filter(|l| !l.is_empty());
+    let tree = &bundles["tree"];
     let mut out = Vec::new();
     if tree.get("id").and_then(Value::as_str).is_some() {
         let root_is_lead = lead.is_none_or(|l| tree["id"].as_str() == Some(l));
         if root_is_lead {
             let mut root = item(tree, 0, true);
-            if root["role"] == "" {
-                root["role"] = json!("project_lead");
+            if root["bundle"] == "" {
+                root["bundle"] = json!("project_lead");
             }
             out.push(root);
             for k in tree["children"].as_array().into_iter().flatten() {
@@ -506,7 +506,7 @@ pub fn agent_list(roles: &Value) -> Vec<Value> {
         }
     } else if let Some(l) = lead {
         out.push(item(
-            &json!({"id": l, "role": "project_lead", "state": "active"}),
+            &json!({"id": l, "bundle": "project_lead", "state": "active"}),
             0,
             true,
         ));
@@ -533,11 +533,11 @@ pub fn agent_list(roles: &Value) -> Vec<Value> {
     out
 }
 
-/// The plan the lead's pane draws, from the board's `roles` section: {lead, fleet,
+/// The plan the lead's pane draws, from the board's `bundles` section: {lead, fleet,
 /// tasks}; each task is {id, source, holder, status} with the holder as text (an agent id,
 /// or "subtree:<id>").
-pub fn plan_of(roles: &Value) -> Value {
-    let tasks: Vec<Value> = roles["tasks"]
+pub fn plan_of(bundles: &Value) -> Value {
+    let tasks: Vec<Value> = bundles["tasks"]
         .as_array()
         .into_iter()
         .flatten()
@@ -553,7 +553,7 @@ pub fn plan_of(roles: &Value) -> Value {
             json!({"id": t["id"], "source": t["source"], "holder": holder, "status": t["status"]})
         })
         .collect();
-    json!({"lead": roles["lead"], "fleet": roles["fleet"], "tasks": tasks})
+    json!({"lead": bundles["lead"], "fleet": bundles["fleet"], "tasks": tasks})
 }
 
 /// Let the page's legs chat with the lead and its agents: the chat verbs only, never `*`.
@@ -642,7 +642,7 @@ fn refused(node: &str, action: &str, error: String) -> Value {
 /// Where the groups are kept: the dispatcher's own record (`me`), and the groups as they stand.
 struct Membership<'a> {
     me: &'a str,
-    roles: Option<&'a str>,
+    bundles: Option<&'a str>,
     groups: &'a BTreeMap<String, Vec<String>>,
 }
 
@@ -665,32 +665,32 @@ async fn save_groups(
     }
 }
 
-/// The tier `name` of the roles registry `roles` (the registry's own `tiers` field), as
+/// The tier `name` of the bundles registry `bundles` (the registry's own `tiers` field), as
 /// the record fields of an AI agent. `Err` names the tiers the registry has.
 fn tier_of(
     kernel: &Arc<fantastic_kernel::Kernel>,
-    roles: Option<&str>,
+    bundles: Option<&str>,
     name: &str,
 ) -> Result<serde_json::Map<String, Value>, String> {
-    let Some(roles) = roles else {
+    let Some(bundles) = bundles else {
         return Err(
-            "team_dispatcher: this dispatcher's record names no `roles` registry, so \
+            "team_dispatcher: this dispatcher's record names no `bundles` registry, so \
                     it has no tiers to make a worker from"
                 .into(),
         );
     };
     let tiers = kernel
         .agents
-        .get(&fantastic_kernel::AgentId::from(roles))
+        .get(&fantastic_kernel::AgentId::from(bundles))
         .and_then(|e| e.meta.read().expect("meta").get("tiers").cloned())
         .and_then(|t| t.as_object().cloned())
-        .ok_or_else(|| format!("team_dispatcher: the registry '{roles}' has no `tiers`"))?;
+        .ok_or_else(|| format!("team_dispatcher: the registry '{bundles}' has no `tiers`"))?;
     match tiers.get(name).and_then(Value::as_object) {
         Some(t) => Ok(t.clone()),
         None => {
             let names: Vec<&str> = tiers.keys().map(String::as_str).collect();
             Err(format!(
-                "team_dispatcher: no tier '{name}' in the registry '{roles}' (have: {})",
+                "team_dispatcher: no tier '{name}' in the registry '{bundles}' (have: {})",
                 names.join(", ")
             ))
         }
@@ -698,7 +698,7 @@ fn tier_of(
 }
 
 /// `add_worker {node: group, id, template}`: create the worker from the tier `template`
-/// of the roles registry's record (`tiers`, in the dispatcher's `roles` field), keep
+/// of the bundles registry's record (`tiers`, in the dispatcher's `bundles` field), keep
 /// its memory in the store that tier names (and let it call that store), and list it.
 /// No memory agent is made.
 async fn add_worker(
@@ -723,7 +723,7 @@ async fn add_worker(
         Ok(g) => g,
         Err(e) => return refused(group, action, e),
     };
-    let tier = match tier_of(kernel, at.roles, &template) {
+    let tier = match tier_of(kernel, at.bundles, &template) {
         Ok(t) => t,
         Err(e) => return refused(group, action, e),
     };
@@ -793,7 +793,7 @@ async fn remove_worker(
     reply
 }
 
-/// The sidebar reply without `services`: the groups, workers, load, and in roles mode the
+/// The sidebar reply without `services`: the groups, workers, load, and in bundles mode the
 /// fleet, the agents and the plan.
 #[allow(clippy::too_many_arguments)]
 async fn sidebar_reply(
@@ -823,19 +823,19 @@ async fn sidebar_reply(
         load = cad["load"].clone();
     }
     let mut out = sidebar(team, groups, &rows, &subs, &expanded_of(expanded), &load);
-    // The roles registry's count (agents running, and the cap), when the
+    // The bundles registry's count (agents running, and the cap), when the
     // team has a registry and it answers.
-    if let Some(roles) = meta.get("roles").and_then(Value::as_str) {
-        let c = peers.ask(roles, json!({"type": "get_count"})).await;
+    if let Some(bundles) = meta.get("bundles").and_then(Value::as_str) {
+        let c = peers.ask(bundles, json!({"type": "get_count"})).await;
         if let Some(f) = fleet_of(&c) {
             out["fleet"] = f;
         }
-        // The lead and its agents, and the plan, from the board's roles section.
-        if snap["roles"].is_object() {
-            let list = agent_list(&snap["roles"]);
+        // The lead and its agents, and the plan, from the board's bundles section.
+        if snap["bundles"].is_object() {
+            let list = agent_list(&snap["bundles"]);
             grant_agents(kernel, &list);
             out["agents"] = json!(list);
-            out["plan"] = plan_of(&snap["roles"]);
+            out["plan"] = plan_of(&snap["bundles"]);
         }
     }
     out
@@ -1051,10 +1051,10 @@ impl fantastic_kernel::bundle::Handler for DispatcherBundle {
                 }
                 let kind = kind_of(&node, &team, &groups);
                 // A spawned lead or child is chatted with like a worker: grant it now.
-                // Only an id the board's roles tree names is granted, never an arbitrary one.
-                if kind == "worker" && meta.get("roles").is_some() {
+                // Only an id the board's bundles tree names is granted, never an arbitrary one.
+                if kind == "worker" && meta.get("bundles").is_some() {
                     let snap = peers.ask(&board, json!({"type": "board"})).await;
-                    let list = agent_list(&snap["roles"]);
+                    let list = agent_list(&snap["bundles"]);
                     if list.iter().any(|a| a["id"] == node.as_str()) {
                         grant_agents(kernel, &list);
                     }
@@ -1094,7 +1094,7 @@ impl fantastic_kernel::bundle::Handler for DispatcherBundle {
                     verbs::ControlAction::AddWorker => {
                         let at = Membership {
                             me: agent_id.as_str(),
-                            roles: meta.get("roles").and_then(Value::as_str),
+                            bundles: meta.get("bundles").and_then(Value::as_str),
                             groups: &groups,
                         };
                         let out =
@@ -1112,7 +1112,7 @@ impl fantastic_kernel::bundle::Handler for DispatcherBundle {
                     verbs::ControlAction::RemoveWorker => {
                         let at = Membership {
                             me: agent_id.as_str(),
-                            roles: meta.get("roles").and_then(Value::as_str),
+                            bundles: meta.get("bundles").and_then(Value::as_str),
                             groups: &groups,
                         };
                         remove_worker(&peers, &at, &node, reply).await
@@ -1773,8 +1773,8 @@ mod tests {
         kernel.stop().await;
     }
 
-    /// A kernel with a dispatcher (the agent verbs on the root, `roles` naming the
-    /// registry), a roles registry whose `tiers` field holds the tier `t`, a board record,
+    /// A kernel with a dispatcher (the agent verbs on the root, `bundles` naming the
+    /// registry), a bundles registry whose `tiers` field holds the tier `t`, a board record,
     /// the stock tree's store `memory`, and one group `g` with `w1`.
     async fn kernel_with_groups(dir: &std::path::Path) -> Booted {
         use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
@@ -1784,10 +1784,10 @@ mod tests {
         for item in [
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
                 "handler_module": HANDLER_MODULE, "can_call": can_call,
-                "roles": "roles", "groups": {"g": ["w1"]}}),
+                "bundles": "bundles", "groups": {"g": ["w1"]}}),
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
                 "handler_module": "ram_store.tools"}),
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "roles",
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "bundles",
                 "handler_module": "agentic_resources.tools",
                 "tiers": {"t": {"handler_module": "ai_chat.tools", "model": "m",
                     "provider_id": "prov", "memory_store_id": "memory"}}}),
@@ -2090,7 +2090,7 @@ mod tests {
         kernel.stop().await;
     }
 
-    /// A registry stand-in: answers `get_count` with {running: 2, max: 3}, or with a
+    /// A registry stand-in: answers `get_count` with {running: 2}, or with a
     /// refusal when its `fail` field is set.
     struct CountBundle;
 
@@ -2098,7 +2098,7 @@ mod tests {
         reg.register("count_test.tools", CountBundle);
     }
 
-    fantastic_kernel::stand_in_verbs!(count_verbs { GetCountV "get_count" { role: Option<String> } });
+    fantastic_kernel::stand_in_verbs!(count_verbs { GetCountV "get_count" { bundle: Option<String> } });
 
     #[async_trait::async_trait]
     impl fantastic_kernel::bundle::Handler for CountBundle {
@@ -2122,17 +2122,17 @@ mod tests {
                 .is_some_and(|a| a.meta.read().unwrap().get("fail").is_some());
             Ok(match payload["type"].as_str() {
                 Some("get_count") if fail => Some(json!({"error": "disabled"})),
-                Some("get_count") => Some(json!({"running": 2, "max": 3})),
+                Some("get_count") => Some(json!({"running": 2})),
                 _ => None,
             })
         }
     }
 
-    /// A kernel with a dispatcher (its `roles` meta set to `roles`, when given) and a
+    /// A kernel with a dispatcher (its `bundles` meta set to `bundles`, when given) and a
     /// registry stand-in `reg` (it refuses `get_count` when `fail`).
     async fn kernel_with_registry(
         dir: &std::path::Path,
-        roles: Option<&str>,
+        bundles: Option<&str>,
         fail: bool,
     ) -> Booted {
         use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
@@ -2140,8 +2140,8 @@ mod tests {
         let kernel = boot_at(dir, Seed::Stock, &[register_count], None).await;
         let mut d = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
             "handler_module": HANDLER_MODULE, "can_call": {"reg": "*"}});
-        if let Some(r) = roles {
-            d["roles"] = json!(r);
+        if let Some(r) = bundles {
+            d["bundles"] = json!(r);
         }
         let mut r = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "reg",
             "handler_module": "count_test.tools", "callable_by": {"dispatcher": "*"}});
@@ -2159,7 +2159,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = kernel_with_registry(dir.path(), Some("reg"), false).await;
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert_eq!(sb["fleet"], json!({"running": 2, "max": 3}), "{sb}");
+        assert_eq!(sb["fleet"], json!({"running": 2}), "{sb}");
         kernel.stop().await;
     }
 
@@ -2185,12 +2185,8 @@ mod tests {
     #[test]
     fn fleet_of_reads_a_count_and_ignores_errors() {
         assert_eq!(
-            fleet_of(&json!({"running": 1, "max": null})),
-            Some(json!({"running": 1, "max": null}))
-        );
-        assert_eq!(
-            fleet_of(&json!({"running": 0})),
-            Some(json!({"running": 0, "max": null}))
+            fleet_of(&json!({"running": 1})),
+            Some(json!({"running": 1}))
         );
         assert_eq!(fleet_of(&json!({"error": "x", "running": 1})), None);
         assert_eq!(fleet_of(&json!({})), None);
@@ -2198,10 +2194,10 @@ mod tests {
 
     // ---- the page's chat surface, run in node against a stub DOM ----
 
-    // ---- roles mode: the agents list and the plan (#185) ----
+    // ---- bundles mode: the agents list and the plan (#185) ----
 
-    fn node(id: &str, role: &str, state: &str, kids: Vec<Value>) -> Value {
-        json!({"id": id, "role": role, "state": state, "children": kids})
+    fn node(id: &str, bundle: &str, state: &str, kids: Vec<Value>) -> Value {
+        json!({"id": id, "bundle": bundle, "state": state, "children": kids})
     }
 
     fn ids(list: &[Value]) -> Vec<String> {
@@ -2213,12 +2209,12 @@ mod tests {
     #[test]
     fn agent_list_puts_the_lead_first() {
         // The lead sits in the middle of the fleet: it is still item 0.
-        let roles = json!({"lead": "pl", "tree": node("root", "", "active", vec![
+        let bundles = json!({"lead": "pl", "tree": node("root", "", "active", vec![
             node("w0", "worker", "active", vec![]),
             node("pl", "project_lead", "active", vec![node("w1", "worker", "active", vec![])]),
             node("w2", "worker", "done", vec![]),
         ])});
-        let list = agent_list(&roles);
+        let list = agent_list(&bundles);
         assert_eq!(list[0]["id"], "pl", "{list:?}");
         assert_eq!(list[0]["lead"], true);
         assert_eq!(list[0]["label"], "Lead");
@@ -2226,18 +2222,18 @@ mod tests {
     }
 
     #[test]
-    fn agent_list_nests_children_depth_first_with_roles_and_states() {
-        let roles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
+    fn agent_list_nests_children_depth_first_with_bundles_and_states() {
+        let bundles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
             node("sub", "project_lead", "paused", vec![node("w1", "worker", "done", vec![])]),
             node("w2", "worker", "active", vec![]),
         ])});
-        let list = agent_list(&roles);
+        let list = agent_list(&bundles);
         assert_eq!(ids(&list), ["pl", "sub", "w1", "w2"]);
         let depth: Vec<u64> = list.iter().map(|a| a["depth"].as_u64().unwrap()).collect();
         assert_eq!(depth, [0, 1, 2, 1]);
         let state: Vec<&str> = list.iter().map(|a| a["state"].as_str().unwrap()).collect();
         assert_eq!(state, ["active", "paused", "done", "active"]);
-        assert_eq!(list[2]["role"], "worker");
+        assert_eq!(list[2]["bundle"], "worker");
         assert_eq!(list[2]["label"], "worker");
         assert_eq!(list[2]["indent"], 2);
         assert_eq!(list[2]["guides"], 2);
@@ -2245,12 +2241,12 @@ mod tests {
     }
 
     #[test]
-    fn agent_list_labels_a_roleless_agent_by_its_id_and_defaults_the_state() {
-        let roles = json!({"lead": "pl", "tree": {"id": "pl", "children": [{"id": "x1"}]}});
-        let list = agent_list(&roles);
+    fn agent_list_labels_a_bundleless_agent_by_its_id_and_defaults_the_state() {
+        let bundles = json!({"lead": "pl", "tree": {"id": "pl", "children": [{"id": "x1"}]}});
+        let list = agent_list(&bundles);
         assert_eq!(list[1]["label"], "x1");
         assert_eq!(list[1]["state"], "active");
-        assert_eq!(list[0]["role"], "project_lead");
+        assert_eq!(list[0]["bundle"], "project_lead");
     }
 
     #[test]
@@ -2277,25 +2273,25 @@ mod tests {
         assert_eq!(list[0]["id"], "pl");
         assert_eq!(list[0]["lead"], true);
         assert_eq!(list[0]["state"], "active");
-        assert_eq!(list[0]["role"], "project_lead");
+        assert_eq!(list[0]["bundle"], "project_lead");
         assert!(agent_list(&json!({"lead": null, "tree": null})).is_empty());
     }
 
     #[test]
-    fn agent_list_empty_without_roles_mode() {
+    fn agent_list_empty_without_bundles_mode() {
         assert!(agent_list(&Value::Null).is_empty());
         assert!(agent_list(&json!({})).is_empty());
     }
 
     #[test]
     fn plan_of_carries_tasks_holder_and_fleet() {
-        let roles = json!({"lead": "pl", "fleet": {"running": 2, "max": 5}, "tasks": [
+        let bundles = json!({"lead": "pl", "fleet": {"running": 2}, "tasks": [
             {"id": "o/r#1", "source": "gh:o/r#1", "holder": "w1", "status": "in_work", "extra": 1},
             {"id": "o/r#2", "source": "gh:o/r#2", "holder": {"subtree": "sub"}, "status": "open"},
         ]});
-        let plan = plan_of(&roles);
+        let plan = plan_of(&bundles);
         assert_eq!(plan["lead"], "pl");
-        assert_eq!(plan["fleet"], json!({"running": 2, "max": 5}));
+        assert_eq!(plan["fleet"], json!({"running": 2}));
         assert_eq!(
             plan["tasks"][0],
             json!({"id": "o/r#1", "source": "gh:o/r#1", "holder": "w1", "status": "in_work"})
@@ -2304,22 +2300,22 @@ mod tests {
         assert_eq!(plan_of(&Value::Null)["tasks"], json!([]));
     }
 
-    /// A board stand-in: answers `board` with the `roles` section its meta holds (when any).
-    struct RolesBoard;
+    /// A board stand-in: answers `board` with the `bundles` section its meta holds (when any).
+    struct BundlesBoard;
 
-    fn register_roles_mocks(reg: &mut fantastic_kernel::BundleRegistry) {
+    fn register_bundles_mocks(reg: &mut fantastic_kernel::BundleRegistry) {
         reg.register("count_test.tools", CountBundle);
-        reg.register("roles_board_test.tools", RolesBoard);
+        reg.register("bundles_board_test.tools", BundlesBoard);
     }
 
-    fantastic_kernel::stand_in_verbs!(roles_board_verbs { BoardV "board" {} });
+    fantastic_kernel::stand_in_verbs!(bundles_board_verbs { BoardV "board" {} });
 
     #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Handler for RolesBoard {
-        stand_in_body!(roles_board_verbs);
+    impl fantastic_kernel::bundle::Handler for BundlesBoard {
+        stand_in_body!(bundles_board_verbs);
 
         fn name(&self) -> &str {
-            "roles_board_test.tools"
+            "bundles_board_test.tools"
         }
 
         async fn handle(
@@ -2337,28 +2333,28 @@ mod tests {
             if let Some(r) = kernel
                 .agents
                 .get(agent_id)
-                .and_then(|a| a.meta.read().unwrap().get("roles_section").cloned())
+                .and_then(|a| a.meta.read().unwrap().get("bundles_section").cloned())
             {
-                out["roles"] = r;
+                out["bundles"] = r;
             }
             Ok(Some(out))
         }
     }
 
-    /// A kernel with a dispatcher (roles mode when `section` is given), a board stand-in,
+    /// A kernel with a dispatcher (bundles mode when `section` is given), a board stand-in,
     /// the `team_ws` leg, and the agents `pl` (the lead) and `c1` (its child), made after
     /// the start so nobody granted them a chat.
-    async fn kernel_in_roles_mode(dir: &std::path::Path, section: Option<Value>) -> Booted {
+    async fn kernel_in_bundles_mode(dir: &std::path::Path, section: Option<Value>) -> Booted {
         use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
-        let kernel = boot_at(dir, Seed::Stock, &[register_roles_mocks], None).await;
+        let kernel = boot_at(dir, Seed::Stock, &[register_bundles_mocks], None).await;
         let mut d = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
             "handler_module": HANDLER_MODULE, "can_call": {"reg": "*", "board": "*"}});
         let mut b = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
-            "handler_module": "roles_board_test.tools", "callable_by": {"dispatcher": "*"}});
+            "handler_module": "bundles_board_test.tools", "callable_by": {"dispatcher": "*"}});
         if let Some(s) = section {
-            d["roles"] = json!("reg");
-            b["roles_section"] = s;
+            d["bundles"] = json!("reg");
+            b["bundles_section"] = s;
         }
         let reg = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "reg",
             "handler_module": "count_test.tools", "callable_by": {"dispatcher": "*"}});
@@ -2375,16 +2371,16 @@ mod tests {
     }
 
     fn lead_section() -> Value {
-        json!({"lead": "pl", "fleet": {"running": 2, "max": 3},
+        json!({"lead": "pl", "fleet": {"running": 2},
             "tree": node("pl", "project_lead", "active", vec![node("c1", "worker", "paused", vec![])]),
-            "agents": [{"id": "c1", "role": "worker", "state": "paused", "parent": "pl"}],
+            "agents": [{"id": "c1", "bundle": "worker", "state": "paused", "parent": "pl"}],
             "tasks": [{"id": "o/r#1", "source": "gh:o/r#1", "holder": "c1", "status": "in_work"}]})
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_in_roles_mode_carries_agents_and_plan() {
+    async fn sidebar_in_bundles_mode_carries_agents_and_plan() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_in_roles_mode(dir.path(), Some(lead_section())).await;
+        let kernel = kernel_in_bundles_mode(dir.path(), Some(lead_section())).await;
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
         assert_eq!(sb["agents"][0]["id"], "pl", "{sb}");
         assert_eq!(sb["agents"][0]["label"], "Lead");
@@ -2395,9 +2391,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_without_roles_mode_has_neither_agents_nor_plan() {
+    async fn sidebar_without_bundles_mode_has_neither_agents_nor_plan() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_in_roles_mode(dir.path(), None).await;
+        let kernel = kernel_in_bundles_mode(dir.path(), None).await;
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
         assert!(sb.get("agents").is_none(), "{sb}");
         assert!(sb.get("plan").is_none(), "{sb}");
@@ -2406,9 +2402,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_in_roles_mode_grants_chat_to_the_lead_and_its_children() {
+    async fn sidebar_in_bundles_mode_grants_chat_to_the_lead_and_its_children() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_in_roles_mode(dir.path(), Some(lead_section())).await;
+        let kernel = kernel_in_bundles_mode(dir.path(), Some(lead_section())).await;
         let chat = json!(crate::tree::CHAT_VERBS);
         let before = meta_of(&kernel, "team_ws");
         assert!(before.get("can_call").is_none_or(|c| c.get("pl").is_none()));
@@ -2425,15 +2421,15 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn open_of_a_roles_agent_returns_the_chat_view_and_grants_only_known_ids() {
+    async fn open_of_a_bundles_agent_returns_the_chat_view_and_grants_only_known_ids() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_in_roles_mode(dir.path(), Some(lead_section())).await;
+        let kernel = kernel_in_bundles_mode(dir.path(), Some(lead_section())).await;
         let out = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": "pl"})).await;
         assert_eq!(out["view"], "chat", "{out}");
         assert_eq!(out["target"], "pl");
         let ws = meta_of(&kernel, "team_ws");
         assert_eq!(ws["can_call"]["pl"], json!(crate::tree::CHAT_VERBS));
-        // An id the roles tree does not name gets no grant.
+        // An id the bundles tree does not name gets no grant.
         ask_kernel(
             &kernel,
             "dispatcher",
@@ -2604,12 +2600,12 @@ mod tests {
             pair("github", "github"),
         ];
         assert_eq!(ids_of(&sb["services"]), want, "{sb}");
-        assert!(sb.get("agents").is_none(), "this is not roles mode: {sb}");
+        assert!(sb.get("agents").is_none(), "this is not bundles mode: {sb}");
         kernel.stop().await;
 
-        // Roles mode too.
+        // Bundles mode too.
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_in_roles_mode(dir.path(), Some(lead_section())).await;
+        let kernel = kernel_in_bundles_mode(dir.path(), Some(lead_section())).await;
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
         assert!(sb["agents"].is_array());
         assert_eq!(
@@ -2678,10 +2674,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn open_of_board_in_roles_mode_returns_tree_and_tasks() {
+    async fn open_of_board_in_bundles_mode_returns_tree_and_tasks() {
         let dir = tempfile::TempDir::new().unwrap();
         let mut b = queue_board();
-        b["roles"] = lead_section();
+        b["bundles"] = lead_section();
         let kernel = kernel_with_services(dir.path(), b, false, false).await;
         let out = ask_kernel(
             &kernel,
@@ -2784,11 +2780,11 @@ mod tests {
 
     #[test]
     fn agent_list_marks_rows_with_children() {
-        let roles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
+        let bundles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
             node("a", "worker", "active", vec![]),
             node("b", "project_lead", "active", vec![node("c", "worker", "active", vec![])]),
         ])});
-        let list = agent_list(&roles);
+        let list = agent_list(&bundles);
         let flags: Vec<(&str, bool)> = list
             .iter()
             .map(|a| {
@@ -2807,11 +2803,11 @@ mod tests {
     #[test]
     fn agent_list_has_children_follows_depth_not_order() {
         // Two siblings in a row: neither has children, though one follows the other.
-        let roles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
+        let bundles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
             node("a", "worker", "active", vec![]),
             node("b", "worker", "active", vec![]),
         ])});
-        let list = agent_list(&roles);
+        let list = agent_list(&bundles);
         assert_eq!(list[1]["has_children"], false);
         assert_eq!(list[2]["has_children"], false);
         // A deep row that is last, and a lead alone.

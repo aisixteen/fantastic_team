@@ -14,7 +14,7 @@ can_call:
   queue: "*"
   git: "*"
   github: "*"
-  roles: [roles, role, spawn, get_count, fleet]
+  bundles: [bundles, bundle, spawn, get_count, fleet]
   board: [board]
 callable_by:
   "$self": "*"

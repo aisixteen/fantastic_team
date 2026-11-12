@@ -4,7 +4,7 @@ name = "team-agentic-resources"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "A generic roles registry: role cards, spawn, fleet, per-role and total limits (off by default). Moved from fantastic (fantastic-agentic-resources)."
+description = "A generic bundles registry: spawnable meta bundles, spawn, fleet. Moved from fantastic (fantastic-agentic-resources)."
 
 [dependencies]
 fantastic-bundle.workspace = true

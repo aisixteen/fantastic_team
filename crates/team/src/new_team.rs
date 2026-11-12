@@ -1,23 +1,23 @@
-//! A new team in roles mode: the fixed agents of `crates/team/blueprint.yaml`, written by
+//! A new team in bundles mode: the fixed agents of `crates/team/blueprint.yaml`, written by
 //! the first run with fantastic's `seed_dir_with` ([`crate::hydrate`]) and rehydrated from
-//! disk after, as fantastic rehydrates its own. The ids are fixed because the role cards
+//! disk after, as fantastic rehydrates its own. The ids are fixed because the bundle cards
 //! name the tool agents by id in their grants (fantastic's import would give every agent a
 //! fresh id: `github` becomes `github_1`).
 //!
-//! The ids: the main lead [`LEAD`]; under it the roles registry [`ROLES`], the GitHub
+//! The ids: the main lead [`LEAD`]; under it the bundles registry [`BUNDLES`], the GitHub
 //! connector [`GITHUB`] and the worker's tools [`WORKER_EXEC`] and [`WORKER_FILES`]. The cards (the
-//! stock roles, embedded meta bundles in [`crate::roles`]) are the kernel's own: registered
+//! stock bundles, embedded meta bundles in [`crate::bundles`]) are the kernel's own: registered
 //! in RAM, nothing written to the folder; the registry reads them from the kernel.
 //!
 //! There is no code here that creates, updates or grants an agent: the blueprint is the
 //! one declaration.
 
-use crate::tree::ROLES_ID;
+use crate::tree::BUNDLES_ID;
 
 /// The main lead: the agent the person chats with.
 pub const LEAD: &str = "lead";
-/// The roles registry (`agentic_resources`, crates/agentic_resources).
-pub const ROLES: &str = ROLES_ID;
+/// The bundles registry (`agentic_resources`, crates/agentic_resources).
+pub const BUNDLES: &str = BUNDLES_ID;
 /// The GitHub connector.
 pub const GITHUB: &str = "github";
 /// The worker's restricted exec.
@@ -37,8 +37,8 @@ pub const CREDENTIALS: &str = "credentials";
 /// What the lead may call on the root: wait for its children, make and remove a sidecar.
 pub const LEAD_ROOT_VERBS: [&str; 4] =
     ["await_set", "await_cancel", "create_agent", "delete_agent"];
-/// What the lead may call on the roles registry.
-pub const LEAD_ROLES_VERBS: [&str; 5] = ["roles", "role", "spawn", "get_count", "fleet"];
+/// What the lead may call on the bundles registry.
+pub const LEAD_BUNDLES_VERBS: [&str; 5] = ["bundles", "bundle", "spawn", "get_count", "fleet"];
 
 /// What the lead may call on the home's `files`, and what `files` admits from the lead: `read`,
 /// and the verbs its `system_prompt_file` is read and followed with through its
@@ -50,7 +50,7 @@ pub const LEAD_FILES_VERBS: [&str; 5] =
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::roles;
+    use crate::bundles;
     use crate::test_boot::{boot_at, Booted, Seed};
     use crate::tree::ROOT_ID;
     use fantastic_kernel::{AgentId, Item, Kernel};
@@ -60,11 +60,11 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn the_stock_roles_are_the_kernels_own_and_nothing_is_written() {
+    async fn the_stock_bundles_are_the_kernels_own_and_nothing_is_written() {
         let dir = tempfile::TempDir::new().unwrap();
         let booted = boot_at(dir.path(), Seed::Team, &[], None).await;
         let rows = booted.bundles.folder_rows();
-        for (name, _) in roles::ALL {
+        for (name, _) in bundles::ALL {
             let row = rows
                 .iter()
                 .find(|r| r["name"] == name)
@@ -78,7 +78,7 @@ mod tests {
         }
         assert!(
             !dir.path().join(".fantastic/bundles").exists(),
-            "the first run writes no role"
+            "the first run writes no bundle"
         );
         booted.stop().await;
     }
@@ -106,10 +106,10 @@ mod tests {
         reg.register("caller.tools", CallerBundle);
     }
 
-    /// The stock roles on the stand-in, so a spawned lead or worker makes its calls as
+    /// The stock bundles on the stand-in, so a spawned lead or worker makes its calls as
     /// itself (a real lead keeps them on the AI agent).
-    fn roles_on_the_caller(reg: &mut fantastic_kernel::BundleRegistry) {
-        for (name, text) in roles::ALL {
+    fn bundles_on_the_caller(reg: &mut fantastic_kernel::BundleRegistry) {
+        for (name, text) in bundles::ALL {
             reg.register_meta_yaml(
                 name,
                 &text.replace("base: ai_chat.tools", "base: caller.tools"),
@@ -275,7 +275,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let seed = Seed::Text(test_blueprint(dir.path(), real_lead));
         let extras: &[fantastic_tui::Extra] = match real_lead {
-            None => &[register_caller, roles_on_the_caller],
+            None => &[register_caller, bundles_on_the_caller],
             Some(_) => &[register_caller],
         };
         let kernel = boot_at(dir.path(), seed, extras, None).await;
@@ -357,7 +357,7 @@ mod tests {
         assert!(!r.to_string().contains("may not call"), "{r}");
         let seen = srv.received_requests().await.unwrap_or_default();
         assert_eq!(seen.len(), 1, "the model got no request: {r}");
-        let directive = crate::roles::parse_card(crate::roles::LEAD, "lead")
+        let directive = crate::bundles::parse_card(crate::bundles::LEAD, "lead")
             .unwrap()
             .directive;
         let sent: Value = serde_json::from_slice(&seen[0].body).unwrap();
@@ -404,20 +404,20 @@ mod tests {
         let (_dir, kernel, _) = build(Some(&format!("{}/v1/messages", srv.uri()))).await;
         let lead = AgentId::from(LEAD);
         let before = meta(&kernel, LEAD)["callable_by"].clone();
-        // a sub-lead that makes its calls as itself: the lead role on the stand-in
+        // a sub-lead that makes its calls as itself: the lead bundle on the stand-in
         kernel
             .bundles
             .register_meta_yaml(
                 "lead_stand_in",
-                &crate::roles::LEAD.replace("base: ai_chat.tools", "base: caller.tools"),
+                &crate::bundles::LEAD.replace("base: ai_chat.tools", "base: caller.tools"),
             )
             .unwrap();
         let made = fantastic_kernel::send::as_agent(
             &lead,
             ask(
                 &kernel,
-                ROLES,
-                json!({"type": "spawn", "role": "lead_stand_in"}),
+                BUNDLES,
+                json!({"type": "spawn", "bundle": "lead_stand_in"}),
             ),
         )
         .await;
@@ -466,12 +466,12 @@ mod tests {
         kernel.stop().await;
     }
 
-    /// Roles mode on the new path: the lead has the roles registry and its spawn grants,
-    /// the registry is the tiers-and-limits record, and the home agents admit the lead.
+    /// Bundles mode on the new path: the lead has the bundles registry and its spawn grants,
+    /// the registry is the tiers record, and the home agents admit the lead.
     #[tokio::test(flavor = "multi_thread")]
-    async fn roles_mode_the_lead_holds_the_registry_and_its_spawn_grants() {
+    async fn bundles_mode_the_lead_holds_the_registry_and_its_spawn_grants() {
         let (_dir, kernel) = team().await;
-        for id in [LEAD, GITHUB, ROLES, WORKER_EXEC, WORKER_FILES] {
+        for id in [LEAD, GITHUB, BUNDLES, WORKER_EXEC, WORKER_FILES] {
             assert!(kernel.agents.contains_key(&AgentId::from(id)), "{id}");
         }
         let lead = meta(&kernel, LEAD);
@@ -500,21 +500,20 @@ mod tests {
             "and ships none"
         );
         assert!(
-            holds(&lead["can_call"]["roles"], &LEAD_ROLES_VERBS),
+            holds(&lead["can_call"]["bundles"], &LEAD_BUNDLES_VERBS),
             "{lead:?}"
         );
         assert!(
             holds(&lead["can_call"]["kernel_state"], &LEAD_ROOT_VERBS),
             "{lead:?}"
         );
-        let reg = meta(&kernel, ROLES);
+        let reg = meta(&kernel, BUNDLES);
         assert!(
-            reg.get("tiers").is_none() && reg.get("role_dirs").is_none(),
-            "the roles are bundles; the spawner names the model"
+            reg.get("tiers").is_none(),
+            "the bundles are bundles; the spawner names the model"
         );
-        assert_eq!(reg["limits"]["total"], 3);
         assert!(
-            holds(&reg["callable_by"]["lead"], &LEAD_ROLES_VERBS),
+            holds(&reg["callable_by"]["lead"], &LEAD_BUNDLES_VERBS),
             "{reg:?}"
         );
         // the other ends on the home agents, merged with what they had
@@ -526,8 +525,8 @@ mod tests {
         assert_eq!(meta(&kernel, "files")["callable_by"]["lead"], "*");
         assert_eq!(meta(&kernel, ROOT_ID)["callable_by"]["lead"], "*");
         // the registry reads the cards, all six
-        let all = call_as(&kernel, LEAD, ROLES, json!({"type": "roles"})).await;
-        for (name, _) in roles::ALL {
+        let all = call_as(&kernel, LEAD, BUNDLES, json!({"type": "bundles"})).await;
+        for (name, _) in bundles::ALL {
             assert!(all.to_string().contains(name), "{name}: {all}");
         }
         kernel.stop().await;
@@ -535,13 +534,12 @@ mod tests {
 
     /// The lead spawns through the registry as its card says: a worker with the tier's
     /// backend fields and the card's grants on the tools under their fixed ids, and a
-    /// project_lead (whose card grants the connector and the root),
-    /// within the registry's limit of three.
+    /// project_lead (whose card grants the connector and the root).
     #[tokio::test(flavor = "multi_thread")]
     async fn the_lead_spawns_a_worker_and_a_project_lead_through_the_registry() {
         let (_dir, kernel) = team().await;
-        let spawn = |role: &'static str| json!({"type": "spawn", "role": role, "model": "claude-haiku-5-5"});
-        let w = call_as(&kernel, LEAD, ROLES, spawn("worker")).await;
+        let spawn = |bundle: &'static str| json!({"type": "spawn", "bundle": bundle, "model": "claude-haiku-5-5"});
+        let w = call_as(&kernel, LEAD, BUNDLES, spawn("worker")).await;
         let worker = w["id"]
             .as_str()
             .unwrap_or_else(|| panic!("worker: {w}"))
@@ -553,7 +551,6 @@ mod tests {
         let wm = meta(&kernel, &worker);
         assert_eq!(wm["model"], "claude-haiku-5-5");
         assert_eq!(wm["memory_store_id"], "memory");
-        assert_eq!(wm["spawned_by"], "roles");
         for tool in [WORKER_EXEC, WORKER_FILES, MEMORY] {
             assert_eq!(wm["can_call"][tool], "*", "{tool}: {wm:?}");
             assert!(
@@ -563,7 +560,7 @@ mod tests {
                 "{tool} admits the worker"
             );
         }
-        let p = call_as(&kernel, LEAD, ROLES, spawn("project_lead")).await;
+        let p = call_as(&kernel, LEAD, BUNDLES, spawn("project_lead")).await;
         let pl = p["id"]
             .as_str()
             .unwrap_or_else(|| panic!("project_lead: {p}"))
@@ -572,41 +569,24 @@ mod tests {
         for tool in [GITHUB, ROOT_ID] {
             assert!(pm["can_call"].get(tool).is_some(), "{tool}: {pm:?}");
         }
-        let count = ask(&kernel, ROLES, json!({"type": "get_count"})).await;
+        // the count reads the tree: the worker and the project_lead
+        let count = ask(&kernel, BUNDLES, json!({"type": "get_count"})).await;
         assert_eq!(count["running"], 2, "{count}");
-        assert_eq!(count["max"], 3, "{count}");
-        // the limit of the record is read: a third worker is one too many past the total
-        let w2 = call_as(&kernel, LEAD, ROLES, spawn("worker")).await;
-        assert!(w2["id"].is_string(), "{w2}");
-        let w3 = call_as(&kernel, LEAD, ROLES, spawn("worker")).await;
-        assert_eq!(w3["reason"], "limit", "{w3}");
         kernel.stop().await;
     }
 
-    /// Room for every spawn of the tests below: the app's registry allows three agents in
-    /// all, and these trees hold up to six. A record field the registry already has.
-    async fn raise_total(kernel: &Arc<Kernel>, total: u64) {
-        let o = ask(
-            kernel,
-            ROOT_ID,
-            json!({"type": "update_agent", "id": ROLES, "limits": {"total": total}}),
-        )
-        .await;
-        assert!(o.get("error").is_none(), "{o}");
-    }
-
-    async fn spawn_as(kernel: &Arc<Kernel>, caller: &str, role: &str) -> String {
+    async fn spawn_as(kernel: &Arc<Kernel>, caller: &str, bundle: &str) -> String {
         let r = call_as(
             kernel,
             caller,
-            ROLES,
-            json!({"type": "spawn", "role": role}),
+            BUNDLES,
+            json!({"type": "spawn", "bundle": bundle}),
         )
         .await;
-        assert!(r.get("error").is_none(), "{caller} spawns {role}: {r}");
+        assert!(r.get("error").is_none(), "{caller} spawns {bundle}: {r}");
         r["id"]
             .as_str()
-            .unwrap_or_else(|| panic!("{caller} spawns {role}: {r}"))
+            .unwrap_or_else(|| panic!("{caller} spawns {bundle}: {r}"))
             .to_string()
     }
 
@@ -616,30 +596,26 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn leads_and_project_leads_spawn_workers_with_the_team_cards() {
         let (_dir, kernel) = team().await;
-        raise_total(&kernel, 6).await;
         let sub = spawn_as(&kernel, LEAD, "lead").await;
         let w1 = spawn_as(&kernel, &sub, "worker").await;
         let pl = spawn_as(&kernel, LEAD, "project_lead").await;
         let w2 = spawn_as(&kernel, &pl, "worker").await;
-        assert_eq!(meta(&kernel, &w1)["spawned_by"], "roles");
-        assert_eq!(meta(&kernel, &w2)["spawned_by"], "roles");
         for w in [&w1, &w2] {
             assert_eq!(meta(&kernel, w)["can_call"][WORKER_EXEC], "*");
             assert_eq!(meta(&kernel, w)["can_call"][WORKER_FILES], "*");
         }
-        let count = ask(&kernel, ROLES, json!({"type": "get_count"})).await;
+        let count = ask(&kernel, BUNDLES, json!({"type": "get_count"})).await;
         assert_eq!(count["running"], 4, "{count}");
         kernel.stop().await;
     }
 
-    /// Every card in `roles/` can be spawned by the main lead, so a card cannot grow past
+    /// Every card in `bundles/` can be spawned by the main lead, so a card cannot grow past
     /// the lead's grants without this test saying so.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_main_lead_can_spawn_every_card() {
         let (_dir, kernel) = team().await;
-        raise_total(&kernel, 12).await;
-        for (name, _) in roles::ALL {
-            let r = call_as(&kernel, LEAD, ROLES, json!({"type": "spawn", "role": name})).await;
+        for (name, _) in bundles::ALL {
+            let r = call_as(&kernel, LEAD, BUNDLES, json!({"type": "spawn", "bundle": name})).await;
             assert!(r["id"].is_string(), "{name}: {r}");
             assert_ne!(r["reason"], "not_allowed", "{name}: {r}");
         }
@@ -661,8 +637,8 @@ mod tests {
         let pl = call_as(
             &kernel,
             LEAD,
-            ROLES,
-            json!({"type": "spawn", "role": "project_lead"}),
+            BUNDLES,
+            json!({"type": "spawn", "bundle": "project_lead"}),
         )
         .await;
         let pl = pl["id"]
@@ -672,8 +648,8 @@ mod tests {
         let w = call_as(
             &kernel,
             LEAD,
-            ROLES,
-            json!({"type": "spawn", "role": "worker"}),
+            BUNDLES,
+            json!({"type": "spawn", "bundle": "worker"}),
         )
         .await;
         let w = w["id"].as_str().unwrap().to_string();
@@ -694,7 +670,7 @@ mod tests {
     async fn the_cadencer_made_with_create_agent_is_wired_and_delivers_a_digest() {
         let (_dir, kernel, sent) = team_with_log().await;
         let edges = json!({
-            "roles": ["fleet", "get_count"],
+            "bundles": ["fleet", "get_count"],
             "kernel_state": ["reflect"], "lead": ["send", "status"],
         });
         let settings = json!({"lead": {"cadence": 120, "stall_after": 600, "quiet": false,
@@ -705,7 +681,7 @@ mod tests {
             &kernel,
             ROOT_ID,
             json!({"type": "create_agent", "id": "cadencer", "parent_id": ROOT_ID,
-                   "handler_module": "team_cadencer.tools", "roles": "roles",
+                   "handler_module": "team_cadencer.tools", "bundles": "bundles",
                    "group_settings": settings, "can_call": can_call,
                    "callable_by": {"$self": "*", "$parent": "*"}}),
         )
@@ -742,8 +718,8 @@ mod tests {
         let pl = call_as(
             &kernel,
             LEAD,
-            ROLES,
-            json!({"type": "spawn", "role": "project_lead"}),
+            BUNDLES,
+            json!({"type": "spawn", "bundle": "project_lead"}),
         )
         .await;
         let pl = pl["id"]
@@ -764,8 +740,8 @@ mod tests {
         let w = call_as(
             &kernel,
             &pl,
-            ROLES,
-            json!({"type": "spawn", "role": "worker"}),
+            BUNDLES,
+            json!({"type": "spawn", "bundle": "worker"}),
         )
         .await;
         let w = w["id"]
