@@ -22,9 +22,11 @@
 //! `delete_agent` is the only way out.
 //!
 //! `spawn` may branch `from` a fork point of an existing agent (`from:{agent, at}`):
-//! the registry forks it (ai_core `fork {at}`). The result is a CLONE: the source's own
-//! bundle (any other is refused), its record untouched, beside the source. The caller gets
-//! control of it and the registry may send it its task; nothing else is written.
+//! the registry forks it (ai_core `fork {at}`). The result is a CLONE with every setting of
+//! the source chat (its bundle is the source's own), its record untouched, beside the
+//! source. That call takes only `from` and `task`: the declaration is a `oneOf` of the two
+//! shapes, so mixing them is refused by the engine. The caller gets control of it and the
+//! registry may send it its task; nothing else is written.
 //!
 //! Verbs: `reflect`, `bundles`, `bundle`, `spawn`, `fleet`, `get_count`.
 
@@ -192,8 +194,39 @@ async fn spawn_reply(
     a: verbs::Spawn,
     kernel: &Arc<Kernel>,
 ) -> Value {
-    let bundle = a.bundle.as_str();
     let (cards, _) = cards_of(kernel);
+    let caller = current_origin();
+    let fresh = match a {
+        verbs::Spawn::Cloned(c) => {
+            // a clone is of the source's own bundle
+            let src = AgentId::from(c.from.agent.as_str());
+            let Some(source) = agent_of(kernel, &src) else {
+                return refusal::refusal(
+                    refusal::NOT_FOUND,
+                    format!("agent {} not found", py_repr(&c.from.agent)),
+                );
+            };
+            let bundle = source.handler_module.clone().unwrap_or_default();
+            let Some(card) = cards.iter().find(|k| k.name == bundle) else {
+                return refusal::refusal(
+                    refusal::NOT_FOUND,
+                    format!("bundle {} not found", py_repr(&bundle)),
+                );
+            };
+            if let Some(refusal) = escalation(kernel, &caller, card) {
+                return refusal;
+            }
+            let ctx = SpawnFrom {
+                reg,
+                card,
+                caller: &caller,
+                first_message: c.task,
+            };
+            return spawn_from(kernel, &ctx, &c.from.agent, c.from.at).await;
+        }
+        verbs::Spawn::Fresh(f) => f,
+    };
+    let bundle = fresh.bundle.as_str();
     let Some(card) = cards.iter().find(|c| c.name == bundle) else {
         return refusal::refusal(
             refusal::NOT_FOUND,
@@ -201,31 +234,18 @@ async fn spawn_reply(
         );
     };
     // the chat: on the spawner's provider (or the one named), with the model named (or the spawner's)
-    let tier_fields = match chat_of(kernel, &current_origin(), &a) {
+    let tier_fields = match chat_of(kernel, &caller, &fresh) {
         Ok(b) => b,
         Err(r) => return r,
     };
     // the task: a string is the child's first message
-    let first_message: Option<String> = a.task.clone();
-    let name = a.name.clone();
-    // `from`: branch the new agent off a fork point of an existing one
-    let from: Option<(String, i64)> = a.from.as_ref().map(|f| (f.agent.clone(), f.at));
+    let first_message: Option<String> = fresh.task.clone();
+    let name = fresh.name.clone();
 
-    let caller = current_origin();
     if let Some(refusal) = escalation(kernel, &caller, card) {
         return refusal;
     }
     let parent = caller.clone().unwrap_or_else(|| reg.clone());
-
-    if let Some((src, at)) = from {
-        let ctx = SpawnFrom {
-            reg,
-            card,
-            caller: &caller,
-            first_message,
-        };
-        return spawn_from(kernel, &ctx, &src, at).await;
-    }
 
     // the child's grants: the card's, with `$registry` made real
     let mut can_call = card_can_call(reg, card);
@@ -348,7 +368,7 @@ const PROVIDER_VERBS: [&str; 2] = ["complete", "watch"];
 fn chat_of(
     kernel: &Kernel,
     caller: &Option<AgentId>,
-    a: &verbs::Spawn,
+    a: &verbs::Fresh,
 ) -> Result<Map<String, Value>, Value> {
     let mut out = Map::new();
     let spawner = caller
@@ -758,28 +778,13 @@ fn fork_ungrant(
     let _ = kernel.edit_callable_by(src, move |m| put(m, &r, &old));
 }
 
-/// `spawn {bundle, from:{agent, at}}`: `fork {at}` of `src` makes a CLONE of it — same
+/// `spawn {from:{agent, at}}`: `fork {at}` of `src` makes a CLONE of it — same
 /// bundle, same record, same level (beside its source, in the source's store). Nothing is
 /// written over the copy; the caller gets control of it and the registry may send its task.
 async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64) -> Value {
     let (reg, card) = (c.reg, c.card);
     let src_id = AgentId::from(src);
     let source = agent_of(kernel, &src_id);
-    // a clone is of the source's own bundle
-    if let Some(source) = source.as_ref() {
-        if source.handler_module.as_deref() != Some(card.name.as_str()) {
-            return refusal::refusal_hint(
-                refusal::BAD_ARG,
-                format!(
-                    "spawn: a fork of {} is a clone of its bundle {}, not {}",
-                    py_repr(src),
-                    py_repr(source.handler_module.as_deref().unwrap_or("")),
-                    py_repr(&card.name)
-                ),
-                "name the source's own bundle, or spawn without `from`",
-            );
-        }
-    }
     // the caller (the operator when there is none) must itself hold `fork` on the source
     if let (Some(who), Some(source)) = (c.caller.as_ref(), source.as_ref()) {
         if !holds_fork(kernel, who, source) {

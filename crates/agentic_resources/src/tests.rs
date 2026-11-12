@@ -753,7 +753,7 @@ async fn spawn_from_child_sends_the_spawner() {
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = r.callers[0].clone();
     let id = id_of(
-        &r.spawn_as(&lead, json!({"bundle": "writer", "from": from(&src, 5)}))
+        &r.spawn_as(&lead, json!({"from": from(&src, 5)}))
             .await,
     );
     // the clone sits beside its source, which is the spawner's child
@@ -1040,7 +1040,7 @@ async fn spawn_from_makes_a_clone_of_its_source() {
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
     let out = r
-        .spawn_as(lead, json!({"bundle": "writer", "from": from(&src, 5)}))
+        .spawn_as(lead, json!({"from": from(&src, 5)}))
         .await;
     assert_eq!(out["bundle"], "writer", "{out}");
     assert_eq!(out["model"], "src-model", "the clone's own model: the source's");
@@ -1083,7 +1083,7 @@ async fn spawn_from_makes_a_clone_of_its_source() {
 }
 
 #[tokio::test]
-async fn spawn_from_refuses_another_bundle() {
+async fn spawn_from_with_a_bundle_is_refused_by_the_declaration() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(
         &tmp,
@@ -1092,14 +1092,22 @@ async fn spawn_from_refuses_another_bundle() {
     )
     .await;
     let before = r.meta(&src);
-    let out = r
-        .spawn_as(
-            &r.callers[0],
-            json!({"bundle": "reviewer", "from": from(&src, 5)}),
-        )
-        .await;
-    assert_shape(&out, "bad_arg");
-    assert!(out["error"].as_str().unwrap().contains("writer"), "{out}");
+    for bundle in ["writer", "reviewer"] {
+        let out = r
+            .spawn_as(
+                &r.callers[0],
+                json!({"bundle": bundle, "from": from(&src, 5)}),
+            )
+            .await;
+        assert_shape(&out, "bad_arg");
+        assert!(
+            out["error"]
+                .as_str()
+                .unwrap()
+                .contains("only one of bundle | from may be given"),
+            "{out}"
+        );
+    }
     assert!(forks_of(&r, &src).is_empty(), "nothing forked");
     assert_eq!(r.meta(&src), before);
 }
@@ -1112,7 +1120,7 @@ async fn spawn_from_task_string_is_sent_as_first_message() {
     let out = r
         .spawn_as(
             &r.callers[0],
-            json!({"bundle": "writer", "from": from(&src, 5), "task": text}),
+            json!({"from": from(&src, 5), "task": text}),
         )
         .await;
     let id = out["id"].as_str().unwrap().to_string();
@@ -1136,7 +1144,7 @@ async fn spawn_from_passes_fork_refusals_through() {
     let lead = &r.callers[0];
     for (at, reason) in [(99, "cuts_turn"), (98, "no_such_row")] {
         let out = r
-            .spawn_as(lead, json!({"bundle": "writer", "from": from(&src, at)}))
+            .spawn_as(lead, json!({"from": from(&src, at)}))
             .await;
         assert_eq!(out["reason"], reason, "{out}");
         assert_eq!(out["at"], at);
@@ -1168,7 +1176,7 @@ async fn spawn_from_requires_the_caller_to_hold_fork() {
         .edit_can_call(&AgentId::from(other.as_str()), |m| m.remove(&src).is_some())
         .unwrap();
     let out = r
-        .spawn_as(&other, json!({"bundle": "writer", "from": from(&src, 5)}))
+        .spawn_as(&other, json!({"from": from(&src, 5)}))
         .await;
     assert_eq!(out["reason"], "not_allowed", "{out}");
     assert!(
@@ -1178,7 +1186,7 @@ async fn spawn_from_requires_the_caller_to_hold_fork() {
     assert!(forks_of(&r, &src).is_empty());
     assert!(r.meta(&r.reg)["can_call"].get(&src).is_none());
     let ok = r
-        .spawn_as(&lead, json!({"bundle": "writer", "from": from(&src, 5)}))
+        .spawn_as(&lead, json!({"from": from(&src, 5)}))
         .await;
     assert!(ok.get("id").is_some(), "{ok}");
 }
@@ -1189,7 +1197,7 @@ async fn spawn_from_gives_the_parent_pause_resume_stop() {
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
     let id = r
-        .spawn_as(lead, json!({"bundle": "writer", "from": from(&src, 5)}))
+        .spawn_as(lead, json!({"from": from(&src, 5)}))
         .await["id"]
         .as_str()
         .unwrap()
@@ -1210,7 +1218,7 @@ async fn spawn_from_survives_restart_beside_its_source_and_delete_removes_it() {
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
     let id = r
-        .spawn_as(lead, json!({"bundle": "writer", "from": from(&src, 5)}))
+        .spawn_as(lead, json!({"from": from(&src, 5)}))
         .await["id"]
         .as_str()
         .unwrap()
@@ -1265,7 +1273,7 @@ async fn spawn_from_bad_shape_refused() {
         json!({"agent": "", "at": 1}),
     ] {
         let out = r
-            .spawn_as(lead, json!({"bundle": "writer", "from": bad_from}))
+            .spawn_as(lead, json!({"from": bad_from}))
             .await;
         assert!(
             ["bad_arg", "missing_arg"].contains(&out["reason"].as_str().unwrap_or("")),
@@ -1353,7 +1361,7 @@ async fn spawn_from_under_reach_keeps_the_spawners_star() {
     let lead = r.callers[0].clone();
     reach(&r, std::slice::from_ref(&lead));
     let id = id_of(
-        &r.spawn_as(&lead, json!({"bundle": "writer", "from": from(&src, 5)}))
+        &r.spawn_as(&lead, json!({"from": from(&src, 5)}))
             .await,
     );
     assert_eq!(r.meta(&lead)["can_call"][&id], json!("*"));
@@ -1409,7 +1417,7 @@ async fn spawn_without_reach_gives_exactly_the_parent_verbs() {
     let want = json!(["pause", "resume", "stop"]);
     let plain = id_of(&r.spawn_as(&lead, json!({"bundle": "reviewer"})).await);
     let forked = id_of(
-        &r.spawn_as(&lead, json!({"bundle": "writer", "from": from(&src, 5)}))
+        &r.spawn_as(&lead, json!({"from": from(&src, 5)}))
             .await,
     );
     for id in [&plain, &forked] {
@@ -1499,7 +1507,7 @@ async fn spawn_from_opens_the_tool_grants_on_both_ends() {
     let id = id_of(
         &r.spawn_as(
             &r.callers[0],
-            json!({"bundle": "writer", "from": from(&src, 5)}),
+            json!({"from": from(&src, 5)}),
         )
         .await,
     );
@@ -1539,7 +1547,7 @@ async fn spawn_from_adds_the_bundles_callable_by_to_the_childs() {
     let id = id_of(
         &r.spawn_as(
             &r.callers[0],
-            json!({"bundle": "wakeable", "from": from(&src, 5)}),
+            json!({"from": from(&src, 5)}),
         )
         .await,
     );
@@ -1666,7 +1674,7 @@ async fn spawn_from_refuses_escalation_before_forking() {
     let out = r
         .spawn_as(
             &r.callers[0],
-            json!({"bundle": "wide", "from": from(&src, 5)}),
+            json!({"from": from(&src, 5)}),
         )
         .await;
     assert_eq!(out["reason"], "not_allowed", "{out}");
@@ -1802,7 +1810,7 @@ async fn fork_not_allowed_refusal_reason_is_code() {
         .edit_can_call(&AgentId::from(other.as_str()), |m| m.remove(&src).is_some())
         .unwrap();
     let out = r
-        .spawn_as(&other, json!({"bundle": "writer", "from": from(&src, 5)}))
+        .spawn_as(&other, json!({"from": from(&src, 5)}))
         .await;
     assert_shape(&out, "not_allowed");
     assert!(out["error"].as_str().unwrap().contains("fork"), "{out}");
