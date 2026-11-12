@@ -6,7 +6,7 @@ commit (w2 after w1), and each parent deletes what it spawned: a sub-lead its wo
 two sub-leads. Cleanup is the model's decision (`delete_agent`), as in fantastic: no kernel or team
 rule does it; here the scripted model decides.
 
-Four lanes plus the lead's (`s1`, `s2`, `w1`, `w2`): a spawn's `task` carries the marker. The lead's
+Four lanes plus the lead's (`s1`, `s2`, `w1`, `w2`): the lead's `send` after each spawn carries the marker. The lead's
 delete turns wait for every lane (`after`), so a sub-lead is never deleted while it still has a
 turn to play; `{{id:N}}` in a delete call is the minted id from the Nth spawn reply the agent saw.
 

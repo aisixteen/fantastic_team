@@ -523,7 +523,8 @@ def script_lead_spawns_two() -> list[dict]:
     when the script reaches that turn); w2's tools are the box's exec agent: it pulls, fixes muler.py
     and pushes. The lead deletes w2 too."""
     lead = open_turns() + [
-        t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker", "task": "[lane:w1] Fix adder.py, commit and push."}}),
+        t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker"}}),
+        t({"target": "{{minted:1}}", "type": "send", "args": {"text": "[lane:w1] Fix adder.py, commit and push."}}),
         t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker"}}),
         *check_ins_open("lead"),
         t(AWAIT),  # w1's report (a plain send) wakes the lead: it deletes w1 at once, then hands w2 its work
@@ -543,7 +544,8 @@ def script_leads_spawn_leads() -> list[dict]:
     that turn); s2 spawns its worker (on the master; its tools are the box's exec agent), which pulls,
     fixes muler.py and pushes; each sub-lead deletes its worker, the lead deletes both sub-leads."""
     lead = open_turns() + [
-        t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead", "task": "[lane:s1] Have a worker fix adder.py, then delete it."}}),
+        t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead"}}),
+        t({"target": "{{minted:1}}", "type": "send", "args": {"text": "[lane:s1] Have a worker fix adder.py, then delete it."}}),
         t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead"}}),
         *check_ins_open("lead"),
         t(work("{{minted:2}}", "s2", "[lane:s2] Have a worker pull, fix muler.py and push, then delete it."),
@@ -553,10 +555,12 @@ def script_leads_spawn_leads() -> list[dict]:
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:2}}"}}),
         check_ins_close("lead"),
     ] + close_turns()
-    s1 = [t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker", "task": "[lane:w1] Fix adder.py, commit and push."}}, "s1"),
+    s1 = [t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker"}}, "s1"),
+          t({"target": "{{minted:1}}", "type": "send", "args": {"text": "[lane:w1] Fix adder.py, commit and push."}}, "s1"),
           t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}, "s1", after=["w1"]),
           t({"name": "done"}, "s1")]
-    s2 = say_first([t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker", "task": "[lane:w2] Pull, fix muler.py, commit and push."}}, "s2"),
+    s2 = say_first([t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker"}}, "s2"),
+                    t({"target": "{{minted:1}}", "type": "send", "args": {"text": "[lane:w2] Pull, fix muler.py, commit and push."}}, "s2"),
                     t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}, "s2", after=["w2"]),
                     t({"name": "done"}, "s2")])
     return (lead + s1 + s2 + fix_turns(ADD, "Fix add", "w1")
@@ -587,8 +591,10 @@ def script_checkins_busy_stuck() -> list[dict]:
     close = close_turns()
     close[-1] = dict(close[-1], say=STUCK_SAY)
     lead = open_turns() + remote + [
-        t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead", "task": "[lane:s1] Fix adder.py and push; it takes a while."}}),
-        t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead", "task": "[lane:s2] Wait for a message that never comes."}}),
+        t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead"}}),
+        t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead"}}),
+        t({"target": "{{minted:1}}", "type": "send", "args": {"text": "[lane:s1] Fix adder.py and push; it takes a while."}}),
+        t({"target": "{{minted:2}}", "type": "send", "args": {"text": "[lane:s2] Wait for a message that never comes."}}),
         *check_ins_open("lead"), *checks, ask(sub2, "stop"),
         t(AWAIT),  # s1's report wakes the lead
         t({"target": "kernel", "type": "delete_agent", "args": {"id": sub1}}),

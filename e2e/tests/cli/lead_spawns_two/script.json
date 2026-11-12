@@ -5,8 +5,18 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "worker",
-     "task": "[lane:w1] Fix adder.py and commit."
+     "bundle": "worker"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{id:1}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:w1] Fix adder.py and commit."
     }
    }
   ]
@@ -17,8 +27,18 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "worker",
-     "task": "[lane:w2] Fix muler.py and commit."
+     "bundle": "worker"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{id:2}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:w2] Fix muler.py and commit."
     }
    }
   ]

@@ -96,14 +96,14 @@ TASKS = {
         f"push), whose commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the work. "
         "Read `w2`'s `history`. " + gpu.COMMIT + "Tell them to pass it on."),
     "lead_spawns_two": (
-        gpu.BROKEN + "Spawn two workers here (`spawn` on `bundles`): `w1` for adder.py, bundle `worker`, with that task, "
-        "and one for the remote workspace, bundle `remote_worker` (it has no local exec), with no task. Open the second to the leg (step 5), then have the remote "
+        gpu.BROKEN + "Spawn two workers here (`spawn` on `bundles`): `w1` for adder.py, bundle `worker`, then `send` it that task, "
+        "and one for the remote workspace, bundle `remote_worker` (it has no local exec), and send it nothing. Open the second to the leg (step 5), then have the remote "
         "ask it (the work program): the work is to pull, fix muler.py, commit and push in the remote workspace, "
         f"where its commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the work. "
         "Each commits and pushes. " + gpu.COMMIT + gpu.DELETE),
     "leads_spawn_leads": (
-        gpu.BROKEN + "Spawn two sub-leads here (`spawn` on `bundles`): one for adder.py, bundle `sublead`, with that task, "
-        "and one for the remote workspace, bundle `remote_sublead`, with no task. Open the second to the leg (step 5), then have the remote "
+        gpu.BROKEN + "Spawn two sub-leads here (`spawn` on `bundles`): one for adder.py, bundle `sublead`, then `send` it that task, "
+        "and one for the remote workspace, bundle `remote_sublead`, and send it nothing. Open the second to the leg (step 5), then have the remote "
         "ask it (the work program): the work is to have a worker pull, fix muler.py, commit and push in the remote "
         f"workspace, whose commands go through `forward` on `{T.BRIDGE}` to the remote `{cli.EXEC}`: say so in the "
         "work, for the sub-lead to pass on to its worker word for word. Each sub-lead spawns one worker (the remote "

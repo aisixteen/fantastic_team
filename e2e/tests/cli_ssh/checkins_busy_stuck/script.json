@@ -256,8 +256,7 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "sublead",
-     "task": "[lane:s1] Fix adder.py and push; it takes a while."
+     "bundle": "sublead"
     }
    }
   ]
@@ -268,8 +267,29 @@
     "target": "bundles",
     "type": "spawn",
     "args": {
-     "bundle": "sublead",
-     "task": "[lane:s2] Wait for a message that never comes."
+     "bundle": "sublead"
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:1}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:s1] Fix adder.py and push; it takes a while."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
+    "target": "{{minted:2}}",
+    "type": "send",
+    "args": {
+     "text": "[lane:s2] Wait for a message that never comes."
     }
    }
   ]
