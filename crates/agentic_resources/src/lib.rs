@@ -22,7 +22,9 @@
 //! `delete_agent` is the only way out.
 //!
 //! `spawn` may branch `from` a fork point of an existing agent (`from:{agent, at}`):
-//! the registry forks it (ai_core `fork {at}`) and applies the bundle's card over the copy.
+//! the registry forks it (ai_core `fork {at}`). The result is a CLONE: the source's own
+//! bundle (any other is refused), its record untouched, beside the source. The caller gets
+//! control of it and the registry may send it its task; nothing else is written.
 //!
 //! Verbs: `reflect`, `bundles`, `bundle`, `spawn`, `fleet`, `get_count`.
 
@@ -219,9 +221,7 @@ async fn spawn_reply(
         let ctx = SpawnFrom {
             reg,
             card,
-            tier_fields: &tier_fields,
             caller: &caller,
-            name: &name,
             first_message,
         };
         return spawn_from(kernel, &ctx, &src, at).await;
@@ -561,9 +561,7 @@ fn send_first(kernel: &Arc<Kernel>, reg: &AgentId, child: &str, text: String) {
 struct SpawnFrom<'a> {
     reg: &'a AgentId,
     card: &'a Card,
-    tier_fields: &'a Map<String, Value>,
     caller: &'a Option<AgentId>,
-    name: &'a Option<String>,
     first_message: Option<String>,
 }
 
@@ -760,13 +758,28 @@ fn fork_ungrant(
     let _ = kernel.edit_callable_by(src, move |m| put(m, &r, &old));
 }
 
-/// `spawn {bundle, from:{agent, at}}`: `fork {at}` of `src` makes the agent (it sits
-/// beside its source, in the source's store); the bundle's card is then applied over
-/// the copy like any spawn.
+/// `spawn {bundle, from:{agent, at}}`: `fork {at}` of `src` makes a CLONE of it — same
+/// bundle, same record, same level (beside its source, in the source's store). Nothing is
+/// written over the copy; the caller gets control of it and the registry may send its task.
 async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64) -> Value {
     let (reg, card) = (c.reg, c.card);
     let src_id = AgentId::from(src);
     let source = agent_of(kernel, &src_id);
+    // a clone is of the source's own bundle
+    if let Some(source) = source.as_ref() {
+        if source.handler_module.as_deref() != Some(card.name.as_str()) {
+            return refusal::refusal_hint(
+                refusal::BAD_ARG,
+                format!(
+                    "spawn: a fork of {} is a clone of its bundle {}, not {}",
+                    py_repr(src),
+                    py_repr(source.handler_module.as_deref().unwrap_or("")),
+                    py_repr(&card.name)
+                ),
+                "name the source's own bundle, or spawn without `from`",
+            );
+        }
+    }
     // the caller (the operator when there is none) must itself hold `fork` on the source
     if let (Some(who), Some(source)) = (c.caller.as_ref(), source.as_ref()) {
         if !holds_fork(kernel, who, source) {
@@ -800,60 +813,18 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
         return out;
     };
 
-    // the copy is the source's whole record: overwrite what the bundle decides, drop the rest
+    // the clone keeps the source's whole record; its store (for an undo) and its own
+    // grants on the registry are read from it
     let fm = meta_of(&fork);
+    let reg_verbs = fm
+        .get("can_call")
+        .and_then(Value::as_object)
+        .and_then(|cc| reg_verbs_of(cc, reg));
     let store = fm
         .get("memory_store_id")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let mut can_call = Map::new();
-    if let Some(s) = &store {
-        if let Some(v) = fm
-            .get("can_call")
-            .and_then(Value::as_object)
-            .and_then(|m| m.get(s))
-        {
-            can_call.insert(s.clone(), v.clone());
-        }
-    }
-    union(&mut can_call, &card_can_call(reg, card));
-    // the fork completes through its provider
-    if let Some(p) = provider_of(c.tier_fields) {
-        union(
-            &mut can_call,
-            &Map::from_iter([(String::from(&p), json!(PROVIDER_VERBS))]),
-        );
-        open_provider(kernel, &p, fork.id.as_str());
-    }
-    let reg_verbs = reg_verbs_of(&can_call, reg);
-    let mut patch = Map::new();
-    for (k, v) in c.tier_fields {
-        // the fork stays in the source's store: its copied prefix must stay readable
-        if k != "memory_store_id" {
-            patch.insert(k.clone(), v.clone());
-        }
-    }
-    // a fork drops the source's own prompt (null clears it) so the default block is in force,
-    // and takes the card's directive after it, as a spawn does
-    patch.insert("system_prompt".to_string(), Value::Null);
-    // the fork keeps its source's backend and takes the bundle's fields (its
-    // directive among them); `bundle` names the kind, so a reload reaches it too
-    patch.insert("post_system_prompt".to_string(), json!(card.directive));
-    patch.insert("can_call".to_string(), Value::Object(can_call));
-    if let Some(n) = c.name {
-        patch.insert("display_name".to_string(), json!(n));
-    }
-    let mut cleared: Vec<&str> = Vec::new();
-    // a task line copied from the source record is dropped
-    cleared.push("task");
-    {
-        let mut m = fork.meta.write().expect("meta poisoned");
-        for k in &cleared {
-            m.remove(*k);
-        }
-    }
-    kernel.update(&fork.id, patch);
 
     // the caller controls it; the registry may `send` it its task
     let (caller, first) = (c.caller.clone(), c.first_message.is_some());
@@ -893,7 +864,7 @@ async fn spawn_from(kernel: &Arc<Kernel>, c: &SpawnFrom<'_>, src: &str, at: i64)
         send_first(kernel, reg, &child, text);
     }
     json!({
-        "id": child, "bundle": card.name, "model": c.tier_fields.get("model").cloned().unwrap_or(Value::Null),
+        "id": child, "bundle": card.name, "model": fm.get("model").cloned().unwrap_or(Value::Null),
         "from": {"agent": src, "at": at}, "copied": copied,
     })
 }

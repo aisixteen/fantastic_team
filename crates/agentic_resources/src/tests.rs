@@ -111,8 +111,11 @@ impl Handler for ForkBundle {
                 .push((agent_id.as_str().to_string(), text));
             return Ok(Some(json!({"ok": true, "verb": "send"})));
         }
+        if verb == "pause" {
+            PAUSED.lock().unwrap().push(agent_id.as_str().to_string());
+        }
         if verb != "fork" {
-            return Ok(None);
+            return Ok(Some(json!({"ok": true, "verb": verb})));
         }
         let at = payload["at"].as_i64().unwrap_or(0);
         let refuse = |reason: &str| {
@@ -138,7 +141,7 @@ impl Handler for ForkBundle {
             kernel,
             &root,
             fantastic_kernel::declared::kernel::CreateAgent {
-                handler_module: "forkable.tools".to_string(),
+                handler_module: src.handler_module.clone().unwrap_or_default(),
                 parent_id: src
                     .parent_id
                     .as_ref()
@@ -219,7 +222,7 @@ fn write_cards(kernel: &Kernel, cards: &[(&str, &str)]) {
         }
         kernel.bundles.register_meta(
             &name,
-            json!({"name": name, "handler_module": name, "base": "caller.tools",
+            json!({"name": name, "handler_module": name, "base": "forkable.tools",
                    "sentence": head["purpose"], "record": record}),
         );
     }
@@ -753,7 +756,7 @@ async fn spawn_from_child_sends_the_spawner() {
         &r.spawn_as(&lead, json!({"bundle": "writer", "from": from(&src, 5)}))
             .await,
     );
-    // the fork sits beside its source, which is the spawner's child: under the spawner
+    // the clone sits beside its source, which is the spawner's child
     assert_eq!(
         r.kernel
             .agents
@@ -985,12 +988,14 @@ async fn no_card_is_built_in() {
 async fn fork_rig(tmp: &TempDir, callers: &[&str], cards: &[(&str, &str)]) -> (Rig, String) {
     let r = rig(tmp, callers, cards).await;
     let src = uid(tmp, "src");
+    // the source runs on the first card's bundle: a clone is of its own bundle
+    let bundle = cards[0].0.trim_end_matches(".md");
     create(
         &r.kernel,
-        json!({"handler_module": "forkable.tools", "id": src, "parent_id": r.callers[0],
+        json!({"handler_module": bundle, "id": src, "parent_id": r.callers[0],
                "system_prompt": "SOURCE PROMPT", "model": "src-model",
                "memory_store_id": "src_store",
-               "can_call": {"src_store": "*", "secret_agent": "*"},
+               "can_call": {"src_store": "*", "secret_agent": "*", r.reg.clone(): ["bundles"]},
                "tier": "old",
                "task": {"label": "old task", "state": "done", "waits_on": [], "result": null}}),
     )
@@ -1030,7 +1035,7 @@ fn from(src: &str, at: i64) -> Value {
 }
 
 #[tokio::test]
-async fn spawn_from_forks_and_applies_the_bundle_card() {
+async fn spawn_from_makes_a_clone_of_its_source() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
@@ -1038,93 +1043,65 @@ async fn spawn_from_forks_and_applies_the_bundle_card() {
         .spawn_as(lead, json!({"bundle": "writer", "from": from(&src, 5)}))
         .await;
     assert_eq!(out["bundle"], "writer", "{out}");
-    assert_eq!(out["model"], "m1", "the spawner's model");
+    assert_eq!(out["model"], "src-model", "the clone's own model: the source's");
     assert_eq!(out["from"], from(&src, 5));
     assert_eq!(out["copied"], 3);
     let id = out["id"].as_str().unwrap();
     assert_eq!(forks_of(&r, &src), [id], "made by fork");
+    // the record is the source's, apart from what makes it another agent
+    let rest = |who: &str| {
+        let mut m = r.meta(who);
+        for k in ["id", "forked_from", "can_call", "callable_by"] {
+            m.remove(k);
+        }
+        m
+    };
+    assert_eq!(rest(id), rest(&src));
     let m = r.meta(id);
-    assert_eq!(m["post_system_prompt"], "You write clearly and briefly.");
-    assert!(
-        m.get("system_prompt").is_none_or(Value::is_null),
-        "the default system block stays in force: {m:?}"
-    );
-    assert_eq!(m["model"], "m1", "the spawner's model, not the source's");
-    assert_eq!(
-        r.kernel.agents.get(&AgentId::from(id)).unwrap().parent_id,
-        Some(AgentId::from(lead.as_str())),
-        "the fork sits under the lead"
-    );
-    assert_eq!(m["can_call"]["notes"], json!(["read"]));
+    assert_eq!(m["system_prompt"], "SOURCE PROMPT", "nothing written over it");
+    assert_eq!(m["task"]["label"], "old task");
+    assert_eq!(m["can_call"]["src_store"], "*");
+    assert_eq!(m["can_call"]["secret_agent"], "*");
+    // it sits at the source's level
+    let level = |who: &str| {
+        r.kernel
+            .agents
+            .get(&AgentId::from(who))
+            .unwrap()
+            .parent_id
+            .clone()
+    };
+    assert_eq!(level(id), level(&src));
+    // the caller controls it and it may tell the caller
+    assert_eq!(m["can_call"][lead], json!(["send"]));
+    assert_eq!(m["callable_by"][lead], json!(["pause", "resume", "stop"]));
+    // the registry admits what the clone holds on it
     assert_eq!(m["can_call"][&r.reg], json!(["bundles"]));
-    assert_eq!(
-        r.meta(&r.reg)["callable_by"][id],
-        json!(["bundles"]),
-        "the registry admits what the card grants on it"
-    );
-    assert_eq!(
-        m["can_call"][lead],
-        json!(["send"]),
-        "it may tell the spawner"
-    );
-    // the name is applied when given
-    let named = r
-        .spawn_as(
-            lead,
-            json!({"bundle": "writer", "from": from(&src, 5), "name": "scribe"}),
-        )
-        .await;
-    assert_eq!(r.meta(named["id"].as_str().unwrap())["display_name"], "scribe");
+    assert_eq!(r.meta(&r.reg)["callable_by"][id], json!(["bundles"]));
+    // the source is untouched
+    assert_eq!(r.meta(&src)["task"]["label"], "old task");
 }
 
 #[tokio::test]
-async fn spawn_from_keeps_the_source_store_and_drops_its_other_grants() {
+async fn spawn_from_refuses_another_bundle() {
     let tmp = TempDir::new().unwrap();
-    let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let id = r
+    let (r, src) = fork_rig(
+        &tmp,
+        &["lead"],
+        &[("writer.md", WRITER), ("reviewer.md", REVIEWER)],
+    )
+    .await;
+    let before = r.meta(&src);
+    let out = r
         .spawn_as(
             &r.callers[0],
-            json!({"bundle": "writer", "from": from(&src, 5)}),
+            json!({"bundle": "reviewer", "from": from(&src, 5)}),
         )
-        .await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let m = r.meta(&id);
-    assert_eq!(m["memory_store_id"], "src_store", "the source's own");
-    assert_eq!(m["can_call"]["src_store"], "*");
-    assert!(
-        m["can_call"].get("secret_agent").is_none(),
-        "{}",
-        m["can_call"]
-    );
-    let keys: Vec<&String> = m["can_call"].as_object().unwrap().keys().collect();
-    assert_eq!(
-        keys.len(),
-        5,
-        "store, notes, registry, the spawner, its provider: {keys:?}"
-    );
-    assert_eq!(m["can_call"][&r.callers[0]], json!(["send"]));
-}
-
-#[tokio::test]
-async fn spawn_from_drops_the_copied_task() {
-    let tmp = TempDir::new().unwrap();
-    let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
-    let lead = &r.callers[0];
-    let bare = r
-        .spawn_as(lead, json!({"bundle": "writer", "from": from(&src, 5)}))
-        .await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let m = r.meta(&bare);
-    assert!(
-        m.get("task").is_none(),
-        "the source's task is dropped: {m:?}"
-    );
-    // the source itself is untouched
-    assert_eq!(r.meta(&src)["task"]["label"], "old task");
+        .await;
+    assert_shape(&out, "bad_arg");
+    assert!(out["error"].as_str().unwrap().contains("writer"), "{out}");
+    assert!(forks_of(&r, &src).is_empty(), "nothing forked");
+    assert_eq!(r.meta(&src), before);
 }
 
 #[tokio::test]
@@ -1166,8 +1143,15 @@ async fn spawn_from_passes_fork_refusals_through() {
         assert_eq!(out["hint"], "a hint");
         assert!(out["error"].as_str().unwrap().starts_with("fork:"), "{out}");
         assert!(forks_of(&r, &src).is_empty());
-        assert_eq!(r.op(json!({"type": "fleet"})).await["bundles"], json!({}));
-        assert_eq!(r.count(None).await["running"], 0);
+        assert_eq!(
+            r.op(json!({"type": "fleet"})).await["bundles"]["writer"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "only the source runs"
+        );
+        assert_eq!(r.count(None).await["running"], 1);
         let reg = r.meta(&r.reg);
         assert!(reg["can_call"].get(&src).is_none(), "no leftover grant");
         assert!(r.meta(&src)["callable_by"].get(&r.reg).is_none());
@@ -1221,7 +1205,7 @@ async fn spawn_from_gives_the_parent_pause_resume_stop() {
 }
 
 #[tokio::test]
-async fn spawn_from_survives_restart_under_its_lead_and_delete_removes_it() {
+async fn spawn_from_survives_restart_beside_its_source_and_delete_removes_it() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
@@ -1249,8 +1233,14 @@ async fn spawn_from_survives_restart_under_its_lead_and_delete_removes_it() {
             .parent_id
             .as_ref()
             .map(|p| p.as_str().to_string()),
-        Some(lead.clone()),
-        "rebuilt from the records"
+        r.kernel
+            .agents
+            .get(&AgentId::from(src.as_str()))
+            .unwrap()
+            .parent_id
+            .as_ref()
+            .map(|p| p.as_str().to_string()),
+        "rebuilt from the records, beside its source"
     );
     let gone = send(
         &r.kernel,
@@ -1500,11 +1490,11 @@ async fn spawned_worker_calls_the_granted_tool_without_directive_setup() {
 }
 
 #[tokio::test]
-async fn spawn_from_opens_the_cards_tool_grants_on_both_ends() {
+async fn spawn_from_opens_the_tool_grants_on_both_ends() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     notes_tool(&r).await;
-    hold(&r, &src, "notes", json!("*"));
+    hold(&r, &src, "notes", json!(["read"]));
     let before = keys_of(&r, "notes", "callable_by");
     let id = id_of(
         &r.spawn_as(
@@ -1516,7 +1506,7 @@ async fn spawn_from_opens_the_cards_tool_grants_on_both_ends() {
     assert_eq!(
         r.meta(&id)["can_call"]["notes"],
         json!(["read"]),
-        "not wider than the card"
+        "the clone holds what its source holds"
     );
     assert_eq!(r.meta("notes")["callable_by"][&id], json!(["read"]));
     let mut want = before;
