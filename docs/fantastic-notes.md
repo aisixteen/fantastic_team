@@ -202,9 +202,17 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 `Cargo.lock` now pins fantastic `cd28b38` (#642). Every team bundle moves to the base's one entry.
 
 - A bundle implements `Handler`: `verbs!` declares each verb as a struct, `record!` the fields of its record, `handle` answers a typed `Call`. The kernel runs the generated entry first, so a call with a missing, unknown or wrongly typed argument is refused as the agent's own reply (`missing_arg`, `bad_arg`, `unhandled`) and the handler never sees a payload. There is no coercion, no readme, no `verb_docs` and no `record_schema`: `docs` and `reflect` render the declarations, and a bundle has one short man text.
-- A record is checked by its bundle at `create_agent` and `update_agent`: a field the record does not declare is refused. The roles registry stamps `spawned_by`, `role`, `limits` and `lead` on the agents it spawns after they are made (`Kernel::update`), since their bundle (an AI chat) does not declare them.
+- A record is checked by its bundle at `create_agent` and `update_agent`: a field the record does not declare is refused. The bundles registry writes nothing onto the agents it spawns (team #329): no role, no limits; the bundle is `handler_module` and the place in the tree is `parent_id`.
 - `boot` and `shutdown` are verbs only of the bundles that handle them; the kernel sends them only to an agent that declares them.
 - `create_agent` takes `handler_module` only (a bare name or a role bundle); the `bundle` alias is gone, and `lifecycle::create_agent` takes the typed `CreateAgent`.
 - The team page declares `read_stream` on its record (`verbs`) as `read_stream_declared()`; the blueprint names it with the placeholder `@read_stream`.
 - `boot_kernel` and the seeding take the state folder (`<folder>/.fantastic`) and the work folder apart; there is no `readme` word (a bare run with no terminal prints the readme).
 - Dev-dependencies that use base's fixtures turn on `test-support` (`fantastic-kernel`, `fantastic-ram-store`, `fantastic-credential-store`); a stand-in bundle declares its verbs with `stand_in_verbs!`.
+
+## Pin at `59c7017`
+
+`Cargo.lock` now pins fantastic `59c7017` (#655, #660, #658).
+
+- A `reflect` reply always stays whole in the chat's view; only `docs` replies fold after the next message.
+- The routing field that names an execution is `id` (was `exec_id`).
+- The schema engine checks the fields inside array items and objects and names the path in the refusal (`versions[0].branch`); a required argument may be `null` only where its type says so (fantastic #656, #657).
