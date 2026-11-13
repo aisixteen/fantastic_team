@@ -232,3 +232,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `1bf7671`
 
 `Cargo.lock` now pins fantastic `1bf7671` (#668): an argument's label names its maximum (`limit:int >= 1 <= 100`), so an over-cap value is refused with the cap shown.
+
+## Pin at `d372d5b`
+
+`Cargo.lock` now pins fantastic `d372d5b` (#669): `caching` has two modes, `none` and `provider_cache` (the default everywhere); `cleanup` and its view trimmers are gone.

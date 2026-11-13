@@ -15,7 +15,7 @@ E2E_MAX_REQUESTS (default 60), answers 429 past it, so a loop cannot run up the 
 
 The gpu tier's cli scenarios run on this plug with `BACKEND=anthropic` (#251): their AI records
 are `anthropic_backend` ones on the relay (`ai_record`, `recipe_args`, `recipe_fields`), with
-prompt caching on by default (`caching` from ANTHROPIC_CACHING: none | cleanup | provider_cache,
+prompt caching on by default (`caching` from ANTHROPIC_CACHING: none | provider_cache,
 default provider_cache, as fantastic's plug). The stream's usage leaves cached input out, so, as
 the vllm plug does, the relay also asks the team: every anthropic agent's `usage` (requests,
 input, cache write and read, output, prompt, saved, `cost_usd` when its record is priced) is read
@@ -43,7 +43,7 @@ from .vllm import usage_reports
 DEFAULT_MODEL = "claude-haiku-5-5"  # the one place a model is named
 DEFAULT_UPSTREAM = "https://api.anthropic.com"
 DEFAULT_CAP = 60
-CACHING = ("none", "cleanup", "provider_cache")  # ai_core's modes
+CACHING = ("none", "provider_cache")  # ai_core's modes
 POLL_S = 2.0  # seconds between two reads of the agents' usage
 #: the counts of an agent's `usage` the relay sums; `cost_usd` is there only when the record is priced
 COUNT_KEYS = ("requests", "input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens",

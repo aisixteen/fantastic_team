@@ -64,7 +64,7 @@ The same variables as fantastic's `vllm` plug (aisixteen/fantastic `e2e/backends
 
 **`BACKEND`: the other model server (#251).** The gpu tests are declared on the vllm plug; `BACKEND` picks their plug, as fantastic's own e2e picks its backend: `BACKEND=vllm` (the shared RTX, the default) or `BACKEND=anthropic` (Sonnet or Haiku through the recording relay of the turns tier, `backends/anthropic.py`). A free or turns test never reads it; any other value is refused. On the anthropic plug the AI records are `anthropic_backend` ones on the relay (the recipe is `--headless ai anthropic --model M --endpoint URL`), and they take the turns tier's variables (above) plus:
 
-- `ANTHROPIC_CACHING`: the records' `caching` (`none`, `cleanup` or `provider_cache`; default `provider_cache`, prompt caching on, as fantastic's plug).
+- `ANTHROPIC_CACHING`: the records' `caching` (`none` or `provider_cache`; default `provider_cache`, prompt caching on, as fantastic's plug).
 
 ```
 BACKEND=anthropic E2E_MODEL=claude-sonnet-... ANTHROPIC_API_KEY=... E2E_MAX_REQUESTS=80 \
