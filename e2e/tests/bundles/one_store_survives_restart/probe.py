@@ -44,7 +44,7 @@ def run(ctx):
     v.check("every AI chat (the lead and the spawned worker) names the one store",
             ctx.lead in chats and len(chats) >= 2 and all(a.get("memory_store_id") == "memory" for a in chats.values()),
             str({i: a.get("memory_store_id") for i, a in chats.items()}))
-    workers = [a for a in live.values() if a.get("bundle") == "worker"]
+    workers = [a for a in live.values() if a.get("handler_module") == "worker"]
     v.check("one worker was spawned and it names the one store",
             len(workers) == 1 and workers[0].get("memory_store_id") == "memory", str(workers))
     if workers:

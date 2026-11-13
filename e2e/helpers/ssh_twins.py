@@ -1043,7 +1043,9 @@ def last_messages(ctx):
             last = json.loads(raw)["messages"][-1]["content"]
         except (ValueError, KeyError, IndexError, TypeError):
             continue
-        yield at, last if isinstance(last, str) else json.dumps(last)
+        # a marked message is a list of blocks: its text, as the model reads it
+        yield at, last if isinstance(last, str) else "".join(
+            b.get("text", "") for b in last if isinstance(b, dict)) if isinstance(last, list) else json.dumps(last, ensure_ascii=False)
 
 
 def came_back(ctx, lane: str | None, evidence: str, via: str | None = None) -> bool:
