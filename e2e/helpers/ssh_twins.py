@@ -527,7 +527,9 @@ def script_lead_spawns_two() -> list[dict]:
         t({"target": "{{minted:1}}", "type": "send", "args": {"text": "[lane:w1] Fix adder.py, commit and push."}}),
         t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker"}}),
         *check_ins_open("lead"),
-        t(AWAIT),  # w1's report (a plain send) wakes the lead: it deletes w1 at once, then hands w2 its work
+        # held until w1's lane is served: its report (a plain send) wakes the lead, which deletes
+        # w1 at once, then hands w2 its work
+        t(AWAIT, after=["w1"]),
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}),
         t(work("{{minted:2}}", "w2", "[lane:w2] Pull, fix muler.py, commit and push."), after=["w1"],
           grant=["{{minted:2}}"]),
