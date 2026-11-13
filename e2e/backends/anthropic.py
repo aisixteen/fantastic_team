@@ -29,9 +29,11 @@ E2E_MAX_REQUESTS, E2E_PRICE_IN_PER_MTOK, E2E_PRICE_OUT_PER_MTOK, ANTHROPIC_CACHI
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -84,6 +86,46 @@ def parse_usage(raw: bytes) -> tuple[int, int]:
     return tin, tout
 
 
+def stream_usage(raw: bytes) -> dict:
+    """Every count of one SSE reply's usage (message_start's, then message_delta's on top): input,
+    cache write and read (with the write's TTL split when the API gives it), output."""
+    u: dict = {}
+    for block in raw.decode("utf-8", "replace").split("\n\n"):
+        for line in block.splitlines():
+            if not line.startswith("data: "):
+                continue
+            try:
+                d = json.loads(line[6:])
+            except ValueError:
+                continue
+            if d.get("type") == "message_start":
+                u.update(d.get("message", {}).get("usage", {}) or {})
+            elif d.get("type") == "message_delta":
+                u.update(d.get("usage", {}) or {})
+    return u
+
+
+def cache_marks(body: dict) -> list[str]:
+    """Where the body's `cache_control` marks sit: `tools[i]`, `system[i]`, `messages[i][j]`."""
+    out = []
+    for name in ("tools", "system"):
+        for i, b in enumerate(body.get(name) or [] if isinstance(body.get(name), list) else []):
+            if isinstance(b, dict) and b.get("cache_control"):
+                out.append(f"{name}[{i}]")
+    for i, m in enumerate(body.get("messages") or []):
+        c = m.get("content") if isinstance(m, dict) else None
+        for j, b in enumerate(c if isinstance(c, list) else []):
+            if isinstance(b, dict) and b.get("cache_control"):
+                out.append(f"messages[{i}][{j}]")
+    return out
+
+
+def prompt_text(body: dict) -> str:
+    """The cached part of a request in the API's order (tools, system, messages), as one text."""
+    return json.dumps([body.get("tools"), body.get("system"), body.get("messages")],
+                      sort_keys=True, ensure_ascii=False)
+
+
 def _price(name: str) -> float | None:
     v = os.environ.get(name)
     return float(v) if v else None
@@ -105,6 +147,11 @@ class AnthropicRelay:
         self.cap = int(os.environ.get("E2E_MAX_REQUESTS", DEFAULT_CAP))
         self.requests: list[dict] = []  # parsed JSON bodies of POST /v1/messages, in order
         self.raw_bodies: list[str] = []
+        # #536: one row per message request (who, where its prompt first changed, the cache counts),
+        # written to <run_dir>/requests.jsonl on stop; no key, no prompt text
+        self.breakdown: list[dict] = []
+        self._last_prompt: dict[str, str] = {}
+        self._t0 = time.time()
         self.keys: list[str | None] = []  # x-api-key of each POST /v1/messages
         self.count = 0  # message requests received, refused ones included
         self.served = 0  # replies streamed back with status 200
@@ -206,6 +253,7 @@ class AnthropicRelay:
                     return
                 status, data = result
                 with outer.lock:
+                    outer.note(body, status, data)
                     if status == 200:
                         tin, tout = parse_usage(data)
                         outer.served += 1
@@ -262,6 +310,33 @@ class AnthropicRelay:
         self._team = team
         self.poll()
 
+    def note(self, raw: bytes, status: int, data: bytes) -> None:
+        """One row of the breakdown (#536). `conv` is the conversation: the system text's hash (one
+        agent's chat: the start of its system text). `changed_at` is the first character of the prompt (tools, system, messages)
+        that differs from this conversation's previous request; `prev_chars` that request's length."""
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = {}
+        text = prompt_text(body)
+        # the system text's first 2,000 characters name the chat (a state block later in it may change)
+        conv = hashlib.sha1(json.dumps(body.get("system"), sort_keys=True)[:2000].encode()).hexdigest()[:10]
+        prev = self._last_prompt.get(conv)
+        changed = None
+        if prev is not None:
+            changed = next((i for i, (a, b) in enumerate(zip(prev, text)) if a != b), min(len(prev), len(text)))
+        self._last_prompt[conv] = text
+        u = stream_usage(data) if status == 200 else {}
+        self.breakdown.append({
+            "n": len(self.breakdown) + 1, "t": round(time.time() - self._t0, 1), "status": status,
+            "model": body.get("model"), "conv": conv, "messages": len(body.get("messages") or []),
+            "chars": len(text), "prev_chars": None if prev is None else len(prev), "changed_at": changed,
+            "marks": cache_marks(body),
+            "input": u.get("input_tokens"), "cache_write": u.get("cache_creation_input_tokens"),
+            "cache_read": u.get("cache_read_input_tokens"), "output": u.get("output_tokens"),
+            "cache_creation": u.get("cache_creation"),
+        })
+
     def start(self) -> "AnthropicRelay":
         self.thread.start()
         return self
@@ -279,6 +354,9 @@ class AnthropicRelay:
             with open(os.path.join(self.run_dir, "cost.json"), "w") as f:
                 json.dump(self.totals(), f, indent=2)
                 f.write("\n")
+            with open(os.path.join(self.run_dir, "requests.jsonl"), "w") as f:
+                for row in self.breakdown:
+                    f.write(json.dumps(row) + "\n")
         except OSError:
             pass
 
