@@ -207,6 +207,12 @@ def play_text(ctx, v, lead: str, text: str, label: str = "") -> Lead:
 
 # ---- checks and the report -------------------------------------------------------------
 
+def bodies(ctx) -> list | None:
+    """The request bodies the plug's relay saw, in order; None on a plug that has no relay (vllm)."""
+    r = getattr(ctx.model, "requests", None)
+    return r if isinstance(r, list) else None
+
+
 def lead_on_default(ctx, v, label: str = "", named: bool = False) -> None:
     """The lead runs its provider's default (`E2E_MODEL`): the provider's `models` and the relay's
     first request body. It names no model, unless its record file does (`named`: the precreated
@@ -219,15 +225,19 @@ def lead_on_default(ctx, v, label: str = "", named: bool = False) -> None:
         v.check(f"{label}the lead names no model: it runs its provider's default", "model" not in lead, str(lead.get("model")))
     m = ctx.team.send(cli.PROVIDER, {"type": "models"}, timeout=60).get("result") or {}
     v.check(f"{label}the provider's default model is {want}", m.get("default") == want, str(m))
-    seen = [r.get("model") for r in ctx.model.requests if isinstance(r, dict) and r.get("model")]
+    if bodies(ctx) is None:  # the vllm plug talks to the server directly: no bodies to read
+        return
+    seen = [r.get("model") for r in bodies(ctx) if isinstance(r, dict) and r.get("model")]
     v.check(f"{label}the lead's first turn ran on the default ({want})", bool(seen) and seen[0] == want, str(seen[:3]))
 
 
 def workers_on_model(ctx, v, label: str = "") -> None:
     """The workers ran on the model the lead was told to give them (`E2E_WORKER_MODEL`): the
     relay's request bodies."""
+    if bodies(ctx) is None:  # the vllm plug: every agent runs the provider's one model
+        return
     worker = cli.worker_model()
-    seen = sorted({r.get("model") for r in ctx.model.requests if isinstance(r, dict) and r.get("model")})
+    seen = sorted({r.get("model") for r in bodies(ctx) if isinstance(r, dict) and r.get("model")})
     v.check(f"{label}the workers ran on {worker}, as the task told the lead", bool(worker) and worker in seen, str(seen))
 
 
