@@ -86,6 +86,8 @@ def run(ctx):
         store_model_key(ctx, probe, keys["model_key"])
         point_at_plug(ctx, probe)
         before = cli.tree(probe)
+        # the app's own agents on spawnable bundles (the lead is one): what runs before the task
+        base = probe.send("bundles", {"type": "get_count"})["result"]
 
         r = probe.send("lead", {"type": "send", "text": TASK})
         v.check("the lead takes its task", r.get("status") == "completed", str(r))
@@ -97,14 +99,15 @@ def run(ctx):
                 {"main", "s1", "p1", "w1", "w2"} <= lanes, str(sorted(lanes)))
         time.sleep(1.0)
         after = cli.tree(probe)
-        left = [i for i, a in probe.agents().items() if a.get("spawned_by")]
+        left = [i for i in probe.agents() if i not in before]
         v.check("no spawned agent is left", not left, str(left))
         orphans = [i for i, (_, p) in after.items() if p and p not in after]
         v.check("no orphans: every agent's parent exists", not orphans, str(orphans))
         v.check("the records are the ones the app made", after == before,
                 f"before {sorted(before)} after {sorted(after)}")
         count = probe.send("bundles", {"type": "get_count"})["result"]
-        v.check("the registry counts nothing running", count["running"] == 0, str(count))
+        v.check("the registry counts only the app's own agents, as before the task", count == base,
+                f"before {base} after {count}")
     finally:
         proc.signal(signal.SIGINT)
         proc.wait(30)
