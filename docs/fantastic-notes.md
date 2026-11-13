@@ -236,3 +236,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `d372d5b`
 
 `Cargo.lock` now pins fantastic `d372d5b` (#669): `caching` has two modes, `none` and `provider_cache` (the default everywhere); `cleanup` and its view trimmers are gone.
+
+## Pin at `24aaea9`
+
+`Cargo.lock` now pins fantastic `24aaea9` (#671): the default system block is `{self}\n\n{howto}`; the tree is out of it, so a spawn or a delete no longer rewrites the whole cached prompt.
