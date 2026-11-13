@@ -220,3 +220,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `5df7ce5`
 
 `Cargo.lock` now pins fantastic `5df7ce5` (#663): an AI chat's wake watchdog ends as soon as its held sends are answered, instead of sleeping the full send ceiling.
+
+## Pin at `beb8a3e`
+
+`Cargo.lock` now pins fantastic `beb8a3e` (#664): `user.forward` reads its inner payload by the target verb's schema, so a call written as text on a peer (a `wait_s` of `30` inside a bridge `forward`) reaches the remote agent as the number it declares.
