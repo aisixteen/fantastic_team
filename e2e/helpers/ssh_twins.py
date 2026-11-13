@@ -654,7 +654,7 @@ def remote_git_record() -> dict:
     (reached over the bridge, per operation); the remote may call that store's `get` and nothing else of it."""
     store = "{{master_guid}}|" + GIT_STORE
     return {"type": "create_agent", "id": GIT, "parent_id": "user", "handler_module": "team_git.tools",
-            "ingress_rule": "allow_all_ingress", "repo_dir": REMOTE_REPO, "workspace_root": WT_ROOT,
+            "repo_dir": REMOTE_REPO, "workspace_root": WT_ROOT,
             "remote": "origin", "default_branch": "main", "credentials": {"store": store, "ref": GIT_REF},
             "author_name": AUTHOR[0], "author_email": AUTHOR[1],
             "can_call": {"$self": "*", store: list(STORE_VERBS)}}

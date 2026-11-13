@@ -147,7 +147,7 @@
       "-o",
       "ConnectTimeout=10",
       "team@127.0.0.1",
-      "cd w && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"create_agent\",\"id\":\"git\",\"parent_id\":\"user\",\"handler_module\":\"team_git.tools\",\"ingress_rule\":\"allow_all_ingress\",\"repo_dir\":\"/home/team/w/repo\",\"workspace_root\":\"/home/team/w/wt\",\"remote\":\"origin\",\"default_branch\":\"main\",\"credentials\":{\"store\":\"{{master_guid}}|git_credentials\",\"ref\":\"git/forge\"},\"author_name\":\"Remote Worker\",\"author_email\":\"remote@example.invalid\",\"can_call\":{\"$self\":\"*\",\"{{master_guid}}|git_credentials\":[\"get\"]}}}'"
+      "cd w && fantastic_team send '{\"target\":\"kernel\",\"payload\":{\"type\":\"create_agent\",\"id\":\"git\",\"parent_id\":\"user\",\"handler_module\":\"team_git.tools\",\"repo_dir\":\"/home/team/w/repo\",\"workspace_root\":\"/home/team/w/wt\",\"remote\":\"origin\",\"default_branch\":\"main\",\"credentials\":{\"store\":\"{{master_guid}}|git_credentials\",\"ref\":\"git/forge\"},\"author_name\":\"Remote Worker\",\"author_email\":\"remote@example.invalid\",\"can_call\":{\"$self\":\"*\",\"{{master_guid}}|git_credentials\":[\"get\"]}}}'"
      ],
      "wait_s": 60
     }
