@@ -251,7 +251,7 @@ def check_ins_ran(ctx, v, label: str = "") -> None:
             watch = Lead(ctx.team, lead)
             watch.refresh()
             got = {r.get("id") for r in watch.rows if r.get("role") == "user"}
-            hit = ctx.team.send(lead, {"type": "grep", "query": "[check-in", "limit": 200},
+            hit = ctx.team.send(lead, {"type": "grep", "query": "[check-in", "limit": 100},
                                 timeout=60).get("result") or {}
             ticks = [m for m in hit.get("matches") or [] if m.get("id") in got]
         except subprocess.TimeoutExpired:
