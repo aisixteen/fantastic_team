@@ -609,7 +609,7 @@ def script_checkins_busy_stuck() -> list[dict]:
         check_ins_close("lead"),
     ] + close
     s1 = fix_turns(ADD, "Fix add", "s1", pull=True, report=S1_REPORT)
-    s1[0]["delay"] = BUSY_S
+    s1[1]["delay"] = BUSY_S  # the 2nd turn: the lead's send waits for the child's first answer, so the slow turn is the next one
     return lead + s1 + [t(AWAIT, "s2")]
 
 
