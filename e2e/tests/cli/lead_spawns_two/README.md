@@ -13,7 +13,7 @@ handler and provider fields) with the lead's model: the spawn names none.
 The plug is one script with lanes (`backends/scripted.py`): `main` is the lead, `w1`/`w2` the
 workers (the lead's `send` after each spawn carries `[lane:w1]`); w2 waits for w1. A worker's last turn is its report to
 the lead, a plain `send` (#247: no `report` verb; it gives the parent a turn, which answers it) and the lead
-awaits (held until both lanes are served) and then deletes both. The lead's kick-off `send` to a child carries `reply_to` none (the reply to it is the child's whole first answer, an extra turn) and rides in the turn of the next call, because a turn waits for the child's first answer; the lead's `git log` waits for both lanes; `{{id:1}}` / `{{id:2}}` in its delete calls are the minted ids from the spawn replies.
+awaits (held until both lanes are served), then deletes both. The lead's kick-off `send` to a child is a plain one: the child's whole first answer reaches the lead later as its next turn, which the script takes as the next step; the lead's `git log` waits for both lanes; `{{id:1}}` / `{{id:2}}` in its delete calls are the minted ids from the spawn replies.
 
 Checks: solved; two `spawn` calls; both workers asked the model; each report reached the lead and gave it a turn; the record set after is the record
 set before (both workers deleted); the registry counts none running.

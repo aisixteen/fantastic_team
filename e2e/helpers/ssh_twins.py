@@ -317,12 +317,6 @@ def work(backend: str, label: str, text: str, flags=()) -> dict:
     return forward(cli.EXEC, {"type": "run", "command": "python3", "args": argv, "wait_s": 60})
 
 
-def merged(*turns: dict) -> dict:
-    """One turn that makes the calls of `turns` together: a lead's kick-off `send` (`reply_to` none: it has no reply to
-    wake the lead) rides in the turn of the call that does."""
-    return dict(turns[-1], calls=[c for x in turns for c in x["calls"]])
-
-
 def t(call: dict, lane: str | None = None, after=(), grant=()) -> dict:
     """One turn of a script. `grant`: backends the operator opens to the bridge leg before the turn is
     answered (`grant_leg`: for a backend minted by a spawn, whose id the script cannot name earlier)."""
@@ -530,8 +524,8 @@ def script_lead_spawns_two() -> list[dict]:
     and pushes. The lead deletes w2 too."""
     lead = open_turns() + [
         t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker"}}),
-        merged(t({"target": "{{minted:1}}", "type": "send", "args": {"reply_to": "none", "text": "[lane:w1] Fix adder.py, commit and push."}}),
-               t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker"}})),
+        t({"target": "{{minted:1}}", "type": "send", "args": {"text": "[lane:w1] Fix adder.py, commit and push."}}),
+        t({"target": "bundles", "type": "spawn", "args": {"bundle": "worker"}}),
         *check_ins_open("lead"),
         t(AWAIT),  # w1's report (a plain send) wakes the lead: it deletes w1 at once, then hands w2 its work
         t({"target": "kernel", "type": "delete_agent", "args": {"id": "{{minted:1}}"}}),
@@ -573,7 +567,7 @@ def script_leads_spawn_leads() -> list[dict]:
             + fix_turns(MUL, "Fix mul", "w2", pull=True, remote=True))
 
 
-BUSY_S = 8  # the slow sub-lead's first turn: it stays generating across the lead's two check-ins
+BUSY_S = 8  # the slow sub-lead's second turn: it stays generating across the lead's two check-ins
 STUCK_SAY = "task failed: the second sub-lead was not generating and added no row in two check-ins in a row; I stopped it."
 
 
@@ -599,17 +593,16 @@ def script_checkins_busy_stuck() -> list[dict]:
     lead = open_turns() + remote + [
         t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead"}}),
         t({"target": "bundles", "type": "spawn", "args": {"bundle": "sublead"}}),
-        merged(t({"target": "{{minted:1}}", "type": "send", "args": {"reply_to": "none", "text": "[lane:s1] Fix adder.py and push; it takes a while."}}),
-               t({"target": "{{minted:2}}", "type": "send", "args": {"reply_to": "none", "text": "[lane:s2] Wait for a message that never comes."}}),
-               check_ins_open("lead")[0]),
-        check_ins_open("lead")[1], *checks, ask(sub2, "stop"),
+        t({"target": "{{minted:1}}", "type": "send", "args": {"text": "[lane:s1] Fix adder.py and push; it takes a while."}}),
+        t({"target": "{{minted:2}}", "type": "send", "args": {"text": "[lane:s2] Wait for a message that never comes."}}),
+        *check_ins_open("lead"), *checks, ask(sub2, "stop"),
         t(AWAIT),  # s1's report wakes the lead
         t({"target": "kernel", "type": "delete_agent", "args": {"id": sub1}}),
         t({"target": "kernel", "type": "delete_agent", "args": {"id": sub2}}),
         check_ins_close("lead"),
     ] + close
     s1 = fix_turns(ADD, "Fix add", "s1", pull=True, report=S1_REPORT)
-    s1[1]["delay"] = BUSY_S  # the 2nd turn: the lead's send waits for the child's first answer, so the slow turn is the next one
+    s1[1]["delay"] = BUSY_S  # the 2nd turn: the lead's send is answered with the child's first answer, so the slow turn is the next one
     return lead + s1 + [t(AWAIT, "s2")]
 
 
