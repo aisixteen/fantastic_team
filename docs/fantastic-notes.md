@@ -224,3 +224,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `beb8a3e`
 
 `Cargo.lock` now pins fantastic `beb8a3e` (#664): `user.forward` reads its inner payload by the target verb's schema, so a call written as text on a peer (a `wait_s` of `30` inside a bridge `forward`) reaches the remote agent as the number it declares.
+
+## Pin at `797e431`
+
+`Cargo.lock` now pins fantastic `797e431` (#666): a chat with no `caching` runs `provider_cache` where its backend places cache marks, so the team's chats send cache marks by default.
