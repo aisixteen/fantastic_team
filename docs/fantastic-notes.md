@@ -228,3 +228,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `797e431`
 
 `Cargo.lock` now pins fantastic `797e431` (#666): a chat with no `caching` runs `provider_cache` where its backend places cache marks, so the team's chats send cache marks by default.
+
+## Pin at `1bf7671`
+
+`Cargo.lock` now pins fantastic `1bf7671` (#668): an argument's label names its maximum (`limit:int >= 1 <= 100`), so an over-cap value is refused with the cap shown.
