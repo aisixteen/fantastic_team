@@ -216,3 +216,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 - A `reflect` reply always stays whole in the chat's view; only `docs` replies fold after the next message.
 - The routing field that names an execution is `id` (was `exec_id`).
 - The schema engine checks the fields inside array items and objects and names the path in the refusal (`versions[0].branch`); a required argument may be `null` only where its type says so (fantastic #656, #657).
+
+## Pin at `5df7ce5`
+
+`Cargo.lock` now pins fantastic `5df7ce5` (#663): an AI chat's wake watchdog ends as soon as its held sends are answered, instead of sleeping the full send ceiling.
