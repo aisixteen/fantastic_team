@@ -414,7 +414,7 @@ class ScriptedModel:
         """Is the newest message of this request the reply to a `send` (`[reply to N · <agent> send …]`)?"""
         try:
             msgs = [m for m in json.loads(raw).get("messages", []) if m.get("role") != "system"]
-            first = (cls.blocks(msgs[-1]) or [""])[0]
+            first = (cls.own_blocks(msgs[-1]) or [""])[0]  # a team notice may precede the reply in one merged message
         except (ValueError, IndexError, AttributeError, TypeError):
             return False
         return msgs[-1].get("role") == "user" and re.match(r"\[reply to \d+ · \w+ send ", first) is not None

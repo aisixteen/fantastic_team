@@ -278,24 +278,18 @@
     "target": "{{minted:1}}",
     "type": "send",
     "args": {
+     "reply_to": "none",
      "text": "[lane:s1] Fix adder.py and push; it takes a while."
     }
-   }
-  ]
- },
- {
-  "calls": [
+   },
    {
     "target": "{{minted:2}}",
     "type": "send",
     "args": {
+     "reply_to": "none",
      "text": "[lane:s2] Wait for a message that never comes."
     }
-   }
-  ]
- },
- {
-  "calls": [
+   },
    {
     "target": "kernel",
     "type": "create_agent",
@@ -543,8 +537,7 @@
     }
    }
   ],
-  "lane": "s1",
-  "delay": 8
+  "lane": "s1"
  },
  {
   "calls": [
@@ -560,7 +553,8 @@
     }
    }
   ],
-  "lane": "s1"
+  "lane": "s1",
+  "delay": 8
  },
  {
   "calls": [
