@@ -16,13 +16,10 @@
     "target": "{{id:1}}",
     "type": "send",
     "args": {
+     "reply_to": "none",
      "text": "[lane:w1] Fix adder.py and commit."
     }
-   }
-  ]
- },
- {
-  "calls": [
+   },
    {
     "target": "bundles",
     "type": "spawn",
@@ -38,13 +35,10 @@
     "target": "{{id:2}}",
     "type": "send",
     "args": {
+     "reply_to": "none",
      "text": "[lane:w2] Fix muler.py and commit."
     }
-   }
-  ]
- },
- {
-  "calls": [
+   },
    {
     "target": "kernel",
     "type": "create_agent",
