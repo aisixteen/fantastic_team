@@ -218,8 +218,11 @@ def busy_stuck_end(ctx, v, before: dict, report: str = S1_REPORT) -> None:
             str(got(busy)))
     v.check("the idle sub-lead read NOT generating on both check-ins", got(stuck).count("false") >= 2 and "true" not in got(stuck),
             str(got(stuck)))
+    blocks = [b for m in json.loads(raw)["messages"] for b in ScriptedModel.blocks(m)]
+    reads = [b.split("\n", 1)[1] if "\n" in b else "" for b in blocks
+             if b.startswith("[reply to") and stuck[0] and f"· {stuck[0]} history" in b.split("\n", 1)[0]]
     v.check("the idle sub-lead's history had no new row on the second check-in (the reply is the first's)",
-            "[identical to the reply in row" in lead, "no repeated history reply")
+            len(reads) >= 2 and reads[-1] == reads[-2], f"{len(reads)} history replies")
     stops = [a for a, verb in team_mod.log_calls(team.log()) if verb == "stop"]
     v.check("the lead stopped the idle sub-lead", stuck[0] in stops, str(stops))
     v.check("the lead did not stop the generating one", busy[0] not in stops, str(stops))
