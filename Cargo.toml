@@ -21,20 +21,20 @@ repository = "https://github.com/aisixteen/fantastic_team"
 #      crate would break the build.
 #   2. git branch main (today): the lines above, pinned by Cargo.lock.
 #   3. local checkout: copy .cargo/config.toml.example to .cargo/config.toml (uncommitted).
-fantastic-tui = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-kernel = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-web = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-web-ws = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-bundle = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-exec-bridge = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
+fantastic-tui = { git = "https://github.com/aisixteen/fantastic", branch = "rig/chatid" }
+fantastic-kernel = { git = "https://github.com/aisixteen/fantastic", branch = "rig/chatid" }
+fantastic-web = { git = "https://github.com/aisixteen/fantastic", branch = "rig/chatid" }
+fantastic-web-ws = { git = "https://github.com/aisixteen/fantastic", branch = "rig/chatid" }
+fantastic-bundle = { git = "https://github.com/aisixteen/fantastic", branch = "rig/chatid" }
+fantastic-exec-bridge = { git = "https://github.com/aisixteen/fantastic", branch = "rig/chatid" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 schemars = { version = "0.8", features = ["preserve_order"] }
-fantastic-ai-core = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-core = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-credential-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
-fantastic-ram-store = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
+fantastic-ai-core = { git = "https://github.com/aisixteen/fantastic", branch = "rig/chatid" }
+fantastic-core = { git = "https://github.com/aisixteen/fantastic", branch = "rig/chatid" }
+fantastic-credential-store = { git = "https://github.com/aisixteen/fantastic", branch = "rig/chatid" }
+fantastic-ram-store = { git = "https://github.com/aisixteen/fantastic", branch = "rig/chatid" }
 async-trait = "0.1"
 tempfile = "3"
 base64 = "0.22"
