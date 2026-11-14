@@ -32,6 +32,10 @@
   #col-right { flex: 3 1 560px; }
   .head { flex: none; display: flex; align-items: center; height: 32px; padding: 0 6px; font: 600 11px/1 var(--fc-mono); letter-spacing: .5px; text-transform: uppercase; color: var(--fc-head); }
   .body { flex: 1; min-height: 0; border-radius: 10px; overflow: hidden; }
+  /* The base sidebar view fills the left cell; the opened agent's view fills the right one. */
+  .body { position: relative; }
+  .body iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
+  .opened { padding: 12px; font: 13px/1.45 var(--fc-sans); }
   @media (max-width: 972px) {
     .cell { min-height: 320px; }
   }
@@ -49,9 +53,61 @@
   </section>
 </div>
 <script>
-  // Both columns are empty for now; the page only marks itself ready. The connection to the
-  // team (window.fantastic, from shim.js) is there for the columns to use later.
-  document.documentElement.setAttribute('data-ready', '1');
+  // THE LEFT CELL is the base's sidebar view (the agent `sidebar`, its `reflect`), the one tree the
+  // canvas draws too. The relay that runs a view in a sandboxed iframe is the base's one module
+  // (`view_relay.js`, served beside this page): the view reaches the team ONLY through it, gated by the
+  // view's own `calls` (the leg's grants are the second gate). A click on an agent row opens it in the
+  // right cell. Nothing from the kernel is put in as markup: the view is a srcdoc, the rest text.
+  (function () {
+    var SIDEBAR = 'sidebar', CELL = 'view_sidebar';
+    document.documentElement.setAttribute('data-ready', '1');
+
+    // The page's end of the relay: sends and watches go over the leg (shim.js).
+    var transport = {
+      send: function (target, payload) { return window.fantastic.send(target, payload); },
+      watch: function (src, deliver) { return { off: window.fantastic.watch(src, deliver) }; }
+    };
+    var right = document.getElementById('body-right');
+    var left = document.getElementById('body-left');
+
+    function viewOf(r) {
+      var v = r && r.view;
+      return v && v.kind === 'html' && typeof v.bytes === 'string' ? v : null;
+    }
+
+    function open(relay, id) {
+      var shown = null;
+      right.setAttribute('data-open', id);
+      right.textContent = '';
+      var note = document.createElement('div');
+      note.className = 'opened';
+      note.textContent = id;
+      right.appendChild(note);
+      window.fantastic.send(id, { type: 'reflect' }).then(function (r) {
+        var v = viewOf(r);
+        if (right.getAttribute('data-open') !== id || !v) return;
+        right.textContent = '';
+        shown = relay.mountView({ mount: right, html: v.bytes, transport: transport, calls: v.calls || {}, cell: 'view_' + id });
+      }, function () { /* the page leg may not reflect this agent: the row's name stays */ });
+      return function () { if (shown) shown.unmount(); };
+    }
+
+    import('./view_relay.js').then(function (relay) {
+      return window.fantastic.send(SIDEBAR, { type: 'reflect' }).then(function (got) {
+        var v = viewOf(got);
+        if (!v) return; // no sidebar agent: no column
+        var closeOpened = function () {};
+        relay.mountView({
+          mount: left, html: v.bytes, transport: transport, calls: v.calls || {}, cell: CELL, keep: relay.pageStore('team.sidebar'),
+          // what the view says is the base's `hearSidebar`; the team page has no canvas to open a file on and
+          // its cell does not hide, so a row's `select` is the one thing it hears
+          onMessage: function (m) {
+            relay.hearSidebar(m, { select: function (id) { closeOpened(); closeOpened = open(relay, id); } });
+          }
+        });
+      });
+    }).catch(function () { /* the connection to the team is down: the cell stays empty */ });
+  })();
 </script>
 </body>
 </html>

@@ -178,7 +178,7 @@ fn csp_allows_every_source_the_served_page_uses() {
 fn served_css_and_js_have_no_csp_violations() {
     let page = fantastic_team::page::file_bytes;
     let text = |f: &str| String::from_utf8(page(f).unwrap()).unwrap();
-    for f in ["page.js", "shim.js", "card.js"] {
+    for f in ["page.js", "shim.js", "view_relay.js"] {
         let js = text(f);
         for bad in [
             "setAttribute('style'",
@@ -196,7 +196,16 @@ fn served_css_and_js_have_no_csp_violations() {
     for lit in ["http://", "https://", "ws://", "wss://"] {
         assert!(!shim.contains(lit), "shim has a {lit} literal");
     }
-    assert!(!text("card.js").contains("<script"));
+    // the relay carries no markup of its own to inject into the page, bar the one srcdoc line that
+    // builds the sandboxed view (its connector text is a script inside that document, not on this page)
+    let relay = text("view_relay.js");
+    let tags: Vec<&str> = relay.lines().filter(|l| l.contains("<script")).collect();
+    assert_eq!(
+        tags.len(),
+        1,
+        "view_relay.js has script tags beyond the srcdoc: {tags:?}"
+    );
+    assert!(tags[0].contains("srcdoc"), "{}", tags[0]);
 }
 
 #[test]

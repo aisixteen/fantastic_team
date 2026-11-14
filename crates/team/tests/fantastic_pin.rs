@@ -4,7 +4,8 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-const SOURCE_PREFIX: &str = "source = \"git+https://github.com/aisixteen/fantastic?branch=main#";
+/// A fantastic git source of any branch (main; a base branch while a base PR is unmerged).
+const SOURCE_PREFIX: &str = "source = \"git+https://github.com/aisixteen/fantastic?branch=";
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -16,7 +17,8 @@ fn locked_fantastic_shas() -> BTreeSet<String> {
     lock.lines()
         .filter_map(|line| line.strip_prefix(SOURCE_PREFIX))
         .filter_map(|rest| rest.strip_suffix('"'))
-        .map(str::to_string)
+        .filter_map(|rest| rest.split_once('#'))
+        .map(|(_, sha)| sha.to_string())
         .collect()
 }
 

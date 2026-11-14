@@ -1,0 +1,14 @@
+id: team_ws
+handler_module: web_ws.tools
+ingress_rule: allow_all_ingress
+can_call:
+  "$self": "*"
+  dispatcher: [sidebar, tree, open, control]
+  cadencer: [status, set]
+  user: [inquiries, answer_inquiry]
+  sidebar: [reflect, watch]
+  kernel_state: [reflect, list_agents]
+  files: [list, watch, watch_path, unwatch_path, open_view]
+callable_by:
+  "$self": "*"
+  web: [get_routes]
