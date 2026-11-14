@@ -357,6 +357,10 @@ class AnthropicRelay:
             with open(os.path.join(self.run_dir, "requests.jsonl"), "w") as f:
                 for row in self.breakdown:
                     f.write(json.dumps(row) + "\n")
+            if os.environ.get("E2E_SAVE_BODIES"):  # a trace run: the request bodies too (no key: it rides a header)
+                with open(os.path.join(self.run_dir, "bodies.jsonl"), "w") as f:
+                    for b in self.raw_bodies:
+                        f.write(b.replace("\n", " ") + "\n")
         except OSError:
             pass
 
