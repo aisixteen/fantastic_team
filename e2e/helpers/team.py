@@ -88,6 +88,7 @@ class Team:
             "LANG": "C.UTF-8",
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",
+            **({"FANTASTIC_GATE_TRACE": "1"} if os.environ.get("FANTASTIC_GATE_TRACE") else {}),
             **env_extra,
         }
         self.log_path = os.path.join(run_dir, "team.log")
