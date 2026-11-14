@@ -26,7 +26,6 @@ pub const WEB_ID: &str = "web";
 pub const PAGE_PATH: &str = "/team_page/file/index.html";
 
 const SHIM: &str = include_str!("../web/page_shim.js");
-const CARD_JS: &str = include_str!("../web/card_connector.js");
 const ICON: &str = include_str!("../web/icon.svg");
 
 /// The files the page serves, in order. Everything the page loads is one of these.
@@ -35,7 +34,7 @@ pub const FILES: [&str; 6] = [
     "page.css",
     "shim.js",
     "page.js",
-    "card.js",
+    "view_relay.js",
     "icon.svg",
 ];
 
@@ -105,7 +104,7 @@ pub fn file_bytes(path: &str) -> Option<Vec<u8>> {
             "page.css" => split_page(HTML).1,
             "shim.js" => SHIM.to_string(),
             "page.js" => split_page(HTML).2,
-            "card.js" => CARD_JS.to_string(),
+            "view_relay.js" => fantastic_tui::VIEW_RELAY_JS.to_string(),
             "icon.svg" => ICON.to_string(),
             _ => return None,
         }
@@ -217,13 +216,15 @@ mod tests {
     }
 
     /// The left cell is the base's sidebar view, not a column of the team's own: the page asks the
-    /// `sidebar` agent for its view and relays it, and it holds no tree markup or rows of its own.
+    /// `sidebar` agent for its view and mounts it through the base relay, and it holds no tree markup or rows of its own.
     #[test]
     fn the_left_cell_mounts_the_base_sidebar_view() {
         let (_, _, js) = split_page(HTML);
         assert!(js.contains("'sidebar'") && js.contains("type: 'reflect'"));
-        assert!(js.contains("sandbox") && js.contains("srcdoc"));
+        assert!(js.contains("import('./view_relay.js')") && js.contains("mountView"));
         assert!(js.contains("'select'"));
+        // the relay is the base's module: the page has no panel, gate or iframe code of its own
+        assert!(!js.contains("createElement('iframe')") && !js.contains("postMessage"));
         assert!(!HTML.contains("role=\"tree"));
     }
 
@@ -289,7 +290,7 @@ mod tests {
 
     #[test]
     fn read_stream_serves_every_listed_file() {
-        for f in ["page.css", "shim.js", "page.js", "card.js", "icon.svg"] {
+        for f in ["page.css", "shim.js", "page.js", "view_relay.js", "icon.svg"] {
             let (head, body) = whole(f);
             assert!(!body.is_empty(), "{f}");
             assert_eq!(head["eof"], json!(true), "{f}");
@@ -316,14 +317,12 @@ mod tests {
         }
     }
 
+    /// The relay is the base's one module, served as it is (no copy in the team).
     #[test]
-    fn card_connector_file_speaks_postmessage() {
-        assert!(CARD_JS.contains("t: \"send\""));
-        assert!(CARD_JS.contains("t: \"watch\""));
-        assert!(CARD_JS.contains("postMessage"));
-        // the sidebar view says what it does with `emit` and hears the page with `onMessage`
-        assert!(CARD_JS.contains("t: \"emit\""));
-        assert!(CARD_JS.contains("onMessage"));
-        assert!(CARD_JS.contains("m.t === \"inbox\""));
+    fn the_view_relay_is_the_base_module_served_as_is() {
+        let served = file_bytes("view_relay.js").unwrap();
+        assert_eq!(served, fantastic_tui::VIEW_RELAY_JS.as_bytes());
+        assert!(fantastic_tui::VIEW_RELAY_JS.contains("export function mountView"));
+        assert!(FILES.contains(&"view_relay.js"));
     }
 }

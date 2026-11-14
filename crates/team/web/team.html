@@ -54,88 +54,64 @@
 </div>
 <script>
   // THE LEFT CELL is the base's sidebar view (the agent `sidebar`, its `reflect`), the one tree the
-  // canvas draws too, in a sandboxed iframe that reaches the team ONLY through this page: what it
-  // sends, watches or emits is relayed over the page's leg (shim.js), and only what the view's own
-  // `calls` name (the leg's grants are the second gate). A click on an agent row opens it in the
+  // canvas draws too. The relay that runs a view in a sandboxed iframe is the base's one module
+  // (`view_relay.js`, served beside this page): the view reaches the team ONLY through it, gated by the
+  // view's own `calls` (the leg's grants are the second gate). A click on an agent row opens it in the
   // right cell. Nothing from the kernel is put in as markup: the view is a srcdoc, the rest text.
   (function () {
     var SIDEBAR = 'sidebar', CELL = 'view_sidebar', KEY = 'fantastic.team.sidebar';
     document.documentElement.setAttribute('data-ready', '1');
 
-    function store(k, v) {
-      try { if (v === undefined) return JSON.parse(localStorage.getItem(k)); localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* no storage: nothing kept */ }
-      return null;
-    }
-    function allowed(calls, target, verb) {
-      var own = calls[target] || [];
-      var any = calls['*'] || [];
-      return own.indexOf(verb) >= 0 || own.indexOf('*') >= 0 || any.indexOf(verb) >= 0;
-    }
-
-    // One panel: `bytes` (a view's html) run in a null-origin iframe with the card connector, relayed
-    // as the page. `hear(msg)` gets what the view emits to its own cell; `inbox(payload)` goes to it.
-    function panel(mount, connector, bytes, calls, cell, hear) {
-      var frame = document.createElement('iframe');
-      frame.setAttribute('sandbox', 'allow-scripts');
-      var offs = {};
-      function to(m) { if (frame.contentWindow) frame.contentWindow.postMessage(m, '*'); }
-      function onMsg(e) {
-        if (e.source !== frame.contentWindow) return;
-        var m = e.data || {};
-        if (m.t === 'send') {
-          var p = m.payload || {};
-          if (!allowed(calls, m.id, String(p.type))) { to({ t: 'reply', n: m.n, error: 'the view may not call ' + m.id + ' ' + p.type }); return; }
-          window.fantastic.send(m.id, p).then(
-            function (r) { to({ t: 'reply', n: m.n, reply: r }); },
-            function (x) { to({ t: 'reply', n: m.n, error: String(x && x.message || x) }); });
-        } else if (m.t === 'watch') {
-          if (allowed(calls, m.id, 'watch')) offs[m.n] = window.fantastic.watch(m.id, function (ev) { to({ t: 'event', n: m.n, ev: ev }); });
-        } else if (m.t === 'unwatch') {
-          if (offs[m.n]) { offs[m.n](); delete offs[m.n]; }
-        } else if (m.t === 'emit' && m.id === cell) {
-          hear(m.payload || {});
-        }
-      }
-      window.addEventListener('message', onMsg);
-      frame.srcdoc = '<!doctype html><html><head><meta charset="utf-8"><script>' + connector + '<\/script></head><body>' +
-        String(bytes).split('{{cell}}').join(cell) + '</body></html>';
-      mount.appendChild(frame);
-      return { inbox: function (payload) { to({ t: 'inbox', payload: payload }); } };
-    }
-
-    function text(el, s) { el.textContent = s; }
+    // The page's end of the relay: sends and watches go over the leg (shim.js).
+    var transport = {
+      send: function (target, payload) { return window.fantastic.send(target, payload); },
+      watch: function (src, deliver) { return { off: window.fantastic.watch(src, deliver) }; }
+    };
+    var keep = {
+      load: function () { try { return JSON.parse(localStorage.getItem(KEY)); } catch (e) { return null; } },
+      save: function (state) { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* no storage: nothing kept */ } }
+    };
 
     var right = document.getElementById('body-right');
     var left = document.getElementById('body-left');
-    var connectorP = fetch('card.js').then(function (r) { return r.text(); });
 
-    function open(id, connector) {
+    function viewOf(r) {
+      var v = r && r.view;
+      return v && v.kind === 'html' && typeof v.bytes === 'string' ? v : null;
+    }
+
+    function open(relay, id) {
+      var shown = null;
       right.setAttribute('data-open', id);
       right.textContent = '';
       var note = document.createElement('div');
       note.className = 'opened';
-      text(note, id);
+      note.textContent = id;
       right.appendChild(note);
       window.fantastic.send(id, { type: 'reflect' }).then(function (r) {
-        var v = r && r.view;
-        if (right.getAttribute('data-open') !== id || !v || v.kind !== 'html' || typeof v.bytes !== 'string') return;
+        var v = viewOf(r);
+        if (right.getAttribute('data-open') !== id || !v) return;
         right.textContent = '';
-        panel(right, connector, v.bytes, v.calls || {}, 'view_' + id, function () {});
+        shown = relay.mountView({ mount: right, html: v.bytes, transport: transport, calls: v.calls || {}, cell: 'view_' + id });
       }, function () { /* the page leg may not reflect this agent: the row's name stays */ });
+      return function () { if (shown) shown.unmount(); };
     }
 
-    Promise.all([connectorP, window.fantastic.send(SIDEBAR, { type: 'reflect' })]).then(function (got) {
-      var connector = got[0], v = got[1] && got[1].view;
-      if (!v || v.kind !== 'html' || typeof v.bytes !== 'string') return; // no sidebar agent: no column
-      var view = null;
-      view = panel(left, connector, v.bytes, v.calls || {}, CELL, function (m) {
-        if (m.type === 'select' && typeof m.id === 'string' && m.id !== '') open(m.id, connector);
-        else if (m.type === 'ready') { var s = store(KEY); if (s !== null) view.inbox({ type: 'restore', state: s }); }
-        else if (m.type === 'state') store(KEY, m.state);
-        // select_file, open_file, open_dir, select_kernel, hide_tree: the team page has no canvas to open
-        // a file on, and its column does not hide
+    import('./view_relay.js').then(function (relay) {
+      return window.fantastic.send(SIDEBAR, { type: 'reflect' }).then(function (got) {
+        var v = viewOf(got);
+        if (!v) return; // no sidebar agent: no column
+        var closeOpened = function () {};
+        relay.mountView({
+          mount: left, html: v.bytes, transport: transport, calls: v.calls || {}, cell: CELL, keep: keep,
+          onMessage: function (m) {
+            if (m.type === 'select' && typeof m.id === 'string' && m.id !== '') { closeOpened(); closeOpened = open(relay, m.id); }
+            // select_file, open_file, open_dir, select_kernel, hide_tree: the team page has no canvas to open
+            // a file on, and its column does not hide
+          }
+        });
       });
-    }, function () { /* the connection to the team is down: the cell stays empty */ });
+    }).catch(function () { /* the connection to the team is down: the cell stays empty */ });
   })();
 </script>
 </body>

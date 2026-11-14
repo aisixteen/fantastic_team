@@ -178,7 +178,7 @@ fn csp_allows_every_source_the_served_page_uses() {
 fn served_css_and_js_have_no_csp_violations() {
     let page = fantastic_team::page::file_bytes;
     let text = |f: &str| String::from_utf8(page(f).unwrap()).unwrap();
-    for f in ["page.js", "shim.js", "card.js"] {
+    for f in ["page.js", "shim.js", "view_relay.js"] {
         let js = text(f);
         for bad in [
             "setAttribute('style'",
@@ -196,7 +196,6 @@ fn served_css_and_js_have_no_csp_violations() {
     for lit in ["http://", "https://", "ws://", "wss://"] {
         assert!(!shim.contains(lit), "shim has a {lit} literal");
     }
-    assert!(!text("card.js").contains("<script"));
 }
 
 #[test]

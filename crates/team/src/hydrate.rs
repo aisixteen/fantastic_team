@@ -624,11 +624,19 @@ mod tests {
             &std::fs::read_to_string(dir.path().join(".fantastic/cli/grants.yaml")).unwrap(),
         )
         .unwrap();
-        // the first boot made the root and took its declaration; the credential store's stays
-        assert!(pending2.get("kernel_state").is_none(), "{pending2}");
+        // the first boot made the root and took its declaration into the root's record; every
+        // other declaration is exactly as it was (the same whole document), and the root's grant
+        // is on its record, stable across the second boot too
+        let mut expected = pending.clone();
+        expected.as_object_mut().unwrap().remove("kernel_state");
         assert_eq!(
-            pending2["credentials"], pending["credentials"],
-            "no boot of the team applies or drops it"
+            pending2, expected,
+            "no boot of the team applies or drops them"
+        );
+        assert_eq!(
+            again["kernel_state"]["callable_by"]["team_ws"],
+            json!(["reflect", "list_agents"]),
+            "the root's page grant is stable across a second boot"
         );
     }
 }
