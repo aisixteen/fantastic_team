@@ -252,3 +252,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `28e1ba6`
 
 `Cargo.toml` pins the base branch `rig/sb608` and `Cargo.lock` pins fantastic `28e1ba6` (#608, #679): the team page mounts the base sidebar view through the base's one relay module (`view_relay.js`, with `hearSidebar` and `pageStore`). The branch is repinned to `main` at finalize, once the base PR is merged.
+
+## Pin at `9dd51bb`
+
+`Cargo.toml` is back on the base branch `main` and `Cargo.lock` pins fantastic `9dd51bb` (#608, #679 merged): the team page mounts the base sidebar view through the base's one relay module. No behaviour change from the `28e1ba6` pin.
