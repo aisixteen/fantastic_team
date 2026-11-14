@@ -535,6 +535,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(pending["credentials"]["callable_by"]["github"], "*");
+        // the root has no record either: the page leg's reads for the base sidebar view wait for it
+        assert_eq!(
+            pending["kernel_state"]["callable_by"]["team_ws"],
+            json!(["reflect", "list_agents"])
+        );
         // the two that have a record are on disk, unioned into the stock grants
         let on = |rel: &str| -> Value {
             serde_yaml::from_str(
@@ -619,9 +624,11 @@ mod tests {
             &std::fs::read_to_string(dir.path().join(".fantastic/cli/grants.yaml")).unwrap(),
         )
         .unwrap();
+        // the first boot made the root and took its declaration; the credential store's stays
+        assert!(pending2.get("kernel_state").is_none(), "{pending2}");
         assert_eq!(
-            pending2, pending,
-            "no boot of the team applies or drops them"
+            pending2["credentials"], pending["credentials"],
+            "no boot of the team applies or drops it"
         );
     }
 }

@@ -198,6 +198,18 @@ async fn assert_the_declared_grants(site: &Site) {
     let root = site.record("kernel_state").await;
     has_grant(&root, "callable_by", "lead", json!(["*"]));
     has_grant(&root, "callable_by", "user", json!(["*"]));
+    // the page leg's reads for the base sidebar view it mounts (#608), the stock grants next to them
+    has_grant(&root, "callable_by", "team_ws", json!(["reflect", "list_agents"]));
+    let sidebar = site.record("sidebar").await;
+    has_grant(&sidebar, "callable_by", "user", json!(["*"]));
+    has_grant(&sidebar, "callable_by", "team_ws", json!(["reflect", "watch"]));
+    let files = site.record("files").await;
+    has_grant(
+        &files,
+        "callable_by",
+        "team_ws",
+        json!(["list", "watch", "watch_path", "unwatch_path", "open_view"]),
+    );
 }
 
 /// A first run seeds the grants (the calls over them are `hydrate::tests`), a second boot keeps them,

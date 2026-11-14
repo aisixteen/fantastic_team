@@ -176,7 +176,7 @@ mod tests {
 
     /// The page leg's end of every edge is the blueprint's: the seeded `team_ws` may call
     /// the dispatcher's page verbs and the `cadencer` and `user` verbs the team's page
-    /// uses, nothing else and never `*`. The other end is on the agent the person makes
+    /// uses, and the base sidebar view's read calls, nothing else and never `*`. The other end is on the agent the person makes
     /// (its own `callable_by`).
     #[tokio::test(flavor = "multi_thread")]
     async fn the_seeded_page_leg_may_call_exactly_its_blueprint_verbs() {
@@ -186,6 +186,13 @@ mod tests {
         for (target, verbs) in [
             ("cadencer", json!(["status", "set"])),
             ("user", json!(["inquiries", "answer_inquiry"])),
+            // the base sidebar view the page mounts: its read calls (#608), no `*`
+            ("sidebar", json!(["reflect", "watch"])),
+            ("kernel_state", json!(["reflect", "list_agents"])),
+            (
+                "files",
+                json!(["list", "watch", "watch_path", "unwatch_path", "open_view"]),
+            ),
         ] {
             assert_eq!(cc[target], verbs, "can_call {target}: {cc}");
         }
@@ -195,14 +202,14 @@ mod tests {
         );
         for k in cc.as_object().unwrap().keys() {
             assert!(
-                ["$self", "dispatcher", "cadencer", "user"].contains(&k.as_str()),
+                ["$self", "dispatcher", "cadencer", "user", "sidebar", "kernel_state", "files"].contains(&k.as_str()),
                 "the seeded leg may call {k}: {cc}"
             );
             if k != "$self" {
                 assert_ne!(cc[k], json!("*"), "{k}");
             }
         }
-        for id in ["kernel", "kernel_state", "queue", "tasks"] {
+        for id in ["kernel", "queue", "tasks"] {
             assert!(cc.get(id).is_none(), "{id}: {cc}");
         }
     }

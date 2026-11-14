@@ -188,6 +188,20 @@ agents:
       user:
       - inquiries
       - answer_inquiry
+      # the base sidebar view the page mounts (its `calls`, read verbs only; its `*: [status]`
+      # names every agent and a static leg cannot: the rows draw without a chat state)
+      sidebar:
+      - reflect
+      - watch
+      '@root':
+      - reflect
+      - list_agents
+      files:
+      - list
+      - watch
+      - watch_path
+      - unwatch_path
+      - open_view
     callable_by:
       $self: '*'
       web:
@@ -202,3 +216,23 @@ agents:
 - id: credentials
   callable_by:
     github: '*'
+# the callee end of the page leg's reads for the base sidebar view (the stock `sidebar` is
+# callable by `user` only)
+- id: sidebar
+  callable_by:
+    team_ws:
+    - reflect
+    - watch
+- id: '@root'
+  callable_by:
+    team_ws:
+    - reflect
+    - list_agents
+- id: files
+  callable_by:
+    team_ws:
+    - list
+    - watch
+    - watch_path
+    - unwatch_path
+    - open_view

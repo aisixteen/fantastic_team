@@ -216,6 +216,17 @@ mod tests {
         assert!(!html.contains("innerHTML"));
     }
 
+    /// The left cell is the base's sidebar view, not a column of the team's own: the page asks the
+    /// `sidebar` agent for its view and relays it, and it holds no tree markup or rows of its own.
+    #[test]
+    fn the_left_cell_mounts_the_base_sidebar_view() {
+        let (_, _, js) = split_page(HTML);
+        assert!(js.contains("'sidebar'") && js.contains("type: 'reflect'"));
+        assert!(js.contains("sandbox") && js.contains("srcdoc"));
+        assert!(js.contains("'select'"));
+        assert!(!HTML.contains("role=\"tree"));
+    }
+
     #[test]
     fn read_stream_serves_index_in_chunks_and_refuses_other_paths() {
         let (head, body) = read_stream(&rs("index.html", 0, Some(10)));
@@ -310,5 +321,9 @@ mod tests {
         assert!(CARD_JS.contains("t: \"send\""));
         assert!(CARD_JS.contains("t: \"watch\""));
         assert!(CARD_JS.contains("postMessage"));
+        // the sidebar view says what it does with `emit` and hears the page with `onMessage`
+        assert!(CARD_JS.contains("t: \"emit\""));
+        assert!(CARD_JS.contains("onMessage"));
+        assert!(CARD_JS.contains("m.t === \"inbox\""));
     }
 }
