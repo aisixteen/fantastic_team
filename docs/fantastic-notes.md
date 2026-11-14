@@ -257,6 +257,6 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 
 `Cargo.toml` is back on the base branch `main` and `Cargo.lock` pins fantastic `9dd51bb` (#608, #679 merged): the team page mounts the base sidebar view through the base's one relay module. No behaviour change from the `28e1ba6` pin.
 
-## Pin at `edfb240`
+## Pin at `663429d`
 
-`Cargo.toml` pins the base branch `rig/chat609` and `Cargo.lock` pins fantastic `edfb240` (#609, base PR #680, not merged yet): the team page's right cell draws the base chat view of the agent picked in the sidebar through the same base relay module (`mountView`), and the page leg holds exactly the chat view's calls (`fantastic_ai_core::chat_bundle::VIEW_CALLS`) on that agent. Repinned to `main` when #680 merges.
+`Cargo.lock` pins fantastic `663429d` (#609, base PR #680): the team page's right cell draws the base chat view of the agent picked in the sidebar through the same base relay module (`mountView`), and the page leg holds exactly the chat view's calls (`fantastic_ai_core::chat_bundle::VIEW_CALLS`) on that agent.
