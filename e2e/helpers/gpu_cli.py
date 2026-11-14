@@ -30,8 +30,8 @@ BROKEN = (f"The repository your exec agent `{EXEC}` runs in has a failing test: 
 COMMIT = ("The fix must be a git commit, with a clean work tree afterwards. git has no identity set here, "
           "so commit with `git -c user.name=Worker -c user.email=worker@example.invalid commit -a -m MESSAGE`. ")
 END = " When the test passes on the committed tree, end your run with the `done` call."
-DELETE = (" Whoever spawns an agent deletes it with `delete_agent` on `kernel` when its work is done, "
-          "and never deletes an agent it did not spawn.")
+DELETE = (" Whoever spawns an agent deletes it with `delete_agent` on `kernel` (with `keep_memory` true, so its "
+          "conversation stays for review) when its work is done, and never deletes an agent it did not spawn.")
 # a spawned agent tells its parent with a plain `send` (team#247): the message starts the parent's turn
 TELL = (" A spawned agent may `send` its parent (the agent that spawned it), and that message starts "
         "the parent's next turn.")
