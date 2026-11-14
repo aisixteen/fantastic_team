@@ -90,7 +90,7 @@ pub fn seed(dir: &Path) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::new_team::{GITHUB, LEAD, BUNDLES, WORKER_EXEC, WORKER_FILES};
+    use crate::new_team::{BUNDLES, GITHUB, LEAD, WORKER_EXEC, WORKER_FILES};
     use crate::page::{PAGE_ID, WEB_ID, WS_ID};
     use crate::test_boot::{boot_at, Seed};
     use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
@@ -573,7 +573,11 @@ mod tests {
             )
         };
         let doc = declared(dir.path());
-        for (caller, callee) in [(BUNDLES, "memory"), (GITHUB, "credentials"), (WS_ID, "user")] {
+        for (caller, callee) in [
+            (BUNDLES, "memory"),
+            (GITHUB, "credentials"),
+            (WS_ID, "user"),
+        ] {
             let can = &rec_in(&doc, caller)["can_call"][callee];
             assert!(!can.is_null(), "{caller} declares can_call {callee}");
         }
@@ -614,29 +618,42 @@ mod tests {
 
         // a later boot keeps the grants and the declarations nobody consumed (one boot
         // settles what fantastic's own boot writes into the home stores' records first)
-        boot_and_stop(dir.path()).await;
+        let settled_boot = boot_and_stop(dir.path()).await;
+        let read_pending = || -> Value {
+            serde_yaml::from_str(
+                &std::fs::read_to_string(dir.path().join(".fantastic/cli/grants.yaml")).unwrap(),
+            )
+            .unwrap()
+        };
+        // the first boot made the root and took ITS declaration into the root's record; every
+        // other declaration is exactly as it was (the same whole document)
+        let settled = read_pending();
+        let mut expected = pending.clone();
+        expected.as_object_mut().unwrap().remove("kernel_state");
+        assert_eq!(
+            settled, expected,
+            "no boot of the team applies or drops them"
+        );
         let before = tree_of(dir.path());
         let again = boot_and_stop(dir.path()).await;
         assert_eq!(tree_of(dir.path()), before);
         assert_eq!(again["memory"]["callable_by"]["bundles"], "*");
         assert!(page_verbs(&again["user"]["callable_by"]["team_ws"]));
-        let pending2: Value = serde_yaml::from_str(
-            &std::fs::read_to_string(dir.path().join(".fantastic/cli/grants.yaml")).unwrap(),
-        )
-        .unwrap();
-        // the first boot made the root and took its declaration into the root's record; every
-        // other declaration is exactly as it was (the same whole document), and the root's grant
-        // is on its record, stable across the second boot too
-        let mut expected = pending.clone();
-        expected.as_object_mut().unwrap().remove("kernel_state");
+        // a second boot changes none of them (the whole document), and the root's page grant, now
+        // on its record, is the same across the second boot as after the first
         assert_eq!(
-            pending2, expected,
+            read_pending(),
+            settled,
             "no boot of the team applies or drops them"
         );
         assert_eq!(
             again["kernel_state"]["callable_by"]["team_ws"],
             json!(["reflect", "list_agents"]),
-            "the root's page grant is stable across a second boot"
+            "the root's page grant is on its record"
+        );
+        assert_eq!(
+            again["kernel_state"]["callable_by"], settled_boot["kernel_state"]["callable_by"],
+            "the root's grants are stable across a second boot"
         );
     }
 }

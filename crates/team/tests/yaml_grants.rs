@@ -199,10 +199,20 @@ async fn assert_the_declared_grants(site: &Site) {
     has_grant(&root, "callable_by", "lead", json!(["*"]));
     has_grant(&root, "callable_by", "user", json!(["*"]));
     // the page leg's reads for the base sidebar view it mounts (#608), the stock grants next to them
-    has_grant(&root, "callable_by", "team_ws", json!(["reflect", "list_agents"]));
+    has_grant(
+        &root,
+        "callable_by",
+        "team_ws",
+        json!(["reflect", "list_agents"]),
+    );
     let sidebar = site.record("sidebar").await;
     has_grant(&sidebar, "callable_by", "user", json!(["*"]));
-    has_grant(&sidebar, "callable_by", "team_ws", json!(["reflect", "watch"]));
+    has_grant(
+        &sidebar,
+        "callable_by",
+        "team_ws",
+        json!(["reflect", "watch"]),
+    );
     let files = site.record("files").await;
     has_grant(
         &files,

@@ -166,7 +166,9 @@ impl Handler for PageBundle {
         _kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         Ok(Some(match call {
-            verbs::Call::Reflect(_) => json!({"id": agent_id.as_str(), "sentence": MAN, "files": FILES}),
+            verbs::Call::Reflect(_) => {
+                json!({"id": agent_id.as_str(), "sentence": MAN, "files": FILES})
+            }
             verbs::Call::List(_) => json!({"files": FILES}),
             // Text-only callers get the head; the bytes ride a binary reply.
             verbs::Call::ReadStream(a) => read_stream(&a).0,
@@ -222,7 +224,8 @@ mod tests {
         let (_, _, js) = split_page(HTML);
         assert!(js.contains("'sidebar'") && js.contains("type: 'reflect'"));
         assert!(js.contains("import('./view_relay.js')") && js.contains("mountView"));
-        assert!(js.contains("'select'"));
+        assert!(js.contains("hearSidebar") && js.contains("pageStore"));
+        assert!(!js.contains("localStorage"));
         // the relay is the base's module: the page has no panel, gate or iframe code of its own
         assert!(!js.contains("createElement('iframe')") && !js.contains("postMessage"));
         assert!(!HTML.contains("role=\"tree"));
@@ -290,7 +293,13 @@ mod tests {
 
     #[test]
     fn read_stream_serves_every_listed_file() {
-        for f in ["page.css", "shim.js", "page.js", "view_relay.js", "icon.svg"] {
+        for f in [
+            "page.css",
+            "shim.js",
+            "page.js",
+            "view_relay.js",
+            "icon.svg",
+        ] {
             let (head, body) = whole(f);
             assert!(!body.is_empty(), "{f}");
             assert_eq!(head["eof"], json!(true), "{f}");

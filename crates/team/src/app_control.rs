@@ -202,7 +202,16 @@ mod tests {
         );
         for k in cc.as_object().unwrap().keys() {
             assert!(
-                ["$self", "dispatcher", "cadencer", "user", "sidebar", "kernel_state", "files"].contains(&k.as_str()),
+                [
+                    "$self",
+                    "dispatcher",
+                    "cadencer",
+                    "user",
+                    "sidebar",
+                    "kernel_state",
+                    "files"
+                ]
+                .contains(&k.as_str()),
                 "the seeded leg may call {k}: {cc}"
             );
             if k != "$self" {

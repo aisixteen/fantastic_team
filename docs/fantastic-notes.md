@@ -248,3 +248,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `56a2a45`
 
 `Cargo.lock` now pins fantastic `56a2a45` (#676): two units pin a chat's call identity (its own grants, not its provider's or its waker's). No behaviour change.
+
+## Pin at `28e1ba6`
+
+`Cargo.toml` pins the base branch `rig/sb608` and `Cargo.lock` pins fantastic `28e1ba6` (#608, #679): the team page mounts the base sidebar view through the base's one relay module (`view_relay.js`, with `hearSidebar` and `pageStore`). The branch is repinned to `main` at finalize, once the base PR is merged.

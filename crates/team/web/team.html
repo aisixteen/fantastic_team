@@ -59,7 +59,7 @@
   // view's own `calls` (the leg's grants are the second gate). A click on an agent row opens it in the
   // right cell. Nothing from the kernel is put in as markup: the view is a srcdoc, the rest text.
   (function () {
-    var SIDEBAR = 'sidebar', CELL = 'view_sidebar', KEY = 'fantastic.team.sidebar';
+    var SIDEBAR = 'sidebar', CELL = 'view_sidebar';
     document.documentElement.setAttribute('data-ready', '1');
 
     // The page's end of the relay: sends and watches go over the leg (shim.js).
@@ -67,11 +67,6 @@
       send: function (target, payload) { return window.fantastic.send(target, payload); },
       watch: function (src, deliver) { return { off: window.fantastic.watch(src, deliver) }; }
     };
-    var keep = {
-      load: function () { try { return JSON.parse(localStorage.getItem(KEY)); } catch (e) { return null; } },
-      save: function (state) { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* no storage: nothing kept */ } }
-    };
-
     var right = document.getElementById('body-right');
     var left = document.getElementById('body-left');
 
@@ -103,11 +98,11 @@
         if (!v) return; // no sidebar agent: no column
         var closeOpened = function () {};
         relay.mountView({
-          mount: left, html: v.bytes, transport: transport, calls: v.calls || {}, cell: CELL, keep: keep,
+          mount: left, html: v.bytes, transport: transport, calls: v.calls || {}, cell: CELL, keep: relay.pageStore('team.sidebar'),
+          // what the view says is the base's `hearSidebar`; the team page has no canvas to open a file on and
+          // its cell does not hide, so a row's `select` is the one thing it hears
           onMessage: function (m) {
-            if (m.type === 'select' && typeof m.id === 'string' && m.id !== '') { closeOpened(); closeOpened = open(relay, m.id); }
-            // select_file, open_file, open_dir, select_kernel, hide_tree: the team page has no canvas to open
-            // a file on, and its column does not hide
+            relay.hearSidebar(m, { select: function (id) { closeOpened(); closeOpened = open(relay, id); } });
           }
         });
       });
