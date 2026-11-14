@@ -1,0 +1,13 @@
+id: w1
+handler_module: ai_chat.tools
+provider_id: provider
+model: scripted-model
+memory_store_id: w1_memory
+can_call:
+  "$self": "*"
+  provider: [complete, watch]
+  w1_memory: "*"
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  team_ws: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]

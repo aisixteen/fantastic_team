@@ -231,6 +231,17 @@ mod tests {
         assert!(!HTML.contains("role=\"tree"));
     }
 
+    /// The right cell draws the view of the agent picked in the sidebar through the SAME base relay
+    /// (`mountView`): the page asks the agent for its `reflect` and has no chat or relay code of its own.
+    #[test]
+    fn the_right_cell_mounts_the_picked_agents_view_through_the_base_relay() {
+        let (_, _, js) = split_page(HTML);
+        assert!(js.contains("send(id, { type: 'reflect' })"));
+        assert_eq!(js.matches("relay.mountView(").count(), 2, "the sidebar and the opened agent");
+        assert!(js.contains("mount: right") && js.contains("calls: v.calls"));
+        assert!(!js.contains("history") && !js.contains("'send'") && !js.contains("\"send\""));
+    }
+
     #[test]
     fn read_stream_serves_index_in_chunks_and_refuses_other_paths() {
         let (head, body) = read_stream(&rs("index.html", 0, Some(10)));

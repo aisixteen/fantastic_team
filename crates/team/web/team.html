@@ -83,7 +83,11 @@
       note.className = 'opened';
       note.textContent = id;
       right.appendChild(note);
-      window.fantastic.send(id, { type: 'reflect' }).then(function (r) {
+      // the dispatcher's `open` grants the leg the chat's calls on an agent of the team (the view's own
+      // list); a refusal just means the page has no more than it had
+      window.fantastic.send('dispatcher', { type: 'open', node: id }).catch(function () {}).then(function () {
+        return window.fantastic.send(id, { type: 'reflect' });
+      }).then(function (r) {
         var v = viewOf(r);
         if (right.getAttribute('data-open') !== id || !v) return;
         right.textContent = '';
