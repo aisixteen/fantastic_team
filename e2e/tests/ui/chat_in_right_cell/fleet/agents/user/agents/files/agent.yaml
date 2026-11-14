@@ -1,0 +1,11 @@
+id: files
+handler_module: file_bridge.tools
+root: "."
+allow: ["."]
+ingress_rule: allow_all_ingress
+callable_by:
+  user: "*"
+  exec: "*"
+  team_ws: [list, watch, watch_path, unwatch_path, open_view]
+can_call:
+  user: "*"

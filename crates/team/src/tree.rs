@@ -31,9 +31,10 @@ pub const TASKS_ID: &str = "tasks";
 /// The kernel verbs the dispatcher may call on the root to add and remove a worker
 /// (`control` with `add_worker` / `remove_worker`) and to keep the groups lists current.
 pub const DISPATCHER_KERNEL_VERBS: [&str; 3] = ["create_agent", "update_agent", "delete_agent"];
-/// The verbs the page uses on a worker or a subagent: its chat (`history`, `send`,
-/// `stop`, `status`, `watch`). Granted by [`grant_chat_to`]; never `*`.
-pub const CHAT_VERBS: [&str; 5] = ["history", "send", "stop", "status", "watch"];
+/// The verbs the page uses on a worker or a subagent: exactly the calls of the base chat
+/// view it draws in the right cell (`fantastic_ai_core::chat_bundle::VIEW_CALLS`, the same
+/// list the view's `reflect` gives the relay). Granted by [`grant_chat_to`]; never `*`.
+pub const CHAT_VERBS: [&str; 9] = fantastic_ai_core::chat_bundle::VIEW_CALLS;
 
 /// Grant the page's principal (the `web_ws` leg that serves the page) the chat verbs on
 /// each worker in `workers` and on every agent whose parent is one of them (its
@@ -361,7 +362,20 @@ mod tests {
 
     #[test]
     fn chat_verbs_are_the_chat_ones_only() {
-        assert_eq!(CHAT_VERBS, ["history", "send", "stop", "status", "watch"]);
+        assert_eq!(
+            CHAT_VERBS,
+            [
+                "watch",
+                "reflect",
+                "history",
+                "rows",
+                "status",
+                "send",
+                "stop",
+                "context_clear",
+                "unembed"
+            ]
+        );
         assert!(!CHAT_VERBS.contains(&"*"));
     }
 
