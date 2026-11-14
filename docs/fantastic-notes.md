@@ -240,3 +240,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `24aaea9`
 
 `Cargo.lock` now pins fantastic `24aaea9` (#671): the default system block is `{self}\n\n{howto}`; the tree is out of it, so a spawn or a delete no longer rewrites the whole cached prompt.
+
+## Pin at `b3559f5`
+
+`Cargo.lock` now pins fantastic `b3559f5` (#673, #675): the system block is immutable during a run: no grants in the `self` part, and a `send` carries no `system_prompt`.
