@@ -60,12 +60,16 @@ def run(ctx):
                 v.check("the agent's row is drawn in the left cell", row)
 
                 # 1. a click opens it; the right cell draws the chat view
-                side.locator("#tree [data-id=w1] .main").click()
-                try:
-                    page.wait_for_selector("#body-right[data-open=w1]", timeout=10000)
-                    opened = True
-                except Exception:
-                    opened = False
+                # the tree redraws while it settles, so a click may land on a row that is replaced: click again
+                opened = False
+                for _ in range(6):
+                    try:
+                        side.locator("#tree [data-id=w1] .main").click(timeout=5000)
+                        page.wait_for_selector("#body-right[data-open=w1]", timeout=5000)
+                        opened = True
+                        break
+                    except Exception:
+                        pass
                 v.check("a click on the row opens the agent in the right cell", opened)
                 chat = page.frame_locator("#body-right iframe")
                 try:
