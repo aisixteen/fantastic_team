@@ -1,1 +1,1 @@
-[{"text": "REPLY_FROM_THE_SCRIPTED_MODEL"}]
+[{"say": "REPLY_FROM_THE_SCRIPTED_MODEL", "calls": [{"name": "done"}]}]
