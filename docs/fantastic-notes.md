@@ -244,3 +244,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `b3559f5`
 
 `Cargo.lock` now pins fantastic `b3559f5` (#673, #675): the system block is immutable during a run: no grants in the `self` part, and a `send` carries no `system_prompt`.
+
+## Pin at `56a2a45`
+
+`Cargo.lock` now pins fantastic `56a2a45` (#676): two units pin a chat's call identity (its own grants, not its provider's or its waker's). No behaviour change.
