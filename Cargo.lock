@@ -1498,6 +1498,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "team-agent-view",
  "team-agentic-resources",
  "team-git-connector",
  "team-github-connector",
@@ -5532,6 +5533,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "team-agent-view"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "team-agentic-resources"
 version = "0.1.0"
 dependencies = [
@@ -5543,6 +5551,7 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "team-agent-view",
  "tempfile",
  "tokio",
 ]
@@ -5582,6 +5591,7 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "team-agent-view",
  "team-git-connector",
  "tempfile",
  "tokio",

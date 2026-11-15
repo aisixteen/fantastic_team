@@ -452,46 +452,83 @@ fn merged(existing: Option<&Value>, want: &[&str]) -> Option<Value> {
     }
 }
 
-/// Grant the dispatcher the read verbs each declared agent's
-/// declaration names, on both ends (the agent's `callable_by`, the caller's
-/// `can_call`), never `*`. Verbs another grant put there stay. Idempotent. Returns
-/// how many grants were written.
-pub fn grant_views(kernel: &Arc<Kernel>) -> usize {
+/// The views of the team's own tool agents that the team page draws (each agent's `reflect`
+/// carries its html view): the handler module and the verbs that view calls.
+pub fn page_views() -> [(&'static str, &'static [&'static str]); 3] {
+    [
+        (
+            crate::cadencer::HANDLER_MODULE,
+            &crate::cadencer::VIEW_CALLS,
+        ),
+        (
+            team_github_connector::HANDLER_MODULE,
+            &team_github_connector::VIEW_CALLS,
+        ),
+        (
+            team_agentic_resources::HANDLER_MODULE,
+            &team_agentic_resources::VIEW_CALLS,
+        ),
+    ]
+}
+
+/// Write `want` for each agent of `wants` on both ends for `principal`: the agent's
+/// `callable_by` and the principal's `can_call`. Never `*`; verbs another grant put there
+/// stay. Idempotent. Returns how many grants were written.
+fn grant_to(kernel: &Arc<Kernel>, principal: &str, wants: &[(AgentId, Vec<&str>)]) -> usize {
+    let who = AgentId::from(principal);
+    if !kernel.agents.contains_key(&who) {
+        return 0;
+    }
     let mut written = 0;
-    for principal in [crate::tree::DISPATCHER_ID] {
-        let who = AgentId::from(principal);
-        if !kernel.agents.contains_key(&who) {
+    for (id, want) in wants {
+        if *id == who {
             continue;
         }
-        for (id, d) in declared_agents(kernel) {
-            if id == who {
-                continue;
+        let by_agent = kernel.edit_callable_by(id, |cb| match merged(cb.get(principal), want) {
+            Some(v) => {
+                cb.insert(principal.into(), v);
+                true
             }
-            let want = read_verbs(&d);
-            let by_agent =
-                kernel.edit_callable_by(&id, |cb| match merged(cb.get(principal), &want) {
-                    Some(v) => {
-                        cb.insert(principal.into(), v);
-                        true
-                    }
-                    None => false,
-                });
-            let by_caller =
-                kernel.edit_can_call(&who, |cc| match merged(cc.get(id.as_str()), &want) {
-                    Some(v) => {
-                        cc.insert(id.0.clone(), v);
-                        true
-                    }
-                    None => false,
-                });
-            match (by_agent, by_caller) {
-                (Ok(a), Ok(b)) => written += usize::from(a) + usize::from(b),
-                (Err(e), _) | (_, Err(e)) => {
-                    eprintln!("declared views: `{principal}` -> `{id}`: {e}")
-                }
+            None => false,
+        });
+        let by_caller = kernel.edit_can_call(&who, |cc| match merged(cc.get(id.as_str()), want) {
+            Some(v) => {
+                cc.insert(id.0.clone(), v);
+                true
+            }
+            None => false,
+        });
+        match (by_agent, by_caller) {
+            (Ok(a), Ok(b)) => written += usize::from(a) + usize::from(b),
+            (Err(e), _) | (_, Err(e)) => {
+                eprintln!("declared views: `{principal}` -> `{id}`: {e}")
             }
         }
     }
+    written
+}
+
+/// Grant the dispatcher the read verbs each declared agent's declaration names, and the
+/// team page's leg the verbs of each tool agent's html view, on both ends, never `*`.
+/// Verbs another grant put there stay. Idempotent. Returns how many grants were written.
+pub fn grant_views(kernel: &Arc<Kernel>) -> usize {
+    let declared: Vec<(AgentId, Vec<&str>)> = declared_agents(kernel)
+        .into_iter()
+        .map(|(id, d)| (id, read_verbs(&d)))
+        .collect();
+    let mut written = grant_to(kernel, crate::tree::DISPATCHER_ID, &declared);
+    let mut page: Vec<(AgentId, Vec<&str>)> = Vec::new();
+    for e in kernel.agents.iter() {
+        let a = e.value();
+        let Some(m) = a.handler_module.as_deref() else {
+            continue;
+        };
+        if let Some((_, calls)) = page_views().iter().find(|(h, _)| *h == m) {
+            page.push((a.id.clone(), calls.to_vec()));
+        }
+    }
+    page.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
+    written += grant_to(kernel, crate::page::WS_ID, &page);
     written
 }
 
@@ -923,6 +960,69 @@ mod tests {
         assert!(field_of(&kernel, "dispatcher_view", "can_call")
             .get("cad")
             .is_none());
+        kernel.stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn grant_views_gives_the_page_leg_the_verbs_of_each_tool_view_and_no_more() {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
+        let leg = crate::page::WS_ID;
+        mk(
+            &kernel,
+            json!({"id": leg, "handler_module": "ram_store.tools"}),
+        )
+        .await;
+        mk(
+            &kernel,
+            json!({"id": "cad", "handler_module": crate::cadencer::HANDLER_MODULE}),
+        )
+        .await;
+        mk(
+            &kernel,
+            json!({"id": "gh", "handler_module": team_github_connector::HANDLER_MODULE,
+                "app": {"credentials": {"store": "credentials", "ref": "github/app"}},
+                "repos": ["o/r"], "directive": "Push a work branch."}),
+        )
+        .await;
+        mk(
+            &kernel,
+            json!({"id": "res", "handler_module": team_agentic_resources::HANDLER_MODULE}),
+        )
+        .await;
+        assert!(grant_views(&kernel) > 0);
+        let cc = field_of(&kernel, leg, "can_call");
+        assert_eq!(cc["cad"], json!(["status", "set"]), "{cc}");
+        assert_eq!(cc["gh"], json!(["reflect", "pr_status"]), "{cc}");
+        assert_eq!(
+            cc["res"],
+            json!(["bundles", "bundle", "fleet", "get_count"]),
+            "{cc}"
+        );
+        assert_eq!(
+            field_of(&kernel, "cad", "callable_by")[leg],
+            json!(["status", "set"])
+        );
+        // no spawn, no star
+        for id in ["cad", "gh", "res"] {
+            let v = cc[id].to_string();
+            assert!(!v.contains("spawn") && !v.contains('*'), "{id}: {v}");
+        }
+        // each agent's reflect names the same calls in its view
+        for (id, want) in [
+            ("cad", json!({"cad": ["status", "set"]})),
+            ("gh", json!({"gh": ["reflect", "pr_status"]})),
+        ] {
+            let r = kernel
+                .send(vec![Item::new(id, json!({"type": "reflect"}))])
+                .await
+                .remove(0)
+                .result;
+            assert_eq!(r["view"]["kind"], "html", "{r}");
+            assert_eq!(r["view"]["calls"], want, "{r}");
+        }
+        // Idempotent.
+        assert_eq!(grant_views(&kernel), 0);
         kernel.stop().await;
     }
 }

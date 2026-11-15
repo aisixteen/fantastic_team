@@ -76,6 +76,7 @@ async fn route(call: Call, id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg) -> Val
                 "recent_calls": crate::callog::recent(&id.to_string(), &cfg.api_url),
                 "rate": crate::callog::rate(&cfg.api_url),
                 "auth": auth,
+                "view": crate::view_of(&id.to_string()),
             })
         }
         Call::Boot(_) => {

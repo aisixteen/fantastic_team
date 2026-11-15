@@ -1565,3 +1565,29 @@ async fn merge_github_405_and_409_come_back_as_error_and_reason_without_the_toke
     merge_refusal_is_named(405, "Pull Request is not mergeable").await;
     merge_refusal_is_named(409, "Head branch was modified").await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reflect_carries_the_html_view_and_exactly_its_calls() {
+    let f = fx(json!({})).await;
+    let r = f.call(json!({"type": "reflect"})).await;
+    let view = &r["view"];
+    assert_eq!(view["kind"], "html", "{r}");
+    let id = r["id"].as_str().unwrap();
+    assert_eq!(view["calls"], json!({ id: ["reflect", "pr_status"] }));
+    let html = view["bytes"].as_str().unwrap();
+    assert!(!html.contains("{{"), "every placeholder is filled");
+    // the verbs the page lists are the connector's own
+    let line = html
+        .lines()
+        .find(|l| l.starts_with("var VERBS = "))
+        .unwrap();
+    assert!(
+        line.starts_with(r#"var VERBS = ["boot","directive","whoami","push""#),
+        "{line}"
+    );
+    assert!(line.contains(r#""read_file"]"#), "{line}");
+    assert!(
+        !line.contains("reflect") && !line.contains("docs"),
+        "{line}"
+    );
+}

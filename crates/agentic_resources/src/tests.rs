@@ -1794,3 +1794,20 @@ async fn grant_failed_refusal_reason_is_code() {
     assert_eq!(r.kernel.agents.len(), before, "nothing left behind");
     assert_eq!(r.count(None).await["running"], 0);
 }
+
+#[tokio::test]
+async fn reflect_carries_the_html_view_and_exactly_its_calls() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
+    let out = send(&r.kernel, &r.reg, json!({"type": "reflect"})).await;
+    let view = &out["view"];
+    assert_eq!(view["kind"], "html", "{out}");
+    assert_eq!(
+        view["calls"],
+        json!({ r.reg.as_str(): ["bundles", "bundle", "fleet", "get_count"] })
+    );
+    let html = view["bytes"].as_str().unwrap();
+    assert!(!html.contains("{{"), "every placeholder is filled");
+    // the view only reads: it never calls spawn
+    assert!(!view["calls"].to_string().contains("spawn"));
+}

@@ -8,6 +8,7 @@ description = "A generic bundles registry: spawnable meta bundles, spawn, fleet.
 
 [dependencies]
 fantastic-bundle.workspace = true
+team-agent-view = { path = "../agent_view" }
 fantastic-kernel.workspace = true
 fantastic-ai-core.workspace = true
 async-trait.workspace = true

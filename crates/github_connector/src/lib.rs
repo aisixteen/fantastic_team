@@ -46,6 +46,24 @@ use serde_json::{Map, Value};
 
 /// The handler module name this bundle registers under.
 pub const HANDLER_MODULE: &str = "team_github.tools";
+/// The connector's own html view (the design mock's github page): the team page draws it
+/// from `reflect`. `{{agent}}` and `{{verbs}}` are filled at reflect time.
+const VIEW: &str = include_str!("view.html");
+/// The verbs the view calls on the connector: its state and the PR lookup. Both read.
+pub const VIEW_CALLS: [&str; 2] = ["reflect", "pr_status"];
+
+/// The connector's `view` for `reflect`: the page of [`VIEW`] with the agent's id, and the
+/// connector's own verbs as the list the page shows.
+pub(crate) fn view_of(id: &str) -> Value {
+    let verbs: Vec<&str> = verbs::VERBS
+        .iter()
+        .map(|v| v.name)
+        .filter(|n| !matches!(*n, "reflect" | "docs"))
+        .collect();
+    let template = VIEW.replace("{{verbs}}", &serde_json::json!(verbs).to_string());
+    team_agent_view::view(&template, id, serde_json::json!({id: VIEW_CALLS}))
+}
+
 /// The bundle name.
 const NAME: &str = "team_github";
 /// What the bundle is for: its one short man text; how to call it is rendered from its
