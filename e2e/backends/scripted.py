@@ -334,7 +334,8 @@ class ScriptedModel:
         if not own:
             return True
         # the kernel's "[N message(s) arrived while you were working …]": a notice when the N
-        # messages that arrived (the latest `[from …]` / `[team]` blocks above it) are all notices
+        # messages that arrived (the latest `[from …]` / `[team]` blocks above it, in earlier messages or
+        # merged into this one before the wake line) are all notices
         arrived = re.match(r"\[(\d+) message\(s\) arrived while you were working", own[-1])
         if not arrived or len(own) > 1:
             return False
@@ -342,6 +343,8 @@ class ScriptedModel:
         for m in msgs[:-1]:
             if m.get("role") == "user":
                 blocks += cls.blocks(m)
+        above = cls.blocks(last)
+        blocks += above[:above.index(own[-1])]
         came = [b for b in blocks if b.startswith(("[from ", "[team] The team of"))][-int(arrived.group(1)):]
         return bool(came) and all(cls.is_notice(b) for b in came)
 

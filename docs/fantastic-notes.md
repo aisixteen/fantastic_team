@@ -260,3 +260,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `663429d`
 
 `Cargo.lock` pins fantastic `663429d` (#609, base PR #680): the team page's right cell draws the base chat view of the agent picked in the sidebar through the same base relay module (`mountView`), and the page leg holds exactly the chat view's calls (`fantastic_ai_core::chat_bundle::VIEW_CALLS`) on that agent.
+
+## Pin at `f837c07`
+
+`Cargo.lock` pins fantastic `f837c07` (base PR #692, aisixteen/fantastic#691): the free e2e after #651 (`cell_id`, `command`, `saved` off the records; `await_set` sends text only; digits read as an id; `docs of=<bundle>` lists its own verbs; the preview's file switch race). No team code change.
