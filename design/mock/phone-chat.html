@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team on a phone: one agent</title>
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+button{font:inherit;color:inherit;cursor:pointer}
+[data-theme]{--sans:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+[data-theme="light"]{--bg:#EDEDED;--page:radial-gradient(circle at 1px 1px,rgb(0 0 0/.14) 1px,transparent 1.6px) 0 0/22px 22px,radial-gradient(70% 55% at 12% -5%,#fff 0,transparent 70%),radial-gradient(55% 60% at 105% 105%,rgb(0 0 0/.16) 0,transparent 70%),#EDEDED;--panel:rgb(255 255 255/.58);--panel-flat:rgb(255 255 255/.72);--side:rgb(0 0 0/.03);--surface:rgb(255 255 255/.72);--sunken:rgb(0 0 0/.06);--hover:rgb(0 0 0/.09);--line:rgb(0 0 0/.10);--line2:rgb(0 0 0/.18);--text:#0B0B0B;--text2:#454545;--text3:#6B6B6B;--accent:#111111;--accent-weak:rgb(0 0 0/.08);--accent-line:rgb(0 0 0/.30);--on-accent:#FFFFFF;--ok:#1B7446;--warn:#8F5200;--bad:#B3261E;--knock:#F8F8F8;--head:rgb(0 0 0/.70);--chip:rgb(0 0 0/.05);--chip-line:rgb(0 0 0/.06);--ext:rgb(0 0 0/.12);--ext-line:rgb(0 0 0/.40);--bubble:rgb(255 255 255/.60);--bubble-user:rgb(0 0 0/.10);--code:rgb(0 0 0/.045);--well:rgb(0 0 0/.06);--input:rgb(0 0 0/.06);--shadow-bezel:0 10px 30px rgb(0 0 0/.10),0 1px 2px rgb(0 0 0/.06);--shadow-bubble:inset 0 0 0 1px rgb(0 0 0/.07)}
+[data-theme="dark"]{--bg:#050505;--page:radial-gradient(circle at 1px 1px,rgb(255 255 255/.14) 1px,transparent 1.6px) 0 0/22px 22px,radial-gradient(70% 55% at 12% -5%,rgb(255 255 255/.20) 0,transparent 70%),radial-gradient(55% 60% at 105% 105%,rgb(255 255 255/.10) 0,transparent 70%),#050505;--panel:rgb(20 20 20/.58);--panel-flat:rgb(20 20 20/.74);--side:rgb(255 255 255/.03);--surface:rgb(255 255 255/.07);--sunken:rgb(255 255 255/.07);--hover:rgb(255 255 255/.10);--line:rgb(255 255 255/.10);--line2:rgb(255 255 255/.18);--text:#F2F2F2;--text2:#B8B8B8;--text3:#8E8E8E;--accent:#F5F5F5;--accent-weak:rgb(255 255 255/.10);--accent-line:rgb(255 255 255/.32);--on-accent:#0B0B0B;--ok:#72D6A2;--warn:#F0B75A;--bad:#FF9288;--knock:#0E0E0E;--head:rgb(255 255 255/.70);--chip:rgb(255 255 255/.05);--chip-line:rgb(255 255 255/.06);--ext:rgb(255 255 255/.14);--ext-line:rgb(255 255 255/.42);--bubble:rgb(255 255 255/.07);--bubble-user:rgb(255 255 255/.16);--code:rgb(0 0 0/.35);--well:rgb(0 0 0/.38);--input:rgb(255 255 255/.06);--shadow-bezel:0 10px 30px rgb(0 0 0/.45),0 1px 2px rgb(0 0 0/.30);--shadow-bubble:inset 0 1px 0 rgb(255 255 255/.10)}
+[data-theme]{--ok-weak:color-mix(in srgb,var(--ok) 12%,transparent);--warn-weak:color-mix(in srgb,var(--warn) 12%,transparent);--warn-line:color-mix(in srgb,var(--warn) 45%,transparent);--bad-weak:color-mix(in srgb,var(--bad) 12%,transparent);--bad-line:color-mix(in srgb,var(--bad) 45%,transparent)}
+.hov:active{background:var(--hover) !important}
+.field:focus-within{border-color:var(--accent) !important}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input::placeholder{color:var(--text3)}
+</style>
+<style>html{background:#EDEDED}@media (prefers-color-scheme: dark){html{background:#050505}}</style>
+</head>
+<body>
+<div style="width:390px;max-width:100%;margin:24px auto;border-radius:28px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.15)">
+
+<div data-theme="dark" style="display: flex; flex-direction: column; height: 844px; overflow: hidden; padding-top: 44px; background: linear-gradient(var(--panel-flat), var(--panel-flat)), var(--page); color: var(--text); font-family: var(--sans); font-size: 15px; line-height: 1.5">
+
+<header style="display: flex; align-items: center; gap: 10px; padding: 8px 12px 10px 6px; border-bottom: 1px solid var(--line)">
+<button type="button" class="hov" aria-label="Back to the team. 2 more wait for you" style="position: relative; flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: var(--text2)">
+<svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"></path></svg>
+<span style="position: absolute; top: 5px; right: 3px; display: grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; font: 700 10px/1 var(--sans); color: var(--knock); background: var(--warn)">2</span>
+</button>
+<span style="position: relative; flex: none; display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; background: var(--accent-weak)">
+<img src="robo-head.png" alt="" style="width: 24px; height: auto">
+<span style="position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; font: 700 11px/1 var(--sans); color: var(--knock); background: var(--warn); box-shadow: 0 0 0 2px var(--knock)">?</span>
+</span>
+<div style="flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3">
+<h1 style="margin: 0; font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">k-rollout</h1>
+<div style="font-size: 13px; color: var(--warn); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">asks you · 12 min</div>
+</div>
+<button type="button" style="flex: none; height: 36px; padding: 0 12px; border: 1px solid var(--bad-line); border-radius: 8px; background: var(--bad-weak); color: var(--bad); font-size: 13px; font-weight: 600">Stop</button>
+</header>
+
+<div style="flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; padding: 12px 16px 14px">
+
+<div style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px">
+<div style="font: 11px/1.4 var(--mono); color: var(--text3)">cluster ops to k-rollout</div>
+<div style="max-width: 85%; padding: 8px 12px; border-radius: 12px; background: var(--bubble-user); box-shadow: var(--shadow-bubble); font-size: 14px">Roll out api v2.4 to prod-eu, one pod at a time. Stop and ask if a pod is not ready in 5 minutes.</div>
+</div>
+
+<p style="margin: 0; align-self: flex-start; max-width: 85%; padding: 8px 12px; border-radius: 12px; background: var(--bubble); box-shadow: var(--shadow-bubble)">Pods 1 and 2 are ready on v2.4. Starting pod 3.</p>
+
+<button type="button" class="hov" aria-expanded="false" style="flex: none; display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 0 12px 0 10px; align-self: flex-start; width: 85%; border: 0; border-radius: 8px; background: var(--code); box-shadow: inset 0 0 0 1px var(--line); font-size: 13px; text-align: left">
+<svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex: none; transform: rotate(-90deg); color: var(--text3)"><path d="M2 3.5l3 3 3-3"></path></svg>
+<span style="flex: none; font-weight: 500">6 tool calls</span>
+<span style="flex: 1; min-width: 0; font: 12px/1.3 var(--mono); color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">kubectl describe pod, get events</span>
+</button>
+
+<p style="margin: 0; align-self: flex-start; max-width: 85%; padding: 8px 12px; border-radius: 12px; background: var(--bubble); box-shadow: var(--shadow-bubble)">Pod 3 cannot pull the image. <code style="font: 13px/1 var(--mono); padding: 2px 5px; border-radius: 4px; background: var(--well)">images.eu/api:2.4.0</code> is missing: the tag was never copied to the eu image store. I stopped at 2 of 3; v2.3 still serves on the third pod.</p>
+
+<section aria-label="Question for you" style="flex: none; display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid var(--warn-line); border-radius: 12px; background: var(--warn-weak)">
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="font: 600 11px/1.4 var(--mono); letter-spacing: .5px; text-transform: uppercase; color: var(--warn)">Question for you</div>
+<div style="font-size: 16px; font-weight: 600; line-height: 1.35">Pod 3 can't pull api:2.4.0 in eu. What should I do?</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+
+<button type="button" style="display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 44px; padding: 0 12px 0 14px; border: 1px solid var(--line2); border-radius: 8px; background: var(--surface); font-size: 14px; font-weight: 500; text-align: left">Copy the image to eu, then retry<svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex: none; color: var(--text3)"><path d="M6 3l5 5-5 5"></path></svg></button>
+
+<button type="button" style="display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 44px; padding: 0 12px 0 14px; border: 1px solid var(--line2); border-radius: 8px; background: var(--surface); font-size: 14px; font-weight: 500; text-align: left">Roll back to v2.3<svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex: none; color: var(--text3)"><path d="M6 3l5 5-5 5"></path></svg></button>
+
+<button type="button" style="display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 44px; padding: 0 12px 0 14px; border: 1px solid var(--line2); border-radius: 8px; background: var(--surface); font-size: 14px; font-weight: 500; text-align: left">Leave it at 2 of 3<svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex: none; color: var(--text3)"><path d="M6 3l5 5-5 5"></path></svg></button>
+
+</div>
+</section>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 0 12px 12px">
+<div class="field" style="display: flex; align-items: center; gap: 4px; padding: 4px 4px 4px 14px; border: 0; border-radius: 10px; background: var(--input); box-shadow: inset 0 0 0 1px var(--line)">
+<label for="message" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap">Answer or message k-rollout</label>
+<input id="message" type="text" placeholder="Answer in your own words" style="flex: 1; min-width: 0; height: 44px; border: 0; outline: none; background: transparent; font: inherit; font-size: 16px; color: var(--text)">
+<button type="button" aria-label="Send" style="flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 10px; background: var(--accent); color: var(--on-accent)"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5"></path></svg></button>
+</div>
+<div style="display: flex; align-items: center; justify-content: center; min-height: 16px; padding: 0 6px">
+<span role="img" aria-label="Panel 2 of 2: the agent" style="flex: none; display: flex; gap: 6px">
+<span style="width: 6px; height: 6px; border-radius: 3px; background: var(--line2)"></span>
+<span style="width: 16px; height: 6px; border-radius: 3px; background: var(--accent)"></span>
+</span>
+</div>
+</div>
+</div>
+</div>
+<script>
+// ?theme=dark or ?theme=light switches the page theme.
+const t = new URLSearchParams(location.search).get('theme');
+if (true && (t === 'dark' || t === 'light')) document.querySelector('[data-theme]').dataset.theme = t;
+</script>
+</body>
+</html>
