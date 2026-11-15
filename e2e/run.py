@@ -1334,6 +1334,19 @@ def selftest_scripted_lanes(v: Verdict) -> None:
         v.check("a lane asked past its end is an overrun, not another lane's turn", m.overrun == 1)
     finally:
         m.stop()
+    wake = "[1 message(s) arrived while you were working \u2014 they are above. Answer them.]"
+    team = ("[team] The team of `lead` changed. `lead` leads it.\nMembers:\n- `w1` (worker), parent `lead`")
+
+    def req(*texts):
+        return json.dumps({"messages": [{"role": "user", "content": "task"}, {"role": "assistant", "content": "ok"},
+                                        {"role": "user", "content": "\n\n".join(texts)}]})
+
+    v.check("a team notice merged with the wake line in the last message is notice-only",
+            scripted.ScriptedModel.notice_only(req(team, wake)))
+    v.check("a `[from cadencer]` notice merged with the wake line in the last message is notice-only",
+            scripted.ScriptedModel.notice_only(req("[from cadencer] tick", wake)))
+    v.check("a merged non-notice message with the wake line is not notice-only",
+            not scripted.ScriptedModel.notice_only(req("[from worker_1] done: fixed", wake)))
 
 
 def selftest_app_helpers(v: Verdict) -> None:
