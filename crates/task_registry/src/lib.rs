@@ -61,21 +61,19 @@ pub const MAN: &str = "A registry of tasks: who holds each one and where it came
 /// How many rows one store read asks for.
 const PAGE: u64 = 500;
 
-/// The registry's own html view, compiled in; `reflect` returns it with `{{agent}}` filled.
+/// The registry's own html view, compiled in: a template on the team's shared view look
+/// (`team_agent_view`: the one skin token block, the mock's parts, the shared helpers);
+/// `reflect` returns it with `{{agent}}` and `{{helpers}}` filled.
 const VIEW: &str = include_str!("view.html");
 
 /// The verbs the view calls on its own agent: the two reads, never a write.
 pub const VIEW_CALLS: [&str; 2] = ["list", "get"];
 
-/// The `view` a registry's `reflect` carries: `{kind: "html", bytes, calls}`, the html
-/// with `{{agent}}` replaced by `id` and the calls naming `id` with [`VIEW_CALLS`].
+/// The `view` a registry's `reflect` carries: `{kind: "html", bytes, calls}`, the page of
+/// [`VIEW`] for `id` and the calls naming `id` with [`VIEW_CALLS`].
 #[must_use]
 pub fn view_of(id: &str) -> Value {
-    json!({
-        "kind": "html",
-        "bytes": VIEW.replace("{{agent}}", id),
-        "calls": {id: VIEW_CALLS},
-    })
+    team_agent_view::view(VIEW, id, json!({id: VIEW_CALLS}))
 }
 
 /// The task_registry bundle. It holds no tasks: only one lock per registry agent, so

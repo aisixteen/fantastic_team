@@ -142,22 +142,27 @@ pub fn grant_card_ids(kernel: &Arc<Kernel>, principal: &str, ids: &[String]) -> 
     granted
 }
 
-/// Let `principal` (the page's leg) reach the html view an agent's `reflect` carries (the
-/// task registry's): `reflect`, which the page reads the view from, plus the view's own
-/// `calls` on that agent, on both ends (the agent's `callable_by`, the leg's `can_call`).
-/// Merged with what each end already holds, never narrowed, never `*`. Idempotent; a
-/// dead id or principal grants nothing. Returns whether anything was written.
-pub fn grant_view_to(kernel: &Arc<Kernel>, principal: &str, id: &str, calls: &[&str]) -> bool {
-    if !kernel.exists(principal) || !kernel.exists(id) {
+/// THE ONE GRANT WRITE of the team's views: let `principal` call `verbs` on `id`, on both
+/// ends (the agent's `callable_by`, the principal's `can_call`), with fantastic's grant
+/// `union`: merged with what each end already holds, never narrowed (a `*` an operator
+/// wrote stays), never `*` itself. Idempotent; a dead id or principal, or an agent naming
+/// itself, grants nothing. Returns whether anything was written. The dispatcher's reads of
+/// the declared views and the page leg's `reflect` + calls of each html view
+/// (`declared_views::grant_views`) both come through here.
+pub fn grant_to(kernel: &Arc<Kernel>, principal: &str, id: &str, verbs: &[&str]) -> bool {
+    if principal == id || !kernel.exists(principal) || !kernel.exists(id) {
         return false;
     }
-    let mut verbs: Vec<&str> = vec!["reflect"];
-    for v in calls {
-        if *v != "*" && !verbs.contains(v) {
-            verbs.push(v);
+    let mut want: Vec<&str> = Vec::new();
+    for v in verbs {
+        if *v != "*" && !want.contains(v) {
+            want.push(v);
         }
     }
-    let verbs = json!(verbs);
+    if want.is_empty() {
+        return false;
+    }
+    let verbs = json!(want);
     let by_agent = kernel.edit_callable_by(&fantastic_kernel::AgentId::from(id), |cb| {
         let before = cb.clone();
         union(

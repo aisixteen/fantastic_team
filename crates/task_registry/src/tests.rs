@@ -1327,31 +1327,33 @@ fn the_view_calls_only_read_verbs_of_this_bundle() {
 
 #[test]
 fn every_colour_of_the_view_is_a_skin_token() {
-    // the day skin's tokens live in the one `:root{}` block; the rest of the stylesheet
-    // names them and never a colour
-    let css_end = VIEW.find("</style>").expect("the view has a stylesheet");
-    let css = &VIEW[..css_end];
-    let root_at = css
-        .find(":root{")
-        .expect("the view holds its tokens in :root");
-    let root_end = root_at + css[root_at..].find('}').expect("the token block closes");
-    let rules = &css[root_end + 1..];
+    // the day skin's tokens live in the ONE `:root{}` block of the team's shared view look
+    // (team_agent_view); the registry's own stylesheet names them and never a colour
+    let page = view_of("x")["bytes"].as_str().unwrap().to_string();
+    assert_eq!(page.matches(":root{").count(), 1, "one token block");
+    let root_at = page.find(":root{").unwrap();
+    let root_end = root_at + page[root_at..].find('}').unwrap();
+    let tokens = &page[root_at..root_end];
+    let own_end = VIEW.find("</style>").expect("the view has a stylesheet");
+    let own = &VIEW[..own_end];
+    assert!(!own.contains(":root"), "the view carries no token block of its own");
     for literal in ["rgb(", "rgba(", "hsl(", "#"] {
         assert!(
-            !rules.contains(literal),
-            "a literal colour ({literal}) outside the token block: {rules}"
+            !own.contains(literal),
+            "a literal colour ({literal}) in the view's own rules: {own}"
         );
     }
-    for line in rules.lines().filter(|l| l.contains("--fc-")) {
+    for line in own.lines().filter(|l| l.contains("--fc-")) {
         for name in line.split("var(--fc-").skip(1) {
-            let token = format!("--fc-{}", name.split(')').next().unwrap_or(""));
+            let token = format!("--fc-{}", name.split([')', ',']).next().unwrap_or(""));
             assert!(
-                css[root_at..root_end].contains(&format!("{token}:")),
-                "the view uses {token}, which its token block does not define"
+                tokens.contains(&format!("{token}:")),
+                "the view uses {token}, which the shared token block does not define"
             );
         }
     }
-    // the javascript's swatches are tokens too
-    let script = &VIEW[css_end..];
+    // the javascript's swatches are tokens too, and the shared helpers are in the page
+    let script = &VIEW[own_end..];
     assert!(!script.contains("rgb("), "a literal colour in the script");
+    assert!(page.contains("function resultClass") && !page.contains("{{helpers}}"));
 }

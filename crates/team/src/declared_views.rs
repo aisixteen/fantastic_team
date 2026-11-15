@@ -430,31 +430,9 @@ pub fn read_verbs(d: &Decl) -> Vec<&'static str> {
     v
 }
 
-/// `existing` with `want` added, or `None` when it already covers them (a `*` or every
-/// verb present). Keeps the verbs another grant put there.
-fn merged(existing: Option<&Value>, want: &[&str]) -> Option<Value> {
-    match existing {
-        Some(Value::String(s)) if s == "*" => None,
-        Some(Value::Array(a)) => {
-            let mut out = a.clone();
-            for w in want {
-                if !out.iter().any(|v| v.as_str() == Some(w)) {
-                    out.push(json!(w));
-                }
-            }
-            if out.len() == a.len() {
-                None
-            } else {
-                Some(Value::Array(out))
-            }
-        }
-        _ => Some(json!(want)),
-    }
-}
-
-/// The views of the team's own tool agents that the team page draws (each agent's `reflect`
-/// carries its html view): the handler module and the verbs that view calls.
-pub fn page_views() -> [(&'static str, &'static [&'static str]); 3] {
+/// The html views the team page draws (each agent's `reflect` carries its view): the
+/// handler module and the verbs that view calls on its agent.
+pub fn page_views() -> [(&'static str, &'static [&'static str]); 4] {
     [
         (
             crate::cadencer::HANDLER_MODULE,
@@ -468,55 +446,35 @@ pub fn page_views() -> [(&'static str, &'static [&'static str]); 3] {
             team_agentic_resources::HANDLER_MODULE,
             &team_agentic_resources::VIEW_CALLS,
         ),
+        (
+            team_task_registry::HANDLER_MODULE,
+            &team_task_registry::VIEW_CALLS,
+        ),
     ]
 }
 
-/// Write `want` for each agent of `wants` on both ends for `principal`: the agent's
-/// `callable_by` and the principal's `can_call`. Never `*`; verbs another grant put there
-/// stay. Idempotent. Returns how many grants were written.
-fn grant_to(kernel: &Arc<Kernel>, principal: &str, wants: &[(AgentId, Vec<&str>)]) -> usize {
-    let who = AgentId::from(principal);
-    if !kernel.agents.contains_key(&who) {
-        return 0;
-    }
-    let mut written = 0;
-    for (id, want) in wants {
-        if *id == who {
-            continue;
-        }
-        let by_agent = kernel.edit_callable_by(id, |cb| match merged(cb.get(principal), want) {
-            Some(v) => {
-                cb.insert(principal.into(), v);
-                true
-            }
-            None => false,
-        });
-        let by_caller = kernel.edit_can_call(&who, |cc| match merged(cc.get(id.as_str()), want) {
-            Some(v) => {
-                cc.insert(id.0.clone(), v);
-                true
-            }
-            None => false,
-        });
-        match (by_agent, by_caller) {
-            (Ok(a), Ok(b)) => written += usize::from(a) + usize::from(b),
-            (Err(e), _) | (_, Err(e)) => {
-                eprintln!("declared views: `{principal}` -> `{id}`: {e}")
-            }
-        }
-    }
-    written
+/// What the page leg needs on an agent to draw its html view: `reflect`, which the page
+/// reads the view from, then the view's own calls.
+pub fn page_verbs(calls: &[&'static str]) -> Vec<&'static str> {
+    let mut v = vec!["reflect"];
+    v.extend(calls.iter().filter(|c| **c != "reflect"));
+    v
 }
 
 /// Grant the dispatcher the read verbs each declared agent's declaration names, and the
-/// team page's leg the verbs of each tool agent's html view, on both ends, never `*`.
-/// Verbs another grant put there stay. Idempotent. Returns how many grants were written.
+/// team page's leg `reflect` plus the calls of each html view ([`page_views`]), on both
+/// ends through [`crate::tree::grant_to`]: never `*`, verbs another grant put there stay.
+/// Idempotent. Returns how many agents got a grant written.
 pub fn grant_views(kernel: &Arc<Kernel>) -> usize {
-    let declared: Vec<(AgentId, Vec<&str>)> = declared_agents(kernel)
-        .into_iter()
-        .map(|(id, d)| (id, read_verbs(&d)))
-        .collect();
-    let mut written = grant_to(kernel, crate::tree::DISPATCHER_ID, &declared);
+    let mut written = 0;
+    for (id, d) in declared_agents(kernel) {
+        written += usize::from(crate::tree::grant_to(
+            kernel,
+            crate::tree::DISPATCHER_ID,
+            id.as_str(),
+            &read_verbs(&d),
+        ));
+    }
     let mut page: Vec<(AgentId, Vec<&str>)> = Vec::new();
     for e in kernel.agents.iter() {
         let a = e.value();
@@ -524,18 +482,25 @@ pub fn grant_views(kernel: &Arc<Kernel>) -> usize {
             continue;
         };
         if let Some((_, calls)) = page_views().iter().find(|(h, _)| *h == m) {
-            page.push((a.id.clone(), calls.to_vec()));
+            page.push((a.id.clone(), page_verbs(calls)));
         }
     }
     page.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
-    written += grant_to(kernel, crate::page::WS_ID, &page);
+    for (id, verbs) in &page {
+        written += usize::from(crate::tree::grant_to(
+            kernel,
+            crate::page::WS_ID,
+            id.as_str(),
+            verbs,
+        ));
+    }
     written
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_boot::{boot_at, Seed};
+    use crate::test_boot::{as_caller, boot_at, Seed};
     use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
     use fantastic_kernel::Item;
 
@@ -963,16 +928,22 @@ mod tests {
         kernel.stop().await;
     }
 
+    #[test]
+    fn page_verbs_lead_with_reflect_once() {
+        assert_eq!(page_verbs(&["status", "set"]), vec!["reflect", "status", "set"]);
+        assert_eq!(page_verbs(&["reflect", "pr_status"]), vec!["reflect", "pr_status"]);
+        assert_eq!(page_verbs(&[]), vec!["reflect"]);
+    }
+
+    /// The team page reads a view with `reflect` AS ITS LEG (`team.html`: `send(id, {type:
+    /// 'reflect'})` over the `team_ws` socket), so the leg needs `reflect` and the view's calls
+    /// on each agent whose view it draws, and nothing more. The reflect here is sent as the
+    /// leg, not as the operator: the gate is the one the page meets.
     #[tokio::test(flavor = "multi_thread")]
-    async fn grant_views_gives_the_page_leg_the_verbs_of_each_tool_view_and_no_more() {
+    async fn grant_views_lets_the_page_leg_reflect_each_html_view_and_call_it_and_no_more() {
         let dir = tempfile::tempdir().unwrap();
         let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
         let leg = crate::page::WS_ID;
-        mk(
-            &kernel,
-            json!({"id": leg, "handler_module": "ram_store.tools"}),
-        )
-        .await;
         mk(
             &kernel,
             json!({"id": "cad", "handler_module": crate::cadencer::HANDLER_MODULE}),
@@ -990,37 +961,52 @@ mod tests {
             json!({"id": "res", "handler_module": team_agentic_resources::HANDLER_MODULE}),
         )
         .await;
+        mk(
+            &kernel,
+            json!({"id": "tasks", "handler_module": team_task_registry::HANDLER_MODULE}),
+        )
+        .await;
+        // the leg comes last: the cadencer's boot (which grants the views) found no leg yet
+        mk(
+            &kernel,
+            json!({"id": leg, "handler_module": "ram_store.tools"}),
+        )
+        .await;
+        let views: [(&str, &[&str]); 4] = [
+            ("cad", &crate::cadencer::VIEW_CALLS),
+            ("gh", &team_github_connector::VIEW_CALLS),
+            ("res", &team_agentic_resources::VIEW_CALLS),
+            ("tasks", &team_task_registry::VIEW_CALLS),
+        ];
+        // before the grant the leg's reflect is refused by the gate: the view never mounts
+        for (id, _) in views {
+            let r = as_caller(&kernel, leg, id, json!({"type": "reflect"})).await;
+            assert_eq!(r["reason"], "unauthorized", "{id}: {r}");
+        }
         assert!(grant_views(&kernel) > 0);
         let cc = field_of(&kernel, leg, "can_call");
-        assert_eq!(cc["cad"], json!(["status", "set"]), "{cc}");
+        assert_eq!(cc["cad"], json!(["reflect", "status", "set"]), "{cc}");
         assert_eq!(cc["gh"], json!(["reflect", "pr_status"]), "{cc}");
-        assert_eq!(
-            cc["res"],
-            json!(["bundles", "bundle", "fleet", "get_count"]),
-            "{cc}"
-        );
-        assert_eq!(
-            field_of(&kernel, "cad", "callable_by")[leg],
-            json!(["status", "set"])
-        );
-        // no spawn, no star
-        for id in ["cad", "gh", "res"] {
+        assert_eq!(cc["tasks"], json!(["reflect", "list", "get"]), "{cc}");
+        for (id, calls) in views {
+            let want = json!(page_verbs(calls));
+            assert_eq!(cc[id], want, "{cc}");
+            assert_eq!(field_of(&kernel, id, "callable_by")[leg], want, "{id}");
+            // no spawn, no star
             let v = cc[id].to_string();
             assert!(!v.contains("spawn") && !v.contains('*'), "{id}: {v}");
+            // sent as the leg, the reflect is admitted and carries the view, whose calls are
+            // the verbs granted
+            let r = as_caller(&kernel, leg, id, json!({"type": "reflect"})).await;
+            assert_eq!(r["view"]["kind"], "html", "{id}: {r}");
+            assert_eq!(r["view"]["calls"][id], json!(calls), "{id}: {r}");
+            // and the view's own calls pass the gate as the leg too
+            let last = calls[calls.len() - 1];
+            let c = as_caller(&kernel, leg, id, json!({"type": last})).await;
+            assert_ne!(c["reason"], "unauthorized", "{id} {last}: {c}");
         }
-        // each agent's reflect names the same calls in its view
-        for (id, want) in [
-            ("cad", json!({"cad": ["status", "set"]})),
-            ("gh", json!({"gh": ["reflect", "pr_status"]})),
-        ] {
-            let r = kernel
-                .send(vec![Item::new(id, json!({"type": "reflect"}))])
-                .await
-                .remove(0)
-                .result;
-            assert_eq!(r["view"]["kind"], "html", "{r}");
-            assert_eq!(r["view"]["calls"], want, "{r}");
-        }
+        // an agent without an html view gets nothing
+        assert!(cc.get("dispatcher").is_none(), "{cc}");
         // Idempotent.
         assert_eq!(grant_views(&kernel), 0);
         kernel.stop().await;

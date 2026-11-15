@@ -10,6 +10,7 @@ description = "A generic task registry: which agent or subtree holds which task,
 fantastic-bundle.workspace = true
 fantastic-kernel.workspace = true
 fantastic-ai-core.workspace = true
+team-agent-view = { path = "../agent_view" }
 async-trait.workspace = true
 serde_json.workspace = true
 serde.workspace = true

@@ -330,7 +330,7 @@ pub fn chat_open(node: &str) -> Value {
 
 /// The `open` reply for an agent whose own `reflect` carries its html view (the task
 /// registry): the page mounts that view, over `reflect` and the view's calls that
-/// `tree::grant_view_to` granted the leg.
+/// `declared_views::grant_views` granted the leg.
 pub fn view_open(node: &str) -> Value {
     json!({
         "view": "html",
@@ -1070,14 +1070,10 @@ impl fantastic_kernel::bundle::Handler for DispatcherBundle {
                     return Ok(Some(out));
                 }
                 // A task registry opens as its own html view (its `reflect` carries it): the
-                // page's leg gets `reflect` and the view's two reads on it, nothing else.
+                // page's leg gets `reflect` and the view's two reads on it, nothing else (the
+                // one view grant, as at boot; a registry made since then gets it here).
                 if module_of(kernel, &node).as_deref() == Some(team_task_registry::HANDLER_MODULE) {
-                    crate::tree::grant_view_to(
-                        kernel,
-                        crate::page::WS_ID,
-                        &node,
-                        &team_task_registry::VIEW_CALLS,
-                    );
+                    crate::declared_views::grant_views(kernel);
                     return Ok(Some(view_open(&node)));
                 }
                 let kind = kind_of(&node, &team, &groups);
@@ -2516,12 +2512,7 @@ mod tests {
         assert_eq!(refl["view"]["kind"], "html", "{refl}");
         assert_eq!(refl["view"]["calls"], json!({"tasks": ["list", "get"]}));
         // again: nothing is written twice
-        assert!(!crate::tree::grant_view_to(
-            &kernel,
-            crate::page::WS_ID,
-            "tasks",
-            &team_task_registry::VIEW_CALLS
-        ));
+        assert_eq!(crate::declared_views::grant_views(&kernel), 0);
         kernel.stop().await;
     }
 

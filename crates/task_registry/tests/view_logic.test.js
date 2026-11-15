@@ -68,10 +68,13 @@ test("a holder is an agent id, a subtree or nobody; distinct holders are counted
   assert.equal(api.kpiHolders({ agents: 1, subtrees: 0 }), "1 agent · 0 subtrees");
 });
 
-test("the status bar lists the states that have tasks, in the mock's order, each with a skin token", () => {
+test("the status bar lists the states that have tasks, in the mock's order, each with a skin token (the shared bar's parts)", () => {
   const rows = plain(api.legendRows(api.countsOf(TASKS)));
   assert.deepEqual(rows.map((r) => [r.label, r.n]), [["done", 5], ["running", 2], ["blocked", 1], ["failed", 1], ["paused", 1], ["waiting", 1]]);
-  for (const r of rows) assert.match(r.swatch, /^var\(--fc-color-/);
+  for (const r of rows) {
+    assert.match(r.color, /^var\(--fc-color-/);
+    assert.equal(r.key, r.label);
+  }
   assert.deepEqual(plain(api.legendRows(api.countsOf([task("1", "failed", "a")]))).map((r) => r.label), ["failed"]);
 });
 
