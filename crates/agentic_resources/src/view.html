@@ -1,0 +1,107 @@
+<div class="head"><span class="t">agentic_resources <span class="sl">/</span> agentic_resources.tools</span><span class="chip" id="run">-</span></div>
+<div class="pg" id="pg"></div>
+<script>
+{{helpers}}
+// pure (agentic_resources)
+// the rows of the kinds table: a kind {name, purpose} with how many of its agents run (the fleet's list of ids)
+function kindRows(bundles, fleet) {
+  var by = fleet && typeof fleet.bundles === "object" && fleet.bundles ? fleet.bundles : {};
+  return (Array.isArray(bundles) ? bundles : []).filter(function (b) { return b && typeof b.name === "string"; }).map(function (b) {
+    var ids = Array.isArray(by[b.name]) ? by[b.name] : [];
+    return { name: b.name, purpose: txt(b.purpose), running: ids.length, ids: ids.map(function (x) { return txt(x && x.id); }).filter(function (x) { return x !== ""; }) };
+  });
+}
+// the chip: how many agents run
+function runText(n) { return count(n) + " running"; }
+// "1 error" / "3 errors", or "" for none
+function errorsText(errors) {
+  var n = Array.isArray(errors) ? errors.length : 0;
+  return n === 0 ? "" : n + (n === 1 ? " error" : " errors");
+}
+// the text of one error: a string as it is, an object by its message
+function errorLine(e) {
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object") return txt(e.error || e.message || JSON.stringify(e));
+  return txt(e);
+}
+// the grants of a kind: the names of the agents it grants
+function grantNames(grants) { return grants && typeof grants === "object" ? Object.keys(grants) : []; }
+// the kind shown: the chosen one while it still exists, else the first
+function chosen(rows, name) {
+  for (var i = 0; i < rows.length; i++) if (rows[i].name === name) return rows[i];
+  return rows.length ? rows[0] : null;
+}
+// end pure
+var AGENT = "{{agent}}";
+var pg = document.getElementById("pg");
+var runChip = document.getElementById("run");
+var pick = "";
+var last = null;
+
+function kindDetail(row, card) {
+  var sec = section(row.name, "bundle {name}");
+  var inn = h("div", "in");
+  if (!card || card.error) { put(inn, h("div", "err", "The kind cannot be read.")); return put(sec, inn); }
+  var dl = h("dl", "kv");
+  put(dl, h("dt", null, "purpose"), put(h("dd"), h("span", null, txt(card.purpose) || "-")));
+  var gs = h("span");
+  grantNames(card.grants).forEach(function (g) { put(gs, pillOf(g), document.createTextNode(" ")); });
+  put(dl, h("dt", null, "grants"), put(h("dd"), gs));
+  put(inn, dl, h("div", "sub", "directive"), put(h("div", "code"), h("pre", null, txt(card.directive))));
+  return put(sec, inn);
+}
+function render(bundles, fleet, total) {
+  runChip.textContent = runText(total);
+  var rows = kindRows(bundles && bundles.bundles, fleet);
+  var sel = chosen(rows, pick);
+  pg.textContent = "";
+  put(pg, put(h("div", "ttl"), h("h1", null, "agentic_resources"), pillOf("tool")));
+
+  var kinds = section("Kinds", "kinds · get_count {kind} · fleet");
+  var tbl = h("div", "tbl");
+  tbl.style.setProperty("--c", "1fr 1.7fr 70px");
+  put(tbl, put(h("div", "tr th"), h("span", null, "kind"), h("span", null, "purpose"), h("span", null, "running")));
+  rows.forEach(function (r) {
+    var b = h("button", "tr" + (sel && sel.name === r.name ? " on" : ""));
+    b.setAttribute("aria-label", "kind " + r.name);
+    put(b, put(h("span", "m"), h("b", null, r.name)), h("span", "t2 ell", r.purpose), h("span", "m", r.running));
+    b.addEventListener("click", function () { pick = r.name; paint(); });
+    put(tbl, b);
+  });
+  if (rows.length === 0) put(tbl, h("div", "empty", "No spawnable kinds."));
+  put(kinds, tbl);
+  var et = errorsText(bundles && bundles.errors);
+  if (et) {
+    var er = put(h("div", "row2"), pillOf(et, "warn"), h("span", "m t2", errorLine(bundles.errors[0])));
+    er.style.padding = "10px 14px 14px";
+    put(kinds, er);
+  }
+  var left = put(h("div", "col"), kinds);
+  var right = h("div", "col");
+  if (sel) {
+    var slot = h("div");
+    put(right, slot);
+    call(AGENT, { type: "bundle", name: sel.name }).then(function (card) {
+      slot.appendChild(kindDetail(sel, card));
+      var run = section("Running agents", "fleet");
+      var pills = h("div", "row2");
+      pills.style.gap = "4px";
+      sel.ids.forEach(function (id) { put(pills, pillOf(id)); });
+      if (sel.ids.length === 0) put(pills, h("span", "dim", "none running"));
+      slot.appendChild(put(run, put(h("div", "in"), pills)));
+      slot.className = "col";
+    });
+  }
+  put(pg, put(h("div", "two"), left, right));
+}
+function paint() { if (last) render(last.bundles, last.fleet, last.total); }
+function refresh() {
+  return Promise.all([call(AGENT, { type: "bundles" }), call(AGENT, { type: "fleet" }), call(AGENT, { type: "get_count" })]).then(function (r) {
+    if (!r[0] || r[0].error) { pg.textContent = ""; put(pg, h("div", "err", "The registry does not answer.")); return; }
+    last = { bundles: r[0], fleet: r[1], total: r[2] && r[2].running };
+    paint();
+  });
+}
+refresh();
+setInterval(refresh, 10000);
+</script>

@@ -55,6 +55,12 @@ pub const HANDLER_MODULE: &str = "agentic_resources.tools";
 /// declared verbs (`docs`, `reflect`).
 pub const MAN: &str = "A registry of spawnable bundles (meta bundles): list them, spawn one as a child of the caller and report the agents running on them. A spawnable bundle is a meta bundle whose record carries a directive and its grants; a child runs on its spawner's provider, and the caller controls it.";
 
+/// The registry's own html view (the design mock's agentic_resources page): the team page
+/// draws it from `reflect`. `{{agent}}` is the agent's id, filled at reflect time.
+const VIEW: &str = include_str!("view.html");
+/// The verbs the view calls on the registry: its kinds, one kind, the fleet and the count.
+pub const VIEW_CALLS: [&str; 4] = ["bundles", "bundle", "fleet", "get_count"];
+
 /// What a parent holds over every agent it spawns: it controls it and assigns its work
 /// with a plain `send` (spawn itself sends nothing).
 const PARENT_VERBS: [&str; 4] = ["pause", "resume", "stop", "send"];
@@ -163,6 +169,11 @@ impl Handler for AgenticResourcesBundle {
                     "id": agent_id.as_str(),
                     "sentence": MAN,
                     "enabled": true, "bundles": names,
+                    "view": team_agent_view::view(
+                        VIEW,
+                        agent_id.as_str(),
+                        json!({agent_id.as_str(): VIEW_CALLS}),
+                    ),
                 })
             }
             verbs::Call::Bundles(_) => {
