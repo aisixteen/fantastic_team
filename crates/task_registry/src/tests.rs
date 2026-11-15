@@ -1285,3 +1285,73 @@ async fn not_in_subtree_refusal_reason_is_code() {
         "{up}"
     );
 }
+
+// ---- the registry's own html view (team#351) ----
+
+#[tokio::test]
+async fn reflect_carries_the_html_view_with_its_two_read_calls() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp).await;
+    for id in [r.reg.as_str(), "bare"] {
+        if id == "bare" {
+            create(
+                &r.kernel,
+                json!({"handler_module": HANDLER_MODULE, "id": "bare"}),
+            )
+            .await;
+        }
+        let refl = send(&r.kernel, id, json!({"type": "reflect"})).await;
+        let view = &refl["view"];
+        assert_eq!(view["kind"], "html", "{refl}");
+        let bytes = view["bytes"].as_str().expect("the view has its body");
+        assert!(
+            bytes.contains(&format!("var ME = \"{id}\"")),
+            "the view knows its agent"
+        );
+        assert!(!bytes.contains("{{agent}}"), "the placeholder is filled");
+        assert_eq!(view["calls"], json!({id: ["list", "get"]}), "{refl}");
+    }
+    // a disabled registry is drawn too: the view shows the refusal
+    let bare = send(&r.kernel, "bare", json!({"type": "reflect"})).await;
+    assert_eq!(bare["enabled"], false, "{bare}");
+}
+
+#[test]
+fn the_view_calls_only_read_verbs_of_this_bundle() {
+    let names: Vec<&str> = verbs::VERBS.iter().map(|v| v.name).collect();
+    for v in VIEW_CALLS {
+        assert!(names.contains(&v), "`{v}` is not a verb of the registry");
+        assert!(matches!(v, "list" | "get"), "`{v}` writes");
+    }
+}
+
+#[test]
+fn every_colour_of_the_view_is_a_skin_token() {
+    // the day skin's tokens live in the one `:root{}` block; the rest of the stylesheet
+    // names them and never a colour
+    let css_end = VIEW.find("</style>").expect("the view has a stylesheet");
+    let css = &VIEW[..css_end];
+    let root_at = css
+        .find(":root{")
+        .expect("the view holds its tokens in :root");
+    let root_end = root_at + css[root_at..].find('}').expect("the token block closes");
+    let rules = &css[root_end + 1..];
+    for literal in ["rgb(", "rgba(", "hsl(", "#"] {
+        assert!(
+            !rules.contains(literal),
+            "a literal colour ({literal}) outside the token block: {rules}"
+        );
+    }
+    for line in rules.lines().filter(|l| l.contains("--fc-")) {
+        for name in line.split("var(--fc-").skip(1) {
+            let token = format!("--fc-{}", name.split(')').next().unwrap_or(""));
+            assert!(
+                css[root_at..root_end].contains(&format!("{token}:")),
+                "the view uses {token}, which its token block does not define"
+            );
+        }
+    }
+    // the javascript's swatches are tokens too
+    let script = &VIEW[css_end..];
+    assert!(!script.contains("rgb("), "a literal colour in the script");
+}

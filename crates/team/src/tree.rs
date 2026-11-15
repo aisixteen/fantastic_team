@@ -142,6 +142,44 @@ pub fn grant_card_ids(kernel: &Arc<Kernel>, principal: &str, ids: &[String]) -> 
     granted
 }
 
+/// Let `principal` (the page's leg) reach the html view an agent's `reflect` carries (the
+/// task registry's): `reflect`, which the page reads the view from, plus the view's own
+/// `calls` on that agent, on both ends (the agent's `callable_by`, the leg's `can_call`).
+/// Merged with what each end already holds, never narrowed, never `*`. Idempotent; a
+/// dead id or principal grants nothing. Returns whether anything was written.
+pub fn grant_view_to(kernel: &Arc<Kernel>, principal: &str, id: &str, calls: &[&str]) -> bool {
+    if !kernel.exists(principal) || !kernel.exists(id) {
+        return false;
+    }
+    let mut verbs: Vec<&str> = vec!["reflect"];
+    for v in calls {
+        if *v != "*" && !verbs.contains(v) {
+            verbs.push(v);
+        }
+    }
+    let verbs = json!(verbs);
+    let by_agent = kernel.edit_callable_by(&fantastic_kernel::AgentId::from(id), |cb| {
+        let before = cb.clone();
+        union(
+            cb,
+            &Map::from_iter([(principal.to_string(), verbs.clone())]),
+        );
+        *cb != before
+    });
+    let by_leg = kernel.edit_can_call(&fantastic_kernel::AgentId::from(principal), |cc| {
+        let before = cc.clone();
+        union(cc, &Map::from_iter([(id.to_string(), verbs.clone())]));
+        *cc != before
+    });
+    match (by_agent, by_leg) {
+        (Ok(a), Ok(b)) => a || b,
+        (Err(e), _) | (_, Err(e)) => {
+            eprintln!("view grant `{principal}` -> `{id}`: {e}");
+            false
+        }
+    }
+}
+
 /// How many history pages [`grant_cards`] follows.
 const CARD_HISTORY_PAGES: usize = 50;
 

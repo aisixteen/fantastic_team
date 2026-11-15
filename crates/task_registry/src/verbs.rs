@@ -24,6 +24,16 @@ pub enum State {
 }
 
 impl State {
+    /// Every state, in declaration order: what a view counts by.
+    pub const ALL: [State; 6] = [
+        State::Waiting,
+        State::Running,
+        State::Blocked,
+        State::Done,
+        State::Failed,
+        State::Paused,
+    ];
+
     /// The state as it is stored and spelled in a call.
     #[must_use]
     pub fn as_str(self) -> &'static str {

@@ -27,10 +27,11 @@ TR=$($FANTASTIC kernel_state create_agent handler_module=task_registry.tools | j
 
 ## Tests
 
-### Test 1: reflect says it is not configured
+### Test 1: reflect says it is not configured, and carries the registry's own view
 
 ```bash
 $FANTASTIC $TR reflect | jq -e '.enabled == false'
+$FANTASTIC $TR reflect | jq -e '.view.kind == "html" and (.view.calls[.id] == ["list", "get"])'
 ```
 
 ### Test 2: every other verb is refused `disabled` without a task_store_id
