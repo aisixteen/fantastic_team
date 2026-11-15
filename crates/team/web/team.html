@@ -9,7 +9,7 @@
   /* No colour, font or radius is written here: the day skin's tokens (--fc-color-*, --fc-font-family-*,
      --fc-radius-*, --fc-shadow-*) are the base views' one block, served ahead of this sheet as page.css. */
   *, *::before, *::after { box-sizing: border-box; }
-  html { background: Canvas; }
+  html { background: var(--fc-color-page-bg); }
   body { margin: 0; min-height: 100vh; background: transparent; color: var(--fc-color-text-primary); font: 13px/1.45 var(--fc-font-family-sans); -webkit-font-smoothing: antialiased; }
 
   /* Two cells side by side; when they no longer fit (a phone) they stack into one column. */
