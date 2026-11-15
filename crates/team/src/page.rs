@@ -242,6 +242,20 @@ mod tests {
         assert!(!js.contains("history") && !js.contains("'send'") && !js.contains("\"send\""));
     }
 
+    /// A phone shows one panel at a time (the tree, or the opened agent) with a back button; the wide
+    /// page keeps two cells; the page has no mock-only parts (viewport row, Packs, role hues).
+    #[test]
+    fn a_phone_shows_one_panel_and_a_back_button() {
+        let (html, css, js) = split_page(HTML);
+        assert!(html.contains("id=\"layout\" data-panel=\"tree\""));
+        assert!(html.contains("aria-label=\"Back to the team\""));
+        assert!(css.contains("@media (max-width: 760px)"));
+        assert!(css.contains("#layout[data-panel=\"tree\"] #col-right"));
+        assert!(css.contains("#layout[data-panel=\"agent\"] #col-left"));
+        assert!(js.contains("panel('agent')") && js.contains("panel('tree')"));
+        assert!(js.contains("send('kernel', { type: 'reflect' })"));
+    }
+
     #[test]
     fn read_stream_serves_index_in_chunks_and_refuses_other_paths() {
         let (head, body) = read_stream(&rs("index.html", 0, Some(10)));

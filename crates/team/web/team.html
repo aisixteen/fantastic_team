@@ -16,6 +16,9 @@
     --fc-panel: rgb(255 255 255 / .58);
     --fc-line: rgb(0 0 0 / .10);
     --fc-text: #0B0B0B;
+    --fc-text2: #454545;
+    --fc-hover: rgb(0 0 0 / .09);
+    --fc-accent: #111111;
     --fc-head: rgb(0 0 0 / .70);
     --fc-shadow-bezel: 0 10px 30px rgb(0 0 0 / .10), 0 1px 2px rgb(0 0 0 / .06);
     --fc-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -30,25 +33,42 @@
   .cell { min-width: 0; min-height: calc(100vh - 24px); display: flex; flex-direction: column; padding: 0 6px 6px; border: 1px solid var(--fc-line); border-radius: 16px; background: var(--fc-panel); box-shadow: var(--fc-shadow-bezel); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
   #col-left { flex: 1 1 376px; }
   #col-right { flex: 3 1 560px; }
+  .head.phone-only { display: none; }
   .head { flex: none; display: flex; align-items: center; height: 32px; padding: 0 6px; font: 600 11px/1 var(--fc-mono); letter-spacing: .5px; text-transform: uppercase; color: var(--fc-head); }
   .body { flex: 1; min-height: 0; border-radius: 10px; overflow: hidden; }
   /* The base sidebar view fills the left cell; the opened agent's view fills the right one. */
   .body { position: relative; }
   .body iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; }
   .opened { padding: 12px; font: 13px/1.45 var(--fc-sans); }
+  .title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .title .sep { opacity: .55; }
+  .back { display: none; flex: none; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: var(--fc-text2); cursor: pointer; }
+  .back:hover { background: var(--fc-hover); }
+  .back:focus-visible { outline: 2px solid var(--fc-accent); outline-offset: 2px; }
   @media (max-width: 972px) {
     .cell { min-height: 320px; }
+  }
+  /* A phone: one column, one panel at a time. The tree is the first panel; picking an agent shows
+     its view, and the back button returns to the tree. */
+  @media (max-width: 760px) {
+    #layout { display: block; padding: 0; min-height: 100vh; }
+    .cell { min-height: 100vh; height: 100vh; padding: 0; border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+    @supports (height: 100dvh) { .cell { min-height: 100dvh; height: 100dvh; } }
+    .body { border-radius: 0; }
+    #layout[data-panel="tree"] #col-right, #layout[data-panel="agent"] #col-left { display: none; }
+    #col-right .head { display: flex; padding: 8px 12px 10px 6px; height: auto; border-bottom: 1px solid var(--fc-line); }
+    .back { display: grid; }
   }
 </style>
 </head>
 <body>
-<div id="layout">
+<div id="layout" data-panel="tree">
   <section id="col-left" class="cell" aria-label="Agents">
-    <div class="head">Agents</div>
+    <div class="head"><span class="title" id="title"><span>team</span></span></div>
     <div class="body" id="body-left"></div>
   </section>
   <section id="col-right" class="cell" aria-label="View">
-    <div class="head">View</div>
+    <div class="head phone-only"><button type="button" class="back" id="back" aria-label="Back to the team"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"></path></svg></button></div>
     <div class="body" id="body-right"></div>
   </section>
 </div>
@@ -69,6 +89,23 @@
     };
     var right = document.getElementById('body-right');
     var left = document.getElementById('body-left');
+    var layout = document.getElementById('layout');
+
+    // The panel a phone shows: the tree, or the opened agent. A wide page shows both and ignores it.
+    function panel(which) { layout.setAttribute('data-panel', which); }
+    document.getElementById('back').addEventListener('click', function () { panel('tree'); });
+
+    // The title bar: the product word and the kernel's own name (the root's display_name).
+    window.fantastic.send('kernel', { type: 'reflect' }).then(function (r) {
+      var n = r && (r.display_name || r.id);
+      if (typeof n !== 'string' || !n) return;
+      var t = document.getElementById('title');
+      var sep = document.createElement('span');
+      sep.className = 'sep';
+      sep.textContent = ' / ';
+      t.appendChild(sep);
+      t.appendChild(document.createTextNode(n));
+    }, function () { /* the leg may not reflect the root: the title stays "team" */ });
 
     function viewOf(r) {
       var v = r && r.view;
@@ -78,6 +115,7 @@
     function open(relay, id) {
       var shown = null;
       right.setAttribute('data-open', id);
+      panel('agent');
       right.textContent = '';
       var note = document.createElement('div');
       note.className = 'opened';
