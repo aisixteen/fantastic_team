@@ -35,6 +35,12 @@ const MAN: &str = "The cadencer: on a cadence each lead gets a short digest of t
 
 pub mod record;
 pub mod verbs;
+
+/// The cadencer's own html view (the design mock's cadencer page): the team page draws it
+/// from `reflect`. `{{agent}}` is the agent's id, filled at reflect time.
+const VIEW: &str = include_str!("cadencer/view.html");
+/// The verbs the view calls on the cadencer: its state, and the switch and settings.
+pub const VIEW_CALLS: [&str; 2] = ["status", "set"];
 const BOARD: &str = "board";
 
 /// One agent in a snapshot of the tree.
@@ -722,13 +728,17 @@ fn restart_timer(shared: &Arc<Mutex<Inner>>, inner: &mut Inner) {
     inner.next_beat_s = Some(now + inner.settings.cadence_s);
 }
 
-/// Only the parent, `maintainer`, `user` or the CLI leg (`mcp`) may steer the cadencer. A send with no origin is an
+/// Only the parent, `maintainer`, `user`, the CLI leg (`mcp`) or the team page's leg may steer the cadencer. A send with no origin is an
 /// operator send, which is trusted.
 fn allowed(inner: &Inner, origin: Option<&str>) -> bool {
     match origin {
         None => true,
         Some(s) => {
-            s == "maintainer" || s == "user" || s == "mcp" || inner.parent.as_deref() == Some(s)
+            s == "maintainer"
+                || s == "user"
+                || s == "mcp"
+                || s == crate::page::WS_ID
+                || inner.parent.as_deref() == Some(s)
         }
     }
 }
@@ -866,7 +876,15 @@ impl Handler for CadencerBundle {
                 }
                 Ok(Some(self.restore(agent_id, kernel)))
             }
-            verbs::Call::Reflect(_) => Ok(Some(json!({"id": agent_id.as_str(), "sentence": MAN}))),
+            verbs::Call::Reflect(_) => Ok(Some(json!({
+                "id": agent_id.as_str(),
+                "sentence": MAN,
+                "view": team_agent_view::view(
+                    VIEW,
+                    agent_id.as_str(),
+                    json!({agent_id.as_str(): VIEW_CALLS}),
+                ),
+            }))),
             call => {
                 let persists = matches!(call, verbs::Call::Configure(_) | verbs::Call::Set(_));
                 let reply = dispatch(&self.inner, call);
@@ -1689,7 +1707,7 @@ mod tests {
             ..Inner::default()
         };
         assert!(!allowed(&g, Some("stranger")));
-        for who in ["maintainer", "user", "mcp", "boss"] {
+        for who in ["maintainer", "user", "mcp", "boss", crate::page::WS_ID] {
             assert!(allowed(&g, Some(who)), "{who}");
         }
         assert!(allowed(&g, None));

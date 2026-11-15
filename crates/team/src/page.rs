@@ -101,7 +101,8 @@ pub fn file_bytes(path: &str) -> Option<Vec<u8>> {
     Some(
         match path {
             "index.html" => index_html(),
-            "page.css" => split_page(HTML).1,
+            // the day skin's one token block (the base views' and the team's own views'), then the page's sheet
+            "page.css" => format!("{}\n{}", team_agent_view::TOKENS, split_page(HTML).1),
             "shim.js" => SHIM.to_string(),
             "page.js" => split_page(HTML).2,
             "view_relay.js" => fantastic_tui::VIEW_RELAY_JS.to_string(),
@@ -240,6 +241,52 @@ mod tests {
         assert_eq!(js.matches("relay.mountView(").count(), 2, "the sidebar and the opened agent");
         assert!(js.contains("mount: right") && js.contains("calls: v.calls"));
         assert!(!js.contains("history") && !js.contains("'send'") && !js.contains("\"send\""));
+    }
+
+    /// A phone shows one panel at a time (the tree, or the opened agent) with a back button; the wide
+    /// page keeps two cells; the page has no mock-only parts (viewport row, Packs, role hues).
+    #[test]
+    fn a_phone_shows_one_panel_and_a_back_button() {
+        let (html, css, js) = split_page(HTML);
+        assert!(html.contains("id=\"layout\" data-panel=\"tree\""));
+        assert!(html.contains("aria-label=\"Back to the team\""));
+        assert!(css.contains("@media (max-width: 760px)"));
+        assert!(css.contains("#layout[data-panel=\"tree\"] #col-right"));
+        assert!(css.contains("#layout[data-panel=\"agent\"] #col-left"));
+        assert!(js.contains("panel('agent')") && js.contains("panel('tree')"));
+        assert!(js.contains("send('kernel', { type: 'reflect' })"));
+    }
+
+    /// The page writes no colour of its own: its sheet is the shared skin tokens, then rules on them.
+    #[test]
+    fn the_page_sheet_has_the_shared_tokens_and_no_literal_colour() {
+        let (_, own, _) = split_page(HTML);
+        assert!(!own.contains("rgb") && !own.contains("hsl") && !own.contains("--fc-text2"));
+        // a `#` + 3, 4, 6 or 8 hex digits that ends there is a hex colour (`#back` is an id, `#col-left` too)
+        for (i, _) in own.match_indices('#') {
+            let run: String = own[i + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            let hex = run.chars().all(|c| c.is_ascii_hexdigit()) && [3, 4, 6, 8].contains(&run.len());
+            assert!(!hex, "literal colour #{run}");
+        }
+        assert!(!own.contains(":root"), "tokens come from the shared block");
+        let served = String::from_utf8(file_bytes("page.css").unwrap()).unwrap();
+        assert!(served.starts_with(team_agent_view::TOKENS));
+        assert_eq!(served.matches(":root{").count(), 1);
+        for name in own.split("var(").skip(1).filter_map(|s| s.split([')', ',']).next()) {
+            assert!(team_agent_view::TOKENS.contains(&format!("{name}:")), "{name}");
+        }
+    }
+
+    /// A name card for an agent with no view, and the back button's waiting badge, are in the page.
+    #[test]
+    fn the_page_has_the_name_card_and_the_waiting_badge() {
+        let (html, _, js) = split_page(HTML);
+        assert!(js.contains("This agent has no view of its own."));
+        assert!(js.contains("send('user', { type: 'inquiries' })"));
+        assert!(html.contains("id=\"back-badge\""));
     }
 
     #[test]

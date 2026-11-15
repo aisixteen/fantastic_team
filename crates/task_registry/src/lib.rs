@@ -29,6 +29,12 @@
 //!
 //! Verbs: `reflect`, `add`, `assign`, `reassign`,
 //! `status`, `report`, `list`, `get`.
+//!
+//! HOW IT IS DRAWN. `reflect` carries the registry's own html view (`view.html`,
+//! compiled in, no record field): the tasks by state, the holders, the grouped table,
+//! one task's facts, history and last report. The view reads `list` and `get` on its
+//! own agent ([`VIEW_CALLS`]) and nothing else; a page mounts it the way it mounts
+//! the base sidebar and chat views.
 
 #![deny(missing_docs)]
 
@@ -54,6 +60,21 @@ pub const MAN: &str = "A registry of tasks: who holds each one and where it came
 
 /// How many rows one store read asks for.
 const PAGE: u64 = 500;
+
+/// The registry's own html view, compiled in: a template on the team's shared view look
+/// (`team_agent_view`: the one skin token block, the mock's parts, the shared helpers);
+/// `reflect` returns it with `{{agent}}` and `{{helpers}}` filled.
+const VIEW: &str = include_str!("view.html");
+
+/// The verbs the view calls on its own agent: the two reads, never a write.
+pub const VIEW_CALLS: [&str; 2] = ["list", "get"];
+
+/// The `view` a registry's `reflect` carries: `{kind: "html", bytes, calls}`, the page of
+/// [`VIEW`] for `id` and the calls naming `id` with [`VIEW_CALLS`].
+#[must_use]
+pub fn view_of(id: &str) -> Value {
+    team_agent_view::view(VIEW, id, json!({id: VIEW_CALLS}))
+}
 
 /// The task_registry bundle. It holds no tasks: only one lock per registry agent, so
 /// the read-modify-append of two leads cannot race.
@@ -280,6 +301,7 @@ impl Handler for TaskRegistryBundle {
                 "id": agent_id.as_str(),
                 "sentence": MAN,
                 "enabled": store.is_some(),
+                "view": view_of(agent_id.as_str()),
             })));
         }
         let Some(store) = store else {

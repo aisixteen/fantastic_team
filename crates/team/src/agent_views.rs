@@ -147,10 +147,15 @@ pub fn board_view(board: &Value) -> Value {
             })
             .collect();
         let plan = plan_of(bundles);
-        let tasks: Vec<Vec<String>> = plan["tasks"]
-            .as_array()
-            .into_iter()
-            .flatten()
+        let entries: Vec<&Value> = plan["tasks"].as_array().into_iter().flatten().collect();
+        let count = |s: &str| entries.iter().filter(|t| t["status"] == s).count();
+        // the registry's six real states, failed and paused included
+        let by_status: Vec<Vec<String>> = team_task_registry::verbs::State::ALL
+            .iter()
+            .map(|s| vec![s.as_str().to_string(), count(s.as_str()).to_string()])
+            .collect();
+        let tasks: Vec<Vec<String>> = entries
+            .iter()
             .map(|t| {
                 vec![
                     or_dash(text(&t["id"])),
@@ -160,7 +165,16 @@ pub fn board_view(board: &Value) -> Value {
                 ]
             })
             .collect();
-        let mut summary = vec![format!("{} agents, {} tasks", agents.len(), tasks.len())];
+        // the mock's subline; held = running, the board's rule (`bundles_load`)
+        let mut summary = vec![
+            format!(
+                "{} tasks · {} held · {} blocked",
+                tasks.len(),
+                count("running"),
+                count("blocked")
+            ),
+            format!("{} agents", agents.len()),
+        ];
         let f = &bundles["fleet"];
         if let Some(r) = f["running"].as_u64() {
             summary.push(format!("fleet {r} running"));
@@ -171,7 +185,8 @@ pub fn board_view(board: &Value) -> Value {
             summary,
             vec![
                 section("agents", &["agent", "bundle", "state"], agents),
-                section("tasks", &["id", "source", "holder", "status"], tasks),
+                section("by status", &["state", "count"], by_status),
+                section("tasks", &["issue", "tracker", "holder", "status"], tasks),
             ],
         );
     }
@@ -494,14 +509,16 @@ mod tests {
                 {"id": "c1", "bundle": "coder", "state": "active", "children": [
                     {"id": "c2", "bundle": "reviewer", "state": "active", "children": []}]}]},
             "agents": [],
-            "tasks": [{"id": "t1", "source": "o/r#1", "holder": "c1", "status": "claimed"},
-                      {"id": "t2", "source": "o/r#2", "holder": {"subtree": "c1"}, "status": "open"}]}})
+            "tasks": [{"id": "t1", "source": "o/r#1", "holder": "c1", "status": "running"},
+                      {"id": "t2", "source": "o/r#2", "holder": {"subtree": "c1"}, "status": "waiting"},
+                      {"id": "t3", "source": "o/r#3", "holder": "c2", "status": "failed"},
+                      {"id": "t4", "source": "o/r#4", "holder": "c2", "status": "paused"}]}})
     }
 
     #[test]
     fn board_view_bundles_mode_lists_agent_tree_and_registry_tasks() {
         let m = board_view(&bundles_board());
-        assert_eq!(names(&m), ["agents", "tasks"]);
+        assert_eq!(names(&m), ["agents", "by status", "tasks"]);
         assert_eq!(
             rows(&m, 0),
             vec![
@@ -511,13 +528,36 @@ mod tests {
             ]
         );
         assert_eq!(
-            rows(&m, 1),
+            m["sections"][2]["columns"],
+            json!(["issue", "tracker", "holder", "status"])
+        );
+        assert_eq!(
+            rows(&m, 2),
             vec![
-                row(&["t1", "o/r#1", "c1", "claimed"]),
-                row(&["t2", "o/r#2", "subtree:c1", "open"]),
+                row(&["t1", "o/r#1", "c1", "running"]),
+                row(&["t2", "o/r#2", "subtree:c1", "waiting"]),
+                row(&["t3", "o/r#3", "c2", "failed"]),
+                row(&["t4", "o/r#4", "c2", "paused"]),
             ]
         );
+        assert_eq!(m["summary"][0], "4 tasks · 1 held · 0 blocked");
         assert!(m["summary"].to_string().contains("fleet 2 running"));
+    }
+
+    #[test]
+    fn board_view_bundles_mode_counts_the_six_real_states_failed_and_paused_included() {
+        let m = board_view(&bundles_board());
+        assert_eq!(
+            rows(&m, 1),
+            vec![
+                row(&["waiting", "1"]),
+                row(&["running", "1"]),
+                row(&["blocked", "0"]),
+                row(&["done", "0"]),
+                row(&["failed", "1"]),
+                row(&["paused", "1"]),
+            ]
+        );
     }
 
     #[test]

@@ -1,0 +1,130 @@
+<div class="head"><span class="t">cadencer <span class="sl">/</span> team_cadencer.tools</span><span class="chip" id="state">-</span></div>
+<div class="pg" id="pg"></div>
+<script>
+{{helpers}}
+// pure (cadencer)
+var BUSY = "var(--fc-color-accent-base)", IDLE = "var(--fc-color-line-strong)", STALLED = "var(--fc-color-status-warn)";
+// a stalled worker is also a busy one in the registry's count: the three parts are disjoint
+function loadParts(workers) {
+  var w = workers && typeof workers === "object" ? workers : {};
+  var stalled = count(w.stalled);
+  return [
+    { key: "busy", label: "busy", n: Math.max(count(w.busy) - stalled, 0), color: BUSY },
+    { key: "idle", label: "idle", n: count(w.idle), color: IDLE },
+    { key: "stalled", label: "stalled", n: stalled, color: STALLED }
+  ];
+}
+// the settings a status reply carries, whatever else it holds
+function settingsOf(status) {
+  var s = status && typeof status.settings === "object" && status.settings ? status.settings : {};
+  return {
+    enabled: s.enabled === true,
+    quiet: s.quiet === true,
+    cadence: typeof s.cadence === "number" ? s.cadence : null,
+    stall_after: typeof s.stall_after === "number" ? s.stall_after : null,
+    off: Array.isArray(s.off) ? s.off.filter(function (x) { return typeof x === "string" && x !== ""; }) : []
+  };
+}
+// the positive whole number an input holds, or null
+function wholeSeconds(text) {
+  var n = Number(String(text).trim());
+  return String(text).trim() !== "" && isFinite(n) && n >= 1 && Math.floor(n) === n ? n : null;
+}
+// end pure
+var AGENT = "{{agent}}";
+var pg = document.getElementById("pg");
+var stateChip = document.getElementById("state");
+var focused = null;
+
+function setCall(p) {
+  p.type = "set";
+  return call(AGENT, p).then(refresh);
+}
+function toggle(label, note, on, field) {
+  var b = h("button", "row2");
+  b.setAttribute("role", "switch");
+  b.setAttribute("aria-checked", on ? "true" : "false");
+  var sw = h("span", "sw" + (on ? "" : " off"));
+  put(b, sw, h("b", null, label), h("span", "dim m", note));
+  b.addEventListener("click", function () { var p = {}; p[field] = !on; setCall(p); });
+  return b;
+}
+function numberField(label, value, field) {
+  var f = h("label", "fld");
+  var i = h("input");
+  i.type = "number"; i.min = "1"; i.value = value == null ? "" : String(value);
+  i.setAttribute("aria-label", label);
+  i.addEventListener("change", function () {
+    var n = wholeSeconds(i.value);
+    if (n === null) { refresh(); return; }
+    var p = {}; p[field] = n; setCall(p);
+  });
+  return put(f, h("small", null, label), i, document.createTextNode(" s"));
+}
+function render(status) {
+  var s = settingsOf(status);
+  stateChip.textContent = s.enabled ? "on" : "off";
+  stateChip.className = "chip " + (s.enabled ? "ok" : "warn");
+  var keep = document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute("aria-label") : null;
+  pg.textContent = "";
+  put(pg, put(h("div", "ttl"), h("h1", null, "cadencer"), pillOf("tool")));
+
+  var sec = section("Switch and settings", "status.settings · set");
+  var inn = h("div", "in");
+  var row = h("div", "row2");
+  row.style.gap = "18px";
+  put(row, toggle("Digests on", "enabled", s.enabled, "enabled"), numberField("cadence", s.cadence, "cadence"), numberField("stall after", s.stall_after, "stall_after"), toggle("Quiet", "only changes and stalls", s.quiet, "quiet"));
+  var off = put(h("div", "row2"), h("span", "dim m", "Switched off for (settings.off):"));
+  s.off.forEach(function (id) {
+    var b = h("button", "pill", id + " ×");
+    b.setAttribute("aria-label", "switch digests on for " + id);
+    b.addEventListener("click", function () { setCall({ lead: id, on: true }); });
+    put(off, b);
+  });
+  var add = h("label", "fld");
+  var li = h("input", "wide");
+  li.setAttribute("aria-label", "lead");
+  li.placeholder = "lead id";
+  var ab = h("button", "btn sm", "+ lead");
+  ab.addEventListener("click", function () { var v = li.value.trim(); if (v !== "") setCall({ lead: v, on: false }); });
+  put(off, put(add, li), ab);
+  put(inn, row, off);
+  put(pg, put(sec, inn));
+
+  var errs = count(status && status.delivery_errors);
+  var kp = h("div", "kpis");
+  put(kp,
+    kpi("ticks", count(status && status.ticks), "since process start"),
+    kpi("digests sent", count(status && status.digests_sent), "bytes/h " + bytesText(status && status.digest_bytes_per_hour)),
+    kpi("delivery errors", errs, "counted, never fatal", errs > 0 ? "warn" : null));
+  put(pg, kp);
+
+  var load = section("Load", "status.load");
+  var li2 = h("div", "in");
+  var parts = loadParts(status && status.load && status.load.workers);
+  put(li2, h("div", "sub", "Workers below the project lead"), bar(parts), legend(parts));
+  put(pg, put(load, li2));
+  if (keep) {
+    var again = pg.querySelector('[aria-label="' + keep + '"]');
+    if (again) again.focus();
+  }
+}
+function refresh() {
+  return call(AGENT, { type: "status" }).then(function (r) {
+    if (!r || r.error) {
+      pg.textContent = "";
+      put(pg, h("div", "err", "The cadencer does not answer."));
+      stateChip.textContent = "-";
+      stateChip.className = "chip";
+      return;
+    }
+    render(r);
+  });
+}
+refresh();
+setInterval(function () {
+  var a = document.activeElement;
+  if (a && a.tagName === "INPUT") return;
+  refresh();
+}, 5000);
+</script>

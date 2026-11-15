@@ -90,6 +90,24 @@ impl Booted {
     }
 }
 
+/// `caller` sends `payload` to `target` AS ITSELF: the call gate judges it as that agent
+/// (an operator send, outside any dispatch, is ungated). The way a test stands where the
+/// page's leg or any other agent stands.
+pub async fn as_caller(
+    k: &Arc<Kernel>,
+    caller: &str,
+    target: &str,
+    payload: serde_json::Value,
+) -> serde_json::Value {
+    fantastic_kernel::send::as_agent(&fantastic_kernel::AgentId::from(caller), async {
+        k.send(vec![fantastic_kernel::Item::new(target, payload)])
+            .await
+            .remove(0)
+            .result
+    })
+    .await
+}
+
 /// Seed `dir` and boot it with `fantastic_team::register_team` and then `extras`. A seed
 /// of a folder that already has `.fantastic` writes nothing. Panics with the error text
 /// when the boot fails.

@@ -1285,3 +1285,75 @@ async fn not_in_subtree_refusal_reason_is_code() {
         "{up}"
     );
 }
+
+// ---- the registry's own html view (team#351) ----
+
+#[tokio::test]
+async fn reflect_carries_the_html_view_with_its_two_read_calls() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp).await;
+    for id in [r.reg.as_str(), "bare"] {
+        if id == "bare" {
+            create(
+                &r.kernel,
+                json!({"handler_module": HANDLER_MODULE, "id": "bare"}),
+            )
+            .await;
+        }
+        let refl = send(&r.kernel, id, json!({"type": "reflect"})).await;
+        let view = &refl["view"];
+        assert_eq!(view["kind"], "html", "{refl}");
+        let bytes = view["bytes"].as_str().expect("the view has its body");
+        assert!(
+            bytes.contains(&format!("var ME = \"{id}\"")),
+            "the view knows its agent"
+        );
+        assert!(!bytes.contains("{{agent}}"), "the placeholder is filled");
+        assert_eq!(view["calls"], json!({id: ["list", "get"]}), "{refl}");
+    }
+    // a disabled registry is drawn too: the view shows the refusal
+    let bare = send(&r.kernel, "bare", json!({"type": "reflect"})).await;
+    assert_eq!(bare["enabled"], false, "{bare}");
+}
+
+#[test]
+fn the_view_calls_only_read_verbs_of_this_bundle() {
+    let names: Vec<&str> = verbs::VERBS.iter().map(|v| v.name).collect();
+    for v in VIEW_CALLS {
+        assert!(names.contains(&v), "`{v}` is not a verb of the registry");
+        assert!(matches!(v, "list" | "get"), "`{v}` writes");
+    }
+}
+
+#[test]
+fn every_colour_of_the_view_is_a_skin_token() {
+    // the day skin's tokens live in the ONE `:root{}` block of the team's shared view look
+    // (team_agent_view); the registry's own stylesheet names them and never a colour
+    let page = view_of("x")["bytes"].as_str().unwrap().to_string();
+    assert_eq!(page.matches(":root{").count(), 1, "one token block");
+    let root_at = page.find(":root{").unwrap();
+    let root_end = root_at + page[root_at..].find('}').unwrap();
+    let tokens = &page[root_at..root_end];
+    let own_end = VIEW.find("</style>").expect("the view has a stylesheet");
+    let own = &VIEW[..own_end];
+    assert!(!own.contains(":root"), "the view carries no token block of its own");
+    for literal in ["rgb(", "rgba(", "hsl(", "#"] {
+        assert!(
+            !own.contains(literal),
+            "a literal colour ({literal}) in the view's own rules: {own}"
+        );
+    }
+    for line in own.lines().filter(|l| l.contains("--fc-")) {
+        for name in line.split("var(--fc-").skip(1) {
+            let token = format!("--fc-{}", name.split([')', ',']).next().unwrap_or(""));
+            assert!(
+                tokens.contains(&format!("{token}:")),
+                "the view uses {token}, which the shared token block does not define"
+            );
+        }
+    }
+    // the javascript's swatches are tokens too, and the shared helpers are in the page
+    let script = &VIEW[own_end..];
+    assert!(!script.contains("rgb("), "a literal colour in the script");
+    assert!(page.contains("function resultClass") && !page.contains("{{helpers}}"));
+}

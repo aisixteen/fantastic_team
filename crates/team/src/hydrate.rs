@@ -92,7 +92,7 @@ mod tests {
     use super::*;
     use crate::new_team::{BUNDLES, GITHUB, LEAD, WORKER_EXEC, WORKER_FILES};
     use crate::page::{PAGE_ID, WEB_ID, WS_ID};
-    use crate::test_boot::{boot_at, Seed};
+    use crate::test_boot::{as_caller, boot_at, Seed};
     use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
     use serde_json::{json, Map};
     use std::collections::BTreeMap;
@@ -487,22 +487,6 @@ mod tests {
         );
     }
 
-    /// `caller` sends `payload` to `target` AS ITSELF: the call gate judges it as that agent.
-    async fn as_caller(
-        k: &std::sync::Arc<fantastic_kernel::Kernel>,
-        caller: &str,
-        target: &str,
-        payload: Value,
-    ) -> Value {
-        fantastic_kernel::send::as_agent(&fantastic_kernel::AgentId::from(caller), async {
-            k.send(vec![fantastic_kernel::Item::new(target, payload)])
-                .await
-                .remove(0)
-                .result
-        })
-        .await
-    }
-
     /// The page leg's grant on `user` holds the two verbs the yaml gives it (fantastic's boot
     /// adds `send` to it: every agent's way back).
     fn page_verbs(g: &Value) -> bool {
@@ -515,6 +499,59 @@ mod tests {
     /// for its own reasons, such as a missing argument).
     fn admitted(r: &Value, what: &str) {
         assert_ne!(r["reason"], "unauthorized", "{what}: {r}");
+    }
+
+    /// The team page's title bar asks `kernel` (fantastic's reserved address of the root) for
+    /// its `reflect` AS THE PAGE LEG (`team.html`: `send('kernel', {type: 'reflect'})`) and
+    /// shows `display_name`, else `id`. The grant the yaml gives the leg is on `@root`, the
+    /// kernel's root, on both ends: the leg's `can_call` (resolved to the root's id at the
+    /// seed) and the root's `callable_by` (the root's own declaration, taken at the first
+    /// boot). No other grant: the call is admitted at the first boot and after a restart, and
+    /// its reply carries the root's name the page shows.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_page_leg_reads_the_kernels_name_for_the_title_bar() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut k = boot_at(dir.path(), Seed::Team, &[], None).await;
+        for run in ["first boot", "restart"] {
+            let root = k.root().expect("a root");
+            let r = as_caller(&k, WS_ID, "kernel", json!({"type": "reflect"})).await;
+            assert_ne!(r["reason"], "unauthorized", "{run}: {r}");
+            assert_eq!(r["id"], root.id.as_str(), "{run}: {r}");
+            // what the page shows: `display_name || id`, the root's own name
+            let shown = r["display_name"].as_str().unwrap_or("");
+            assert!(!shown.is_empty(), "{run}: {r}");
+            assert_eq!(shown, root.name_or_id(), "{run}");
+            // both ends hold exactly the yaml's `@root` grant, nothing wider
+            let live = |id: &str| -> Value {
+                Value::Object(
+                    k.agents
+                        .get(&fantastic_kernel::AgentId::from(id))
+                        .unwrap()
+                        .meta
+                        .read()
+                        .unwrap()
+                        .clone(),
+                )
+            };
+            assert_eq!(
+                live(WS_ID)["can_call"][root.id.as_str()],
+                json!(["reflect", "list_agents"]),
+                "{run}"
+            );
+            assert_eq!(
+                live(root.id.as_str())["callable_by"][WS_ID],
+                json!(["reflect", "list_agents"]),
+                "{run}"
+            );
+            // a kernel verb the yaml does not grant stays shut
+            let shut = as_caller(&k, WS_ID, "kernel", json!({"type": "delete_agent", "id": "x"})).await;
+            assert_eq!(shut["reason"], "unauthorized", "{run}: {shut}");
+            if run == "first boot" {
+                k.flush_records().await;
+                k = k.restart().await;
+            }
+        }
+        k.stop().await;
     }
 
     /// THE CALLEE END of the five edges, from the yaml alone (fantastic#500 parent entries):

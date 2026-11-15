@@ -1,0 +1,140 @@
+<div class="head"><span class="t">github <span class="sl">/</span> team_github.tools</span><span class="chip" id="auth">-</span></div>
+<div class="pg" id="pg"></div>
+<script>
+{{helpers}}
+// pure (github)
+// the chip of an auth mode: its text and class (an unusable credential stops the team)
+function authChip(auth) {
+  var m = auth && typeof auth.mode === "string" ? auth.mode : "";
+  if (m === "app" || m === "personal") return { text: "auth: " + m, cls: "ok" };
+  if (m === "local") return { text: "auth: local", cls: "warn" };
+  if (m === "invalid") return { text: "auth: invalid", cls: "bad" };
+  return { text: "auth: unknown", cls: "" };
+}
+// the kept calls come oldest first; the table shows the newest first
+function newestFirst(calls) {
+  return (Array.isArray(calls) ? calls : []).filter(function (c) { return c && typeof c === "object"; }).slice().reverse();
+}
+// "5 passed, 1 pending, 1 failed" from the check runs a pr_status reply lists
+function checksText(checks) {
+  var list = Array.isArray(checks) ? checks : [];
+  if (list.length === 0) return "none";
+  var failed = 0, pending = 0, passed = 0;
+  list.forEach(function (c) {
+    var con = c && c.conclusion;
+    if (c && c.status !== "completed") pending++;
+    else if (con === "success" || con === "neutral" || con === "skipped") passed++;
+    else failed++;
+  });
+  var out = [];
+  if (passed) out.push(passed + " passed");
+  if (pending) out.push(pending + " pending");
+  if (failed) out.push(failed + " failed");
+  return out.join(", ");
+}
+function reviewText(state) { var s = txt(state).replace(/_/g, " "); return s === "" ? "-" : s; }
+function shortSha(sha) { return txt(sha).slice(0, 7) || "-"; }
+// the number an input holds, or null
+function prNumber(text) {
+  var t = String(text).trim();
+  var n = Number(t);
+  return t !== "" && isFinite(n) && n >= 1 && Math.floor(n) === n ? n : null;
+}
+// end pure
+// the connector's own verbs, filled when `reflect` is answered
+var VERBS = {{verbs}};
+var AGENT = "{{agent}}";
+var pg = document.getElementById("pg");
+var authChipEl = document.getElementById("auth");
+var lookup = { out: null, repo: "", number: "" };
+
+function kvRow(dl, k, valueNode) { put(dl, h("dt", null, k), put(h("dd"), valueNode)); }
+function renderLookup(box) {
+  box.textContent = "";
+  var o = lookup.out;
+  if (!o) return;
+  if (o.error) { put(box, h("div", "err", "No answer: " + txt(o.error))); return; }
+  var dl = h("dl", "kv");
+  var st = put(h("span"), pillOf(txt(o.state) || "-"));
+  if (o.draft === true) put(st, document.createTextNode(" "), pillOf("draft"));
+  kvRow(dl, "state", st);
+  kvRow(dl, "head", h("span", "m", shortSha(o.head_sha)));
+  kvRow(dl, "checks", h("span", null, checksText(o.checks)));
+  kvRow(dl, "review", h("span", null, reviewText(o.review_state)));
+  put(box, dl);
+}
+function prSection() {
+  var sec = section("Pull request", "pr_status");
+  var inn = h("div", "in");
+  var row = h("div", "row2");
+  var rf = h("label", "fld"), ri = h("input", "wide");
+  ri.setAttribute("aria-label", "repo"); ri.value = lookup.repo; ri.placeholder = "owner/name";
+  var nf = h("label", "fld"), ni = h("input");
+  ni.setAttribute("aria-label", "pull request number"); ni.value = lookup.number; ni.inputMode = "numeric";
+  var go = h("button", "btn", "Look up");
+  var box = h("div", "col");
+  go.addEventListener("click", function () {
+    lookup.repo = ri.value.trim(); lookup.number = ni.value;
+    var n = prNumber(ni.value);
+    if (lookup.repo === "" || n === null) { lookup.out = { error: "give a repo and a pull request number" }; renderLookup(box); return; }
+    call(AGENT, { type: "pr_status", repo: lookup.repo, number: n }).then(function (r) {
+      lookup.out = r || { error: "the connector does not answer" };
+      renderLookup(box);
+    });
+  });
+  put(row, put(rf, h("small", null, "repo"), ri), put(nf, h("small", null, "#"), ni), go);
+  put(inn, row, box);
+  renderLookup(box);
+  return put(sec, inn);
+}
+function render(r) {
+  var chip = authChip(r.auth);
+  authChipEl.textContent = chip.text;
+  authChipEl.className = "chip " + chip.cls;
+  var focus = document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute("aria-label") : null;
+  pg.textContent = "";
+  put(pg, put(h("div", "ttl"), h("h1", null, "github"), pillOf("tool")));
+
+  var idn = section("Identity and auth", "reflect.auth · repos · api_url");
+  var dl = h("dl", "kv");
+  var allow = h("span");
+  (Array.isArray(r.repos) ? r.repos : []).forEach(function (x) { put(allow, pillOf(txt(x)), document.createTextNode(" ")); });
+  kvRow(dl, "allowlist", allow);
+  kvRow(dl, "api url", h("span", "m", txt(r.api_url) || "-"));
+  put(idn, put(h("div", "in"), dl));
+
+  var calls = newestFirst(r.recent_calls);
+  var rc = section("Recent calls", "reflect.recent_calls (last 50)", "newest first");
+  var tbl = h("div", "tbl");
+  tbl.style.setProperty("--c", "1fr 1.7fr 74px");
+  put(tbl, put(h("div", "tr th"), h("span", null, "verb"), h("span", null, "target"), h("span", null, "result")));
+  calls.forEach(function (c) {
+    put(tbl, put(h("div", "tr"), h("span", "m ell", txt(c.verb)), h("span", "m t2 ell", txt(c.target) || "-"), pillOf(txt(c.result), resultClass(c.result))));
+  });
+  if (calls.length === 0) put(tbl, h("div", "empty", "No calls yet."));
+  put(rc, tbl);
+
+  var vb = section("Verbs", "verb_docs");
+  var pills = h("div", "row2");
+  pills.style.gap = "4px";
+  VERBS.forEach(function (v) { put(pills, pillOf(v)); });
+  put(vb, put(h("div", "in"), pills));
+
+  var left = put(h("div", "col"), idn, rc, vb);
+  var right = put(h("div", "col"), prSection());
+  put(pg, put(h("div", "two"), left, right));
+  if (focus) { var again = pg.querySelector('[aria-label="' + focus + '"]'); if (again) again.focus(); }
+}
+function refresh() {
+  return call(AGENT, { type: "reflect" }).then(function (r) {
+    if (!r || r.error) { pg.textContent = ""; put(pg, h("div", "err", "The connector does not answer.")); return; }
+    render(r);
+  });
+}
+refresh();
+setInterval(function () {
+  var a = document.activeElement;
+  if (a && a.tagName === "INPUT") return;
+  refresh();
+}, 10000);
+</script>

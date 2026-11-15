@@ -264,3 +264,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `f837c07`
 
 `Cargo.lock` pins fantastic `f837c07` (base PR #692, aisixteen/fantastic#691): the free e2e after #651 (`cell_id`, `command`, `saved` off the records; `await_set` sends text only; digits read as an id; `docs of=<bundle>` lists its own verbs; the preview's file switch race). No team code change.
+
+## Pin at `eaf6056`
+
+`Cargo.lock` pins fantastic `eaf6056` (base PR #694, fantastic_team#351): the base tree, chat and file views aligned to the label-pruned design mock (pinned files rows, composer answers an open question, the file view's agent breadcrumb). The team page mounts them unchanged.

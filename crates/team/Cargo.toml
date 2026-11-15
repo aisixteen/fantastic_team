@@ -24,6 +24,7 @@ fantastic-web.workspace = true
 fantastic-web-ws.workspace = true
 team-git-connector = { path = "../git_connector" }
 team-github-connector = { path = "../github_connector" }
+team-agent-view = { path = "../agent_view" }
 tokio.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true

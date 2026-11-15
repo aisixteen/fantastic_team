@@ -328,6 +328,26 @@ pub fn chat_open(node: &str) -> Value {
     })
 }
 
+/// The `open` reply for an agent whose own `reflect` carries its html view (the task
+/// registry): the page mounts that view, over `reflect` and the view's calls that
+/// `declared_views::grant_views` granted the leg.
+pub fn view_open(node: &str) -> Value {
+    json!({
+        "view": "html",
+        "target": node,
+        "fullscreen": true,
+        "back": "sidebar",
+    })
+}
+
+/// The handler module of a live agent, if any.
+fn module_of(kernel: &fantastic_kernel::Kernel, id: &str) -> Option<String> {
+    kernel
+        .agents
+        .get(&fantastic_kernel::AgentId::from(id))
+        .and_then(|e| e.value().handler_module.clone())
+}
+
 /// What a click shows: a worker or subagent opens its full-screen chat; a group
 /// or team opens a dispatcher bound to that node.
 pub fn open_target(node: &str, kind: &str) -> Value {
@@ -1048,6 +1068,13 @@ impl fantastic_kernel::bundle::Handler for DispatcherBundle {
                     )
                     .await;
                     return Ok(Some(out));
+                }
+                // A task registry opens as its own html view (its `reflect` carries it): the
+                // page's leg gets `reflect` and the view's two reads on it, nothing else (the
+                // one view grant, as at boot; a registry made since then gets it here).
+                if module_of(kernel, &node).as_deref() == Some(team_task_registry::HANDLER_MODULE) {
+                    crate::declared_views::grant_views(kernel);
+                    return Ok(Some(view_open(&node)));
                 }
                 let kind = kind_of(&node, &team, &groups);
                 // A spawned lead or child is chatted with like a worker: grant it now.
@@ -2441,6 +2468,54 @@ mod tests {
         kernel.stop().await;
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_of_a_task_registry_answers_its_html_view_and_grants_the_leg_its_reads() {
+        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
+        use fantastic_kernel::Item;
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_in_bundles_mode(dir.path(), None).await;
+        // a registry with a store the operator already lets the leg read `list` on
+        kernel
+            .send(vec![Item::new(
+                DEFAULT_ROOT_ID,
+                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "tasks",
+                    "handler_module": team_task_registry::HANDLER_MODULE,
+                    "callable_by": {"team_ws": ["list"], "lead": "*"}}),
+            )])
+            .await;
+        let out = ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "open", "node": "tasks"}),
+        )
+        .await;
+        assert_eq!(out["view"], "html", "{out}");
+        assert_eq!(out["target"], "tasks");
+        assert_eq!(out["fullscreen"], true);
+        let want = json!(["list", "reflect", "get"]);
+        let tasks = meta_of(&kernel, "tasks");
+        assert_eq!(tasks["callable_by"]["team_ws"], want, "{tasks:?}");
+        assert_eq!(tasks["callable_by"]["lead"], "*", "another grant is kept");
+        let ws = meta_of(&kernel, "team_ws");
+        assert_eq!(
+            ws["can_call"]["tasks"],
+            json!(["reflect", "list", "get"]),
+            "{ws:?}"
+        );
+        assert!(ws["can_call"].get("*").is_none());
+        // the leg now reads the view the registry's reflect carries
+        let refl = kernel
+            .send(vec![Item::new("tasks", json!({"type": "reflect"}))])
+            .await
+            .remove(0)
+            .result;
+        assert_eq!(refl["view"]["kind"], "html", "{refl}");
+        assert_eq!(refl["view"]["calls"], json!({"tasks": ["list", "get"]}));
+        // again: nothing is written twice
+        assert_eq!(crate::declared_views::grant_views(&kernel), 0);
+        kernel.stop().await;
+    }
+
     /// A board stand-in for the service views: answers `board` with the `board_reply` its
     /// meta holds, or with an error carrying a secret when its `fail` field is set.
     struct ViewsBoard;
@@ -2690,9 +2765,14 @@ mod tests {
         let m = &out["model"];
         assert_eq!(m["sections"][0]["name"], "agents");
         assert_eq!(m["sections"][0]["rows"][0][0], "Lead");
-        assert_eq!(m["sections"][1]["name"], "tasks");
+        assert_eq!(m["sections"][1]["name"], "by status");
+        assert_eq!(m["sections"][2]["name"], "tasks");
         assert_eq!(
-            m["sections"][1]["rows"][0],
+            m["sections"][2]["columns"],
+            json!(["issue", "tracker", "holder", "status"])
+        );
+        assert_eq!(
+            m["sections"][2]["rows"][0],
             json!(["o/r#1", "gh:o/r#1", "c1", "in_work"])
         );
         kernel.stop().await;
