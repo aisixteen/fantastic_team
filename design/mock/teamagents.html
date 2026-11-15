@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team agents</title>
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+button{font:inherit;color:inherit;cursor:pointer}
+[data-theme]{--sans:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+[data-theme="light"]{--bg:#EDEDED;--page:radial-gradient(circle at 1px 1px,rgb(0 0 0/.14) 1px,transparent 1.6px) 0 0/22px 22px,radial-gradient(70% 55% at 12% -5%,#fff 0,transparent 70%),radial-gradient(55% 60% at 105% 105%,rgb(0 0 0/.16) 0,transparent 70%),#EDEDED;--panel:rgb(255 255 255/.58);--panel-flat:rgb(255 255 255/.72);--side:rgb(0 0 0/.03);--surface:rgb(255 255 255/.72);--sunken:rgb(0 0 0/.06);--hover:rgb(0 0 0/.09);--line:rgb(0 0 0/.10);--line2:rgb(0 0 0/.18);--text:#0B0B0B;--text2:#454545;--text3:#6B6B6B;--accent:#111111;--accent-weak:rgb(0 0 0/.08);--accent-line:rgb(0 0 0/.30);--on-accent:#FFFFFF;--ok:#1B7446;--warn:#8F5200;--bad:#B3261E;--knock:#F8F8F8;--head:rgb(0 0 0/.70);--chip:rgb(0 0 0/.05);--chip-line:rgb(0 0 0/.06);--ext:rgb(0 0 0/.12);--ext-line:rgb(0 0 0/.40);--bubble:rgb(255 255 255/.60);--bubble-user:rgb(0 0 0/.10);--code:rgb(0 0 0/.045);--well:rgb(0 0 0/.06);--input:rgb(0 0 0/.06);--shadow-bezel:0 10px 30px rgb(0 0 0/.10),0 1px 2px rgb(0 0 0/.06);--shadow-bubble:inset 0 0 0 1px rgb(0 0 0/.07)}
+[data-theme="dark"]{--bg:#050505;--page:radial-gradient(circle at 1px 1px,rgb(255 255 255/.14) 1px,transparent 1.6px) 0 0/22px 22px,radial-gradient(70% 55% at 12% -5%,rgb(255 255 255/.20) 0,transparent 70%),radial-gradient(55% 60% at 105% 105%,rgb(255 255 255/.10) 0,transparent 70%),#050505;--panel:rgb(20 20 20/.58);--panel-flat:rgb(20 20 20/.74);--side:rgb(255 255 255/.03);--surface:rgb(255 255 255/.07);--sunken:rgb(255 255 255/.07);--hover:rgb(255 255 255/.10);--line:rgb(255 255 255/.10);--line2:rgb(255 255 255/.18);--text:#F2F2F2;--text2:#B8B8B8;--text3:#8E8E8E;--accent:#F5F5F5;--accent-weak:rgb(255 255 255/.10);--accent-line:rgb(255 255 255/.32);--on-accent:#0B0B0B;--ok:#72D6A2;--warn:#F0B75A;--bad:#FF9288;--knock:#0E0E0E;--head:rgb(255 255 255/.70);--chip:rgb(255 255 255/.05);--chip-line:rgb(255 255 255/.06);--ext:rgb(255 255 255/.14);--ext-line:rgb(255 255 255/.42);--bubble:rgb(255 255 255/.07);--bubble-user:rgb(255 255 255/.16);--code:rgb(0 0 0/.35);--well:rgb(0 0 0/.38);--input:rgb(255 255 255/.06);--shadow-bezel:0 10px 30px rgb(0 0 0/.45),0 1px 2px rgb(0 0 0/.30);--shadow-bubble:inset 0 1px 0 rgb(255 255 255/.10)}
+[data-theme]{--ok-weak:color-mix(in srgb,var(--ok) 12%,transparent);--warn-weak:color-mix(in srgb,var(--warn) 12%,transparent);--warn-line:color-mix(in srgb,var(--warn) 45%,transparent);--bad-weak:color-mix(in srgb,var(--bad) 12%,transparent);--bad-line:color-mix(in srgb,var(--bad) 45%,transparent)}
+.hov:hover{background:var(--hover) !important}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.root{display:flex;gap:12px;min-height:900px;padding:12px;background:var(--page);color:var(--text);font-family:var(--sans);font-size:13px;line-height:1.45;position:relative}
+.rd{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.side,.cell{border:1px solid var(--line);border-radius:16px;background:var(--panel);box-shadow:var(--shadow-bezel);padding:0 6px 6px;flex-direction:column;height:calc(100vh - 24px);min-height:876px}
+.side{display:flex;flex:0 0 340px}
+.cell{display:none;flex:1 1 0;min-width:0}
+.hd{flex:none;display:flex;align-items:center;gap:6px;height:32px;padding:0 6px;font:600 11px/1 var(--mono);letter-spacing:.5px;text-transform:uppercase;color:var(--head)}
+.hd .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip{flex:none;display:inline-grid;place-items:center;height:20px;padding:0 7px;border:1px solid var(--chip-line);border-radius:4px;background:var(--chip);color:var(--head);font:600 10px/1 var(--mono);letter-spacing:.5px;text-transform:uppercase;white-space:nowrap}
+.ok{color:var(--ok) !important;background:var(--ok-weak) !important}
+.warn{color:var(--warn) !important;background:var(--warn-weak) !important}
+.bad{color:var(--bad) !important;background:var(--bad-weak) !important}
+.pill{display:inline-block;padding:0 8px;border-radius:999px;background:var(--sunken);color:var(--text2);font:500 11px/18px var(--mono);white-space:nowrap}
+.body{flex:1;min-height:0;overflow:auto;border-radius:10px;background:var(--side);border:1px solid var(--line)}
+.pg{display:flex;flex-direction:column;gap:12px;padding:16px 20px 24px}
+.ttl{display:flex;align-items:center;gap:10px}
+.ttl h1{margin:0;font-size:18px;font-weight:600;letter-spacing:-.01em}
+.sub{color:var(--text2);font-size:12px}
+.sec{border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden}
+.sh{display:flex;align-items:center;gap:8px;padding:10px 14px 0}
+.sh h2{margin:0;font-size:14px;font-weight:600}
+.sh .gap{flex:1}
+.via{font:500 10px/1.4 var(--mono);color:var(--text3);white-space:nowrap}
+.in{padding:10px 14px 14px;display:flex;flex-direction:column;gap:10px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.kpi{border:1px solid var(--line);border-radius:10px;background:var(--surface);padding:9px 12px}
+.kpi span{display:block;font:600 10px/1.5 var(--mono);letter-spacing:.5px;text-transform:uppercase;color:var(--text3)}
+.kpi b{display:block;font-size:19px;font-weight:600;line-height:1.3}
+.kpi small{font:11px/1.3 var(--mono);color:var(--text3)}
+.two{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:12px;align-items:start}
+.three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:start}
+.col{display:flex;flex-direction:column;gap:12px;min-width:0}
+.tbl{display:flex;flex-direction:column;font-size:12px}
+.tr{display:grid;grid-template-columns:var(--c);gap:10px;align-items:center;padding:6px 14px;border-top:1px solid var(--line);min-height:32px}
+.tr.th{font:600 10px/1.4 var(--mono);letter-spacing:.5px;text-transform:uppercase;color:var(--text3);border-top:0;min-height:26px}
+.tr.on{background:var(--accent-weak)}
+.m{font-family:var(--mono);font-size:12px}
+.dim{color:var(--text3)}
+.t2{color:var(--text2)}
+.ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ns{flex:none;display:inline-flex;align-items:center;gap:4px;padding:0 6px;border:1px dashed var(--ext-line);border-radius:6px;font:500 10px/16px var(--mono);color:var(--text2);white-space:nowrap}
+.ns b{font-weight:700;color:var(--text)}
+.ghost{border:1px dashed var(--ext-line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;background:transparent}
+.bar{display:flex;gap:2px;height:6px}
+.bar i{display:block;border-radius:3px}
+.leg{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--text2)}
+.leg span{display:flex;align-items:center;gap:6px}
+.leg u{display:block;width:8px;height:8px;border-radius:3px;text-decoration:none}
+.sw{position:relative;flex:none;display:inline-block;width:30px;height:18px;border-radius:999px;background:var(--accent)}
+.sw::after{content:"";position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;background:var(--on-accent)}
+.sw.off{background:var(--sunken);box-shadow:inset 0 0 0 1px var(--line2)}
+.sw.off::after{right:auto;left:2px;background:var(--text3)}
+.fld{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--input);font:12px/1 var(--mono);white-space:nowrap}
+.fld small{color:var(--text3);font:600 10px/1 var(--mono);letter-spacing:.5px;text-transform:uppercase}
+.btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 12px;border:1px solid var(--line2);border-radius:8px;background:var(--surface);font-size:12px;font-weight:600;color:var(--text)}
+.btn.pri{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.row2{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dot{display:inline-block;flex:none;width:8px;height:8px;border-radius:50%;background:var(--text3)}
+.dot.ok{background:var(--ok) !important}.dot.warn{background:var(--warn) !important}.dot.bad{background:var(--bad) !important}.dot.run{background:var(--accent)}
+pre{margin:0;font:11.5px/1.55 var(--mono);color:var(--text);white-space:pre-wrap}
+.code{background:var(--code);border-radius:8px;padding:8px 10px}
+.kv{display:grid;grid-template-columns:128px minmax(0,1fr);gap:6px 12px;font-size:12px;align-items:baseline}
+.kv dt{font:600 10px/1.6 var(--mono);letter-spacing:.5px;text-transform:uppercase;color:var(--text3)}
+.kv dd{margin:0;min-width:0}
+.gauge{position:relative;height:10px;border-radius:999px;background:var(--sunken);overflow:hidden}
+.gauge i{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:999px}
+.sidelist{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:2px;padding:4px 2px;border-radius:10px;border:1px solid var(--line);background:var(--side)}
+.grp{padding:10px 10px 4px;font:600 10px/1.4 var(--mono);letter-spacing:.5px;text-transform:uppercase;color:var(--text3)}
+.row{display:flex;align-items:center;gap:10px;min-height:52px;padding:5px 8px;border-radius:8px;cursor:pointer;margin:0 4px}
+.row:hover{background:var(--hover)}
+.row .tile{position:relative;flex:none;display:grid;place-items:center;width:30px;height:30px;border-radius:8px;background:var(--sunken);color:var(--text2)}
+.row .tile .dot{position:absolute;right:-3px;bottom:-3px;box-shadow:0 0 0 2px var(--knock)}
+.row .nm{flex:1;min-width:0;display:flex;flex-direction:column}
+.row .nm b{font-weight:600;font-size:13px}
+.row .nm em{font:normal 11px/1.3 var(--mono);color:var(--text3)}
+.row .nm span{font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .age{flex:none;font:500 11px/1 var(--mono);color:var(--text3)}
+#r1:checked ~ .v1,#r2:checked ~ .v2,#r3:checked ~ .v3,#r4:checked ~ .v4{display:flex}
+#r1:checked ~ .side label[for=r1],#r2:checked ~ .side label[for=r2],#r3:checked ~ .side label[for=r3],#r4:checked ~ .side label[for=r4]{background:var(--accent-weak);box-shadow:inset 0 0 0 1px var(--accent-line)}
+#r1:focus-visible ~ .side label[for=r1],#r2:focus-visible ~ .side label[for=r2],#r3:focus-visible ~ .side label[for=r3],#r4:focus-visible ~ .side label[for=r4]{outline:2px solid var(--accent);outline-offset:1px}
+</style>
+<style>body>[data-theme]{min-height:100vh !important}</style>
+</head>
+<body>
+<div data-theme="light" class="root">
+<input class="rd" type="radio" name="agent" id="r1" checked aria-label="team_cadencer.tools">
+<input class="rd" type="radio" name="agent" id="r2" aria-label="task_registry.tools">
+<input class="rd" type="radio" name="agent" id="r3" aria-label="team_github.tools">
+<input class="rd" type="radio" name="agent" id="r4" aria-label="agentic_resources.tools">
+<aside class="side" aria-label="Team agents">
+<div class="hd"><span class="t">team <span style="opacity:.55">/</span> launch-week <span style="opacity:.55">/</span> tools</span></div>
+<div class="sidelist">
+<label class="row" for="r1"><span class="tile"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.6 8a5.6 5.6 0 1 1-11.2 0a5.6 5.6 0 0 1 11.2 0zM8 4.8V8l2.2 1.6"/></svg><span class="dot ok"></span></span><span class="nm"><b>cadencer</b><em>team_cadencer.tools</em><span>digests on</span></span></label>
+<label class="row" for="r2"><span class="tile"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5l1.2 1.2L6.2 3.5M3 9.5l1.2 1.2l2-2.2M8.5 4.5h5M8.5 9.5h5M8.5 13h5"/></svg><span class="dot warn"></span></span><span class="nm"><b>tasks</b><em>task_registry.tools</em><span>22 tasks · 6 held · 1 blocked</span></span></label>
+<label class="row" for="r3"><span class="tile"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.6 4a1.6 1.6 0 1 1-3.2 0a1.6 1.6 0 0 1 3.2 0zM5.6 12a1.6 1.6 0 1 1-3.2 0a1.6 1.6 0 0 1 3.2 0zM13.6 12a1.6 1.6 0 1 1-3.2 0a1.6 1.6 0 0 1 3.2 0zM4 5.6v4.8M12 10.4V7a2 2 0 0 0-2-2H8.5M9.8 3.4L8.2 5l1.6 1.6"/></svg><span class="dot ok"></span></span><span class="nm"><b>github</b><em>team_github.tools</em><span>auth: app</span></span></label>
+<label class="row" for="r4"><span class="tile"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5l5.5 2.8L8 8.1 2.5 5.3zM2.5 8.2L8 11l5.5-2.8M2.5 11L8 13.8l5.5-2.8"/></svg><span class="dot warn"></span></span><span class="nm"><b>agentic_resources</b><em>agentic_resources.tools</em><span>7 agents running</span></span></label>
+<div style="padding:8px 8px 4px"><span class="ns" style="white-space:normal;padding:3px 8px;line-height:1.4"><span><b>needs source:</b> the health dot on each tool agent (ok / needs a look)</span></span></div>
+</div>
+</aside>
+<section class="cell v1" aria-label="team_cadencer.tools">
+<div class="hd"><span class="t">cadencer <span style="opacity:.55">/</span> team_cadencer.tools</span><span class="chip ok">on</span></div>
+<div class="body"><div class="pg">
+<div class="ttl"><h1>cadencer</h1><span class="pill">tool</span></div>
+
+<div class="sec"><div class="sh"><h2>Switch and settings</h2><span class="gap"></span><span class="via">status.settings · set</span></div>
+<div class="in">
+<div class="row2" style="gap:18px">
+<span class="row2"><span class="sw"></span><b>Digests on</b><span class="dim m">enabled</span></span>
+<span class="fld"><small>cadence</small>60 s</span>
+<span class="fld"><small>stall after</small>300 s</span>
+<span class="row2"><span class="sw"></span><b>Quiet</b><span class="dim m">only changes and stalls</span></span>
+</div>
+<div class="row2"><span class="dim m" style="font-size:11px">Switched off for (settings.off):</span><span class="pill">m-ads ×</span><span class="btn" style="height:22px;font-size:11px">+ lead</span></div>
+</div></div>
+
+<div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+<div class="kpi"><span>ticks</span><b>412</b><small>since process start</small></div>
+<div class="kpi"><span>digests sent</span><b>188</b><small>bytes/h 5.2 KB</small></div>
+<div class="kpi"><span>delivery errors</span><b style="color:var(--warn)">2</b><small>counted, never fatal</small></div>
+</div>
+
+<div class="sec"><div class="sh"><h2>Load</h2><span class="gap"></span><span class="via">status.load</span></div>
+<div class="in">
+<div class="sub" style="margin-bottom:-4px">Workers below the project lead</div>
+<div class="bar" style="height:10px"><i style="flex:5;background:var(--accent)"></i><i style="flex:2;background:var(--line2)"></i><i style="flex:1;background:var(--warn)"></i></div>
+<div class="leg"><span><u style="background:var(--accent)"></u><b>5</b> busy</span><span><u style="background:var(--line2)"></u><b>2</b> idle</span><span><u style="background:var(--warn)"></u><b>1</b> stalled</span></div>
+</div></div>
+</div></div>
+</section>
+<section class="cell v2" aria-label="task_registry.tools">
+<div class="hd"><span class="t">tasks <span style="opacity:.55">/</span> task_registry.tools</span><span class="chip">22 tasks</span><span class="chip warn">1 blocked</span></div>
+<div class="body"><div class="pg">
+<div class="ttl"><h1>tasks</h1><span class="pill">tool</span><span style="flex:1"></span><span class="btn pri">Pull from tracker</span></div>
+
+<div class="sec"><div class="sh"><h2>Record</h2><span class="gap"></span><span class="via">record</span></div>
+<div class="in"><dl class="kv" style="margin:0">
+<dt>repos</dt><dd><span class="pill">aisixteen/fantastic</span> <span class="pill">aisixteen/fantastic_team</span></dd>
+<dt>auth</dt><dd class="m">credentials <b>github/app</b></dd>
+</dl></div></div>
+
+<div class="kpis" style="grid-template-columns:repeat(2,1fr)">
+<div class="kpi"><span>tasks</span><b>22</b><small>6 held · 3 waiting · 1 blocked</small></div>
+<div class="kpi"><span>holders</span><b>6</b><small>5 agents · 1 subtree</small></div>
+</div>
+
+<div class="sec"><div class="sh"><h2>By status</h2><span class="gap"></span><span class="via">list {status?}</span></div>
+<div class="in">
+<div class="bar" style="height:8px"><i style="flex:6;background:var(--accent)"></i><i style="flex:3;background:var(--line)"></i><i style="flex:1;background:var(--warn)"></i><i style="flex:1;background:var(--bad)"></i><i style="flex:1;background:var(--text3)"></i><i style="flex:10;background:var(--ok)"></i></div>
+<div class="leg"><span><u style="background:var(--accent)"></u><b>6</b> running</span><span><u style="background:var(--line)"></u><b>3</b> waiting</span><span><u style="background:var(--warn)"></u><b>1</b> blocked</span><span><u style="background:var(--bad)"></u><b>1</b> failed</span><span><u style="background:var(--text3)"></u><b>1</b> paused</span><span><u style="background:var(--ok)"></u><b>10</b> done</span></div>
+</div></div>
+
+<div class="row2"><span class="fld"><small>status</small>any</span><span class="fld"><small>holder</small>any</span></div>
+
+<div class="sec"><div class="sh"><h2>Tasks</h2><span class="gap"></span><span class="via">list</span></div>
+<div class="tbl" style="--c:1.2fr 2.2fr 1fr 80px">
+<div class="tr th"><span>issue</span><span class="row2" style="gap:8px">title<span class="ns" style="letter-spacing:0;text-transform:none"><b>needs source:</b> task title</span></span><span>holder</span><span>status</span></div>
+<div class="tr on"><span class="m ell">aisixteen/fantastic#691</span><span class="ell">Cache marks missing on provider_cache replay</span><span class="m">w-core-2</span><span class="pill">running</span></div>
+<div class="tr"><span class="m ell">aisixteen/fantastic#616</span><span class="ell">Autogrants: the adder writes the grants</span><span class="m">w-core-1</span><span class="pill">running</span></div>
+<div class="tr"><span class="m ell">aisixteen/fantastic_team#219</span><span class="ell">CLI drafts: the ssh twin scenario</span><span class="m">w-team-3</span><span class="pill">running</span></div>
+<div class="tr"><span class="m ell">aisixteen/fantastic_team#312</span><span class="ell">Dry audit checklist: cleanup items</span><span class="m ell">subtree lead-team</span><span class="pill">paused</span></div>
+<div class="tr"><span class="m ell">aisixteen/fantastic#642</span><span class="ell">No-shim sweep: remove the legacy_tmp patch</span><span class="m">lead-core</span><span class="pill warn">blocked</span></div>
+<div class="tr"><span class="m ell">aisixteen/fantastic#699</span><span class="ell">Fold rows spliced into thinking</span><span class="dim">nobody</span><span class="pill">waiting</span></div>
+<div class="tr"><span class="m ell">aisixteen/fantastic#618</span><span class="ell">Token count per context part</span><span class="m">w-core-1</span><span class="pill ok">done</span></div>
+<div class="tr dim" style="font-size:12px"><span>12 more done</span><span></span><span></span><span></span></div>
+</div></div>
+
+<div class="two" style="grid-template-columns:minmax(0,1fr)">
+<div class="col">
+<div class="sec"><div class="sh"><h2>aisixteen/fantastic#691</h2><span class="pill">running</span><span class="gap"></span><span class="via">get</span></div>
+<div class="in"><dl class="kv" style="margin:0">
+<dt>title</dt><dd class="row2" style="gap:8px">Cache marks missing on provider_cache replay<span class="ns"><b>needs source:</b> task title</span></dd>
+<dt>tracker</dt><dd class="m">aisixteen/fantastic#691 <span class="pill" style="margin-left:6px">open</span> <span class="pill">team-ready</span></dd>
+<dt>holder</dt><dd class="m">w-core-2 <span class="dim">(under lead-core)</span></dd>
+</dl>
+<div class="sub" style="margin-bottom:-4px">versions</div>
+<div class="tbl" style="--c:1fr 1.4fr 64px;margin:0 -14px"><div class="tr th" style="padding:4px 14px"><span>repo</span><span>branch</span><span>commit</span></div><div class="tr" style="padding:4px 14px"><span class="m">aisixteen/fantastic</span><span class="m ell">fix/691-cache-marks</span><span class="m">9f3c2ab</span></div></div>
+</div></div>
+
+<div class="sec"><div class="sh"><h2>History</h2><span class="gap"></span><span class="via">history {from, to, by, at}</span></div>
+<div class="in">
+<div class="row2"><span class="dot"></span><span class="m">nobody</span><span class="dim">to</span><span class="m">lead-core</span><span class="dim">by lead-main · 13:10</span></div>
+<div class="row2"><span class="dot"></span><span class="m">lead-core</span><span class="dim">to</span><span class="m">w-core-2</span><span class="dim">by lead-core · 13:12</span></div>
+<div class="sub" style="margin-top:4px">Last report from w-core-2, 14:31, state: running</div>
+<div class="code"><pre>replay test added; cache.rs tests pass, waiting on lint</pre></div>
+</div></div>
+</div>
+</div>
+</div></div>
+</section>
+<section class="cell v3" aria-label="team_github.tools">
+<div class="hd"><span class="t">github <span style="opacity:.55">/</span> team_github.tools</span><span class="chip ok">auth: app</span></div>
+<div class="body"><div class="pg">
+<div class="ttl"><h1>github</h1><span class="pill">tool</span></div>
+
+<div class="two">
+<div class="col">
+<div class="sec"><div class="sh"><h2>Identity and auth</h2><span class="gap"></span><span class="via">reflect.auth · repos · api_url</span></div>
+<div class="in"><dl class="kv" style="margin:0">
+<dt>credentials</dt><dd class="m"><b>github/app</b> <span class="dim">(the value is never shown)</span></dd>
+<dt>allowlist</dt><dd><span class="pill">aisixteen/fantastic</span> <span class="pill">aisixteen/fantastic_team</span></dd>
+<dt>api url</dt><dd class="m">https://api.github.com</dd>
+</dl></div></div>
+
+<div class="sec"><div class="sh"><h2>Recent calls</h2><span class="sub">newest first</span><span class="gap"></span><span class="via">reflect.recent_calls (last 50)</span></div>
+<div class="tbl" style="--c:1fr 1.7fr 74px">
+<div class="tr th"><span>verb</span><span>target</span><span>result</span></div>
+<div class="tr"><span class="m">pr_status</span><span class="m t2 ell">aisixteen/fantastic#703</span><span class="pill ok">ok</span></div>
+<div class="tr"><span class="m">comment</span><span class="m t2 ell">aisixteen/fantastic#691</span><span class="pill ok">ok</span></div>
+<div class="tr"><span class="m">push</span><span class="m t2 ell">aisixteen/fantastic fix/691-cache-marks</span><span class="pill ok">ok</span></div>
+<div class="tr"><span class="m">label_events</span><span class="m t2 ell">aisixteen/fantastic_team#328</span><span class="pill ok">ok</span></div>
+<div class="tr"><span class="m">issues</span><span class="m t2 ell">aisixteen/fantastic team-ready</span><span class="pill ok">ok</span></div>
+<div class="tr"><span class="m">issues</span><span class="m t2 ell">other-org/tools</span><span class="pill warn">refused</span></div>
+<div class="tr"><span class="m">issue_view</span><span class="m t2 ell">aisixteen/fantastic#99</span><span class="pill bad">error 404</span></div>
+</div></div>
+
+<div class="sec"><div class="sh"><h2>Verbs</h2><span class="gap"></span><span class="via">verb_docs</span></div>
+<div class="in">
+<div class="row2" style="gap:4px"><span class="pill">issues</span><span class="pill">issue_view</span><span class="pill">issue_create</span><span class="pill">issue_state</span><span class="pill">issue_edit</span><span class="pill">label_events</span><span class="pill">comment</span><span class="pill">label</span><span class="pill">push</span><span class="pill">pr_create</span><span class="pill">pr_status</span><span class="pill">merge</span><span class="pill">staleness</span><span class="pill">whoami</span><span class="pill">directive</span><span class="pill">read_file</span><span class="pill">project_field_set</span><span class="pill">boot</span></div></div></div>
+</div>
+
+<div class="col">
+<div class="sec"><div class="sh"><h2>Pull request</h2><span class="gap"></span><span class="via">pr_status</span></div>
+<div class="in">
+<div class="row2"><span class="fld"><small>repo</small>aisixteen/fantastic</span><span class="fld"><small>#</small>703</span><span class="btn">Look up</span></div>
+<dl class="kv" style="margin:0">
+<dt>state</dt><dd><span class="pill">open</span> <span class="pill">draft</span></dd>
+<dt>head</dt><dd class="m">9f3c2ab</dd>
+<dt>checks</dt><dd>5 passed, 1 pending</dd>
+<dt>review</dt><dd>review required</dd>
+</dl>
+</div></div>
+</div>
+</div>
+</div></div>
+</section>
+<section class="cell v4" aria-label="agentic_resources.tools">
+<div class="hd"><span class="t">agentic_resources <span style="opacity:.55">/</span> agentic_resources.tools</span><span class="chip">7 running</span></div>
+<div class="body"><div class="pg">
+<div class="ttl"><h1>agentic_resources</h1><span class="pill">tool</span></div>
+<div class="two">
+<div class="sec"><div class="sh"><h2>Kinds</h2><span class="gap"></span><span class="via">kinds · get_count {kind} · fleet</span></div>
+<div class="tbl" style="--c:1fr 1.7fr 70px">
+<div class="tr th"><span>kind</span><span>purpose</span><span>running</span></div>
+<div class="tr on"><span class="m"><b>project_lead</b></span><span class="t2 ell">Owns a project, splits it, spawns sub-leads</span><span class="m">1</span></div>
+<div class="tr"><span class="m"><b>sub_lead</b></span><span class="t2 ell">Runs one branch of the plan</span><span class="m">3</span></div>
+<div class="tr"><span class="m"><b>worker</b></span><span class="t2 ell">Does one task in a worktree</span><span class="m">3</span></div>
+<div class="tr"><span class="m"><b>reviewer</b></span><span class="t2 ell">Reads a diff and reports</span><span class="m">0</span></div>
+</div><div class="in" style="padding-top:10px"><div class="row2"><span class="pill warn">1 error</span><span class="m t2" style="font-size:11px">bundles/old_scout: no directive (kinds.errors)</span></div></div>
+</div>
+
+<div class="col">
+<div class="sec"><div class="sh"><h2>worker</h2><span class="gap"></span><span class="via">kind {name}</span></div>
+<div class="in">
+<dl class="kv" style="margin:0"><dt>purpose</dt><dd>Does one task in a worktree</dd><dt>grants</dt><dd><span class="pill">team_github</span> <span class="pill">task_registry</span></dd></dl>
+<div class="sub" style="margin-bottom:-4px">directive</div>
+<div class="code"><pre>You do one task from the task registry. Work in your worktree, push your branch, report progress on the task, and send your lead one message when you are done.</pre></div>
+</div></div>
+
+<div class="sec"><div class="sh"><h2>Running workers</h2><span class="gap"></span><span class="via">fleet</span></div>
+<div class="in"><div class="row2" style="gap:4px"><span class="pill">w-core-1</span><span class="pill">w-core-2</span><span class="pill">w-team-3</span></div></div></div>
+
+<div class="sec"><div class="sh"><h2>Spawn</h2><span class="gap"></span><span class="via">spawn</span></div>
+<div class="in">
+<div class="row2"><span class="fld"><small>kind</small>worker</span><span class="fld"><small>name</small>w-team-4</span></div>
+<div class="row2"><span class="fld"><small>provider</small>yours</span><span class="fld"><small>model</small>yours</span></div>
+<div class="row2"><span class="btn pri">Spawn</span></div>
+</div></div>
+</div>
+</div>
+</div></div>
+</section>
+</div>
+<script>
+// ?theme=dark or ?theme=light switches the page theme.
+const t = new URLSearchParams(location.search).get('theme');
+if (true && (t === 'dark' || t === 'light')) document.querySelector('[data-theme]').dataset.theme = t;
+</script>
+</body>
+</html>
