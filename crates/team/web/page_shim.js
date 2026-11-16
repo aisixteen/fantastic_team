@@ -10,6 +10,9 @@
   var calls = {};
   var watchers = {};
   var next = 1;
+  // a call id is bound to its first execution for the life of the team: one page load's ids never
+  // repeat another's (a reload, a second tab), so each load numbers its calls under its own prefix
+  var tag = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8) + '-';
   function out(frame) {
     var text = JSON.stringify(frame);
     if (ws.readyState === 1) ws.send(text); else pending.push(text);
@@ -42,7 +45,7 @@
   window.fantastic = {
     send: function (target, payload) {
       return new Promise(function (resolve, reject) {
-        var id = 'p' + next++;
+        var id = tag + next++;
         calls[id] = { resolve: resolve, reject: reject };
         out({ type: 'call', target: target, payload: payload, id: id });
       });

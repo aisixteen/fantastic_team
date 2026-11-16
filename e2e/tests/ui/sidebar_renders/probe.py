@@ -61,24 +61,24 @@ def run(ctx):
                 # 2. agent rows: the lead and its child
                 ids = view.locator(ROW).evaluate_all("els => els.map(e => e.dataset.id).filter(Boolean)")
                 v.check("the lead's row is drawn", "lead" in ids, str(ids))
-                if "child_one" not in ids:
-                    fold = view.locator("[aria-label='Unfold lead']")
-                    if fold.count():
-                        fold.first.click()
-                ids = view.locator(ROW).evaluate_all("els => els.map(e => e.dataset.id).filter(Boolean)")
+                if "child_one" not in ids:  # not an AI agent: a row of the tools group, opened
+                    group = view.locator("#pins button.tg[aria-expanded='false']")
+                    if group.count():
+                        group.first.click()
+                ids = view.locator("[role=treeitem]").evaluate_all("els => els.map(e => e.dataset.id).filter(Boolean)")
                 v.check("the lead's child row is drawn", "child_one" in ids, str(ids))
 
                 # 3. the Files switch puts the project's files in the tree
                 v.check("no file row while the switch is off",
-                        view.locator("#tree [data-path]").count() == 0)
+                        view.locator("[data-path]").count() == 0)
                 view.locator("button[role=switch]").click()
                 try:
-                    view.locator("#tree [data-path='notes.txt']").wait_for(timeout=20000)
+                    view.locator("[data-path='notes.txt']").wait_for(timeout=20000)
                     shown = True
                 except Exception:
                     shown = False
                 v.check("the Files switch shows the project's files as rows (notes.txt, docs)",
-                        shown and view.locator("#tree [data-path='docs']").count() == 1)
+                        shown and view.locator("[data-path='docs']").count() == 1)
 
                 # 4. a click on an agent opens it
                 view.locator("#tree [data-id=lead] .main").click()

@@ -4,17 +4,15 @@ body{overflow:auto;background:transparent;color:var(--fc-color-text-primary);fon
 button{font:inherit;color:inherit;cursor:pointer;border:0;background:transparent;padding:0;text-align:left}
 button:focus-visible,input:focus-visible{outline:2px solid var(--fc-color-accent-base);outline-offset:2px}
 button:disabled{cursor:default;opacity:.55}
-.head{display:flex;align-items:center;gap:6px;height:32px;padding:0 12px;font:600 11px/1 var(--fc-font-family-mono);letter-spacing:.5px;text-transform:uppercase;color:var(--fc-color-text-muted)}
-.head .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.head .sl{opacity:.55}
 .chip{flex:none;display:inline-grid;place-items:center;height:20px;padding:0 7px;border-radius:var(--fc-radius-chip);background:var(--fc-color-surface-button);box-shadow:inset 0 0 0 1px var(--fc-color-line-faint);color:var(--fc-color-text-muted);font:600 10px/1 var(--fc-font-family-mono);letter-spacing:.5px;text-transform:uppercase;white-space:nowrap}
 .ok{color:var(--fc-color-status-ok) !important;background:color-mix(in srgb,var(--fc-color-status-ok) 12%,transparent) !important}
 .warn{color:var(--fc-color-status-warn) !important;background:var(--fc-color-status-warn-surface) !important}
 .bad{color:var(--fc-color-status-error) !important;background:color-mix(in srgb,var(--fc-color-status-error) 12%,transparent) !important}
 .pill{display:inline-block;padding:0 8px;border-radius:var(--fc-radius-pill);background:var(--fc-color-surface-well);color:var(--fc-color-text-muted);font:500 11px/18px var(--fc-font-family-mono);white-space:nowrap}
-.pg{display:flex;flex-direction:column;gap:12px;padding:8px 20px 24px}
+.pg{display:flex;flex-direction:column;gap:12px;padding:16px 20px 24px}
 .ttl{display:flex;align-items:center;gap:10px}
 .ttl h1{margin:0;font-size:18px;font-weight:600;letter-spacing:-.01em}
+.ttl .gap{flex:1}
 .sec{border:1px solid var(--fc-color-line-button);border-radius:12px;background:var(--fc-color-surface-raised);overflow:hidden}
 .sh{display:flex;align-items:center;gap:8px;padding:10px 14px 0}
 .sh h2{margin:0;font-size:14px;font-weight:600}
