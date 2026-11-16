@@ -220,6 +220,36 @@ async fn assert_the_declared_grants(site: &Site) {
         "team_ws",
         json!(["list", "watch", "watch_path", "unwatch_path", "open_view"]),
     );
+    // the callee end of the page leg's view reads (#351): the lead's chat, the connector's and the bundles
+    // registry's views, each by the verbs of its view
+    has_grant(
+        &site.record("lead").await,
+        "callable_by",
+        "team_ws",
+        json!([
+            "watch",
+            "reflect",
+            "history",
+            "rows",
+            "status",
+            "send",
+            "stop",
+            "context_clear",
+            "unembed"
+        ]),
+    );
+    has_grant(
+        &site.record("github").await,
+        "callable_by",
+        "team_ws",
+        json!(["reflect", "pr_status"]),
+    );
+    has_grant(
+        &site.record("bundles").await,
+        "callable_by",
+        "team_ws",
+        json!(["reflect", "bundles", "bundle", "fleet", "get_count"]),
+    );
 }
 
 /// A first run seeds the grants (the calls over them are `hydrate::tests`), a second boot keeps them,

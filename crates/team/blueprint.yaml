@@ -86,6 +86,17 @@ agents:
       $parent: '*'
       $subtree:
       - send
+      # the page leg draws the lead's chat: the base chat view's own calls
+      team_ws:
+      - watch
+      - reflect
+      - history
+      - rows
+      - status
+      - send
+      - stop
+      - context_clear
+      - unembed
     agents:
     - id: github
       handler_module: team_github.tools
@@ -108,6 +119,10 @@ agents:
         tasks:
         - reflect
         - issues
+        # the page leg draws the connector's view: its reflect, then the view's calls
+        team_ws:
+        - reflect
+        - pr_status
     - id: github_credentials
       # the github connector's credential by env ref (#303): a personal token read from GH_TOKEN
       # at each call, no value at rest. GH_TOKEN unset = the connector works local only. An
@@ -137,6 +152,13 @@ agents:
         - spawn
         - get_count
         - fleet
+        # the page leg draws the registry's view: its reflect, then the view's calls
+        team_ws:
+        - reflect
+        - bundles
+        - bundle
+        - fleet
+        - get_count
     - id: tasks
       # the team's one tasks agent: its tables in the home's `memory`, its tracker the github
       # connector (`pull` reads the ready issues through it: its `reflect` for the repos, then
@@ -209,11 +231,32 @@ agents:
       cadencer:
       - status
       - set
-      # the task registry's own html view the page mounts: its reflect, then the view's reads
+      # the html views the page mounts, each agent's own `reflect`, then the view's calls: the task
+      # registry's two reads, the connector's, the bundles registry's, the lead's chat (the base chat
+      # view's calls). The other end of each is on the agent (its `callable_by` above).
       tasks:
       - reflect
       - list
       - get
+      github:
+      - reflect
+      - pr_status
+      bundles:
+      - reflect
+      - bundles
+      - bundle
+      - fleet
+      - get_count
+      lead:
+      - watch
+      - reflect
+      - history
+      - rows
+      - status
+      - send
+      - stop
+      - context_clear
+      - unembed
       user:
       - inquiries
       - answer_inquiry

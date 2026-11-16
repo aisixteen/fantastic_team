@@ -187,6 +187,27 @@ mod tests {
             ("cadencer", json!(["status", "set"])),
             // the task registry's own html view: its reflect, then the view's two reads
             ("tasks", json!(["reflect", "list", "get"])),
+            // the connector's, the bundles registry's and the lead's chat views (#351): each agent's
+            // `reflect`, then its view's calls (the crates' `VIEW_CALLS`, the base chat view's)
+            ("github", json!(["reflect", "pr_status"])),
+            (
+                "bundles",
+                json!(["reflect", "bundles", "bundle", "fleet", "get_count"]),
+            ),
+            (
+                "lead",
+                json!([
+                    "watch",
+                    "reflect",
+                    "history",
+                    "rows",
+                    "status",
+                    "send",
+                    "stop",
+                    "context_clear",
+                    "unembed"
+                ]),
+            ),
             ("user", json!(["inquiries", "answer_inquiry"])),
             // the base sidebar view the page mounts: its read calls (#608), no `*`
             ("sidebar", json!(["reflect", "watch"])),
@@ -209,6 +230,9 @@ mod tests {
                     "dispatcher",
                     "cadencer",
                     "tasks",
+                    "github",
+                    "bundles",
+                    "lead",
                     "user",
                     "sidebar",
                     "kernel_state",
@@ -221,7 +245,7 @@ mod tests {
                 assert_ne!(cc[k], json!("*"), "{k}");
             }
         }
-        for id in ["kernel", "memory", "github", "bundles"] {
+        for id in ["kernel", "memory", "github_credentials", "worker_exec"] {
             assert!(cc.get(id).is_none(), "{id}: {cc}");
         }
     }
