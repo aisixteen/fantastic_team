@@ -107,21 +107,24 @@ def start(ctx, v, cards: bool = True):
 
 def report_as_holder(team, tid: str, state: str, errors: list) -> None:
     """`k_rollout`'s last report on `tid`. The registry takes a report only from its caller or the caller's
-    descendants (the operator's `send` is `mcp`, which k_rollout is not under), so the entry the registry
-    holds is read back with `get` and written with its `report` into the registry's own store, the row
-    the registry itself appends on a report."""
+    descendants (the operator's `send` is `mcp`, which k_rollout is not under), so the registry's entry is
+    read back with `get` and its next snapshot, with the `report`, is put among the rows the registry
+    itself keeps in its store (`dump`, then `inject` of the same tables with that one row added)."""
     got = op(team, "tasks", {"type": "get", "id": tid})
     entry = {k: v for k, v in got.items() if k != "children"}
     if entry.get("id") != tid:
         errors.append(f"get {tid}: {str(got)[:160]}")
         return
     entry["report"] = {"from": "k_rollout", "state": state, "result": REPORT, "at": int(time.time()), "usage": None}
-    r = team.send("memory", {"type": "append", "rows": [{"kind": "task", "task_id": tid, "content": entry}]})
-    if r.get("status") != "completed" or (r.get("result") or {}).get("error"):
-        errors.append(f"append report {tid}: {str(r)[:160]}")
+    tables = op(team, "memory", {"type": "dump"}).get("tables") or {}
+    rows = tables.get("rows") or []
+    last = max((r["row"].get("id", 0) for r in rows if r.get("owner") == "tasks"), default=0)
+    rows.append({"owner": "tasks", "row": {"id": last + 1, "kind": "task", "task_id": tid, "content": entry}})
+    tables["rows"] = rows
+    r = team.send("memory", {"type": "inject", "tables": tables})
     seen = op(team, "tasks", {"type": "get", "id": tid}).get("report")
     if not seen:
-        errors.append(f"report {tid} not kept: append {str(r)[:200]}")
+        errors.append(f"report {tid} not kept: inject {str(r)[:200]}; last row {last}")
 
 
 def seed_tasks(ctx, v) -> bool:
