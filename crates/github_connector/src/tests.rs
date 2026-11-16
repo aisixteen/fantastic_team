@@ -1107,29 +1107,16 @@ async fn issue_edit_refuses_when_more_than_one_line_matches() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn issue_edit_refuses_a_line_inside_the_spec_section() {
+async fn issue_edit_replaces_the_one_matching_line() {
     let f = fx(json!({})).await;
     mock_app(&f.gh).await;
-    mock_issue_body(
-        &f.gh,
-        5,
-        "## Notes\n- [ ] n\n## SPEC\n- [ ] s\n## After\n- [ ] z",
-    )
-    .await;
+    mock_issue_body(&f.gh, 5, "## Notes\n- [ ] n\n## After\n- [ ] z").await;
     let p = "/repos/acme/widgets/issues/5";
-    let r = f.call(edit("- [ ] s", "- [x] s")).await;
-    assert_eq!(r["reason"], "bad_arg", "{r}");
-    let e = r["error"].as_str().unwrap();
-    assert!(
-        e.contains("inside a `## SPEC` section") && e.contains("line 4"),
-        "{r}"
-    );
-    assert!(patch_bodies_to(&f.gh, p).await.is_empty());
     let r = f.call(edit("- [ ] z", "- [x] z")).await;
     assert!(r.get("error").is_none(), "{r}");
     assert_eq!(
         patch_bodies_to(&f.gh, p).await,
-        vec![json!({"body": "## Notes\n- [ ] n\n## SPEC\n- [ ] s\n## After\n- [x] z"})]
+        vec![json!({"body": "## Notes\n- [ ] n\n## After\n- [x] z"})]
     );
 }
 

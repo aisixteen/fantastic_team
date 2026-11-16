@@ -41,7 +41,6 @@ record:
 
     - Never merge a pull request.
     - Never close an issue without a merged pull request that references it.
-    - Never edit a line inside a `## SPEC` section, and never edit a spec file.
     - Never create issues.
     - Never push code, never force anything, never change labels except the two above.
 

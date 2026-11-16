@@ -1047,17 +1047,6 @@ async fn stale_token(
     Ok(t)
 }
 
-/// True when line `i` sits under a `## SPEC` heading (until the next `## ` heading).
-fn in_spec_section(lines: &[&str], i: usize) -> bool {
-    let mut spec = false;
-    for l in &lines[..=i] {
-        if let Some(h) = l.strip_prefix("## ") {
-            spec = h.trim() == "SPEC";
-        }
-    }
-    spec
-}
-
 async fn issue_edit(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &verbs::IssueEdit) -> Value {
     const V: &str = "issue_edit";
     let repo = match repo_arg(&a.repo, V, cfg) {
@@ -1109,16 +1098,6 @@ async fn issue_edit(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &verbs::Is
             ));
         }
         let i = hits[0];
-        if in_spec_section(&lines, i) {
-            return Err(bad(
-                format!(
-                    "team_github issue_edit: line {} of #{number} is inside a `## SPEC` section — the keeper does not edit specs",
-                    i + 1
-                ),
-                "old",
-                json!(old),
-            ));
-        }
         let mut out = lines;
         out[i] = new.as_str();
         let text = out.join("\n");
@@ -1306,23 +1285,4 @@ async fn issue_state(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &verbs::I
     }
     .await;
     finish(r, &token)
-}
-
-#[cfg(test)]
-mod keeper_tests {
-    use super::*;
-
-    #[test]
-    fn spec_section_is_detected_until_next_heading() {
-        let lines = ["# T", "## SPEC", "- [ ] a", "## Notes", "- [ ] b"];
-        assert!(in_spec_section(&lines, 2));
-        assert!(!in_spec_section(&lines, 4));
-        assert!(!in_spec_section(&lines, 0));
-    }
-
-    #[test]
-    fn issue_edit_refuses_spec_section() {
-        let lines = ["## SPEC", "- [ ] a"];
-        assert!(in_spec_section(&lines, 1));
-    }
 }

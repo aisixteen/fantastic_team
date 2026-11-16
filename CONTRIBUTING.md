@@ -12,8 +12,8 @@ It is **AGPL-3.0-or-later**.
 
 ## How work happens here
 
-- Issues carry the spec. Every open issue of the tracker becomes a task on the next pull and may be taken
-  by a team worker; `team-pr` marks the PR it opened. `aiagent` is set by the maintainer only.
+- Issues carry the task. Every open issue of the tracker becomes a task on the next pull and may be taken
+  by a team worker. `aiagent` is set by the maintainer only.
 - Workers open **draft** PRs. The maintainer reviews and approves; the team merges only PRs
   approved on their current head.
 - CI is run by hand (#46): units by default, the e2e for a finished milestone or a release.

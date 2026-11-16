@@ -221,7 +221,7 @@ Facts about the web UI at this commit, found while writing these tests:
 
 ## How a free test runs
 
-The launcher makes a bare repo and a seeded clone, starts the fake forge (the repo is `acme/widgets`, one open issue with a `## SPEC` comment), starts the plug, and starts `fantastic_team --headless` in the run folder with fake keys in ITS environment only (the credential store reads them with `backend: env`). The stock records and the test's blueprint are made with `send` and `import` (see above); the probe then drives the team with `fantastic_team send`.
+The launcher makes a bare repo and a seeded clone, starts the fake forge (the repo is `acme/widgets`, one open issue), starts the plug, and starts `fantastic_team --headless` in the run folder with fake keys in ITS environment only (the credential store reads them with `backend: env`). The stock records and the test's blueprint are made with `send` and `import` (see above); the probe then drives the team with `fantastic_team send`.
 
 The anthropic backend sends no `tools` array: a model calls a tool by writing a `<call name="send">` element in its text. So the scripted plug streams Anthropic SSE whose text is that element; a script turn lists `calls`, and the plug renders them.
 
