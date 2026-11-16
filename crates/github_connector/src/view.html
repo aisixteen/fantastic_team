@@ -1,4 +1,4 @@
-<div class="head"><span class="t">github <span class="sl">/</span> team_github.tools</span><span class="chip" id="auth">-</span></div>
+<div class="head"><span class="t">{{agent}} <span class="sl">/</span> team_github.tools</span><span class="chip" id="auth">-</span></div>
 <div class="pg" id="pg"></div>
 <script>
 {{helpers}}
@@ -93,7 +93,7 @@ function render(r) {
   authChipEl.className = "chip " + chip.cls;
   var focus = document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute("aria-label") : null;
   pg.textContent = "";
-  put(pg, put(h("div", "ttl"), h("h1", null, "github"), pillOf("tool")));
+  put(pg, put(h("div", "ttl"), h("h1", null, AGENT), pillOf("tool")));
 
   var idn = section("Identity and auth", "reflect.auth · repos · api_url");
   var dl = h("dl", "kv");

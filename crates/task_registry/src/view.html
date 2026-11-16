@@ -7,6 +7,9 @@
 .titles{flex:1 1 200px;min-width:0;display:flex;flex-direction:column;gap:1px}
 .titles .line{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .hero .name{margin:0;font-size:18px;font-weight:600;letter-spacing:-.01em;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.who{display:flex;align-items:center;gap:8px;min-width:0}
+.hav{flex:none;display:grid;place-items:center;width:20px;height:20px;border-radius:6px;background:var(--fc-color-surface-selected);color:var(--fc-color-text-muted)}
+.hav svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round}
 .tag{font:11px/18px var(--fc-font-family-mono);padding:0 7px;border-radius:var(--fc-radius-control);color:var(--fc-color-text-muted);background:var(--fc-color-surface-well)}
 .pg{max-width:1040px;margin:0 auto;padding:16px 24px 24px}
 .tasks .tr{--c:minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr);min-height:38px}
@@ -213,6 +216,15 @@ function paintFilters() {
   fillSelect($("f-holder"), holderOptions(st.tasks), st.holder);
   st.status = $("f-status").value; st.holder = $("f-holder").value;
 }
+// the holder's small avatar, the mock's robot head as a glyph on the token colours
+function avatarOf() {
+  var a = h("span", "hav");
+  var ns = "http://www.w3.org/2000/svg", v = document.createElementNS(ns, "svg"), d = document.createElementNS(ns, "path");
+  v.setAttribute("viewBox", "0 0 16 16"); v.setAttribute("aria-hidden", "true");
+  d.setAttribute("d", "M4 5.5h8a1 1 0 0 1 1 1V11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6.5a1 1 0 0 1 1-1zM8 5.5V3.5M6 8.5v.5M10 8.5v.5");
+  v.appendChild(d); a.appendChild(v);
+  return a;
+}
 function statePill(state) { var p = pillOf(state); p.setAttribute("data-state", state); return p; }
 function paintTable() {
   var host = $("tbl"); host.textContent = "";
@@ -229,7 +241,9 @@ function paintTable() {
     } else if (r.kind === "item") {
       var b = h("button", "tr" + (st.selected === r.id ? " on" : "")); b.type = "button"; b.setAttribute("role", "row"); b.title = r.id;
       var id = h("span", "m ell", r.id); id.setAttribute("role", "cell");
-      var who = h("span", "m ell" + (r.nobody ? " dim" : ""), r.holder); who.setAttribute("role", "cell");
+      var who = h("span", "who"), wn = h("span", "m ell" + (r.nobody ? " dim" : ""), r.holder); who.setAttribute("role", "cell");
+      if (!r.nobody) who.appendChild(avatarOf());
+      who.appendChild(wn);
       var s = h("span"); s.setAttribute("role", "cell"); s.appendChild(statePill(r.state));
       put(b, id, who, s);
       b.addEventListener("click", function () { select(r.id); });

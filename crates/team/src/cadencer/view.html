@@ -1,4 +1,4 @@
-<div class="head"><span class="t">cadencer <span class="sl">/</span> team_cadencer.tools</span><span class="chip" id="state">-</span></div>
+<div class="head"><span class="t">{{agent}} <span class="sl">/</span> team_cadencer.tools</span><span class="chip" id="state">-</span></div>
 <div class="pg" id="pg"></div>
 <script>
 {{helpers}}
@@ -67,7 +67,7 @@ function render(status) {
   stateChip.className = "chip " + (s.enabled ? "ok" : "warn");
   var keep = document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute("aria-label") : null;
   pg.textContent = "";
-  put(pg, put(h("div", "ttl"), h("h1", null, "cadencer"), pillOf("tool")));
+  put(pg, put(h("div", "ttl"), h("h1", null, AGENT), pillOf("tool")));
 
   var sec = section("Switch and settings", "status.settings · set");
   var inn = h("div", "in");
