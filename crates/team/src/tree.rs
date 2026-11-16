@@ -80,13 +80,6 @@ pub fn grant_chat_to(kernel: &Arc<Kernel>, workers: &[String], principal: &str) 
             (Ok(_), Ok(_)) => granted += 1,
             (Err(e), _) | (_, Err(e)) => eprintln!("dispatcher chat: `{id}`: {e}"),
         }
-        // the view follows the rows landing in the store that keeps the chat's history: `watch` on it
-        let store = kernel.agents.get(&agent).and_then(|e| {
-            e.meta.read().ok()?.get("memory_store_id")?.as_str().map(str::to_string)
-        });
-        if let Some(store) = store {
-            grant_to(kernel, principal, &store, &["watch"]);
-        }
     }
     granted
 }

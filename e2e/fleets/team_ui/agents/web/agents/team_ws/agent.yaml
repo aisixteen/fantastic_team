@@ -16,7 +16,6 @@ can_call:
   sidebar: [reflect, watch]
   kernel_state: [reflect, list_agents]
   files: [list, watch, watch_path, unwatch_path, open_view]
-  memory: [watch]
   worker_exec: [reflect]
   lead: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]
   ops: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]
