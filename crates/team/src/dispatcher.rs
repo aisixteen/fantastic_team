@@ -2388,7 +2388,10 @@ mod tests {
             json!({"type": "open_view", "kind": "file", "path": "a.txt"}),
         )
         .await;
-        let vid = made["id"].as_str().expect(&made.to_string()).to_string();
+        let vid = made["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{made}"))
+            .to_string();
         let out = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": vid})).await;
         assert_eq!(out["kind"], "file", "{out}");
         let ws = meta_of(&kernel, "team_ws");
