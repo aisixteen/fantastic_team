@@ -51,13 +51,13 @@ pub mod verbs;
 
 use async_trait::async_trait;
 use fantastic_bundle::py_repr;
-use verbs::{ForkFrom, Holder, State, Usage, Version};
 use fantastic_kernel::bundle::{BundleError, Handler, Reply};
 use fantastic_kernel::refusal::{self, missing};
 use fantastic_kernel::{current_origin, Agent, AgentId, Item, Kernel};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use verbs::{ForkFrom, Holder, State, Usage, Version};
 
 /// `handler_module` key under which this bundle registers.
 pub const HANDLER_MODULE: &str = "task_registry.tools";
@@ -530,11 +530,7 @@ async fn assign_inner(
     Ok(entry)
 }
 
-async fn status_inner(
-    kernel: &Arc<Kernel>,
-    store: &str,
-    a: verbs::Status,
-) -> Result<Value, Value> {
+async fn status_inner(kernel: &Arc<Kernel>, store: &str, a: verbs::Status) -> Result<Value, Value> {
     let id = a.id.as_str();
     let status = a.status.map(State::as_str);
     let facts = facts_of(a.versions, a.source_version, a.fork_from);
@@ -607,16 +603,15 @@ async fn report_inner(
     Ok(entry)
 }
 
-async fn list_inner(
-    kernel: &Arc<Kernel>,
-    store: &str,
-    a: verbs::List,
-) -> Result<Value, Value> {
+async fn list_inner(kernel: &Arc<Kernel>, store: &str, a: verbs::List) -> Result<Value, Value> {
     let parent = a.parent.as_deref();
     let status = a.status.map(State::as_str);
     let holder = a.holder.as_ref().map(|h| json!(h));
     let holder = holder.as_ref();
-    let ids: Option<Vec<&str>> = a.ids.as_ref().map(|v| v.iter().map(String::as_str).collect());
+    let ids: Option<Vec<&str>> = a
+        .ids
+        .as_ref()
+        .map(|v| v.iter().map(String::as_str).collect());
     let tasks = load(kernel, store, None).await?;
     if let Some(ids) = &ids {
         if let Some(unknown) = ids.iter().find(|i| !tasks.contains_key(**i)) {

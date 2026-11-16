@@ -159,7 +159,9 @@ async fn reads(peers: &dyn Peers, bundles: &str) -> (Value, Value, Value, Value)
             .await;
         tree = find_node(&r["tree"], pl).unwrap_or(Value::Null);
     }
-    let tasks = peers.ask(crate::tree::TASKS_ID, json!({"type": "list"})).await;
+    let tasks = peers
+        .ask(crate::tree::TASKS_ID, json!({"type": "list"}))
+        .await;
     (fleet, count, tree, tasks)
 }
 
@@ -463,7 +465,12 @@ mod tests {
     fn section_fleet_is_the_registrys_count_as_is() {
         let v = section(&json!({}), &json!({"running": 3}), &Value::Null, &json!({}));
         assert_eq!(v["fleet"], json!({"running": 3}));
-        let v = section(&json!({}), &json!({"error": "no"}), &Value::Null, &json!({}));
+        let v = section(
+            &json!({}),
+            &json!({"error": "no"}),
+            &Value::Null,
+            &json!({}),
+        );
         assert!(v["fleet"].is_null());
     }
 

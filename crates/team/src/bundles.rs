@@ -288,9 +288,18 @@ mod tests {
         // the lead card grants what its text calls on the registry and the connector
         let g = l.grants;
         for v in ["pull", "list", "get", "assign", "status", "report"] {
-            assert!(g["tasks"].as_array().unwrap().contains(&serde_json::json!(v)), "lead: tasks {v}");
+            assert!(
+                g["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!(v)),
+                "lead: tasks {v}"
+            );
         }
-        assert!(g["github"].as_array().unwrap().contains(&serde_json::json!("issue_view")));
+        assert!(g["github"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("issue_view")));
         assert!(!w.grants.contains_key("tasks") && !w.grants.contains_key("github"));
     }
 

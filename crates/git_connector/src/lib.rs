@@ -88,7 +88,10 @@ impl GitConnectorBundle {
             remote: field_text(meta, "remote").unwrap_or_default(),
             default_branch: field_text(meta, "default_branch").unwrap_or_default(),
             username: field_text(meta, "username").unwrap_or_default(),
-            author: match (field_text(meta, "author_name"), field_text(meta, "author_email")) {
+            author: match (
+                field_text(meta, "author_name"),
+                field_text(meta, "author_email"),
+            ) {
                 (Some(n), Some(e)) => Some((n, e)),
                 _ => None,
             },

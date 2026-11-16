@@ -585,7 +585,9 @@ mod tests {
             assert!(pm["can_call"].get(tool).is_some(), "{tool}: {pm:?}");
         }
         assert!(
-            meta(&kernel, TASKS)["callable_by"].get(pl.as_str()).is_some(),
+            meta(&kernel, TASKS)["callable_by"]
+                .get(pl.as_str())
+                .is_some(),
             "the registry admits the project_lead the spawn granted it to"
         );
         // the count reads the tree: the worker and the project_lead
@@ -634,7 +636,13 @@ mod tests {
     async fn the_main_lead_can_spawn_every_card() {
         let (_dir, kernel) = team().await;
         for (name, _) in bundles::ALL {
-            let r = call_as(&kernel, LEAD, BUNDLES, json!({"type": "spawn", "bundle": name})).await;
+            let r = call_as(
+                &kernel,
+                LEAD,
+                BUNDLES,
+                json!({"type": "spawn", "bundle": name}),
+            )
+            .await;
             assert!(r["id"].is_string(), "{name}: {r}");
             assert_ne!(r["reason"], "not_allowed", "{name}: {r}");
         }

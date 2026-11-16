@@ -1145,10 +1145,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn dispatcher_off_runs_no_timer() {
         let b = shared();
-        dispatch(
-            &b,
-            &json!({"type": "set", "enabled": false}),
-        );
+        dispatch(&b, &json!({"type": "set", "enabled": false}));
         run_for(600).await;
         let s = status(&b);
         assert_eq!(s["ticks"], 0);
@@ -1325,10 +1322,7 @@ mod tests {
         dispatch(&b, &json!({"type": "set", "cadence": 60}));
         run_for(90).await;
         let before = status(&b)["next_beat_s"].clone();
-        dispatch(
-            &b,
-            &json!({"type": "set", "quiet": false}),
-        );
+        dispatch(&b, &json!({"type": "set", "quiet": false}));
         assert_eq!(status(&b)["next_beat_s"], before);
     }
 
@@ -1845,8 +1839,9 @@ mod tests {
 
     #[tokio::test]
     async fn bundles_beat_digests_the_project_lead_and_sub_leads() {
-        let peers =
-            BundlesPeers::new(json!({"tasks": [running("t1", "w1", 5.0), running("t2", "w2", 5.0)]}));
+        let peers = BundlesPeers::new(
+            json!({"tasks": [running("t1", "w1", 5.0), running("t2", "w2", 5.0)]}),
+        );
         let b = bundles_inner(peers.clone());
         beat_once(&b).await;
         let pl = peers.sent_to("pl").join("\n");

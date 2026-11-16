@@ -1337,7 +1337,10 @@ fn every_colour_of_the_view_is_a_skin_token() {
     let tokens = &page[root_at..root_end];
     let own_end = VIEW.find("</style>").expect("the view has a stylesheet");
     let own = &VIEW[..own_end];
-    assert!(!own.contains(":root"), "the view carries no token block of its own");
+    assert!(
+        !own.contains(":root"),
+        "the view carries no token block of its own"
+    );
     for literal in ["rgb(", "rgba(", "hsl(", "#"] {
         assert!(
             !own.contains(literal),
@@ -1384,7 +1387,9 @@ impl Handler for TrackerBundle {
     ) -> Result<Reply, BundleError> {
         let payload = call.payload();
         let verb = payload["type"].as_str().unwrap_or("").to_string();
-        let by = current_origin().map(|a| a.as_str().to_string()).unwrap_or_default();
+        let by = current_origin()
+            .map(|a| a.as_str().to_string())
+            .unwrap_or_default();
         TRACKER_CALLS
             .lock()
             .unwrap()
@@ -1395,7 +1400,9 @@ impl Handler for TrackerBundle {
             .map(|a| a.meta.read().unwrap().clone())
             .unwrap_or_default();
         Ok(Some(match verb.as_str() {
-            "reflect" => json!({"id": agent_id.as_str(), "repos": meta.get("repos").cloned().unwrap_or(json!([]))}),
+            "reflect" => {
+                json!({"id": agent_id.as_str(), "repos": meta.get("repos").cloned().unwrap_or(json!([]))})
+            }
             "issues" => {
                 assert!(payload.get("label").is_none(), "pull sends no label");
                 assert_eq!(payload["state"], "open", "pull asks for open issues");
@@ -1461,16 +1468,28 @@ async fn pull_adds_each_ready_issue_as_a_waiting_task_and_skips_known_ones() {
     )
     .await;
     // the lead already recorded o/a#9 by hand
-    r.add("lead", "o/a#9", json!({"source": "gh:o/a#9", "holder": "sublead"})).await;
+    r.add(
+        "lead",
+        "o/a#9",
+        json!({"source": "gh:o/a#9", "holder": "sublead"}),
+    )
+    .await;
     let before = Rig::tracker_calls("gh_two").len();
     let out = r.call("lead", json!({"type": "pull"})).await;
     assert_eq!(out["created"], json!(["o/a#7", "o/b#1"]), "{out}");
-    assert_eq!(out["skipped"], json!([["o/a#9", "already a task"]]), "{out}");
+    assert_eq!(
+        out["skipped"],
+        json!([["o/a#9", "already a task"]]),
+        "{out}"
+    );
     let seven = r.call("lead", json!({"type": "get", "id": "o/a#7"})).await;
     assert_eq!(seven["status"], "waiting", "{seven}");
     assert_eq!(seven["source"], "gh:o/a#7");
     assert_eq!(seven["update_to"], "gh:o/a#7");
-    assert!(seven["holder"].is_null(), "nobody holds a pulled task: {seven}");
+    assert!(
+        seven["holder"].is_null(),
+        "nobody holds a pulled task: {seven}"
+    );
     assert_eq!(seven["history"], json!([]));
     // the one the lead recorded keeps its holder
     let nine = r.call("lead", json!({"type": "get", "id": "o/a#9"})).await;
@@ -1503,8 +1522,12 @@ async fn pull_adds_each_ready_issue_as_a_waiting_task_and_skips_known_ones() {
 async fn pull_skips_a_repo_whose_listing_fails_and_keeps_the_others() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp).await;
-    r.make_tracker("gh_down", json!(["o/down", "o/up"]), json!({"o/up": [{"number": 2}]}))
-        .await;
+    r.make_tracker(
+        "gh_down",
+        json!(["o/down", "o/up"]),
+        json!({"o/up": [{"number": 2}]}),
+    )
+    .await;
     let out = r.call("lead", json!({"type": "pull"})).await;
     assert_eq!(out["created"], json!(["o/up#2"]), "{out}");
     let skipped = out["skipped"].as_array().unwrap();
@@ -1533,7 +1556,11 @@ async fn pull_is_disabled_without_a_tracker_and_reflect_names_it() {
     let refl = r.op(json!({"type": "reflect"})).await;
     assert_eq!(refl["tracker"], "gh_empty", "{refl}");
     let out = r.call("lead", json!({"type": "pull"})).await;
-    assert_eq!(out, json!({"created": [], "skipped": []}), "no repo, nothing pulled");
+    assert_eq!(
+        out,
+        json!({"created": [], "skipped": []}),
+        "no repo, nothing pulled"
+    );
     // and no store, no pull either
     create(
         &r.kernel,
@@ -1548,9 +1575,13 @@ async fn pull_is_disabled_without_a_tracker_and_reflect_names_it() {
 async fn pull_is_refused_to_an_agent_without_the_grant() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp).await;
-    r.make_tracker("gh_gate", json!(["o/a"]), json!({"o/a": [{"number": 1}]})).await;
+    r.make_tracker("gh_gate", json!(["o/a"]), json!({"o/a": [{"number": 1}]}))
+        .await;
     let out = r.call("worker", json!({"type": "pull"})).await;
-    assert!(out.get("error").is_some(), "the worker holds no grant: {out}");
+    assert!(
+        out.get("error").is_some(),
+        "the worker holds no grant: {out}"
+    );
     let all = r.call("lead", json!({"type": "list"})).await;
     assert_eq!(all["tasks"], json!([]), "{all}");
 }

@@ -33,17 +33,17 @@
 
 #![deny(missing_docs)]
 
-pub mod record;
 pub mod cards;
+pub mod record;
 pub mod verbs;
 
 use async_trait::async_trait;
+use cards::{Card, REGISTRY_TOKEN};
 use fantastic_bundle::py_repr;
 use fantastic_kernel::bundle::{BundleError, Handler, Reply};
 use fantastic_kernel::grants::union;
 use fantastic_kernel::refusal;
 use fantastic_kernel::{current_origin, Agent, AgentId, Item, Kernel};
-use cards::{Card, REGISTRY_TOKEN};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -202,11 +202,7 @@ fn bundle_reply(kernel: &Kernel, name: &str) -> Value {
     }
 }
 
-async fn spawn_reply(
-    reg: &AgentId,
-    a: verbs::Spawn,
-    kernel: &Arc<Kernel>,
-) -> Value {
+async fn spawn_reply(reg: &AgentId, a: verbs::Spawn, kernel: &Arc<Kernel>) -> Value {
     let (cards, _) = cards_of(kernel);
     let caller = current_origin();
     let fresh = match a {

@@ -562,7 +562,13 @@ mod tests {
                 "{run}"
             );
             // a kernel verb the yaml does not grant stays shut
-            let shut = as_caller(&k, WS_ID, "kernel", json!({"type": "delete_agent", "id": "x"})).await;
+            let shut = as_caller(
+                &k,
+                WS_ID,
+                "kernel",
+                json!({"type": "delete_agent", "id": "x"}),
+            )
+            .await;
             assert_eq!(shut["reason"], "unauthorized", "{run}: {shut}");
             if run == "first boot" {
                 k.flush_records().await;

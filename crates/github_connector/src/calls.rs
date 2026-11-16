@@ -456,7 +456,12 @@ async fn issue_view(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &verbs::Is
     finish(r, &token)
 }
 
-async fn label_events(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &verbs::LabelEvents) -> Value {
+async fn label_events(
+    id: &AgentId,
+    kernel: &Arc<Kernel>,
+    cfg: &Cfg,
+    a: &verbs::LabelEvents,
+) -> Value {
     const V: &str = "label_events";
     let repo = match repo_arg(&a.repo, V, cfg) {
         Ok(r) => r,
@@ -1117,7 +1122,12 @@ async fn issue_edit(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &verbs::Is
     finish(r, &token)
 }
 
-async fn project_field_set(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &verbs::ProjectFieldSet) -> Value {
+async fn project_field_set(
+    id: &AgentId,
+    kernel: &Arc<Kernel>,
+    cfg: &Cfg,
+    a: &verbs::ProjectFieldSet,
+) -> Value {
     const V: &str = "project_field_set";
     let repo = match repo_arg(&a.repo, V, cfg) {
         Ok(r) => r,
@@ -1162,7 +1172,12 @@ async fn project_field_set(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &ve
 }
 
 /// Open an issue on a repo as the app. With `project`, also add it to that board.
-async fn issue_create(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &verbs::IssueCreate) -> Value {
+async fn issue_create(
+    id: &AgentId,
+    kernel: &Arc<Kernel>,
+    cfg: &Cfg,
+    a: &verbs::IssueCreate,
+) -> Value {
     const V: &str = "issue_create";
     let repo = match repo_arg(&a.repo, V, cfg) {
         Ok(r) => r,
@@ -1229,7 +1244,12 @@ async fn issue_create(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &verbs::
 }
 
 /// Open or close an issue. Closing an issue labelled `epic` is the maintainer's alone.
-async fn issue_state(id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg, a: &verbs::IssueState) -> Value {
+async fn issue_state(
+    id: &AgentId,
+    kernel: &Arc<Kernel>,
+    cfg: &Cfg,
+    a: &verbs::IssueState,
+) -> Value {
     const V: &str = "issue_state";
     let repo = match repo_arg(&a.repo, V, cfg) {
         Ok(r) => r,

@@ -860,8 +860,14 @@ mod tests {
 
     #[test]
     fn page_verbs_lead_with_reflect_once() {
-        assert_eq!(page_verbs(&["status", "set"]), vec!["reflect", "status", "set"]);
-        assert_eq!(page_verbs(&["reflect", "pr_status"]), vec!["reflect", "pr_status"]);
+        assert_eq!(
+            page_verbs(&["status", "set"]),
+            vec!["reflect", "status", "set"]
+        );
+        assert_eq!(
+            page_verbs(&["reflect", "pr_status"]),
+            vec!["reflect", "pr_status"]
+        );
         assert_eq!(page_verbs(&[]), vec!["reflect"]);
     }
 

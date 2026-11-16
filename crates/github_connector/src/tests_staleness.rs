@@ -5,8 +5,8 @@ use serde_json::{json, Value};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::tests::{fx, mock_app, requests_to, token, Fx};
 use crate::calls::{issue_facts, summarize_compare};
+use crate::tests::{fx, mock_app, requests_to, token, Fx};
 
 const HEAD: &str = "9999999999999999999999999999999999999999";
 const OLD: &str = "1111111111111111111111111111111111111111";

@@ -18,8 +18,8 @@
 mod api;
 mod app;
 mod callog;
-mod footer;
 mod calls;
+mod footer;
 mod push;
 pub mod record;
 pub mod verbs;

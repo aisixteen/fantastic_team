@@ -238,7 +238,11 @@ mod tests {
     fn the_right_cell_mounts_the_picked_agents_view_through_the_base_relay() {
         let (_, _, js) = split_page(HTML);
         assert!(js.contains("send(id, { type: 'reflect' })"));
-        assert_eq!(js.matches("relay.mountView(").count(), 2, "the sidebar and the opened agent");
+        assert_eq!(
+            js.matches("relay.mountView(").count(),
+            2,
+            "the sidebar and the opened agent"
+        );
         assert!(js.contains("mount: right") && js.contains("calls: v.calls"));
         assert!(!js.contains("history") && !js.contains("'send'") && !js.contains("\"send\""));
     }
@@ -268,15 +272,23 @@ mod tests {
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
                 .collect();
-            let hex = run.chars().all(|c| c.is_ascii_hexdigit()) && [3, 4, 6, 8].contains(&run.len());
+            let hex =
+                run.chars().all(|c| c.is_ascii_hexdigit()) && [3, 4, 6, 8].contains(&run.len());
             assert!(!hex, "literal colour #{run}");
         }
         assert!(!own.contains(":root"), "tokens come from the shared block");
         let served = String::from_utf8(file_bytes("page.css").unwrap()).unwrap();
         assert!(served.starts_with(team_agent_view::TOKENS));
         assert_eq!(served.matches(":root{").count(), 1);
-        for name in own.split("var(").skip(1).filter_map(|s| s.split([')', ',']).next()) {
-            assert!(team_agent_view::TOKENS.contains(&format!("{name}:")), "{name}");
+        for name in own
+            .split("var(")
+            .skip(1)
+            .filter_map(|s| s.split([')', ',']).next())
+        {
+            assert!(
+                team_agent_view::TOKENS.contains(&format!("{name}:")),
+                "{name}"
+            );
         }
     }
 

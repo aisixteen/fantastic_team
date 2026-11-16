@@ -76,12 +76,7 @@ async fn configure_survives_restart() {
     assert_ne!(rec["parent"], "lead", "record: {yaml}");
 
     // The restored parent is still accepted as a sender.
-    let set = call(
-        &kernel,
-        "cad",
-        json!({"type": "set", "cadence": 9}),
-    )
-    .await;
+    let set = call(&kernel, "cad", json!({"type": "set", "cadence": 9})).await;
     assert!(set.get("error").is_none(), "set from parent refused: {set}");
 
     kernel.stop().await;

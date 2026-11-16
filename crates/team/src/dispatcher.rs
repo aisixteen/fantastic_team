@@ -73,7 +73,10 @@ pub fn rows_from(workers: &[String], tasks: &Value, now: u64, limit: u64) -> Vec
         .into_iter()
         .filter(|r| !r["parent"].is_null())
         .map(|r| {
-            let task = r["task"].as_str().filter(|t| !t.is_empty()).map(str::to_string);
+            let task = r["task"]
+                .as_str()
+                .filter(|t| !t.is_empty())
+                .map(str::to_string);
             let minutes = task
                 .as_ref()
                 .map(|_| r["idle_s"].as_u64().unwrap_or(0) / 60);
@@ -955,7 +958,14 @@ impl fantastic_kernel::bundle::Handler for DispatcherBundle {
             }
             verbs::Call::Sidebar(a) => {
                 let mut out = sidebar_reply(
-                    kernel, &peers, &meta, &team, &groups, limit, now, &a.expanded,
+                    kernel,
+                    &peers,
+                    &meta,
+                    &team,
+                    &groups,
+                    limit,
+                    now,
+                    &a.expanded,
                 )
                 .await;
                 out["services"] = json!(services_of(kernel, agent_id.as_str()));
@@ -2320,7 +2330,11 @@ mod tests {
         assert_eq!(sb["agents"][1]["bundle"], "worker", "{sb}");
         assert_eq!(sb["plan"]["tasks"][0]["id"], "o/r#1", "{sb}");
         assert_eq!(sb["plan"]["lead"], "pl");
-        assert_eq!(sb["fleet"], json!({"running": 2}), "the registry's count: {sb}");
+        assert_eq!(
+            sb["fleet"],
+            json!({"running": 2}),
+            "the registry's count: {sb}"
+        );
         kernel.stop().await;
     }
 
@@ -2847,8 +2861,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn panel_reply_for_a_refusing_declared_kind_is_unavailable_without_the_error() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel =
-            kernel_with_declared(dir.path(), &[("wh", "team_git.tools", json!({}))]).await;
+        let kernel = kernel_with_declared(dir.path(), &[("wh", "team_git.tools", json!({}))]).await;
         kernel.update(&fantastic_kernel::AgentId::from("wh"), {
             let mut m = serde_json::Map::new();
             m.insert("fail".into(), json!(true));
