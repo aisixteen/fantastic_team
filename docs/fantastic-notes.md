@@ -288,3 +288,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `2f915e9`
 
 `Cargo.lock` pins fantastic `2f915e9`: every AI chat call's events land on the agent's inbox (one model, many view-models).
+
+## Pin at `3a1f32c`
+
+`Cargo.lock` pins fantastic `3a1f32c` (base PR #707: agents publish, views watch, no polling).
