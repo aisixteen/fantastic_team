@@ -2,6 +2,7 @@
 opened from the tree, show their own agent's real data, and their controls act on that agent. Function
 only."""
 
+from helpers import stock
 from helpers import team_ui as D
 from helpers.verdict import Verdict
 
@@ -154,6 +155,10 @@ def clicks(ctx, v, ui):
         v.check(f"the detail is headed by the kind picked ({pick})", pick in heads, str(heads))
         # live: an agent spawned and deleted outside the page changes the count without a reload
         D.view_follows(team, v, "bundles")
+        # a spawner grants only what it holds: the operator (`mcp`) holds what the card grants first
+        # (the targets it holds nothing on; what it already holds is kept as it is)
+        held = (team.agents().get("mcp") or {}).get("can_call") or {}
+        stock.operator_holds(team, {t: g for t, g in (card.get("grants") or {}).items() if not t.startswith("$") and t not in held})
         made = D.op(team, "bundles", {"type": "spawn", "bundle": pick, "provider": "provider"})
         kid = made.get("id")
         if v.check(f"the operator spawns one {pick}", isinstance(kid, str) and kid != "", str(made)[:200]):
