@@ -24,7 +24,6 @@ macro_rules! stand_in_body {
     };
 }
 
-pub mod agent_views;
 pub mod app_control;
 pub mod cadence_feed;
 pub mod cadencer;

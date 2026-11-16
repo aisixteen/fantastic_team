@@ -9,4 +9,3 @@ can_call:
 callable_by:
   "$self": "*"
   "$parent": "*"
-  dispatcher: [status]

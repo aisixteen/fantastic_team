@@ -227,10 +227,13 @@ fn webui_port_serves_the_team_page_and_its_socket() {
     assert_eq!(js, 200);
     let (canvas, _) = get(port, "/canvas_page/file/index.html").unwrap();
     assert_eq!(canvas, 404, "webui serves the team page, not the canvas");
-    // the socket: the handshake and a call answered under the call's id
-    let (head, reply) = ws_call(port, "dispatcher", serde_json::json!({"type": "sidebar"}));
+    // the socket: the handshake and the page's first call, the sidebar agent's `reflect`,
+    // answered under the call's id with the html view the page mounts in its left column
+    let (head, reply) = ws_call(port, "sidebar", serde_json::json!({"type": "reflect"}));
     assert!(head.starts_with("HTTP/1.1 101"), "{head}");
     assert_eq!(reply["id"], "p1", "{reply}");
+    assert_eq!(reply["type"], "reply", "{reply}");
+    assert_eq!(reply["data"]["view"]["kind"], "html", "{reply}");
     // the records the page needs are on disk: the host, and the page and socket under it
     let web = dir.path().join(".fantastic/agents/web");
     for rec in [

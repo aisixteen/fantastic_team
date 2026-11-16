@@ -9,10 +9,6 @@ pub struct Record {
     #[serde(default = "team")]
     #[schemars(length(min = 1))]
     pub team: String,
-    /// Minutes without movement before a task counts as stalled.
-    #[serde(default = "stall_minutes")]
-    #[schemars(range(min = 1))]
-    pub stall_minutes: u64,
     /// The bundles registry agent (bundles mode).
     #[schemars(length(min = 1))]
     pub bundles: Option<String>,
@@ -22,10 +18,6 @@ pub struct Record {
 
 fn team() -> String {
     "team".to_string()
-}
-
-fn stall_minutes() -> u64 {
-    30
 }
 
 fantastic_kernel::record!(Record);

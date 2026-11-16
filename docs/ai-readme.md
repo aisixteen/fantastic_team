@@ -17,14 +17,11 @@ Run it from the directory the team lives in (`cd` there first).
 
 Nothing is read from a config file: the team is the agent records in `.fantastic/agents/`. Make them with a recipe and `send` (`create_agent` payloads, under ids you choose; see section 3). The team uses no blueprints.
 
-The web UI's home screen is the dispatcher (agent `dispatcher`): a sidebar of
-the team's groups. In each group, every worker is followed by a `subagents (N)`
-expander, and its subagents (kernel agents whose parent is that worker) show
-under it only when expanded. A click on a worker or a subagent opens that agent
-as a full-screen chat, and Back returns to the sidebar with its scroll and
-expansion kept. The dispatcher's view is made at the first start. It reads no secrets and sends no work. The `sidebar` verb answers the
-list; `open` answers the chat for one agent (`view: chat`, `target`, `fullscreen`).
-`control {node, action, confirm?}` sends start, pause or stop to a worker (any other action is refused); stop needs `confirm: true`, and the answer is `{sent, error?}`.
+The web UI's left column is fantastic's sidebar agent's html view: the agent tree, each chat's
+state, what waits for the person and the files. A click opens that agent in the right pane from
+its own `reflect`; when the page's leg may not read it, the dispatcher's `open` (agent
+`dispatcher`) grants the leg what drawing it takes and the page reflects again. It reads no
+secrets and sends no work. `control {node, action, confirm?}` sends start, pause or stop to a worker (any other action is refused); stop needs `confirm: true`, and the answer is `{sent, error?}`.
 
 The right pane fills the height beside the tree: the chat's transcript scrolls inside it and the chat has no fixed height. An `embed {id}` row in the chat's history is drawn as a card where the row sits (a sandboxed iframe of the host agent's `get_html`; `unembed` removes it, the X hides it in the page only); the page's leg may call that host's panel verbs plus `get_html` and `watch`, granted at `open` and again after a turn, never `*`. When a canvas named after the node exists (`canvas_<id>`, what `new_canvas {name: <id>}` makes), the `open` reply carries `canvas {id, url}` and the pane shows a Canvas button that swaps the chat for `url` (`/canvas_page/file/index.html?canvas=<id>`) in an iframe. The `agents` rows carry `has_children`, so a subtree and the whole tree column fold (remembered in the browser). Up to 600 px wide the list and the pane are two snap panels side by side: opening a node scrolls the pane into view and Back scrolls the list back. 
 

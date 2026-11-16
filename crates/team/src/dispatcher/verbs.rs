@@ -9,24 +9,7 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct Boot {}
 
-/// Per group one flat list: each worker, its subagents expander, and its subagents when expanded; with a bundles registry the reply also has fleet {running, max}, the registry's get_count, and (bundles mode) agents, the lead first then its tree depth-first [{id, bundle, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: tasks|github|dispatcher|cadencer|git, label}], the team's own agents that exist.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Sidebar {
-    /// The workers whose subagents are shown.
-    pub expanded: Option<Vec<String>>,
-}
-
-/// The tree of the team or a node, rows with state/task/minutes/cost.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Tree {
-    /// The node; absent, the team.
-    #[schemars(length(min = 1))]
-    pub node: Option<String>,
-}
-
-/// The view to open for a node: a worker or subagent → full-screen chat; a group or the team → a dispatcher; a node in the sidebar's services → {view: panel, kind, target, model: {kind, title, summary, sections}} drawn as text in the right pane.
+/// Grant the page's leg what opening a node takes, and name it: a worker or subagent → its full-screen chat (the chat verbs); an agent whose reflect carries an html view → {view: html} (reflect and the view's calls); a file's view agent → {kind: file} (reflect, read, watch); a group or the team → a dispatcher.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Open {
@@ -90,8 +73,6 @@ pub struct Control {
 
 fantastic_kernel::verbs! {
     "boot" => Boot,
-    "sidebar" => Sidebar,
-    "tree" => Tree,
     "open" => Open,
     "control" => Control,
 }
