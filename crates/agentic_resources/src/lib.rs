@@ -91,17 +91,16 @@ pub struct AgenticResourcesBundle {
 }
 
 impl AgenticResourcesBundle {
-    /// Start the fleet tap of registry `me` on `kernel` once: true when this call started it.
-    fn follow_once(&self, me: &AgentId, kernel: &Arc<Kernel>) -> bool {
+    /// Start the fleet tap of registry `me` on `kernel` once.
+    fn follow_once(&self, me: &AgentId, kernel: &Arc<Kernel>) {
         let mut taps = self.taps.lock().expect("taps poisoned");
         taps.retain(|(k, _, _)| k.strong_count() > 0);
         let weak = Arc::downgrade(kernel);
         if taps.iter().any(|(k, id, _)| k.ptr_eq(&weak) && id == me) {
-            return false;
+            return;
         }
         let token = follow_fleet(kernel, me.clone());
         taps.push((weak, me.clone(), token));
-        true
     }
 
     /// Stop the fleet tap of registry `me` on `kernel` (its delete or shutdown): the
@@ -132,47 +131,32 @@ fn lifecycle_of(ev: &Value) -> Option<(&'static str, String)> {
     }
 }
 
-/// THE FLEET TAP: the kernel's lifecycle stream, queued (the kernel is not touched from
-/// inside its own publish), then each add or removal of an agent on a spawnable bundle
-/// emitted as [`FLEET_CHANGED`] on the registry's own id. A removal names no bundle, so
-/// the tap remembers the bundle of every fleet member it has seen.
+/// THE FLEET TAP: the kernel's lifecycle stream (fantastic's `publish_changes`), each add or
+/// removal of an agent on a spawnable bundle emitted as [`FLEET_CHANGED`] on the registry's
+/// own id. A removal names no bundle, so the tap remembers the bundle of every fleet member
+/// it has seen.
 fn follow_fleet(kernel: &Arc<Kernel>, me: AgentId) -> SubscriberToken {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(&'static str, String)>();
-    let token = kernel.add_state_subscriber(Arc::new(move |ev: &Value, _body| {
-        if let Some(c) = lifecycle_of(ev) {
-            let _ = tx.send(c);
-        }
-    }));
     let mut known: BTreeMap<String, String> = spawned(kernel)
         .into_iter()
         .map(|s| (s.id.as_str().to_string(), s.bundle))
         .collect();
-    let weak = Arc::downgrade(kernel);
-    tokio::spawn(async move {
-        while let Some((change, id)) = rx.recv().await {
-            let Some(k) = weak.upgrade() else { return };
-            let bundle = if change == "added" {
-                let names: Vec<String> = cards::of(&k).into_iter().map(|c| c.name).collect();
-                let b = k
-                    .agents
-                    .get(&AgentId::from(id.as_str()))
-                    .and_then(|a| a.value().handler_module.clone())
-                    .filter(|b| names.contains(b));
-                if let Some(b) = &b {
-                    known.insert(id.clone(), b.clone());
-                }
-                b
-            } else {
-                known.remove(&id)
-            };
-            if let Some(bundle) = bundle {
-                let ev =
-                    json!({"type": FLEET_CHANGED, "change": change, "agent": id, "bundle": bundle});
-                k.emit(&me, ev).await;
+    kernel.publish_changes(me, lifecycle_of, move |k, (change, id)| {
+        let bundle = if change == "added" {
+            let names: Vec<String> = cards::of(k).into_iter().map(|c| c.name).collect();
+            let b = k
+                .agents
+                .get(&AgentId::from(id.as_str()))
+                .and_then(|a| a.value().handler_module.clone())
+                .filter(|b| names.contains(b));
+            if let Some(b) = &b {
+                known.insert(id.clone(), b.clone());
             }
-        }
-    });
-    token
+            b
+        } else {
+            known.remove(&id)
+        };
+        bundle.map(|bundle| json!({"type": FLEET_CHANGED, "change": change, "agent": id, "bundle": bundle}))
+    })
 }
 
 // ── record helpers ──────────────────────────────────────────────────

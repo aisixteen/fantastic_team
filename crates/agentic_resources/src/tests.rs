@@ -1931,7 +1931,8 @@ async fn the_registrys_delete_removes_its_fleet_tap_from_the_kernel() {
     assert_eq!(two.len(), 1, "one tap, the deleted registry's is gone: {got:?}");
     // the shutdown hook drops the tap too
     let b = AgenticResourcesBundle::default();
-    assert!(b.follow_once(&me, &r.kernel));
+    b.follow_once(&me, &r.kernel);
+    assert_eq!(b.taps.lock().unwrap().len(), 1);
     Handler::on_shutdown(&b, &me, &r.kernel).await.unwrap();
     assert!(b.taps.lock().unwrap().is_empty());
 }
