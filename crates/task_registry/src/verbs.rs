@@ -238,6 +238,11 @@ pub struct Get {
     pub id: String,
 }
 
+/// One pass over the tracker's issues (the record's `task_tracker_id`): every open issue (no label, no spec comment) on each repo the tracker's `reflect` lists becomes a waiting task with no holder, id `owner/name#N` and source `gh:owner/name#N`; an issue that is a task already is skipped. Refused `disabled` without a task_tracker_id. Returns {created: [id], skipped: [[id or repo, reason]]}.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Pull {}
+
 fantastic_kernel::verbs! {
     "add" => Add,
     "assign" => Assign,
@@ -246,4 +251,5 @@ fantastic_kernel::verbs! {
     "report" => Report,
     "list" => List,
     "get" => Get,
+    "pull" => Pull,
 }

@@ -247,7 +247,7 @@ pub struct Staleness {
     pub issue: Option<StaleIssue>,
 }
 
-/// Replace one line of an issue's body (a line outside a `## SPEC` section, matching `old` once). Returns {repo, number, line}.
+/// Replace one line of an issue's body (the line matching `old` once). Returns {repo, number, line}.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IssueEdit {

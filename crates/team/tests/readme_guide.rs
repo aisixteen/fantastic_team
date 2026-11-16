@@ -143,54 +143,6 @@ fn readme_yaml_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
-#[test]
-fn readme_defaults_match_repo_config() {
-    let text = readme();
-    let defaults = text
-        .lines()
-        .find(|l| l.starts_with("Every key is optional"))
-        .expect("README must state the defaults in an `Every key is optional` line");
-    // The code's own answer for an empty file, not a grep of its source.
-    let cfg =
-        fantastic_team::repo_config::from_record(None).expect("no entry must give the defaults");
-    let label = fantastic_team::repo_config::DEFAULT_LABEL;
-    assert_eq!(cfg.task_labels, vec![label.to_string()]);
-    assert_eq!(cfg.review.approvals, 1);
-    assert!(
-        cfg.review.approvers.is_empty(),
-        "default approvers is any reviewer"
-    );
-    assert!(
-        defaults.contains(&format!("`{label}`")),
-        "README default label disagrees with DEFAULT_LABEL `{label}`"
-    );
-    assert!(
-        defaults.contains("one approval"),
-        "README must say the default is one approval"
-    );
-}
-
-#[test]
-fn readme_repo_yaml_example_parses() {
-    let text = readme();
-    let block = readme_yaml_blocks(&text)
-        .into_iter()
-        .find(|b| b.lines().any(|l| l.starts_with("task_labels:")))
-        .expect("README must show a repo_config example with task_labels");
-    let entry: serde_json::Value = serde_yaml::from_str(&block).expect("the example is YAML");
-    let cfg = fantastic_team::repo_config::from_record(Some(&entry))
-        .unwrap_or_else(|e| panic!("README repo_config example must parse: {e}"));
-    assert_eq!(cfg.task_labels, vec!["team-ready".to_string()]);
-    assert_eq!(
-        cfg.paths,
-        vec!["src/**".to_string(), "docs/*.md".to_string()]
-    );
-    assert_eq!(cfg.build.as_deref(), Some("cargo build"));
-    assert_eq!(cfg.test.as_deref(), Some("cargo test"));
-    assert_eq!(cfg.review.approvals, 1);
-    assert_eq!(cfg.review.approvers, vec!["alice".to_string()]);
-}
-
 /// Every `.rs` file under `dir` outside a `tests` folder, concatenated.
 fn rust_sources(dir: &std::path::Path) -> String {
     let mut out = String::new();
@@ -267,7 +219,6 @@ fn readme_record_fields_are_the_ones_the_code_reads() {
     for (field, needle) in [
         ("tiers", "\"tiers\""),
         ("group_settings", "\"group_settings\""),
-        ("repo_config", "\"repo_config\""),
         ("groups", "\"groups\""),
     ] {
         assert!(

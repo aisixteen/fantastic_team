@@ -233,34 +233,33 @@ mod tests {
     }
 
     #[test]
-    fn moved_cards_keep_the_old_text() {
+    fn cards_keep_their_key_text() {
         let (w, l, k) = (card("worker.md"), card("lead.md"), card("issue_keeper.md"));
         assert!(w.directive.starts_with("# The worker directive"));
         assert!(l.directive.starts_with("# The lead directive"));
         assert!(k.directive.starts_with("# The issue-keeper directive"));
+        // the worker hands its task back with one message and holds no tool on the registry
         for s in [
-            "if_match",
-            "version",
-            "version_mismatch",
-            ".state",
-            "pending",
-            "taken",
-            "until",
-            "done",
-            "failed",
-            "\"taker\":\"YOU\"",
-            "<type>list</type>",
-            "<type>read</type>",
-            "<type>write</type>",
+            "done TASK: RESULT",
+            "failed TASK: REASON",
+            "blocked TASK: WHY",
+            "You hold no tool on it",
+            "wait_s",
+            "Never end your run (`<call name=\"done\"></call>`) while you hold a task",
         ] {
             assert!(w.directive.contains(s), "worker card lacks {s}");
         }
+        // the lead fills, takes, hands out and records the tasks on the registry
         for s in [
-            "if_match",
-            "version_mismatch",
+            "<type>pull</type>",
             "<type>list</type>",
-            "<type>read</type>",
-            "<type>write</type>",
+            "<type>get</type>",
+            "<type>assign</type>",
+            "<status>running</status>",
+            "already_held",
+            "<type>issue_view</type>",
+            "<type>report</type>",
+            "gh:owner/name#N",
             "delete_agent",
             "wait_s",
             "generating",
@@ -276,17 +275,31 @@ mod tests {
             assert!(l.directive.contains(s), "lead card lacks {s}");
         }
         for t in [&w.directive, &l.directive] {
-            assert!(t.contains("wait_s"));
             assert!(t.contains("await"));
             assert!(t.contains("<call name=\"done\"></call>"));
         }
         let text = k.directive.to_lowercase();
-        for s in ["never merge", "never close", "never edit", "never create"] {
+        for s in ["never merge", "never close", "never create"] {
             assert!(text.contains(s), "issue-keeper card lacks '{s}'");
         }
-        assert!(text.contains("spec"));
         let ww = words(&w.directive);
         assert!(!ww.iter().any(|x| x == "git" || x == "github"));
+        // the lead card grants what its text calls on the registry and the connector
+        let g = l.grants;
+        for v in ["pull", "list", "get", "assign", "status", "report"] {
+            assert!(
+                g["tasks"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!(v)),
+                "lead: tasks {v}"
+            );
+        }
+        assert!(g["github"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("issue_view")));
+        assert!(!w.grants.contains_key("tasks") && !w.grants.contains_key("github"));
     }
 
     #[test]
@@ -314,13 +327,14 @@ mod tests {
     fn lead_card_spawns_and_asks_bundles_without_an_admit_step() {
         let l = card("lead.md").directive;
         let start = l.find("## Starting an agent").unwrap();
-        let end = l.find("## Workers that serve themselves").unwrap();
+        let end = l.find("## Handing out tasks").unwrap();
         let section = &l[start..end];
         assert!(section.contains("Ask `bundles` first (bundles, then get_count)"));
         assert!(section.contains("<type>spawn</type>"));
         assert!(section.contains("get_count"));
         assert!(section.contains("fleet"));
-        assert!(section.contains("<text>The queue is QUEUE. Your parent is YOUR_ID"));
+        assert!(section.contains("<text>Your parent is YOUR_ID"));
+        assert!(section.contains("Your task is TASK. Its instructions: INSTRUCTIONS."));
         assert!(!section.contains("<task>"));
         assert!(l.contains("Ask `bundles` before starting an agent"));
         let g = card("lead.md").grants;
@@ -493,8 +507,9 @@ mod tests {
                 "`lead`",
                 "`bundles`",
                 "`tasks`",
-                "`queue`",
-                "`board`",
+                "`pull`",
+                "`dispatcher`",
+                "`cadencer`",
                 "`worker_exec`",
                 "`worker_files`",
                 "`kernel_state`",
@@ -513,7 +528,7 @@ mod tests {
                 "{file}: the brief says keys reach every agent"
             );
             assert!(
-                brief.contains("They are not there at the start: a lead makes one, under that id, when it judges it useful."),
+                brief.contains("`dispatcher` and `cadencer` are not there at the start: a lead makes one, under that id, when it judges it useful."),
                 "{file}"
             );
             assert!(brief.len() < 2500, "{file}: the brief stays short");
@@ -538,10 +553,10 @@ mod tests {
         let rest = &l[start + 3..];
         let section = &rest[..rest.find("\n## ").unwrap_or(rest.len())];
         assert!(section.contains("in your own context"));
+        // the registry is there from the start; the two it may make are named with their modules
+        assert!(section.contains("`tasks`, the task registry, which is there from the start"));
+        assert!(booted.bundles.get("task_registry.tools").is_some());
         for (id, module) in [
-            ("tasks", "task_registry.tools"),
-            ("queue", "ram_store.tools"),
-            ("board", "team_board.tools"),
             ("dispatcher", "team_dispatcher.tools"),
             ("cadencer", "team_cadencer.tools"),
         ] {
@@ -551,7 +566,10 @@ mod tests {
                 "{module} is registered"
             );
         }
-        assert!(start < l.find("## The queue").unwrap());
+        for v in ["pull", "list", "get", "assign", "status", "report"] {
+            assert!(section.contains(&format!("`{v}`")), "the section names {v}");
+        }
+        assert!(start < l.find("## The tasks").unwrap());
         booted.stop().await;
     }
 
@@ -559,7 +577,7 @@ mod tests {
     fn lead_card_starting_an_agent_section_still_has_no_create_agent() {
         let l = card("lead.md").directive;
         let start = l.find("## Starting an agent").unwrap();
-        let end = l.find("## Workers that serve themselves").unwrap();
+        let end = l.find("## Handing out tasks").unwrap();
         assert!(!l[start..end].contains("create_agent"));
     }
 }

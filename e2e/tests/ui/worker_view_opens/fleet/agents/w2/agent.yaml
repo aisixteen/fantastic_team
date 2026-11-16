@@ -6,7 +6,6 @@ memory_store_id: memory
 can_call:
   "$self": "*"
   provider: [complete, watch]
-  queue: "*"
 callable_by:
   "$self": "*"
   "$parent": "*"

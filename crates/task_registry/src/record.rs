@@ -8,6 +8,9 @@ pub struct Record {
     /// The store agent that keeps the task tables; absent, the registry refuses every verb `disabled`.
     #[schemars(length(min = 1))]
     pub task_store_id: Option<String>,
+    /// The tracker agent (the github connector): `pull` reads its ready issues through it, and its update and close verbs take the write-back; absent, `pull` is refused `disabled`.
+    #[schemars(length(min = 1))]
+    pub task_tracker_id: Option<String>,
 }
 
 fantastic_kernel::record!(Record);

@@ -5,10 +5,6 @@ use schemars::JsonSchema;
 /// A dispatcher's own record fields.
 #[derive(Debug, JsonSchema)]
 pub struct Record {
-    /// The board agent the dispatcher reads the work from.
-    #[serde(default = "board")]
-    #[schemars(length(min = 1))]
-    pub board: String,
     /// The team's name (the root of its tree).
     #[serde(default = "team")]
     #[schemars(length(min = 1))]
@@ -22,10 +18,6 @@ pub struct Record {
     pub bundles: Option<String>,
     /// The groups: group name → its workers' ids.
     pub groups: Option<std::collections::BTreeMap<String, Vec<String>>>,
-}
-
-fn board() -> String {
-    "board".to_string()
 }
 
 fn team() -> String {

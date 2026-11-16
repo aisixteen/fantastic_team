@@ -553,7 +553,12 @@ async fn get_count_after_spawn_delete_restart() {
         ],
     ); // the bundles load before the tree
     k2.load(state).unwrap();
-    let after = send(&k2, &r.reg, json!({"type": "get_count", "bundle": "writer"})).await;
+    let after = send(
+        &k2,
+        &r.reg,
+        json!({"type": "get_count", "bundle": "writer"}),
+    )
+    .await;
     assert_eq!(after, json!({"running": 1}), "rebuilt from the records");
     assert_eq!(
         send(&k2, &r.reg, json!({"type": "get_count"})).await["running"],
@@ -729,10 +734,7 @@ async fn spawn_from_child_sends_the_spawner() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = r.callers[0].clone();
-    let id = id_of(
-        &r.spawn_as(&lead, json!({"from": from(&src, 5)}))
-            .await,
-    );
+    let id = id_of(&r.spawn_as(&lead, json!({"from": from(&src, 5)})).await);
     // the clone sits beside its source, which is the spawner's child
     assert_eq!(
         r.kernel
@@ -932,7 +934,9 @@ async fn no_auto_cleanup_on_done() {
 async fn no_card_is_built_in() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["boss"], &[]).await;
-    let c = r.op(json!({"type": "bundle", "name": "project_lead"})).await;
+    let c = r
+        .op(json!({"type": "bundle", "name": "project_lead"}))
+        .await;
     assert_eq!(c["reason"], "not_found", "{c}");
     let out = r
         .spawn_as(&r.callers[0], json!({"bundle": "project_lead"}))
@@ -1016,11 +1020,12 @@ async fn spawn_from_makes_a_clone_of_its_source() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
-    let out = r
-        .spawn_as(lead, json!({"from": from(&src, 5)}))
-        .await;
+    let out = r.spawn_as(lead, json!({"from": from(&src, 5)})).await;
     assert_eq!(out["bundle"], "writer", "{out}");
-    assert_eq!(out["model"], "src-model", "the clone's own model: the source's");
+    assert_eq!(
+        out["model"], "src-model",
+        "the clone's own model: the source's"
+    );
     assert_eq!(out["from"], from(&src, 5));
     assert_eq!(out["copied"], 3);
     let id = out["id"].as_str().unwrap();
@@ -1035,7 +1040,10 @@ async fn spawn_from_makes_a_clone_of_its_source() {
     };
     assert_eq!(rest(id), rest(&src));
     let m = r.meta(id);
-    assert_eq!(m["system_prompt"], "SOURCE PROMPT", "nothing written over it");
+    assert_eq!(
+        m["system_prompt"], "SOURCE PROMPT",
+        "nothing written over it"
+    );
     assert_eq!(m["task"]["label"], "old task");
     assert_eq!(m["can_call"]["src_store"], "*");
     assert_eq!(m["can_call"]["secret_agent"], "*");
@@ -1051,7 +1059,10 @@ async fn spawn_from_makes_a_clone_of_its_source() {
     assert_eq!(level(id), level(&src));
     // the caller controls it and it may tell the caller
     assert_eq!(m["can_call"][lead], json!(["send"]));
-    assert_eq!(m["callable_by"][lead], json!(["pause", "resume", "stop", "send"]));
+    assert_eq!(
+        m["callable_by"][lead],
+        json!(["pause", "resume", "stop", "send"])
+    );
     // the registry admits what the clone holds on it
     assert_eq!(m["can_call"][&r.reg], json!(["bundles"]));
     assert_eq!(r.meta(&r.reg)["callable_by"][id], json!(["bundles"]));
@@ -1095,9 +1106,7 @@ async fn spawn_from_passes_fork_refusals_through() {
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
     for (at, reason) in [(99, "cuts_turn"), (98, "no_such_row")] {
-        let out = r
-            .spawn_as(lead, json!({"from": from(&src, at)}))
-            .await;
+        let out = r.spawn_as(lead, json!({"from": from(&src, at)})).await;
         assert_eq!(out["reason"], reason, "{out}");
         assert_eq!(out["at"], at);
         assert_eq!(out["hint"], "a hint");
@@ -1127,9 +1136,7 @@ async fn spawn_from_requires_the_caller_to_hold_fork() {
     r.kernel
         .edit_can_call(&AgentId::from(other.as_str()), |m| m.remove(&src).is_some())
         .unwrap();
-    let out = r
-        .spawn_as(&other, json!({"from": from(&src, 5)}))
-        .await;
+    let out = r.spawn_as(&other, json!({"from": from(&src, 5)})).await;
     assert_eq!(out["reason"], "not_allowed", "{out}");
     assert!(
         out["error"].as_str().unwrap().contains("may not fork"),
@@ -1137,9 +1144,7 @@ async fn spawn_from_requires_the_caller_to_hold_fork() {
     );
     assert!(forks_of(&r, &src).is_empty());
     assert!(r.meta(&r.reg)["can_call"].get(&src).is_none());
-    let ok = r
-        .spawn_as(&lead, json!({"from": from(&src, 5)}))
-        .await;
+    let ok = r.spawn_as(&lead, json!({"from": from(&src, 5)})).await;
     assert!(ok.get("id").is_some(), "{ok}");
 }
 
@@ -1148,9 +1153,7 @@ async fn spawn_from_gives_the_parent_pause_resume_stop() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
-    let id = r
-        .spawn_as(lead, json!({"from": from(&src, 5)}))
-        .await["id"]
+    let id = r.spawn_as(lead, json!({"from": from(&src, 5)})).await["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1169,9 +1172,7 @@ async fn spawn_from_survives_restart_beside_its_source_and_delete_removes_it() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = &r.callers[0];
-    let id = r
-        .spawn_as(lead, json!({"from": from(&src, 5)}))
-        .await["id"]
+    let id = r.spawn_as(lead, json!({"from": from(&src, 5)})).await["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1224,9 +1225,7 @@ async fn spawn_from_bad_shape_refused() {
         json!({"agent": src, "at": "1"}),
         json!({"agent": "", "at": 1}),
     ] {
-        let out = r
-            .spawn_as(lead, json!({"from": bad_from}))
-            .await;
+        let out = r.spawn_as(lead, json!({"from": bad_from})).await;
         assert!(
             ["bad_arg", "missing_arg"].contains(&out["reason"].as_str().unwrap_or("")),
             "{bad_from}: {out}"
@@ -1312,10 +1311,7 @@ async fn spawn_from_under_reach_keeps_the_spawners_star() {
     let (r, src) = fork_rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
     let lead = r.callers[0].clone();
     reach(&r, std::slice::from_ref(&lead));
-    let id = id_of(
-        &r.spawn_as(&lead, json!({"from": from(&src, 5)}))
-            .await,
-    );
+    let id = id_of(&r.spawn_as(&lead, json!({"from": from(&src, 5)})).await);
     assert_eq!(r.meta(&lead)["can_call"][&id], json!("*"));
     assert_eq!(r.meta(&id)["callable_by"][&lead], json!("*"));
     reaches(&r, &lead, &id).await;
@@ -1368,10 +1364,7 @@ async fn spawn_without_reach_gives_exactly_the_parent_verbs() {
     let lead = r.callers[0].clone();
     let want = json!(["pause", "resume", "stop", "send"]);
     let plain = id_of(&r.spawn_as(&lead, json!({"bundle": "reviewer"})).await);
-    let forked = id_of(
-        &r.spawn_as(&lead, json!({"from": from(&src, 5)}))
-            .await,
-    );
+    let forked = id_of(&r.spawn_as(&lead, json!({"from": from(&src, 5)})).await);
     for id in [&plain, &forked] {
         assert_eq!(r.meta(&lead)["can_call"][id], want, "{id}");
         assert_eq!(r.meta(id)["callable_by"][&lead], want, "{id}");
@@ -1456,11 +1449,8 @@ async fn spawn_from_opens_the_tool_grants_on_both_ends() {
     hold(&r, &src, "notes", json!(["read"]));
     let before = keys_of(&r, "notes", "callable_by");
     let id = id_of(
-        &r.spawn_as(
-            &r.callers[0],
-            json!({"from": from(&src, 5)}),
-        )
-        .await,
+        &r.spawn_as(&r.callers[0], json!({"from": from(&src, 5)}))
+            .await,
     );
     assert_eq!(
         r.meta(&id)["can_call"]["notes"],
@@ -1481,7 +1471,10 @@ const WAKEABLE: &str = "---\nname: wakeable\npurpose: Runs agents and checks on 
 async fn spawn_adds_the_bundles_callable_by_to_the_childs() {
     let tmp = TempDir::new().unwrap();
     let r = rig(&tmp, &["lead"], &[("wakeable.md", WAKEABLE)]).await;
-    let id = id_of(&r.spawn_as(&r.callers[0], json!({"bundle": "wakeable"})).await);
+    let id = id_of(
+        &r.spawn_as(&r.callers[0], json!({"bundle": "wakeable"}))
+            .await,
+    );
     let cb = &r.meta(&id)["callable_by"];
     assert_eq!(cb["$subtree"], json!(["send"]), "{cb}");
     assert_eq!(
@@ -1496,11 +1489,8 @@ async fn spawn_from_adds_the_bundles_callable_by_to_the_childs() {
     let tmp = TempDir::new().unwrap();
     let (r, src) = fork_rig(&tmp, &["lead"], &[("wakeable.md", WAKEABLE)]).await;
     let id = id_of(
-        &r.spawn_as(
-            &r.callers[0],
-            json!({"from": from(&src, 5)}),
-        )
-        .await,
+        &r.spawn_as(&r.callers[0], json!({"from": from(&src, 5)}))
+            .await,
     );
     assert_eq!(r.meta(&id)["callable_by"]["$subtree"], json!(["send"]));
 }
@@ -1550,9 +1540,7 @@ async fn refused_tool_grant_undoes_the_spawn() {
     let lead_before = keys_of(&r, &lead, "can_call");
     let lead_cb_before = keys_of(&r, &lead, "callable_by");
     let agents_before = r.kernel.agents.len();
-    let out = r
-        .spawn_as(&lead, json!({"bundle": "two"}))
-        .await;
+    let out = r.spawn_as(&lead, json!({"bundle": "two"})).await;
     assert_eq!(out["reason"], "grant_failed", "{out}");
     assert_eq!(r.kernel.agents.len(), agents_before, "no child left");
     assert_eq!(r.op(json!({"type": "fleet"})).await["bundles"], json!({}));
@@ -1623,10 +1611,7 @@ async fn spawn_from_refuses_escalation_before_forking() {
     notes_tool(&r).await;
     hold(&r, &r.callers[0], "notes", json!(["read"]));
     let out = r
-        .spawn_as(
-            &r.callers[0],
-            json!({"from": from(&src, 5)}),
-        )
+        .spawn_as(&r.callers[0], json!({"from": from(&src, 5)}))
         .await;
     assert_eq!(out["reason"], "not_allowed", "{out}");
     assert!(forks_of(&r, &src).is_empty(), "nothing forked");
@@ -1760,9 +1745,7 @@ async fn fork_not_allowed_refusal_reason_is_code() {
     r.kernel
         .edit_can_call(&AgentId::from(other.as_str()), |m| m.remove(&src).is_some())
         .unwrap();
-    let out = r
-        .spawn_as(&other, json!({"from": from(&src, 5)}))
-        .await;
+    let out = r.spawn_as(&other, json!({"from": from(&src, 5)})).await;
     assert_shape(&out, "not_allowed");
     assert!(out["error"].as_str().unwrap().contains("fork"), "{out}");
 }

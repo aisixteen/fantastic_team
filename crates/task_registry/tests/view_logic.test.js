@@ -46,7 +46,7 @@ test("the six real states are the states; an unknown or missing status reads as 
   assert.equal(api.stateOf({}), "waiting");
 });
 
-test("counts per state, the total, and held = running (the board's rule)", () => {
+test("counts per state, the total, and held = running (the plan's rule)", () => {
   const c = plain(api.countsOf(TASKS));
   assert.deepEqual(c, { total: 11, held: 2, waiting: 1, running: 2, blocked: 1, done: 5, failed: 1, paused: 1 });
   assert.equal(api.subline(c), "11 tasks · 2 held · 1 blocked");

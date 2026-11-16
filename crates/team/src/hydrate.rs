@@ -90,7 +90,7 @@ pub fn seed(dir: &Path) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::new_team::{BUNDLES, GITHUB, LEAD, WORKER_EXEC, WORKER_FILES};
+    use crate::new_team::{BUNDLES, GITHUB, LEAD, TASKS, WORKER_EXEC, WORKER_FILES};
     use crate::page::{PAGE_ID, WEB_ID, WS_ID};
     use crate::test_boot::{as_caller, boot_at, Seed};
     use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
@@ -98,11 +98,12 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// The blueprint's ids with their parents, in order.
-    const TREE: [(&str, &str); 9] = [
+    const TREE: [(&str, &str); 10] = [
         (LEAD, "user"),
         (GITHUB, LEAD),
         ("github_credentials", LEAD),
         (BUNDLES, LEAD),
+        (TASKS, LEAD),
         (WORKER_EXEC, LEAD),
         (WORKER_FILES, LEAD),
         (WEB_ID, DEFAULT_ROOT_ID),
@@ -358,6 +359,23 @@ mod tests {
             lead["can_call"]["bundles"],
             json!(crate::new_team::LEAD_BUNDLES_VERBS)
         );
+        // the tasks agent: its store, its tracker, and both ends of its edges
+        let tasks = disk_record(dir.path(), TASKS);
+        assert_eq!(tasks["task_store_id"], "memory");
+        assert_eq!(tasks["task_tracker_id"], GITHUB);
+        assert_eq!(tasks["can_call"][GITHUB], json!(["reflect", "issues"]));
+        assert_eq!(
+            disk_record(dir.path(), GITHUB)["callable_by"][TASKS],
+            json!(["reflect", "issues"])
+        );
+        assert_eq!(
+            tasks["callable_by"][WS_ID],
+            json!(["reflect", "list", "get"])
+        );
+        assert_eq!(
+            disk_record(dir.path(), WS_ID)["can_call"][TASKS],
+            json!(["reflect", "list", "get"])
+        );
         assert_eq!(
             disk_record(dir.path(), WEB_ID)["can_call"][PAGE_ID],
             json!(["read_stream"])
@@ -544,7 +562,13 @@ mod tests {
                 "{run}"
             );
             // a kernel verb the yaml does not grant stays shut
-            let shut = as_caller(&k, WS_ID, "kernel", json!({"type": "delete_agent", "id": "x"})).await;
+            let shut = as_caller(
+                &k,
+                WS_ID,
+                "kernel",
+                json!({"type": "delete_agent", "id": "x"}),
+            )
+            .await;
             assert_eq!(shut["reason"], "unauthorized", "{run}: {shut}");
             if run == "first boot" {
                 k.flush_records().await;

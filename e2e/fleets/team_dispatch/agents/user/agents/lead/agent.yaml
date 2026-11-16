@@ -11,11 +11,9 @@ can_call:
   credentials: "*"
   worker_exec: "*"
   worker_files: "*"
-  queue: "*"
   git: "*"
   github: "*"
   bundles: [bundles, bundle, spawn, get_count, fleet]
-  board: [board]
 callable_by:
   "$self": "*"
   "$parent": "*"

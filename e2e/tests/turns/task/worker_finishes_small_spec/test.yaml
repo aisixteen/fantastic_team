@@ -1,4 +1,4 @@
 costs: turns
 timeout: 1800
 plug: anthropic
-fleet: stock team_tools team_forge team_puller provider_{{provider_shape}}
+fleet: stock team_tools team_forge team_tasks provider_{{provider_shape}}

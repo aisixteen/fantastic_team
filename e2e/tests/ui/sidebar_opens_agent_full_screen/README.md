@@ -1,6 +1,6 @@
 # ui/sidebar_opens_agent_full_screen (free)
 
-The page's socket, end to end against the real binary: one group `fantastic` (no driver, no board) with two workers, `w1` and `w2`, and two subagents of `w2` (`sub_a`, `sub_b`: kernel agents whose parent is `w2`), all on the scripted model. The model's script is two `done` turns, one per message sent.
+The page's socket, end to end against the real binary: one group `fantastic` (no driver) with two workers, `w1` and `w2`, and two subagents of `w2` (`sub_a`, `sub_b`: kernel agents whose parent is `w2`), all on the scripted model. The model's script is two `done` turns, one per message sent.
 
 The page is two empty columns for now (see `ui/layout_two_columns`), so there is no page DOM here: the probe speaks the frames of `web/page_shim.js` over the team's live `/team_ws/ws`, the page's real leg, with its real grants (the dispatcher's `sidebar`, `tree`, `open`, `control`, and the chat verbs `history`, `send`, `stop`, `status`, `watch` on the workers and subagents).
 

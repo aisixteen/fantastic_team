@@ -79,15 +79,15 @@ impl Handler for SpyBundle {
     }
 }
 
-const WRITE_VERBS: [&str; 7] = [
-    "add", "assign", "reassign", "status", "report", "list", "get",
+const WRITE_VERBS: [&str; 8] = [
+    "add", "assign", "reassign", "status", "report", "list", "get", "pull",
 ];
 
 /// A complete call of `verb` (the entry refuses an incomplete one before the registry
 /// is asked anything).
 fn whole(verb: &str) -> Value {
     let mut p = json!({"type": verb, "id": "t"});
-    if verb == "list" {
+    if verb == "list" || verb == "pull" {
         p = json!({"type": verb});
     }
     match verb {
@@ -114,6 +114,7 @@ fn new_kernel() -> Kernel {
     kernel
         .bundles
         .register(HANDLER_MODULE, TaskRegistryBundle::default());
+    kernel.bundles.register("tracker.tools", TrackerBundle);
     kernel
 }
 
@@ -1336,7 +1337,10 @@ fn every_colour_of_the_view_is_a_skin_token() {
     let tokens = &page[root_at..root_end];
     let own_end = VIEW.find("</style>").expect("the view has a stylesheet");
     let own = &VIEW[..own_end];
-    assert!(!own.contains(":root"), "the view carries no token block of its own");
+    assert!(
+        !own.contains(":root"),
+        "the view carries no token block of its own"
+    );
     for literal in ["rgb(", "rgba(", "hsl(", "#"] {
         assert!(
             !own.contains(literal),
@@ -1356,4 +1360,228 @@ fn every_colour_of_the_view_is_a_skin_token() {
     let script = &VIEW[own_end..];
     assert!(!script.contains("rgb("), "a literal colour in the script");
     assert!(page.contains("function resultClass") && !page.contains("{{helpers}}"));
+}
+
+// ── the tracker and `pull` ─────────────────────────────────────────
+
+/// A tracker stand-in (what the github connector is to the registry): `reflect` answers
+/// the `repos` its meta holds, `issues` the `issues` its meta holds for that repo (a repo
+/// with none is an error), and it records every call it got as (tracker, caller, verb).
+struct TrackerBundle;
+
+fantastic_kernel::stand_in_verbs!(tracker_verbs {
+    IssuesV "issues" { repo: String, label: Option<String>, state: Option<String> },
+});
+
+static TRACKER_CALLS: std::sync::Mutex<Vec<(String, String, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[async_trait]
+impl Handler for TrackerBundle {
+    stand_in!("tracker", tracker_verbs);
+    async fn handle(
+        &self,
+        agent_id: &AgentId,
+        call: Self::Call,
+        kernel: &Arc<Kernel>,
+    ) -> Result<Reply, BundleError> {
+        let payload = call.payload();
+        let verb = payload["type"].as_str().unwrap_or("").to_string();
+        let by = current_origin()
+            .map(|a| a.as_str().to_string())
+            .unwrap_or_default();
+        TRACKER_CALLS
+            .lock()
+            .unwrap()
+            .push((agent_id.as_str().to_string(), by, verb.clone()));
+        let meta = kernel
+            .agents
+            .get(agent_id)
+            .map(|a| a.meta.read().unwrap().clone())
+            .unwrap_or_default();
+        Ok(Some(match verb.as_str() {
+            "reflect" => {
+                json!({"id": agent_id.as_str(), "repos": meta.get("repos").cloned().unwrap_or(json!([]))})
+            }
+            "issues" => {
+                assert!(payload.get("label").is_none(), "pull sends no label");
+                assert_eq!(payload["state"], "open", "pull asks for open issues");
+                let repo = payload["repo"].as_str().unwrap_or("");
+                match meta.get("issues").and_then(|i| i.get(repo)) {
+                    Some(list) => json!({"repo": repo, "issues": list}),
+                    None => json!({"error": format!("no such repo {repo}")}),
+                }
+            }
+            other => json!({"ok": true, "verb": other}),
+        }))
+    }
+}
+
+impl Rig {
+    /// A tracker `id` with `repos` and their `issues`, wired to the registry both ends,
+    /// and the registry's record pointed at it. (The id is the test's own: the call log is
+    /// one static for every test of this process.)
+    async fn make_tracker(&self, id: &str, repos: Value, issues: Value) {
+        create(
+            &self.kernel,
+            json!({"handler_module": "tracker.tools", "id": id, "repos": repos, "issues": issues,
+                   "callable_by": {self.reg.clone(): ["reflect", "issues"]}}),
+        )
+        .await;
+        let tracker = id.to_string();
+        self.kernel
+            .edit_can_call(&AgentId::from(self.reg.as_str()), move |m| {
+                m.insert(tracker, json!(["reflect", "issues"]));
+                true
+            })
+            .unwrap();
+        let r = send(
+            &self.kernel,
+            "kernel_state",
+            json!({"type": "update_agent", "id": self.reg, "task_tracker_id": id}),
+        )
+        .await;
+        assert!(r.get("error").is_none(), "{r}");
+    }
+
+    /// The (caller, verb) calls the tracker `id` got, in order.
+    fn tracker_calls(id: &str) -> Vec<(String, String)> {
+        TRACKER_CALLS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(t, _, _)| t == id)
+            .map(|(_, by, verb)| (by.clone(), verb.clone()))
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn pull_adds_each_ready_issue_as_a_waiting_task_and_skips_known_ones() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp).await;
+    r.make_tracker(
+        "gh_two",
+        json!(["o/a", "o/b"]),
+        json!({"o/a": [{"number": 7, "title": "seven"}, {"number": 9, "title": "nine"}],
+               "o/b": [{"number": 1, "title": "one"}]}),
+    )
+    .await;
+    // the lead already recorded o/a#9 by hand
+    r.add(
+        "lead",
+        "o/a#9",
+        json!({"source": "gh:o/a#9", "holder": "sublead"}),
+    )
+    .await;
+    let before = Rig::tracker_calls("gh_two").len();
+    let out = r.call("lead", json!({"type": "pull"})).await;
+    assert_eq!(out["created"], json!(["o/a#7", "o/b#1"]), "{out}");
+    assert_eq!(
+        out["skipped"],
+        json!([["o/a#9", "already a task"]]),
+        "{out}"
+    );
+    let seven = r.call("lead", json!({"type": "get", "id": "o/a#7"})).await;
+    assert_eq!(seven["status"], "waiting", "{seven}");
+    assert_eq!(seven["source"], "gh:o/a#7");
+    assert_eq!(seven["update_to"], "gh:o/a#7");
+    assert!(
+        seven["holder"].is_null(),
+        "nobody holds a pulled task: {seven}"
+    );
+    assert_eq!(seven["history"], json!([]));
+    // the one the lead recorded keeps its holder
+    let nine = r.call("lead", json!({"type": "get", "id": "o/a#9"})).await;
+    assert_eq!(nine["holder"], "sublead", "{nine}");
+    // the tracker was asked as the registry: its reflect, then one listing per repo
+    let calls = Rig::tracker_calls("gh_two")[before..].to_vec();
+    assert!(
+        calls.iter().all(|(by, _)| by == "tr"),
+        "every call is the registry's own: {calls:?}"
+    );
+    let verbs: Vec<&str> = calls.iter().map(|(_, v)| v.as_str()).collect();
+    assert_eq!(
+        verbs.iter().filter(|v| **v == "issues").count(),
+        2,
+        "one listing per repo: {calls:?}"
+    );
+    assert!(
+        verbs.iter().position(|v| *v == "reflect") < verbs.iter().position(|v| *v == "issues"),
+        "the repos are read before the listings: {calls:?}"
+    );
+    // a second pass adds nothing
+    let again = r.call("lead", json!({"type": "pull"})).await;
+    assert_eq!(again["created"], json!([]), "{again}");
+    assert_eq!(again["skipped"].as_array().unwrap().len(), 3, "{again}");
+    let all = r.call("lead", json!({"type": "list"})).await;
+    assert_eq!(all["tasks"].as_array().unwrap().len(), 3, "{all}");
+}
+
+#[tokio::test]
+async fn pull_skips_a_repo_whose_listing_fails_and_keeps_the_others() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp).await;
+    r.make_tracker(
+        "gh_down",
+        json!(["o/down", "o/up"]),
+        json!({"o/up": [{"number": 2}]}),
+    )
+    .await;
+    let out = r.call("lead", json!({"type": "pull"})).await;
+    assert_eq!(out["created"], json!(["o/up#2"]), "{out}");
+    let skipped = out["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 1, "{out}");
+    assert_eq!(skipped[0][0], "o/down");
+    assert!(
+        skipped[0][1].as_str().unwrap().contains("no such repo"),
+        "{out}"
+    );
+}
+
+#[tokio::test]
+async fn pull_is_disabled_without_a_tracker_and_reflect_names_it() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp).await;
+    let refl = r.op(json!({"type": "reflect"})).await;
+    assert_eq!(refl["enabled"], true, "{refl}");
+    assert!(refl["tracker"].is_null(), "{refl}");
+    let out = r.call("lead", json!({"type": "pull"})).await;
+    assert_eq!(out["reason"], "disabled", "{out}");
+    assert!(
+        out["error"].as_str().unwrap().contains("task_tracker_id"),
+        "{out}"
+    );
+    r.make_tracker("gh_empty", json!([]), json!({})).await;
+    let refl = r.op(json!({"type": "reflect"})).await;
+    assert_eq!(refl["tracker"], "gh_empty", "{refl}");
+    let out = r.call("lead", json!({"type": "pull"})).await;
+    assert_eq!(
+        out,
+        json!({"created": [], "skipped": []}),
+        "no repo, nothing pulled"
+    );
+    // and no store, no pull either
+    create(
+        &r.kernel,
+        json!({"handler_module": HANDLER_MODULE, "id": "bare", "task_tracker_id": "gh_empty"}),
+    )
+    .await;
+    let out = send(&r.kernel, "bare", json!({"type": "pull"})).await;
+    assert_eq!(out["reason"], "disabled", "{out}");
+}
+
+#[tokio::test]
+async fn pull_is_refused_to_an_agent_without_the_grant() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp).await;
+    r.make_tracker("gh_gate", json!(["o/a"]), json!({"o/a": [{"number": 1}]}))
+        .await;
+    let out = r.call("worker", json!({"type": "pull"})).await;
+    assert!(
+        out.get("error").is_some(),
+        "the worker holds no grant: {out}"
+    );
+    let all = r.call("lead", json!({"type": "list"})).await;
+    assert_eq!(all["tasks"], json!([]), "{all}");
 }

@@ -20,8 +20,6 @@ pub const ROOT_ID: &str = DEFAULT_ROOT_ID;
 pub const DISPATCHER_ID: &str = "dispatcher";
 /// The worker view agent, under the dispatcher; it opens a worker's view.
 pub const WORKER_VIEW_ID: &str = "worker_view";
-/// The board agent, when a team has one.
-pub const BOARD_ID: &str = "board";
 /// The cadencer agent.
 pub const CADENCER_ID: &str = "cadencer";
 /// The bundles registry's conventional agent id.

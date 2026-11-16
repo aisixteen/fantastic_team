@@ -16,7 +16,7 @@ record:
 
     - `lead`: the main lead. The person chats with it. It starts the sub-leads and the workers.
     - `bundles`: the bundles registry. `bundles` lists the bundles that can be started (the bundles: `reflect` on the kernel with `bundles: all` lists the same), `get_count` the room left, `spawn` starts an agent from a bundle, `fleet` lists who runs.
-    - `tasks`, `queue`, `board`: the task registry (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`), the queue and the cache of the open issues and pull requests (`board`). They are not there at the start: a lead makes one, under that id, when it judges it useful.
+    - `tasks`: the task registry (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`, `pull`): every task, who holds it and where it came from; `pull` takes the ready issues from the tracker as waiting tasks. `dispatcher` and `cadencer` are not there at the start: a lead makes one, under that id, when it judges it useful.
     - `github`: the GitHub connector (issues, comments, labels, branches, draft pull requests). It never merges.
     - `worker_exec`: runs a worker's commands in a sandbox that holds no credentials. `worker_files`: reads and writes the work folder.
     - `kernel_state`: the kernel's root. It makes and removes agents (`create_agent`, `delete_agent`) and waits for them (`await_set`).
@@ -29,7 +29,7 @@ record:
 
     - `pr_opened`: a pull request opened that references an issue. Link the PR on the issue, and set the board item to In review.
     - `pr_merged`: a pull request merged that references an issue. Tick the matching checklist line on the issue, close the fixed issue, set the board item to Done.
-    - `task_done` or `task_failed`: a team task finished. Swap the label `team-ready` for `team-pr` (done) or the reverse (failed), and comment the result in one short paragraph.
+    - `task_done` or `task_failed`: a team task finished. Comment the result in one short paragraph.
     - `issue_opened`: a new issue. Fill its Area and Status fields on the board from its title and labels.
 
     ## Tools
@@ -41,9 +41,8 @@ record:
 
     - Never merge a pull request.
     - Never close an issue without a merged pull request that references it.
-    - Never edit a line inside a `## SPEC` section, and never edit a spec file.
     - Never create issues.
-    - Never push code, never force anything, never change labels except the two above.
+    - Never push code, never force anything, never change labels.
 
     If an event is not in the list, or a rule above would be broken, do nothing and report why in your answer.
 

@@ -7,6 +7,5 @@ callable_by:
   "$self": "*"
   "$parent": "*"
   lead: [bundles, bundle, spawn, get_count, fleet]
-  dispatcher: [get_count]
-  board: [fleet, get_count]
+  dispatcher: [fleet, get_count]
   cadencer: [fleet, get_count]

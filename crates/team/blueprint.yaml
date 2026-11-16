@@ -23,6 +23,7 @@
 #   |       +-- github         the GitHub connector
 #   |       +-- github_credentials  the connector's GitHub credential (GH_TOKEN, env ref)
 #   |       +-- bundles          the bundles registry
+#   |       +-- tasks            the task registry: the tasks, pulled from the tracker (`github`)
 #   |       +-- worker_exec    the worker's restricted exec
 #   |       +-- worker_files   the worker's file bridge on the work folder
 #   +-- web                  the web host
@@ -104,6 +105,9 @@ agents:
       callable_by:
         $self: '*'
         $parent: '*'
+        tasks:
+        - reflect
+        - issues
     - id: github_credentials
       # the github connector's credential by env ref (#303): a personal token read from GH_TOKEN
       # at each call, no value at rest. GH_TOKEN unset = the connector works local only. An
@@ -133,6 +137,26 @@ agents:
         - spawn
         - get_count
         - fleet
+    - id: tasks
+      # the team's one tasks agent: its tables in the home's `memory`, its tracker the github
+      # connector (`pull` reads the ready issues through it: its `reflect` for the repos, then
+      # `issues`); the page leg reads its own html view (`reflect`, then the view's two reads)
+      handler_module: task_registry.tools
+      task_store_id: memory
+      task_tracker_id: github
+      can_call:
+        $self: '*'
+        memory: '*'
+        github:
+        - reflect
+        - issues
+      callable_by:
+        $self: '*'
+        $parent: '*'
+        team_ws:
+        - reflect
+        - list
+        - get
     - id: worker_exec
       handler_module: exec_bridge.tools
       allowed: [".*"]
@@ -185,6 +209,11 @@ agents:
       cadencer:
       - status
       - set
+      # the task registry's own html view the page mounts: its reflect, then the view's reads
+      tasks:
+      - reflect
+      - list
+      - get
       user:
       - inquiries
       - answer_inquiry
@@ -213,6 +242,7 @@ agents:
 - id: memory
   callable_by:
     bundles: '*'
+    tasks: '*'
 - id: credentials
   callable_by:
     github: '*'

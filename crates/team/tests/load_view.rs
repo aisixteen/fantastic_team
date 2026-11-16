@@ -6,7 +6,7 @@
 
 /// The files the load code lives in.
 const LOAD_SOURCES: &[(&str, &str)] = &[
-    ("board.rs", include_str!("../src/board.rs")),
+    ("plan.rs", include_str!("../src/plan.rs")),
     ("cadencer.rs", include_str!("../src/cadencer.rs")),
     ("cadence_feed.rs", include_str!("../src/cadence_feed.rs")),
     ("dispatcher.rs", include_str!("../src/dispatcher.rs")),

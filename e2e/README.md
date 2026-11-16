@@ -168,10 +168,10 @@ Facts found while building them (fantastic at 5e74eb5):
 
 ## The stock team of the older tests (`helpers/stock.py`)
 
-The older groups (`task`, `secrets`, `dispatcher`, `bundles`, `ui`, `app`, `turns`) lay their team as record files before the first start (#312), the way the cli group does: the `fleet:` key of a test's `test.yaml` names layers of `e2e/fleets/` (`stock` first, then for example `team_tools`, `team_forge`, `team_puller`, `team_bundles`, `team_dispatch`, `team_core`, `team_page`, `github_app`, `github_git`, `github_personal`) and the test's own `fleet/` folder last; `stock.boot` (through `run_flow.boot` or `ctx.boot_team`) copies them to `.fantastic/` with the `{{marks}}` filled, makes the folders `work/wt`, `work/tasks` and `sandbox/home`, and, with `cards=True`, copies the repo's bundles to `.fantastic/bundles/`. The kernel loads them at boot and every id laid must be there after it. The agents, under the ids the product's code and the bundle cards name:
+The older groups (`task`, `secrets`, `dispatcher`, `bundles`, `ui`, `app`, `turns`) lay their team as record files before the first start (#312), the way the cli group does: the `fleet:` key of a test's `test.yaml` names layers of `e2e/fleets/` (`stock` first, then for example `team_tools`, `team_forge`, `team_tasks`, `team_bundles`, `team_dispatch`, `team_core`, `team_page`, `github_app`, `github_git`, `github_personal`) and the test's own `fleet/` folder last; `stock.boot` (through `run_flow.boot` or `ctx.boot_team`) copies them to `.fantastic/` with the `{{marks}}` filled, makes the folders `work/wt`, `work/tasks` and `sandbox/home`, and, with `cards=True`, copies the repo's bundles to `.fantastic/bundles/`. The kernel loads them at boot and every id laid must be there after it. The agents, under the ids the product's code and the bundle cards name:
 
 - the lead is `lead` (`ctx.lead`): the plug's model and credential ref, the shared `memory` store, and the tools it may call;
-- the credential store, `worker_exec` and `worker_files`, `queue`, the `git` and `github` connectors against the fake forge, the queue folder and the puller; the bundles registry (`agentic_resources`, with its tiers and limits in its record) and the `tasks` registry; the board, the dispatcher with its `worker_view`, the cadencer, and the `web` host with `team_page` and `team_ws` (its port is the mark `{{web_port}}`, picked by the probe). Each record file holds its own `can_call` and `callable_by`, as a person would write them;
+- the credential store, `worker_exec` and `worker_files`, the `git` and `github` connectors against the fake forge; the bundles registry (`agentic_resources`, with its tiers and limits in its record) and the `tasks` registry (its store `memory`, its tracker the `github` connector: `pull` takes the forge's open issue); the dispatcher with its `worker_view`, the cadencer, and the `web` host with `team_page` and `team_ws` (its port is the mark `{{web_port}}`, picked by the probe). Each record file holds its own `can_call` and `callable_by`, as a person would write them;
 - `stock.serve_webui(team, port)` stops the headless team and starts it again with `webui --port N` (#224); the page and its leg are already on disk;
 - the tests that run on the product's seed (`app/launcher_start_attach_stop`, `app/attach_remote`, `bundles/app_team_spawn_trees`) name no fleet and call `stock.boot(ctx, seeded=True)` / keep their own setup steps; only the credential store of the first two is made with `send`.
 
@@ -221,7 +221,7 @@ Facts about the web UI at this commit, found while writing these tests:
 
 ## How a free test runs
 
-The launcher makes a bare repo and a seeded clone, starts the fake forge (the repo is `acme/widgets`, one issue labelled `team-ready` by the maintainer with a `## SPEC` comment), starts the plug, and starts `fantastic_team --headless` in the run folder with fake keys in ITS environment only (the credential store reads them with `backend: env`). The stock records and the test's blueprint are made with `send` and `import` (see above); the probe then drives the team with `fantastic_team send`.
+The launcher makes a bare repo and a seeded clone, starts the fake forge (the repo is `acme/widgets`, one open issue), starts the plug, and starts `fantastic_team --headless` in the run folder with fake keys in ITS environment only (the credential store reads them with `backend: env`). The stock records and the test's blueprint are made with `send` and `import` (see above); the probe then drives the team with `fantastic_team send`.
 
 The anthropic backend sends no `tools` array: a model calls a tool by writing a `<call name="send">` element in its text. So the scripted plug streams Anthropic SSE whose text is that element; a script turn lists `calls`, and the plug renders them.
 
@@ -229,12 +229,12 @@ The anthropic backend sends no `tools` array: a model calls a tool by writing a 
 
 These are facts about the binary at the commit this was built on, not decisions of the suite. Each workaround is in `helpers/team.py` or `helpers/run_flow.py` and goes away when the cause is fixed.
 
-1. `worker_files` and the puller's queue folder are sealed by default (`edge sealed by policy`); the fleet's record files carry `ingress_rule: allow_all_ingress` and the callers on both ends.
+1. `worker_files` is sealed by default (`edge sealed by policy`); the fleet's record files carry `ingress_rule: allow_all_ingress` and the callers on both ends.
 2. The binary never calls `prepare_sandbox`: `stock.boot` makes `work/`, `work/wt`, `work/tasks` and `sandbox/home` before the first start. The worker's HOME is the relative `./sandbox/home`.
-3. Agents are record files under fixed ids, so a string field that names another agent (the board's `github`, the dispatcher's `team`) and a card's grant on `github` or `worker_exec` are true as written (fantastic's import would rename them `_1`).
+3. Agents are record files under fixed ids, so a string field that names another agent (the registry's `task_tracker_id`, the dispatcher's `team`) and a card's grant on `github` or `worker_exec` are true as written (fantastic's import would rename them `_1`).
 4. A spawner grants only what it holds, and the operator is the `mcp` leg: `stock.operator_holds` gives it the grants a card names before a probe spawns a bundle as the operator.
 5. A model cannot pass `title` to `github pr_create`: `title` is a call-level field of the `<call>` grammar. The scripted model therefore stops after the push, and the probe sends `pr_create` itself, as the operator. The PR request is still what the github connector sends.
-6. The bundles registry and the board are record files of the fleet, not a start-up step: nothing in the binary plans a tree now.
+6. The bundles registry and the task registry are record files of the fleet, not a start-up step: nothing in the binary plans a tree now.
 7. The team page for the older UI tests is the `team_page` layer (see above).
 
 ## The bundles group

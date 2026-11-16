@@ -86,19 +86,18 @@ The terminal UI (needs a terminal):
 
 `--dir`, `--port` outside `canvas` and `webui`, `--tui`, `--instructions` and `--resend-instructions` are not flags any more; fantastic refuses them.
 
-## 6. Label a first issue, watch, review
+## 6. Open a first issue, watch, review
 
-1. In the target repo, label an issue `team-ready`.
-2. Add a comment that starts with `## SPEC` and holds the task. The puller takes it only when the latest label event is by the maintainer and the `## SPEC` comment is by the maintainer or the app.
-3. The team's puller (`team_puller.tools`) reads it and writes `queue/<repo>-<n>.md` plus a pending `.state`. Its `status` verb shows progress.
+1. In the target repo, open an issue. The issue's text is the task; every open issue of the tracker becomes a task on the next pull.
+2. The team's task registry (`tasks`, `task_registry.tools`) reads it with `pull` and adds it as a waiting task; `list` shows every task with its holder and state.
+3. The lead hands the task to a worker, which reads the issue through the `github` connector.
 4. The team opens a **draft** pull request. Review it on GitHub. Merging stays human.
 
 ## 7. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `no ## SPEC comment by the maintainer or the app` | Add the `## SPEC` comment yourself, or let the app author it; comments by others are ignored. |
-| Issue is not picked up | The latest `team-ready` label event must be by the maintainer. Re-add the label as the maintainer. |
+| Issue is not picked up | `pull` takes every open issue of the repos the `github` connector's record lists; check the repo is listed and the issue is open, then call `pull` again. |
 | `gh --version` fails in the worker | Install `gh` and put it on PATH. |
 
 ## Tested on

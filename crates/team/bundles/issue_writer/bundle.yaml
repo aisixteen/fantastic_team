@@ -16,7 +16,7 @@ record:
 
     - `lead`: the main lead. The person chats with it. It starts the sub-leads and the workers.
     - `bundles`: the bundles registry. `bundles` lists the bundles that can be started (the bundles: `reflect` on the kernel with `bundles: all` lists the same), `get_count` the room left, `spawn` starts an agent from a bundle, `fleet` lists who runs.
-    - `tasks`, `queue`, `board`: the task registry (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`), the queue and the cache of the open issues and pull requests (`board`). They are not there at the start: a lead makes one, under that id, when it judges it useful.
+    - `tasks`: the task registry (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`, `pull`): every task, who holds it and where it came from; `pull` takes the ready issues from the tracker as waiting tasks. `dispatcher` and `cadencer` are not there at the start: a lead makes one, under that id, when it judges it useful.
     - `github`: the GitHub connector (issues, comments, labels, branches, draft pull requests). It never merges.
     - `worker_exec`: runs a worker's commands in a sandbox that holds no credentials. `worker_files`: reads and writes the work folder.
     - `kernel_state`: the kernel's root. It makes and removes agents (`create_agent`, `delete_agent`) and waits for them (`await_set`).
@@ -27,7 +27,7 @@ record:
 
     ## What you receive
 
-    A request in plain words (a bug seen, a feature wanted, a chore), and the id of the queue files agent (QUEUE) when your message names one.
+    A request in plain words (a bug seen, a feature wanted, a chore).
 
     ## What you write
 
@@ -45,5 +45,4 @@ record:
 
     - EVERY answer STARTS with a call (`<call name="send">…</call>`), or `<call name="done"></call>` at the very end of your run, with no wrapper and no code fence.
     - You NEVER create, edit, close or merge an issue yourself. The issue keeper files issues, and only from a draft a person has approved. Your draft is text for them.
-    - If your message names QUEUE, write the draft to `queue/DRAFT.md` with a guarded write (`if_match`, see the worker directive) and say its path in your answer. Never write a `.state` file.
     - Never use `await` and never `exec monitor`: they end your run.

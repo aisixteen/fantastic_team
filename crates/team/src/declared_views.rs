@@ -48,10 +48,8 @@ pub struct Decl {
     pub sections: Vec<Sec>,
 }
 
-/// The handler module of the queue: a plain store named by the board's `store`.
-pub const QUEUE_MODULE: &str = "ram_store.tools";
 /// The kinds whose web view is built here (the others keep their page code).
-pub const WEB_KINDS: [&str; 3] = ["cadencer", "puller", "git"];
+pub const WEB_KINDS: [&str; 2] = ["cadencer", "git"];
 
 fn sec(
     title: &'static str,
@@ -112,27 +110,6 @@ pub fn decls() -> Vec<Decl> {
                     Some(5),
                 ),
             ],
-        },
-        Decl {
-            handler_module: crate::puller::HANDLER_MODULE,
-            kind: "puller",
-            title: "Puller",
-            sections: vec![sec(
-                "Pulls",
-                "status",
-                "kv",
-                &[
-                    ("repos", "repos"),
-                    ("github", "github"),
-                    ("store", "store"),
-                    ("pulls", "pulls"),
-                    ("last_pull_s", "last_pull_s"),
-                    ("last_created", "last_created"),
-                    ("last_skipped", "last_skipped"),
-                    ("total_created", "total_created"),
-                ],
-                Some(10),
-            )],
         },
         Decl {
             handler_module: team_github_connector::HANDLER_MODULE,
@@ -212,29 +189,10 @@ pub fn decls() -> Vec<Decl> {
                 ),
             ],
         },
-        Decl {
-            handler_module: QUEUE_MODULE,
-            kind: "queue",
-            title: "Queue",
-            // Counts only: the store's `read` answers whole rows (the task text).
-            sections: vec![sec(
-                "Store",
-                "reflect",
-                "kv",
-                &[
-                    ("id", "id"),
-                    ("durable", "durable"),
-                    ("owners", "owners"),
-                    ("rows", "rows"),
-                ],
-                Some(10),
-            )],
-        },
     ]
 }
 
-/// The declaration of a handler module (the queue's store module included; see
-/// [`declared_agents`] for which `ram_store` agent is the queue).
+/// The declaration of a handler module.
 pub fn decl_for(handler_module: &str) -> Option<Decl> {
     decls()
         .into_iter()
@@ -375,44 +333,16 @@ pub fn model_of(d: &Decl, replies: &[Value]) -> Value {
     model
 }
 
-/// Every live agent that has a declaration: by handler module, plus the queue (the
-/// store named by a board record's `store`; another `ram_store` agent has none).
-/// Sorted by id.
+/// Every live agent that has a declaration, by handler module. Sorted by id.
 pub fn declared_agents(kernel: &Kernel) -> Vec<(AgentId, Decl)> {
     let mut out: Vec<(AgentId, Decl)> = Vec::new();
-    let mut stores: Vec<String> = Vec::new();
     for e in kernel.agents.iter() {
         let a = e.value();
         let Some(m) = a.handler_module.as_deref() else {
             continue;
         };
-        if m == crate::board::HANDLER_MODULE {
-            if let Some(s) = a
-                .meta
-                .read()
-                .ok()
-                .and_then(|m| m.get("store").and_then(Value::as_str).map(str::to_string))
-            {
-                stores.push(s);
-            }
-        }
-        if m == QUEUE_MODULE {
-            continue;
-        }
         if let Some(d) = decl_for(m) {
             out.push((a.id.clone(), d));
-        }
-    }
-    if let Some(q) = decl_for(QUEUE_MODULE) {
-        for s in stores {
-            let id = AgentId::from(s.as_str());
-            let is_ram = kernel
-                .agents
-                .get(&id)
-                .is_some_and(|a| a.handler_module.as_deref() == Some(QUEUE_MODULE));
-            if is_ram && !out.iter().any(|(i, _)| *i == id) {
-                out.push((id, q.clone()));
-            }
         }
     }
     out.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
@@ -512,7 +442,7 @@ mod tests {
     fn declarations_cover_every_team_kind() {
         let all = decls();
         let kinds: Vec<&str> = all.iter().map(|d| d.kind).collect();
-        for k in ["cadencer", "puller", "github", "git", "dispatcher", "queue"] {
+        for k in ["cadencer", "github", "git", "dispatcher"] {
             assert!(kinds.contains(&k), "no declaration for {k}");
         }
         for d in &all {
@@ -930,8 +860,14 @@ mod tests {
 
     #[test]
     fn page_verbs_lead_with_reflect_once() {
-        assert_eq!(page_verbs(&["status", "set"]), vec!["reflect", "status", "set"]);
-        assert_eq!(page_verbs(&["reflect", "pr_status"]), vec!["reflect", "pr_status"]);
+        assert_eq!(
+            page_verbs(&["status", "set"]),
+            vec!["reflect", "status", "set"]
+        );
+        assert_eq!(
+            page_verbs(&["reflect", "pr_status"]),
+            vec!["reflect", "pr_status"]
+        );
         assert_eq!(page_verbs(&[]), vec!["reflect"]);
     }
 

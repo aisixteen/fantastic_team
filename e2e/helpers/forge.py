@@ -1,8 +1,8 @@
 """A fake forge: the GitHub API a team needs, plus git over smart HTTP.
 
 Stdlib only, on 127.0.0.1, port 0. It stands in for api.github.com AND for the
-git host: `GET /repos/acme/widgets/installation`, the token mint, one labelled
-issue with a `## SPEC` comment, `POST /repos/acme/widgets/pulls` (recorded
+git host: `GET /repos/acme/widgets/installation`, the token mint, one open
+issue with a task comment, `POST /repos/acme/widgets/pulls` (recorded
 verbatim), and `/acme/widgets.git/...` served by `git http-backend` from a bare
 repo, only for the minted installation token.
 
@@ -29,7 +29,7 @@ APP_LOGIN = "team-bot[bot]"
 ISSUE_NUMBER = 1
 PR_SHA = "abc123def456"  # the head of the forge's pull request 7
 ISSUE_TITLE = "Add a greeting file"
-SPEC = "## SPEC\nAdd a file greeting.txt that says hello, and check it with cat.\n"
+SPEC = "Add a file greeting.txt that says hello, and check it with cat.\n"
 
 
 def make_token() -> str:

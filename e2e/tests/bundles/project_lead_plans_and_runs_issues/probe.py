@@ -67,7 +67,7 @@ def run(ctx):
     ctx.model.bind(pl=pl)
     # the operator names the project_lead on the tools it was given (a spawned
     # agent is not named in them, and only the tools' parent or the operator can write them)
-    admit(team, pl, ["github", "queue", "board"])
+    admit(team, pl, ["github", "tasks"])
 
     # 1. "do your best choice": it reads, then proposes and waits
     team.send(pl, {"type": "send", "text": "do your best choice"})
@@ -85,7 +85,7 @@ def run(ctx):
 
     # 2. "yes": worker 1, then (on "continue") worker 2. A spawned worker's first message is
     # given no task (the spawn has none), so it asks the model nothing; the probe plays the
-    # lead's admit step (the connector and queue it was given), sends the task
+    # lead's admit step (the connector it was given), sends the task
     # again, and the worker plays its turns: it sends its parent a message (`send`, which
     # spawn let it make), the message starts the project_lead's turn, then the worker closes.
     handled = []
@@ -105,15 +105,15 @@ def run(ctx):
         v.check(f"worker {n} asked the model nothing before it was admitted",
                 ctx.model.served == started, str(ctx.model.served))
         gated = agents(team)
-        v.check(f"worker {n} is named on neither the connector nor the queue before the lead admits it",
-                all(wid not in (gated[t].get("callable_by") or {}) for t in ("github", "queue")),
-                str({t: gated[t].get("callable_by") for t in ("github", "queue")}))
-        admit(team, wid, ["github", "queue"])
+        v.check(f"worker {n} is not named on the connector before the lead admits it",
+                wid not in (gated["github"].get("callable_by") or {}),
+                str(gated["github"].get("callable_by")))
+        admit(team, wid, ["github"])
         opened_to = agents(team)
-        v.check(f"worker {n} is named on both after the admit",
-                all((opened_to[t].get("callable_by") or {}).get(wid) in ("*", ["*"]) for t in ("github", "queue")),
-                str({t: opened_to[t].get("callable_by") for t in ("github", "queue")}))
-        task = f"The queue is queue. Your id is the id in your own reflect. Work on issue {n}."
+        v.check(f"worker {n} is named on the connector after the admit",
+                (opened_to["github"].get("callable_by") or {}).get(wid) in ("*", ["*"]),
+                str(opened_to["github"].get("callable_by")))
+        task = f"Your id is the id in your own reflect. Your task is acme/widgets#{n}. Work on issue {n}."
         team.send(wid, {"type": "send", "text": task})
         settle(ctx, started + 3)  # the worker's send, the project_lead's turn it starts, the worker's close
         woke = ctx.model.raw_bodies[started + 1] if len(ctx.model.raw_bodies) > started + 1 else ""

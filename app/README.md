@@ -12,9 +12,8 @@ start (agent `dispatcher`, under the root) and placed on the canvas by the
 first start only.
 
 - Each worker is a row with its state (`busy`, `idle`, `stalled N min`,
-  `done`, `failed`), the minutes on the task (`2m`, from `Row.minutes`), the
-  number of its pull request (`#9`, from the board's PR link: the task in hand,
-  else its latest done task with a PR) and its current task. Workers and subagents sit in one
+  `done`, `paused`, from the tasks it holds in the task registry), the minutes on
+  the task (`2m`, from `Row.minutes`) and its current task. Workers and subagents sit in one
   flat list per group: workers in normal weight with ● (busy) or ○, subagents
   smaller and muted with ◇.
 - Each worker has a `subagents (N)` expander. It starts collapsed. Expanding
@@ -67,13 +66,13 @@ driver shows its raw counts under its title (`busy N · idle N · stalled N`); a
 group with a driver shows nothing here, since its AI writes the summary.
 The team load {tasks, done_last_hour} is drawn as a footer row under the tree:
 `tasks: held N · in review N · done N · blocked N · queued N · done last hour N`.
-It is left out when the board gave no load. When the cadencer answers, the footer
+It is left out when the cadencer gave no load. When the cadencer answers, the footer
 also shows the cost per hour: ` · digests N B/h`. Above the footer a
 `waiting for you: N PRs · N stalled` line shows the PRs in review and the stalled
 workers; stalled worker rows are marked.
 
 The page talks to the dispatcher through fantastic's html connector
-(`fantastic.send('dispatcher', …)`), with the `sidebar`, `open` and `control` verbs. The sidebar's Team section lists the queue, the board, the github connector and the dispatcher (`services`); opening one shows a text-only view of it in the right pane, refreshed every five seconds. The github view never shows a token or a key, and the TUI shows these agents in its generic panel.
+(`fantastic.send('dispatcher', …)`), with the `sidebar`, `open` and `control` verbs. The sidebar's Team section lists the task registry, the github connector and the dispatcher (`services`); opening the registry mounts its own html view, opening another shows a text-only view of it in the right pane, refreshed every five seconds. The github view never shows a token or a key, and the TUI shows these agents in its generic panel.
 Served on a port, the page gets the same two calls from a small
 shim over the team's `web_ws` leg (`team_ws`). Without
 that connection it says so on one line instead of failing.
@@ -159,8 +158,8 @@ Not in this slice:
   agent made later is granted at the next start. No real browser check of the
   chat, and no live-canvas test. The page is two empty columns for now (#216); the
   chat handlers went with the old page.
-- Row status: the row carries `minutes` and `pr` from the board snapshot (the
-  claimed task, else the worker's newest done task with a link).
+- Row status: the row carries `minutes` from the task registry's `list` (the
+  task the worker holds); a pull request number has no source on a task.
 - No window run in CI (it needs a display and webkit). CI builds the app with
   `--features tauri` (the `tauri` job); the window has not been run yet
   (unverified). App end-to-end test per platform

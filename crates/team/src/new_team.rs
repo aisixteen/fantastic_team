@@ -5,21 +5,24 @@
 //! fresh id: `github` becomes `github_1`).
 //!
 //! The ids: the main lead [`LEAD`]; under it the bundles registry [`BUNDLES`], the GitHub
-//! connector [`GITHUB`] and the worker's tools [`WORKER_EXEC`] and [`WORKER_FILES`]. The cards (the
+//! connector [`GITHUB`], the task registry [`TASKS`] (its tracker is the connector) and the
+//! worker's tools [`WORKER_EXEC`] and [`WORKER_FILES`]. The cards (the
 //! stock bundles, embedded meta bundles in [`crate::bundles`]) are the kernel's own: registered
 //! in RAM, nothing written to the folder; the registry reads them from the kernel.
 //!
 //! There is no code here that creates, updates or grants an agent: the blueprint is the
 //! one declaration.
 
-use crate::tree::BUNDLES_ID;
+use crate::tree::{BUNDLES_ID, TASKS_ID};
 
 /// The main lead: the agent the person chats with.
 pub const LEAD: &str = "lead";
 /// The bundles registry (`agentic_resources`, crates/agentic_resources).
 pub const BUNDLES: &str = BUNDLES_ID;
-/// The GitHub connector.
+/// The GitHub connector: the tracker of the tasks and the source control.
 pub const GITHUB: &str = "github";
+/// The task registry (`task_registry`, crates/task_registry): the team's one tasks agent.
+pub const TASKS: &str = TASKS_ID;
 /// The worker's restricted exec.
 pub const WORKER_EXEC: &str = "worker_exec";
 /// The worker's file bridge on the work folder.
@@ -471,9 +474,21 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn bundles_mode_the_lead_holds_the_registry_and_its_spawn_grants() {
         let (_dir, kernel) = team().await;
-        for id in [LEAD, GITHUB, BUNDLES, WORKER_EXEC, WORKER_FILES] {
+        for id in [LEAD, GITHUB, BUNDLES, TASKS, WORKER_EXEC, WORKER_FILES] {
             assert!(kernel.agents.contains_key(&AgentId::from(id)), "{id}");
         }
+        // the tasks agent keeps its tables in the home's store and pulls from the connector
+        let tasks = meta(&kernel, TASKS);
+        assert_eq!(tasks["task_store_id"], MEMORY);
+        assert_eq!(tasks["task_tracker_id"], GITHUB);
+        assert_eq!(meta(&kernel, MEMORY)["callable_by"][TASKS], "*");
+        assert_eq!(
+            meta(&kernel, GITHUB)["callable_by"][TASKS],
+            json!(["reflect", "issues"])
+        );
+        let refl = call_as(&kernel, LEAD, TASKS, json!({"type": "reflect"})).await;
+        assert_eq!(refl["enabled"], true, "{refl}");
+        assert_eq!(refl["tracker"], GITHUB, "{refl}");
         let lead = meta(&kernel, LEAD);
         assert_eq!(lead["memory_store_id"], "memory");
         assert!(
@@ -566,9 +581,15 @@ mod tests {
             .unwrap_or_else(|| panic!("project_lead: {p}"))
             .to_string();
         let pm = meta(&kernel, &pl);
-        for tool in [GITHUB, ROOT_ID] {
+        for tool in [GITHUB, ROOT_ID, TASKS] {
             assert!(pm["can_call"].get(tool).is_some(), "{tool}: {pm:?}");
         }
+        assert!(
+            meta(&kernel, TASKS)["callable_by"]
+                .get(pl.as_str())
+                .is_some(),
+            "the registry admits the project_lead the spawn granted it to"
+        );
         // the count reads the tree: the worker and the project_lead
         let count = ask(&kernel, BUNDLES, json!({"type": "get_count"})).await;
         assert_eq!(count["running"], 2, "{count}");
@@ -615,7 +636,13 @@ mod tests {
     async fn the_main_lead_can_spawn_every_card() {
         let (_dir, kernel) = team().await;
         for (name, _) in bundles::ALL {
-            let r = call_as(&kernel, LEAD, BUNDLES, json!({"type": "spawn", "bundle": name})).await;
+            let r = call_as(
+                &kernel,
+                LEAD,
+                BUNDLES,
+                json!({"type": "spawn", "bundle": name}),
+            )
+            .await;
             assert!(r["id"].is_string(), "{name}: {r}");
             assert_ne!(r["reason"], "not_allowed", "{name}: {r}");
         }
