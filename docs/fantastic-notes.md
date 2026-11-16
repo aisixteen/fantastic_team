@@ -268,3 +268,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `eaf6056`
 
 `Cargo.lock` pins fantastic `eaf6056` (base PR #694, fantastic_team#351): the base tree, chat and file views aligned to the label-pruned design mock (pinned files rows, composer answers an open question, the file view's agent breadcrumb). The team page mounts them unchanged.
+
+## Pin at `fdca201`
+
+`Cargo.lock` pins fantastic `fdca201` (base PR #699): the connectors (`web request`, `sqlite_store query`, the `mail` agent; a credential ref may bind several hosts), file and folder views in html, and main's CI fixes. No team code change.
