@@ -4,6 +4,8 @@ ingress_rule: allow_all_ingress
 can_call:
   "$self": "*"
   dispatcher: [open]
+  sidebar: [reflect, watch]
+  kernel_state: [reflect, list_agents]
   w1: [history, send, stop, status, watch]
   w2: [history, send, stop, status, watch]
   sub_a: [history, send, stop, status, watch]
