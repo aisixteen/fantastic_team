@@ -105,6 +105,22 @@ def start(ctx, v, cards: bool = True):
     return port if served else None
 
 
+def report_as_holder(team, tid: str, state: str, errors: list) -> None:
+    """`k_rollout`'s last report on `tid`. The registry takes a report only from its caller or the caller's
+    descendants (the operator's `send` is `mcp`, which k_rollout is not under), so the entry the registry
+    holds is read back with `get` and written with its `report` into the registry's own store, the row
+    the registry itself appends on a report."""
+    got = op(team, "tasks", {"type": "get", "id": tid})
+    entry = {k: v for k, v in got.items() if k != "children"}
+    if entry.get("id") != tid:
+        errors.append(f"get {tid}: {str(got)[:160]}")
+        return
+    entry["report"] = {"from": "k_rollout", "state": state, "result": REPORT, "at": int(time.time()), "usage": None}
+    r = team.send("memory", {"type": "append", "rows": [{"kind": "task", "task_id": tid, "content": entry}]})
+    if r.get("status") != "completed" or (r.get("result") or {}).get("error"):
+        errors.append(f"append report {tid}: {str(r)[:160]}")
+
+
 def seed_tasks(ctx, v) -> bool:
     """The registry's tasks, made with its own verbs as the operator. `HELD` gets a history (nobody ->
     ops -> k_rollout), a version and a last report. Checked: the registry lists exactly `TASKS`."""
@@ -122,7 +138,7 @@ def seed_tasks(ctx, v) -> bool:
             call({"type": "assign", "id": tid, "holder": "ops"})
             call({"type": "reassign", "id": tid, "holder": "k_rollout"})
             call({"type": "status", "id": tid, "status": state, "versions": [VERSION]})
-            call({"type": "report", "id": tid, "from": "k_rollout", "state": state, "result": REPORT})
+            report_as_holder(team, tid, state, errors)
             continue
         if holder is not None:
             add["holder"] = holder
