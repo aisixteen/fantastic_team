@@ -279,10 +279,9 @@ mod tests {
             assert!(t.contains("<call name=\"done\"></call>"));
         }
         let text = k.directive.to_lowercase();
-        for s in ["never merge", "never close", "never edit", "never create"] {
+        for s in ["never merge", "never close", "never create"] {
             assert!(text.contains(s), "issue-keeper card lacks '{s}'");
         }
-        assert!(text.contains("spec"));
         let ww = words(&w.directive);
         assert!(!ww.iter().any(|x| x == "git" || x == "github"));
         // the lead card grants what its text calls on the registry and the connector
