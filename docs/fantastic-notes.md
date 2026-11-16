@@ -272,3 +272,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `fdca201`
 
 `Cargo.lock` pins fantastic `fdca201` (base PR #699): the connectors (`web request`, `sqlite_store query`, the `mail` agent; a credential ref may bind several hosts), file and folder views in html, and main's CI fixes. No team code change.
+
+## Pin at `203fab2`
+
+`Cargo.lock` pins fantastic `203fab2` (base PR #703: the chat view shows Stop for any running turn and draws the reply after an answered question; #702: macOS/Windows path handling and races).
