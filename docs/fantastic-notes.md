@@ -280,3 +280,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `106bfa7`
 
 `Cargo.lock` pins fantastic `106bfa7` (base PR #704: the AI chat's reflect carries display_name).
+
+## Pin at `b1fee77`
+
+`Cargo.lock` pins fantastic `b1fee77` (base PR #705: the AI chat keeps its behaviour and takes the redesign only).
