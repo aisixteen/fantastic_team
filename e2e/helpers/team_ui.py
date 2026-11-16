@@ -118,8 +118,9 @@ def report_as_holder(team, tid: str, state: str, errors: list) -> None:
     entry["report"] = {"from": "k_rollout", "state": state, "result": REPORT, "at": int(time.time()), "usage": None}
     tables = op(team, "memory", {"type": "dump"}).get("tables") or {}
     rows = tables.get("rows") or []
-    last = max((r["row"].get("id", 0) for r in rows if r.get("owner") == "tasks"), default=0)
-    rows.append({"owner": "tasks", "row": {"id": last + 1, "kind": "task", "task_id": tid, "content": entry}})
+    owner = next((r["owner"] for r in rows if str(r.get("owner")).endswith("|tasks")), "")  # `<guid>|<caller>`
+    last = max((r["row"].get("id", 0) for r in rows if r.get("owner") == owner), default=0)
+    rows.append({"owner": owner, "row": {"id": last + 1, "kind": "task", "task_id": tid, "content": entry}})
     tables["rows"] = rows
     r = team.send("memory", {"type": "inject", "tables": tables})
     seen = op(team, "tasks", {"type": "get", "id": tid}).get("report")
