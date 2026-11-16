@@ -82,7 +82,8 @@ def clicks(ctx, v, ui):
             heads == [f"{s}{c[s]}" for s in ORDER] or heads == [f"{s} {c[s]}" for s in ORDER], str(heads))
 
     # ---- the rows ----
-    by_state = {s: [t[0] for t in D.TASKS if t[2] == s] for s in ORDER}
+    # the registry's `list` is sorted by id (its verb's own text), and the view keeps that order inside a group
+    by_state = {s: sorted(t[0] for t in D.TASKS if t[2] == s) for s in ORDER}
     folded = [tid for s in ORDER for tid in (by_state[s][:D.DONE_SHOWN] if s == "done" else by_state[s])]
     v.check("the rows are the seeded tasks, by state; the done ones past three are folded", rows(ui) == folded,
             f"{rows(ui)}")
