@@ -90,7 +90,9 @@ class Team:
             "GIT_TERMINAL_PROMPT": "0",
             **env_extra,
         }
-        self.log_path = os.path.join(run_dir, "team.log")
+        # beside the run folder, not in it: the run folder is the files root, and a log written
+        # into it is a file the files agent reports on every line
+        self.log_path = os.path.abspath(run_dir).rstrip(os.sep) + ".team.log"
         self.proc: subprocess.Popen | None = None
         self.port: int | None = None  # the web UI port of the last start that had one
 

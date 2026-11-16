@@ -58,7 +58,10 @@ def clicks(ctx, v, ui):
     try:
         box = right.locator("#send").first.bounding_box(timeout=4000)
         frame = page.locator("#body-right iframe").first.bounding_box(timeout=4000)
-        fits = box is not None and frame is not None and frame["x"] + box["x"] + box["width"] <= 390 and frame["y"] + box["y"] + box["height"] <= 844
+        # a frame's element box is already in the page's own coordinates (Playwright: relative to the main frame)
+        fits = (box is not None and frame is not None and box["x"] >= frame["x"] and box["y"] >= frame["y"]
+                and box["x"] + box["width"] <= min(390, frame["x"] + frame["width"])
+                and box["y"] + box["height"] <= min(844, frame["y"] + frame["height"]))
     except Exception as e:
         fits, box = False, type(e).__name__
     v.check("the composer's Send button is on the screen", fits, str(box))

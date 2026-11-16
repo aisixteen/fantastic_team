@@ -9,6 +9,7 @@ from helpers.verdict import Verdict
 
 NAME = "ui/tasks_view_counts_and_detail"
 ORDER = ["blocked", "failed", "running", "paused", "waiting", "done"]  # the order the view groups in
+R_LIVE = D.R + "777"  # a task added while the view is open
 
 
 def run(ctx):
@@ -82,7 +83,8 @@ def clicks(ctx, v, ui):
             heads == [f"{s}{c[s]}" for s in ORDER] or heads == [f"{s} {c[s]}" for s in ORDER], str(heads))
 
     # ---- the rows ----
-    by_state = {s: [t[0] for t in D.TASKS if t[2] == s] for s in ORDER}
+    # the registry's `list` is sorted by id (its verb's own text), and the view keeps that order inside a group
+    by_state = {s: sorted(t[0] for t in D.TASKS if t[2] == s) for s in ORDER}
     folded = [tid for s in ORDER for tid in (by_state[s][:D.DONE_SHOWN] if s == "done" else by_state[s])]
     v.check("the rows are the seeded tasks, by state; the done ones past three are folded", rows(ui) == folded,
             f"{rows(ui)}")
@@ -148,7 +150,14 @@ def clicks(ctx, v, ui):
             ok and ui.texts(right.locator("#d-holder")) == ["nobody"] and ui.texts(right.locator("#h-in .empty")) == ["nothing yet"],
             f"{got!r} {ui.texts(right.locator('#d-holder'))} {ui.texts(right.locator('#h-in'))}")
 
-    # ---- it follows the registry ----
+    # ---- it follows the registry: live, no timer ----
+    D.view_follows(ctx.team, v, "tasks")
     D.op(ctx.team, "tasks", {"type": "status", "id": D.BARE, "status": "blocked"})
-    ok, got = ui.waits(right.locator("#chip-blocked"), f"{c['blocked'] + 1} blocked", exact=True, timeout=20)
-    v.check("a task that changes state in the registry changes on the page without a reload", ok, got)
+    ok, got = ui.waits(right.locator("#chip-blocked"), f"{c['blocked'] + 1} blocked", exact=True, timeout=D.LIVE_S)
+    v.check(f"a task that changes state in the registry (a call outside the page) shows within {D.LIVE_S:g} s, "
+             "without a reload", ok, got)
+    ok, got = ui.waits(right.locator("#d-state"), "blocked", exact=True, timeout=D.LIVE_S)
+    v.check("the opened task's detail follows it too", ok, got)
+    D.op(ctx.team, "tasks", {"type": "add", "id": R_LIVE, "source": "gh:" + R_LIVE})
+    ok, got = ui.waits(right.locator("#sub"), lambda t: t.startswith(f"{D.TOTAL + 1} tasks"), timeout=D.LIVE_S)
+    v.check(f"a task added in the registry shows within {D.LIVE_S:g} s, without a reload", ok, got)

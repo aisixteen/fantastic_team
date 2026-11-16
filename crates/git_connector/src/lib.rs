@@ -6,6 +6,12 @@
 //! fetch or push and handed to git only through the child's environment and a
 //! one-shot credential helper. It is never in argv, a URL, a git config, a
 //! reply, an error or a log line. Every string returned passes through `redact`.
+//!
+//! WHAT IT PUBLISHES. Each write that took (`worktree_add`, `worktree_remove`,
+//! `commit`, `push`, `fetch`) emits [`REPO_CHANGED`] `{type, change: <verb>}` on the
+//! connector's own id (the kernel's `emit`): a watcher re-reads `status` or
+//! `diff_stat` then. A refusal and the reads emit nothing; no reply value is put in
+//! the event.
 #![deny(missing_docs)]
 
 pub mod git;
@@ -36,6 +42,9 @@ const NAME: &str = "team_git";
 /// What the bundle is for: its one short man text; how to call it is rendered from its
 /// declared verbs (`docs`, `reflect`).
 pub const MAN: &str = "git connector — worktrees, commits and pushes of work branches to one remote; never the default branch, never a force. One agent is one local clone and one remote (SSH, HTTPS or a local path); an HTTPS token is read from the credential store at each fetch and push and never leaves the agent.";
+
+/// The event a write that took emits on the connector's own id.
+pub const REPO_CHANGED: &str = "repo_changed";
 
 /// Refusal text: the record's remote carries a user or password.
 pub(crate) const URL_CREDS: &str = "team_git: the remote URL carries a user or password — remove it and name a credential store ref in credentials instead";
@@ -216,6 +225,14 @@ impl Handler for GitConnectorBundle {
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
         let cfg = Self::cfg(agent_id.as_str(), &agent_meta(agent_id, kernel));
+        let change = match &call {
+            verbs::Call::WorktreeAdd(_) => Some("worktree_add"),
+            verbs::Call::WorktreeRemove(_) => Some("worktree_remove"),
+            verbs::Call::Commit(_) => Some("commit"),
+            verbs::Call::Push(_) => Some("push"),
+            verbs::Call::Fetch(_) => Some("fetch"),
+            _ => None,
+        };
         let out: Value = match call {
             verbs::Call::Reflect(_) => json!({
                 "id": agent_id.to_string(),
@@ -248,6 +265,11 @@ impl Handler for GitConnectorBundle {
                 Ok(v) | Err(v) => v,
             },
         };
+        if let Some(change) = change.filter(|_| out.get("error").is_none()) {
+            kernel
+                .emit(agent_id, json!({"type": REPO_CHANGED, "change": change}))
+                .await;
+        }
         Ok(Some(out))
     }
 }

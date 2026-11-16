@@ -11,4 +11,4 @@ can_call:
 callable_by:
   "$self": "*"
   "$parent": "*"
-  team_ws: [sidebar, tree, open, control]
+  team_ws: [open]

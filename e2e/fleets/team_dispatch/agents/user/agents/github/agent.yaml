@@ -15,4 +15,3 @@ callable_by:
   "$self": "*"
   lead: "*"
   tasks: [reflect, issues]
-  dispatcher: [reflect]

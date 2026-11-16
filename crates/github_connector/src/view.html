@@ -1,4 +1,4 @@
-<div class="head"><span class="t">github <span class="sl">/</span> team_github.tools</span><span class="chip" id="auth">-</span></div>
+<div class="head"><span class="t">{{agent}} <span class="sl">/</span> team_github.tools</span><span class="chip" id="auth">-</span></div>
 <div class="pg" id="pg"></div>
 <script>
 {{helpers}}
@@ -93,7 +93,7 @@ function render(r) {
   authChipEl.className = "chip " + chip.cls;
   var focus = document.activeElement && document.activeElement.getAttribute ? document.activeElement.getAttribute("aria-label") : null;
   pg.textContent = "";
-  put(pg, put(h("div", "ttl"), h("h1", null, "github"), pillOf("tool")));
+  put(pg, put(h("div", "ttl"), h("h1", null, AGENT), pillOf("tool")));
 
   var idn = section("Identity and auth", "reflect.auth · repos · api_url");
   var dl = h("dl", "kv");
@@ -132,9 +132,16 @@ function refresh() {
   });
 }
 refresh();
-setInterval(function () {
+// the connector publishes `call_served` on its own id after each call it serves (the recent calls,
+// the rate and the auth it read): re-read then, never on a timer. A field being typed is not
+// redrawn under the cursor: the read waits until it is left.
+// This view's own pr_status lookup is a served call too: it brings one `call_served` and one
+// reflect after it; reflect publishes nothing, so it ends there (one repeat, no loop).
+var stale = false;
+follow(AGENT, ["call_served"], function () {
   var a = document.activeElement;
-  if (a && a.tagName === "INPUT") return;
+  if (a && a.tagName === "INPUT") { stale = true; return; }
   refresh();
-}, 10000);
+});
+pg.addEventListener("focusout", function () { if (stale) { stale = false; refresh(); } });
 </script>

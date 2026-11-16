@@ -130,24 +130,26 @@ mod tests {
     async fn make_dispatcher(k: &Arc<Kernel>, groups: Value) {
         let mk = json!({"type": "create_agent", "id": "dispatcher", "parent_id": DEFAULT_ROOT_ID,
             "handler_module": crate::dispatcher::HANDLER_MODULE, "groups": groups,
-            "callable_by": {page::WS_ID: ["sidebar", "tree", "open", "control"]}});
+            "callable_by": {page::WS_ID: ["open"]}});
         let out = k.send(vec![Item::new(DEFAULT_ROOT_ID, mk)]).await;
         assert!(out[0].result.get("error").is_none(), "{}", out[0].result);
     }
 
     /// The page's socket leg reaches the dispatcher: a raw websocket handshake and one
-    /// `call` frame for `sidebar`, answered by a `reply` frame with the same id.
+    /// `call` frame for `open` (the one dispatcher verb the page sends), answered by a
+    /// `reply` frame with the same id.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_page_socket_reaches_the_dispatcher() {
         let dir = tempfile::TempDir::new().unwrap();
         let port = free_port();
         let k = boot_at(dir.path(), Seed::Team, &[], Some(port)).await;
-        make_dispatcher(&k, json!({})).await;
-        let reply = ws_call(port, "dispatcher", json!({"type": "sidebar"})).await;
+        make_dispatcher(&k, json!({"g": []})).await;
+        let reply = ws_call(port, "dispatcher", json!({"type": "open", "node": "g"})).await;
         assert_eq!(reply["type"], "reply", "{reply}");
         assert_eq!(reply["id"], "p1");
         assert!(reply["data"].get("error").is_none(), "{reply}");
-        assert_eq!(reply["data"]["groups"], json!([]), "{reply}");
+        assert_eq!(reply["data"]["node"], "g", "{reply}");
+        assert_eq!(reply["data"]["kind"], "group", "{reply}");
         k.stop().await;
     }
 
@@ -175,8 +177,8 @@ mod tests {
     }
 
     /// The page leg's end of every edge is the blueprint's: the seeded `team_ws` may call
-    /// the dispatcher's page verbs and the `cadencer` and `user` verbs the team's page
-    /// uses, and the base sidebar view's read calls, nothing else and never `*`. The other end is on the agent the person makes
+    /// the dispatcher's `open`, each mounted html view's agent's `reflect` and that view's
+    /// calls, the `user` verbs the team's page uses, and the base sidebar view's read calls, nothing else and never `*`. The other end is on the agent the person makes
     /// (its own `callable_by`).
     #[tokio::test(flavor = "multi_thread")]
     async fn the_seeded_page_leg_may_call_exactly_its_blueprint_verbs() {
@@ -184,24 +186,51 @@ mod tests {
         hydrate::seed(dir.path()).unwrap();
         let cc = read_can_call(dir.path());
         for (target, verbs) in [
-            ("cadencer", json!(["status", "set"])),
+            // the cadencer's html view: its reflect, then the view's calls
+            ("cadencer", json!(["reflect", "watch", "status", "set"])),
             // the task registry's own html view: its reflect, then the view's two reads
-            ("tasks", json!(["reflect", "list", "get"])),
+            ("tasks", json!(["reflect", "watch", "list", "get"])),
+            // the connector's, the bundles registry's and the lead's chat views (#351): each agent's
+            // `reflect`, then its view's calls (the crates' `VIEW_CALLS`, the base chat view's)
+            ("github", json!(["reflect", "watch", "pr_status"])),
+            (
+                "bundles",
+                json!([
+                    "reflect",
+                    "watch",
+                    "bundles",
+                    "bundle",
+                    "fleet",
+                    "get_count"
+                ]),
+            ),
+            (
+                "lead",
+                json!([
+                    "watch",
+                    "reflect",
+                    "history",
+                    "rows",
+                    "status",
+                    "send",
+                    "stop",
+                    "context_clear",
+                    "unembed"
+                ]),
+            ),
+            // the base chat view's inquiry reads and answers; the badge follows the sidebar
             ("user", json!(["inquiries", "answer_inquiry"])),
-            // the base sidebar view the page mounts: its read calls (#608), no `*`
+            // the base sidebar view the page mounts: it watches its own agent only, no `*`
             ("sidebar", json!(["reflect", "watch"])),
             ("kernel_state", json!(["reflect", "list_agents"])),
             (
                 "files",
-                json!(["list", "watch", "watch_path", "unwatch_path", "open_view"]),
+                json!(["list", "watch_path", "unwatch_path", "open_view"]),
             ),
         ] {
             assert_eq!(cc[target], verbs, "can_call {target}: {cc}");
         }
-        assert_eq!(
-            cc["dispatcher"],
-            json!(["sidebar", "tree", "open", "control"])
-        );
+        assert_eq!(cc["dispatcher"], json!(["open"]));
         for k in cc.as_object().unwrap().keys() {
             assert!(
                 [
@@ -209,6 +238,9 @@ mod tests {
                     "dispatcher",
                     "cadencer",
                     "tasks",
+                    "github",
+                    "bundles",
+                    "lead",
                     "user",
                     "sidebar",
                     "kernel_state",
@@ -221,7 +253,7 @@ mod tests {
                 assert_ne!(cc[k], json!("*"), "{k}");
             }
         }
-        for id in ["kernel", "memory", "github", "bundles"] {
+        for id in ["kernel", "memory", "github_credentials", "worker_exec"] {
             assert!(cc.get(id).is_none(), "{id}: {cc}");
         }
     }

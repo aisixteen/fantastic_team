@@ -103,7 +103,13 @@ pub struct GetCount {
     pub bundle: Option<String>,
 }
 
+/// The kernel starts the registry (it creates or loads it): from here on it follows the kernel's lifecycle stream and publishes `fleet_changed` on its own id for each agent made or deleted on a spawnable bundle. Idempotent. Returns {following: true}.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Boot {}
+
 fantastic_kernel::verbs! {
+    "boot" => Boot,
     "bundles" => Bundles,
     "bundle" => Bundle,
     "spawn" => Spawn,

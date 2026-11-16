@@ -2,13 +2,13 @@
 
 The page's socket, end to end against the real binary: one group `fantastic` (no driver) with two workers, `w1` and `w2`, and two subagents of `w2` (`sub_a`, `sub_b`: kernel agents whose parent is `w2`), all on the scripted model. The model's script is two `done` turns, one per message sent.
 
-The page is two empty columns for now (see `ui/layout_two_columns`), so there is no page DOM here: the probe speaks the frames of `web/page_shim.js` over the team's live `/team_ws/ws`, the page's real leg, with its real grants (the dispatcher's `sidebar`, `tree`, `open`, `control`, and the chat verbs `history`, `send`, `stop`, `status`, `watch` on the workers and subagents).
+The page is two empty columns for now (see `ui/layout_two_columns`), so there is no page DOM here: the probe speaks the frames of `web/page_shim.js` over the team's live `/team_ws/ws`, the page's real leg, with its real grants (the sidebar agent's `reflect`, the root's `reflect`, the dispatcher's `open`, and the chat verbs `history`, `send`, `stop`, `status`, `watch` on the workers and subagents).
 
 Asserts, in order:
 
 - the page is served, with the socket shim;
-- one flat `items` list per group: each worker, then its `subagents` expander; workers have style `worker`, expanders style `subagent`; collapsed by default (no subagent listed);
-- `expanded: ["w2"]` lists `sub_a` and `sub_b`;
+- the sidebar agent's `reflect` answers the leg with its html view (the page's left column);
+- the tree that view draws (the root's full `reflect`, over the leg) holds `w1` with no children and `w2` with `sub_a` and `sub_b`;
 - `open` for w1: `view chat`, `target w1`, `fullscreen`; a message sent to w1 reaches the model once (holding the unique token), and only w1's history holds the token (not w2, `sub_a`, `sub_b` or the lead);
 - `open` for `sub_a`, then a second token: one more model request, and only `sub_a`'s history holds it.
 

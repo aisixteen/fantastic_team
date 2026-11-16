@@ -7,11 +7,9 @@ can_call:
   "$self": "*"
   worker_view: "*"
   kernel_state: [create_agent, update_agent, delete_agent, reflect]
-  cadencer: [status]
   bundles: [fleet, get_count]
   tasks: [list]
-  github: [reflect]
 callable_by:
   "$self": "*"
   "$parent": "*"
-  team_ws: [sidebar, tree, open, control]
+  team_ws: [open]

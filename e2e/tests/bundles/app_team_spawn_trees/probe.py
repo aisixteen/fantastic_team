@@ -22,6 +22,9 @@ def seed(ctx, folder, env, v, team):
     try:
         v.check("a first run seeds the directory",
                 app.wait_http(f"http://127.0.0.1:{port}/team_page/file/index.html", 30), proc.log())
+        # the page can answer before the kernel's MCP channel is written: `send` needs the channel
+        v.check("the first run writes its MCP channel",
+                team.wait_for(lambda: os.path.exists(os.path.join(folder, team_mod.ENDPOINT)), 30), proc.log())
         records.create(team, {"id": "person_setup", "parent_id": "user", "handler_module": "setup.tools"})
         r = team.send("person_setup", {"type": "set_key_mode", "mode": "plain"})
         v.check("the person chose the plain key mode", (r.get("result") or {}).get("mode") == "plain", str(r))

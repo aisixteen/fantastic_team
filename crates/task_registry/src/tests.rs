@@ -1310,7 +1310,11 @@ async fn reflect_carries_the_html_view_with_its_two_read_calls() {
             "the view knows its agent"
         );
         assert!(!bytes.contains("{{agent}}"), "the placeholder is filled");
-        assert_eq!(view["calls"], json!({id: ["list", "get"]}), "{refl}");
+        assert_eq!(
+            view["calls"],
+            json!({id: ["watch", "list", "get"]}),
+            "{refl}"
+        );
     }
     // a disabled registry is drawn too: the view shows the refusal
     let bare = send(&r.kernel, "bare", json!({"type": "reflect"})).await;
@@ -1321,9 +1325,132 @@ async fn reflect_carries_the_html_view_with_its_two_read_calls() {
 fn the_view_calls_only_read_verbs_of_this_bundle() {
     let names: Vec<&str> = verbs::VERBS.iter().map(|v| v.name).collect();
     for v in VIEW_CALLS {
+        // `watch` is the kernel's: the view follows the registry's own events
+        if v == "watch" {
+            continue;
+        }
         assert!(names.contains(&v), "`{v}` is not a verb of the registry");
         assert!(matches!(v, "list" | "get"), "`{v}` writes");
     }
+}
+
+// ---- what the registry publishes (one model, many view-models) ----
+
+/// A watcher of the registry: every payload its inbox got that is a `task_changed`.
+fn changes(rx: &mut fantastic_kernel::inbox::InboxReceiver) -> Vec<Value> {
+    let mut out = Vec::new();
+    while let Some(item) = rx.try_recv() {
+        if item.payload["type"] == CHANGED {
+            out.push(item.payload);
+        }
+    }
+    out
+}
+
+async fn watcher(r: &Rig, id: &str) -> fantastic_kernel::inbox::InboxReceiver {
+    let w = AgentId::from(id);
+    let rx = r.kernel.ensure_inbox(&w);
+    assert!(r
+        .kernel
+        .watch(&AgentId::from(r.reg.as_str()), w)
+        .await
+        .is_none());
+    rx
+}
+
+#[tokio::test]
+async fn every_write_publishes_task_changed_naming_the_task_and_the_change() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp).await;
+    let mut rx = watcher(&r, "_t_view").await;
+    r.add("lead", "t1", json!({})).await;
+    assert_eq!(
+        changes(&mut rx),
+        vec![json!({"type": CHANGED, "change": "add", "task": "t1"})]
+    );
+    r.call(
+        "lead",
+        json!({"type": "assign", "id": "t1", "holder": "worker"}),
+    )
+    .await;
+    assert_eq!(
+        changes(&mut rx),
+        vec![json!({"type": CHANGED, "change": "assign", "task": "t1"})]
+    );
+    r.call(
+        "lead",
+        json!({"type": "reassign", "id": "t1", "holder": "sublead"}),
+    )
+    .await;
+    assert_eq!(
+        changes(&mut rx),
+        vec![json!({"type": CHANGED, "change": "reassign", "task": "t1"})]
+    );
+    r.call(
+        "lead",
+        json!({"type": "status", "id": "t1", "status": "running"}),
+    )
+    .await;
+    assert_eq!(
+        changes(&mut rx),
+        vec![json!({"type": CHANGED, "change": "status", "task": "t1"})]
+    );
+    r.call(
+        "lead",
+        json!({"type": "report", "id": "t1", "result": "half"}),
+    )
+    .await;
+    assert_eq!(
+        changes(&mut rx),
+        vec![json!({"type": CHANGED, "change": "report", "task": "t1"})]
+    );
+    // the reads publish nothing
+    r.call("lead", json!({"type": "list"})).await;
+    r.call("lead", json!({"type": "get", "id": "t1"})).await;
+    assert_eq!(changes(&mut rx), Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn a_refused_write_publishes_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp).await;
+    r.add("lead", "t1", json!({})).await;
+    let mut rx = watcher(&r, "_t_view").await;
+    let again = r.add("lead", "t1", json!({})).await;
+    assert_eq!(again["reason"], "exists", "{again}");
+    let nobody = r
+        .call(
+            "lead",
+            json!({"type": "status", "id": "nope", "status": "done"}),
+        )
+        .await;
+    assert!(nobody.get("error").is_some(), "{nobody}");
+    assert_eq!(changes(&mut rx), Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn a_pull_that_creates_tasks_publishes_them_once_and_an_empty_one_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp).await;
+    r.make_tracker(
+        "gh_pub",
+        json!(["o/a"]),
+        json!({"o/a": [{"number": 3, "title": "three"}, {"number": 4, "title": "four"}]}),
+    )
+    .await;
+    let mut rx = watcher(&r, "_t_view").await;
+    let out = r.call("lead", json!({"type": "pull"})).await;
+    assert_eq!(out["created"], json!(["o/a#3", "o/a#4"]), "{out}");
+    assert_eq!(
+        changes(&mut rx),
+        vec![json!({"type": CHANGED, "change": "pull", "tasks": ["o/a#3", "o/a#4"]})]
+    );
+    r.call("lead", json!({"type": "pull"})).await;
+    assert_eq!(
+        changes(&mut rx),
+        Vec::<Value>::new(),
+        "nothing new, nothing published"
+    );
 }
 
 #[test]

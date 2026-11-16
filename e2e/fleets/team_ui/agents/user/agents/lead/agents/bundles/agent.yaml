@@ -9,4 +9,4 @@ callable_by:
   lead: [bundles, bundle, spawn, get_count, fleet]
   dispatcher: [fleet, get_count]
   cadencer: [fleet, get_count]
-  team_ws: [reflect, bundles, bundle, fleet, get_count]
+  team_ws: [reflect, watch, bundles, bundle, fleet, get_count]

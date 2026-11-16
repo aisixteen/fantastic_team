@@ -1,7 +1,7 @@
 //! The plan: the spawned tree and the tasks it holds, read through the public verbs of
 //! the two registries (the bundles registry's `fleet` and `get_count`, the root's
 //! `reflect` of the project_lead's branch, the task registry's `list`) and shaped for the
-//! dispatcher's sidebar ([`read`], [`section`]) and the cadencer's digest rows
+//! dispatcher's `open` (the agents of the plan the page may chat with: [`read`], [`section`]) and the cadencer's digest rows
 //! ([`tree_rows`], [`rows`], [`load`]). Pure functions over the replies; one read path.
 //! No spawned agent is called and nothing here writes.
 

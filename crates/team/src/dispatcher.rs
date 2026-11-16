@@ -1,17 +1,12 @@
-//! Dispatcher: the main view of the team's web UI. A sidebar (`sidebar`): per
-//! group one flat list in which each worker is followed by its subagents
-//! expander, and the subagents (kernel agents whose parent is that worker) show
-//! only when the worker is expanded. A tree (`tree`) of nodes (team → group →
-//! worker), each row with state, current task and time; per team its
-//! connections (present/missing, never values); and what is waiting for the
-//! person. The dispatcher only reads and asks: no verb assigns work. Opening a
-//! worker or a subagent returns a full-screen chat for that agent alone; opening
-//! a group or team points at a dispatcher bound to that node.
+//! Dispatcher: what the team page asks for a node it opens, and the control of a
+//! worker or group. `open` grants the page's leg what drawing the node takes (a
+//! worker's or subagent's chat, an agent's html view, a file's view agent) and
+//! names it; `control` starts, pauses, stops, hands a task to, adds or removes a
+//! worker. The tree the page shows is fantastic's sidebar agent, not this one.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::peers::{KernelPeers, Peers};
@@ -20,253 +15,12 @@ use crate::peers::{KernelPeers, Peers};
 pub const HANDLER_MODULE: &str = "team_dispatcher.tools";
 /// What the bundle is for: its one short man text; how to call it is rendered from its
 /// declared verbs (`docs`, `reflect`).
-const MAN: &str = "The main view of the team's web UI: the sidebar (workers per group, their subagents, the team's services), the tree of the team, what to open for a node, and the control of a worker or group. It only reads and asks: no verb assigns work.";
+const MAN: &str = "What the team page opens for a node (it grants the page's leg the node's chat, html view or file view), and the control of a worker or group. No verb assigns work.";
 
 pub mod record;
 pub mod verbs;
 
-/// One worker as the dispatcher shows it, from the tasks it holds in the task registry.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Row {
-    /// The worker's agent id.
-    pub id: String,
-    /// `busy`, `idle`, `stalled N min`, `done`, `paused`.
-    pub state: String,
-    /// The current task (the registry's id, `owner/name#N`), if any.
-    pub task: Option<String>,
-    /// Minutes since the task last moved, when it holds one.
-    pub minutes: Option<u64>,
-}
-
-/// One connection of a team: its name and whether it is set. Never its value.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Connection {
-    /// The connection's name.
-    pub name: String,
-    /// `present` or `missing`.
-    pub status: &'static str,
-}
-
-/// The state label for a row: the plan's state ([`crate::plan::rows`]), except that a
-/// busy worker whose task has not moved past `limit` minutes reads as stalled.
-pub fn state_label(state: &str, minutes: Option<u64>, limit: u64) -> String {
-    if state == "busy" {
-        if let Some(m) = minutes {
-            if m > limit {
-                return format!("stalled {m} min");
-            }
-        }
-    }
-    state.to_string()
-}
-
-/// The rows of `workers` from the task registry's `list` reply: each worker's state, task
-/// and minutes are the plan's one rule ([`crate::plan::rows`], over the workers as the
-/// children of one node), the state labelled by [`state_label`].
-pub fn rows_from(workers: &[String], tasks: &Value, now: u64, limit: u64) -> Vec<Row> {
-    let kids: Vec<Value> = workers
-        .iter()
-        .map(|w| json!({"id": w, "children": []}))
-        .collect();
-    let tree = json!({"id": "", "children": kids});
-    crate::plan::rows(&tree, tasks, now)
-        .into_iter()
-        .filter(|r| !r["parent"].is_null())
-        .map(|r| {
-            let task = r["task"]
-                .as_str()
-                .filter(|t| !t.is_empty())
-                .map(str::to_string);
-            let minutes = task
-                .as_ref()
-                .map(|_| r["idle_s"].as_u64().unwrap_or(0) / 60);
-            Row {
-                id: r["id"].as_str().unwrap_or("").to_string(),
-                state: state_label(r["state"].as_str().unwrap_or("idle"), minutes, limit),
-                task,
-                minutes,
-            }
-        })
-        .collect()
-}
-
-/// The row of one worker ([`rows_from`] for it alone).
-pub fn row_of(worker: &str, tasks: &Value, now: u64, limit: u64) -> Row {
-    rows_from(&[worker.to_string()], tasks, now, limit)
-        .pop()
-        .expect("one worker, one row")
-}
-
-/// The tree of a team: the team, its groups (each with its workers), and the
-/// workers under no group. `groups` maps a group id to its worker ids.
-pub fn build_tree(team: &str, groups: &BTreeMap<String, Vec<String>>, workers: &[Row]) -> Value {
-    let find = |id: &str| workers.iter().find(|r| r.id == id).cloned();
-    let mut grouped: Vec<String> = Vec::new();
-    let mut children = Vec::new();
-    for (gid, members) in groups {
-        let kids: Vec<Value> = members
-            .iter()
-            .filter_map(|m| find(m))
-            .map(|r| {
-                grouped.push(r.id.clone());
-                json!({"kind": "worker", "row": r})
-            })
-            .collect();
-        children.push(json!({"kind": "group", "id": gid, "children": kids}));
-    }
-    for r in workers {
-        if !grouped.contains(&r.id) {
-            children.push(json!({"kind": "worker", "row": r}));
-        }
-    }
-    json!({"kind": "team", "id": team, "children": children})
-}
-
-/// The connections of a team, from the names it declares. Only presence.
-pub fn connections(names: &[String]) -> Vec<Connection> {
-    names
-        .iter()
-        .map(|n| Connection {
-            name: n.clone(),
-            status: if std::env::var(n).is_ok() {
-                "present"
-            } else {
-                "missing"
-            },
-        })
-        .collect()
-}
-
-/// A kernel agent as the sidebar reads it: its parent, what it is, its status.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Member {
-    /// The agent's parent id.
-    pub parent: String,
-    /// The agent's handler module (its tool or kind).
-    pub kind: String,
-    /// Its last status (`ok` when none is recorded).
-    pub status: String,
-}
-
-/// A subagent of a worker: a kernel agent whose parent is that worker.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Sub {
-    /// The subagent's agent id.
-    pub id: String,
-    /// The subagent's tool or kind.
-    pub kind: String,
-    /// Its last status.
-    pub status: String,
-}
-
-/// The direct children of `worker` in the agent table, in id order.
-pub fn subagents_of(agents: &BTreeMap<String, Member>, worker: &str) -> Vec<Sub> {
-    agents
-        .iter()
-        .filter(|(_, m)| m.parent == worker)
-        .map(|(id, m)| Sub {
-            id: id.clone(),
-            kind: m.kind.clone(),
-            status: m.status.clone(),
-        })
-        .collect()
-}
-
-/// The expanded set after a click on `worker`'s expander: only that worker flips.
-pub fn toggle(expanded: &BTreeSet<String>, worker: &str) -> BTreeSet<String> {
-    let mut out = expanded.clone();
-    if !out.remove(worker) {
-        out.insert(worker.to_string());
-    }
-    out
-}
-
-/// One worker's entries in a group's flat list: the worker, its subagents
-/// expander, and (only when expanded) its subagents. All are siblings.
-fn worker_items(
-    r: &Row,
-    subs: &BTreeMap<String, Vec<Sub>>,
-    expanded: &BTreeSet<String>,
-) -> Vec<Value> {
-    let kids = subs.get(&r.id).map(Vec::as_slice).unwrap_or(&[]);
-    let open = expanded.contains(&r.id);
-    let mut out = vec![json!({
-        "kind": "worker", "style": "worker", "id": r.id, "state": r.state,
-        "task": r.task, "busy": r.state == "busy",
-        "minutes": r.minutes,
-        "stalled": r.state.starts_with("stalled"),
-    })];
-    out.push(json!({
-        "kind": "subagents", "style": "subagent", "worker": r.id,
-        "count": kids.len(), "expanded": open,
-    }));
-    if open {
-        for s in kids {
-            out.push(json!({
-                "kind": "subagent", "style": "subagent", "worker": r.id,
-                "id": s.id, "tool": s.kind, "status": s.status,
-            }));
-        }
-    }
-    out
-}
-
-/// The sidebar: per group one flat ordered list, and the workers under no group
-/// in one more. Subagents start collapsed; `expanded` names the open workers.
-/// `load` is the bundles registry's `load` object (`Null` when none came). The team gets `load`
-/// {tasks, done_last_hour} when one came, plus the cadencer's
-/// `digest_bytes_per_hour` when `load` carries it,
-/// and `waiting` {prs, stalled}: the PRs waiting for approval and the stalled
-/// workers, the figures that need the person. (The bundle adds `fleet` after this.)
-pub fn sidebar(
-    team: &str,
-    groups: &BTreeMap<String, Vec<String>>,
-    rows: &[Row],
-    subs: &BTreeMap<String, Vec<Sub>>,
-    expanded: &BTreeSet<String>,
-    load: &Value,
-) -> Value {
-    let mut grouped: Vec<String> = Vec::new();
-    let mut gs = Vec::new();
-    for (gid, members) in groups {
-        let mut items = Vec::new();
-        for m in members {
-            if let Some(r) = rows.iter().find(|r| &r.id == m) {
-                grouped.push(r.id.clone());
-                items.extend(worker_items(r, subs, expanded));
-            }
-        }
-        let group = json!({"id": gid, "items": items});
-        gs.push(group);
-    }
-    let mut loose = Vec::new();
-    for r in rows {
-        if !grouped.contains(&r.id) {
-            loose.extend(worker_items(r, subs, expanded));
-        }
-    }
-    let mut out = json!({"team": team, "groups": gs, "ungrouped": loose});
-    if !load.is_null() {
-        let mut team_load = json!({
-            "tasks": load["tasks"],
-            "done_last_hour": load["done_last_hour"],
-        });
-        if load
-            .get("digest_bytes_per_hour")
-            .is_some_and(|v| !v.is_null())
-        {
-            team_load["digest_bytes_per_hour"] = load["digest_bytes_per_hour"].clone();
-        }
-        out["load"] = team_load;
-        out["waiting"] = json!({
-            "prs": load["tasks"]["in_review"].as_u64().unwrap_or(0),
-            "stalled": load["workers"]["stalled"].as_u64().unwrap_or(0),
-        });
-    }
-    out
-}
-
-/// The sidebar's `fleet` {running} from a registry's `get_count` reply: none when the
+/// The plan's `fleet` {running} from a registry's `get_count` reply: none when the
 /// reply is an error or lacks a count.
 pub fn fleet_of(count: &Value) -> Option<Value> {
     if count.get("error").is_some() {
@@ -292,8 +46,8 @@ pub fn chat_open(node: &str) -> Value {
 }
 
 /// The `open` reply for an agent whose own `reflect` carries its html view (the task
-/// registry): the page mounts that view, over `reflect` and the view's calls that
-/// `declared_views::grant_views` granted the leg.
+/// registry, the cadencer, a connector, the bundles registry): the page mounts that view,
+/// over `reflect` and the view's calls that `declared_views::grant_views` granted the leg.
 pub fn view_open(node: &str) -> Value {
     json!({
         "view": "html",
@@ -362,7 +116,6 @@ pub fn groups_without(
 }
 
 /// What a node is: the team itself, one of its groups, or otherwise a worker.
-/// `tree` and `open` both classify through this, so they agree.
 pub fn kind_of(node: &str, team: &str, groups: &BTreeMap<String, Vec<String>>) -> &'static str {
     if node == team {
         "team"
@@ -373,201 +126,35 @@ pub fn kind_of(node: &str, team: &str, groups: &BTreeMap<String, Vec<String>>) -
     }
 }
 
-/// The subtree a click shows. The team is the whole tree; a group is the group
-/// with its own workers (no team layer above it); a worker is its row. An id
-/// that is no worker of the team is an error, not an empty tree.
-pub fn subtree(
-    team: &str,
-    groups: &BTreeMap<String, Vec<String>>,
-    rows: &[Row],
-    node: &str,
-) -> Value {
-    match kind_of(node, team, groups) {
-        "team" => build_tree(team, groups, rows),
-        "group" => {
-            let kids: Vec<Value> = groups
-                .get(node)
-                .map(Vec::as_slice)
-                .unwrap_or(&[])
-                .iter()
-                .filter_map(|m| rows.iter().find(|r| &r.id == m))
-                .map(|r| json!({"kind": "worker", "row": r}))
-                .collect();
-            json!({"kind": "group", "id": node, "children": kids})
-        }
-        _ => match rows.iter().find(|r| r.id == node) {
-            Some(r) => json!({"kind": "worker", "row": r}),
-            None => json!({"error": format!("dispatcher: unknown node '{node}'")}),
-        },
-    }
-}
-
-/// The ids the rows cover: the workers of the groups, then every agent that holds a task
-/// in the registry (a string `holder`) and is in no group, in the order met.
-fn worker_ids(groups: &BTreeMap<String, Vec<String>>, tasks: &Value) -> Vec<String> {
-    let mut ids: Vec<String> = groups.values().flatten().cloned().collect();
-    for t in tasks["tasks"].as_array().into_iter().flatten() {
-        if let Some(h) = t["holder"].as_str() {
-            if !ids.iter().any(|i| i == h) {
-                ids.push(h.to_string());
+/// The agents of bundles mode the page may chat with, from the plan ([`crate::plan::read`]):
+/// the lead, then every node of its tree.
+fn plan_ids(plan: &Value) -> Vec<String> {
+    fn walk(node: &Value, out: &mut Vec<String>) {
+        if let Some(id) = node["id"].as_str().filter(|i| !i.is_empty()) {
+            if !out.iter().any(|o| o == id) {
+                out.push(id.to_string());
             }
         }
-    }
-    ids
-}
-
-/// The rows of every worker the team knows ([`worker_ids`]), from the task registry's
-/// `list` (an error reply gives rows that hold nothing).
-async fn rows_of(
-    peers: &dyn Peers,
-    groups: &BTreeMap<String, Vec<String>>,
-    limit: u64,
-    now: u64,
-) -> Vec<Row> {
-    let tasks = peers
-        .ask(crate::tree::TASKS_ID, json!({"type": "list"}))
-        .await;
-    rows_from(&worker_ids(groups, &tasks), &tasks, now, limit)
-}
-
-/// How many levels the page indents an agent row at most.
-pub const INDENT_CAP: usize = 4;
-
-/// The agents of bundles mode as one flat depth-first list for the page, from the plan
-/// ([`crate::plan::read`]): the lead first (`lead: true`, label "Lead"), then every node of the
-/// tree in its child order. Each item is {id, bundle, state, depth, indent, guides, lead,
-/// label, has_children}; `indent` and `guides` stop at [`INDENT_CAP`], `depth` keeps counting. With no
-/// tree but a lead id, just the lead; with neither, nothing.
-pub fn agent_list(bundles: &Value) -> Vec<Value> {
-    fn item(node: &Value, depth: usize, lead: bool) -> Value {
-        let id = node["id"].as_str().unwrap_or("");
-        let bundle = node["bundle"].as_str().unwrap_or("");
-        let state = node["state"].as_str().unwrap_or("active");
-        let indent = depth.min(INDENT_CAP);
-        let label = if lead {
-            "Lead"
-        } else if bundle.is_empty() {
-            id
-        } else {
-            bundle
-        };
-        json!({"id": id, "bundle": bundle, "state": state, "depth": depth, "indent": indent,
-            "guides": indent, "lead": lead, "label": label})
-    }
-    fn walk(node: &Value, depth: usize, out: &mut Vec<Value>) {
-        out.push(item(node, depth, false));
         for k in node["children"].as_array().into_iter().flatten() {
-            walk(k, depth + 1, out);
+            walk(k, out);
         }
     }
-    let lead = bundles["lead"].as_str().filter(|l| !l.is_empty());
-    let tree = &bundles["tree"];
-    let mut out = Vec::new();
-    if tree.get("id").and_then(Value::as_str).is_some() {
-        let root_is_lead = lead.is_none_or(|l| tree["id"].as_str() == Some(l));
-        if root_is_lead {
-            let mut root = item(tree, 0, true);
-            if root["bundle"] == "" {
-                root["bundle"] = json!("project_lead");
-            }
-            out.push(root);
-            for k in tree["children"].as_array().into_iter().flatten() {
-                walk(k, 1, &mut out);
-            }
-        } else {
-            walk(tree, 0, &mut out);
-        }
-    } else if let Some(l) = lead {
-        out.push(item(
-            &json!({"id": l, "bundle": "project_lead", "state": "active"}),
-            0,
-            true,
-        ));
-    }
-    // The lead is always first, wherever the tree put it.
-    if let Some(l) = lead {
-        if let Some(i) = out.iter().position(|a| a["id"] == l) {
-            let mut a = out.remove(i);
-            a["lead"] = json!(true);
-            a["label"] = json!("Lead");
-            out.insert(0, a);
-        }
-    }
-    // Derived from the list itself: a row has children when the next row is deeper.
-    // The page uses it to collapse a subtree; it is not a record field.
-    let depths: Vec<u64> = out
-        .iter()
-        .map(|a| a["depth"].as_u64().unwrap_or(0))
+    let mut out: Vec<String> = plan["lead"]
+        .as_str()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .into_iter()
         .collect();
-    for (i, a) in out.iter_mut().enumerate() {
-        let deeper = depths.get(i + 1).is_some_and(|d| *d > depths[i]);
-        a["has_children"] = json!(deeper);
-    }
+    walk(&plan["tree"], &mut out);
     out
 }
 
-/// The plan the lead's pane draws, from the plan's section ([`crate::plan::read`]): {lead,
-/// fleet, tasks}; each task is {id, source, holder, status} with the holder as text (an agent id,
-/// or "subtree:<id>").
-pub fn plan_of(bundles: &Value) -> Value {
-    let tasks: Vec<Value> = bundles["tasks"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|t| {
-            let holder = match &t["holder"] {
-                Value::String(h) => h.clone(),
-                Value::Null => String::new(),
-                other => match other.get("subtree").and_then(Value::as_str) {
-                    Some(r) => format!("subtree:{r}"),
-                    None => other.to_string(),
-                },
-            };
-            json!({"id": t["id"], "source": t["source"], "holder": holder, "status": t["status"]})
-        })
-        .collect();
-    json!({"lead": bundles["lead"], "fleet": bundles["fleet"], "tasks": tasks})
-}
-
 /// Let the page's legs chat with the lead and its agents: the chat verbs only, never `*`.
-fn grant_agents(kernel: &Arc<fantastic_kernel::Kernel>, agents: &[Value]) {
-    let ids: Vec<String> = agents
-        .iter()
-        .filter_map(|a| a["id"].as_str().map(str::to_string))
-        .collect();
+fn grant_agents(kernel: &Arc<fantastic_kernel::Kernel>, ids: &[String]) {
     if ids.is_empty() {
         return;
     }
-    crate::tree::grant_chat_to(kernel, &ids, crate::page::WS_ID);
-}
-
-/// The kernel's agent table as the sidebar reads it: every agent with a parent.
-fn agent_table(kernel: &fantastic_kernel::Kernel) -> BTreeMap<String, Member> {
-    kernel
-        .agents
-        .iter()
-        .filter_map(|e| {
-            let a = e.value();
-            let parent = a.parent_id.as_ref()?.0.clone();
-            let status = a
-                .meta
-                .read()
-                .ok()
-                .and_then(|m| m.get("status").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or_else(|| "ok".into());
-            let member = Member {
-                parent,
-                kind: a.handler_module.clone().unwrap_or_default(),
-                status,
-            };
-            Some((a.id.0.clone(), member))
-        })
-        .collect()
-}
-
-/// The workers the page has expanded, from the call's `expanded` list.
-fn expanded_of(expanded: &Option<Vec<String>>) -> BTreeSet<String> {
-    expanded.iter().flatten().cloned().collect()
+    crate::tree::grant_chat_to(kernel, ids, crate::page::WS_ID);
 }
 
 fn groups_of(meta: &serde_json::Map<String, Value>) -> BTreeMap<String, Vec<String>> {
@@ -766,130 +353,7 @@ async fn remove_worker(
     reply
 }
 
-/// The sidebar reply without `services`: the groups, workers, load, and in bundles mode the
-/// fleet, the agents and the plan.
-#[allow(clippy::too_many_arguments)]
-async fn sidebar_reply(
-    kernel: &Arc<fantastic_kernel::Kernel>,
-    peers: &KernelPeers,
-    meta: &serde_json::Map<String, Value>,
-    team: &str,
-    groups: &BTreeMap<String, Vec<String>>,
-    limit: u64,
-    now: u64,
-    expanded: &Option<Vec<String>>,
-) -> Value {
-    let rows = rows_of(peers, groups, limit, now).await;
-    let agents = agent_table(kernel);
-    let subs: BTreeMap<String, Vec<Sub>> = rows
-        .iter()
-        .map(|r| (r.id.clone(), subagents_of(&agents, &r.id)))
-        .collect();
-    let mut load = Value::Null;
-    // The cadencer's load holds the task counts plus the cost per hour.
-    let cad = peers
-        .ask(crate::tree::CADENCER_ID, json!({"type": "status"}))
-        .await;
-    if cad.get("error").is_none() && cad["load"].is_object() {
-        load = cad["load"].clone();
-    }
-    let mut out = sidebar(team, groups, &rows, &subs, &expanded_of(expanded), &load);
-    // Bundles mode: the plan read through the registries' public verbs gives the count
-    // (agents running), the lead and its agents, and the tasks.
-    if let Some(bundles) = meta.get("bundles").and_then(Value::as_str) {
-        let plan = crate::plan::read(peers, bundles).await;
-        if !plan["fleet"].is_null() {
-            out["fleet"] = plan["fleet"].clone();
-        }
-        let list = agent_list(&plan);
-        grant_agents(kernel, &list);
-        out["agents"] = json!(list);
-        out["plan"] = plan_of(&plan);
-    }
-    out
-}
-
-/// The team's own services the page lists under "Team" and opens in the right pane:
-/// the dispatcher itself, each task registry (kind `tasks`: it opens as its own html
-/// view), each github connector, and the kinds a declaration draws. Only agents that
-/// exist are listed.
-pub fn services_of(kernel: &fantastic_kernel::Kernel, me: &str) -> Vec<Value> {
-    let mut out = vec![json!({"id": me, "kind": "dispatcher", "label": "Dispatcher"})];
-    let by_module = |module: &str| -> Vec<String> {
-        let mut ids: Vec<String> = kernel
-            .agents
-            .iter()
-            .filter(|e| e.value().handler_module.as_deref() == Some(module))
-            .map(|e| e.value().id.0.clone())
-            .collect();
-        ids.sort();
-        ids
-    };
-    for id in by_module(team_task_registry::HANDLER_MODULE) {
-        out.push(json!({"id": id, "kind": "tasks", "label": format!("Tasks ({id})")}));
-    }
-    for id in by_module(team_github_connector::HANDLER_MODULE) {
-        out.push(json!({"id": id, "kind": "github", "label": format!("GitHub ({id})")}));
-    }
-    // The kinds a declaration draws (`declared_views`): cadencer and git, in that order,
-    // each by id.
-    let declared = crate::declared_views::declared_agents(kernel);
-    for kind in crate::declared_views::WEB_KINDS {
-        for (id, d) in declared.iter().filter(|(_, d)| d.kind == kind) {
-            out.push(json!({"id": id.0, "kind": kind, "label": format!("{} ({})", d.title, id.0)}));
-        }
-    }
-    out
-}
-
-/// The panel reply for a service node: the model drawn in the right pane. A service
-/// that errors gives a model with one "unavailable" row, never the raw error.
-#[allow(clippy::too_many_arguments)]
-async fn panel_reply(
-    kernel: &Arc<fantastic_kernel::Kernel>,
-    peers: &KernelPeers,
-    meta: &serde_json::Map<String, Value>,
-    team: &str,
-    groups: &BTreeMap<String, Vec<String>>,
-    limit: u64,
-    now: u64,
-    svc: &Value,
-) -> Value {
-    use crate::agent_views as v;
-    let node = svc["id"].as_str().unwrap_or("");
-    let kind = svc["kind"].as_str().unwrap_or("");
-    let ok = |r: &Value| r.is_object() && r.get("error").is_none();
-    let model = match kind {
-        "github" => {
-            let r = peers.ask(node, json!({"type": "reflect"})).await;
-            if ok(&r) {
-                v::github_view(&r)
-            } else {
-                v::unavailable(kind, "GitHub")
-            }
-        }
-        "dispatcher" => {
-            let sb = sidebar_reply(kernel, peers, meta, team, groups, limit, now, &None).await;
-            v::dispatcher_view(&sb)
-        }
-        other => match crate::declared_views::decl_by_kind(other) {
-            Some(d) if crate::declared_views::WEB_KINDS.contains(&other) => {
-                // A declared kind: ask each section's read verb, draw the one model.
-                let mut replies = Vec::new();
-                for s in &d.sections {
-                    let mut ask = s.args.clone().unwrap_or_else(|| json!({}));
-                    ask["type"] = json!(s.verb);
-                    replies.push(peers.ask(node, ask).await);
-                }
-                crate::declared_views::model_of(&d, &replies)
-            }
-            _ => v::unavailable(other, other),
-        },
-    };
-    json!({"view": "panel", "kind": kind, "target": node, "model": model})
-}
-
-/// The dispatcher bundle: `sidebar`, `tree`, `open`, `control`.
+/// The dispatcher bundle: `open`, `control`.
 #[derive(Default)]
 pub struct DispatcherBundle;
 
@@ -939,63 +403,42 @@ impl fantastic_kernel::bundle::Handler for DispatcherBundle {
                 .unwrap_or_default()
         };
         let team = text("team");
-        let limit = record::RECORD
-            .get(&meta, "stall_minutes")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_default();
         let groups = groups_of(&meta);
         let peers = KernelPeers(kernel.clone());
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
         let out = match call {
             verbs::Call::Boot(_) => Value::Null,
             verbs::Call::Reflect(_) => json!({"id": agent_id.as_str(), "sentence": MAN}),
-            verbs::Call::Tree(a) => {
-                let node = a.node.unwrap_or_else(|| team.clone());
-                let rows = rows_of(&peers, &groups, limit, now).await;
-                subtree(&team, &groups, &rows, &node)
-            }
-            verbs::Call::Sidebar(a) => {
-                let mut out = sidebar_reply(
-                    kernel,
-                    &peers,
-                    &meta,
-                    &team,
-                    &groups,
-                    limit,
-                    now,
-                    &a.expanded,
-                )
-                .await;
-                out["services"] = json!(services_of(kernel, agent_id.as_str()));
-                out
-            }
             verbs::Call::Open(a) => {
                 let node = a.node;
-                let services = services_of(kernel, agent_id.as_str());
-                if let Some(svc) = services.iter().find(|s| s["id"] == node.as_str()) {
-                    // A task registry opens as its own html view (its `reflect` carries
-                    // it): the page's leg gets `reflect` and the view's two reads on it,
-                    // nothing else (the one view grant, as at boot; a registry made since
-                    // then gets it here).
-                    if svc["kind"] == "tasks" {
-                        crate::declared_views::grant_views(kernel);
-                        return Ok(Some(view_open(&node)));
-                    }
-                    let out =
-                        panel_reply(kernel, &peers, &meta, &team, &groups, limit, now, svc).await;
-                    return Ok(Some(out));
+                // An agent whose own `reflect` carries its html view: the page's leg gets
+                // `reflect` and the view's calls on it, nothing else (the one view grant, as
+                // at boot; an agent made since then gets it here).
+                let module = kernel
+                    .agents
+                    .get(&fantastic_kernel::AgentId::from(node.as_str()))
+                    .and_then(|e| e.value().handler_module.clone());
+                if module.is_some_and(|m| {
+                    crate::declared_views::page_views()
+                        .iter()
+                        .any(|(h, _)| *h == m)
+                }) {
+                    crate::declared_views::grant_views(kernel);
+                    return Ok(Some(view_open(&node)));
+                }
+                // The view agent of a file the person opened (made by the files bridge's `open_view`): the
+                // leg draws it, with `reflect`, `read` and `watch` on it.
+                if crate::tree::is_file_view(kernel, &node) {
+                    crate::tree::grant_file_view(kernel, crate::page::WS_ID, &node);
+                    return Ok(Some(json!({"kind": "file", "id": node})));
                 }
                 let kind = kind_of(&node, &team, &groups);
                 // A spawned lead or child is chatted with like a worker: grant it now.
                 // Only an id the plan's tree names is granted, never an arbitrary one.
                 if let Some(bundles) = meta.get("bundles").and_then(Value::as_str) {
                     if kind == "worker" {
-                        let list = agent_list(&crate::plan::read(&peers, bundles).await);
-                        if list.iter().any(|a| a["id"] == node.as_str()) {
-                            grant_agents(kernel, &list);
+                        let ids = plan_ids(&crate::plan::read(&peers, bundles).await);
+                        if ids.contains(&node) {
+                            grant_agents(kernel, &ids);
                         }
                     }
                 }
@@ -1074,101 +517,6 @@ mod tests {
     use super::*;
     use crate::test_boot::{boot_at, Booted, Seed};
 
-    /// The task registry's `list`: `w1` runs `r#1` since 0; `w2` holds nothing.
-    fn tasks() -> Value {
-        json!({"tasks": [
-            {"id": "r#1", "source": "gh:r#1", "holder": "w1", "status": "running",
-             "history": [{"from": null, "to": "w1", "by": "lead", "at": 0.0}], "report": null}
-        ]})
-    }
-
-    #[test]
-    fn tree_groups_workers_under_groups_under_teams() {
-        let mut groups = BTreeMap::new();
-        groups.insert("g1".to_string(), vec!["w1".to_string()]);
-        let rows = vec![row_of("w1", &tasks(), 0, 30), row_of("w2", &tasks(), 0, 30)];
-        let t = build_tree("team", &groups, &rows);
-        assert_eq!(t["kind"], "team");
-        assert_eq!(t["children"][0]["kind"], "group");
-        assert_eq!(t["children"][0]["children"][0]["row"]["id"], "w1");
-        assert_eq!(t["children"][1]["row"]["id"], "w2");
-    }
-
-    #[test]
-    fn row_shows_state_and_task_from_the_registry() {
-        let r = row_of("w1", &tasks(), 600, 30);
-        assert_eq!(r.task.as_deref(), Some("r#1"));
-        assert_eq!(r.state, "busy");
-        let idle = row_of("w2", &tasks(), 600, 30);
-        assert_eq!((idle.state.as_str(), idle.task.as_deref()), ("idle", None));
-        // the plan's states pass through: done and paused
-        let more = json!({"tasks": [
-            {"id": "a", "source": "s", "holder": "w3", "status": "done", "history": []},
-            {"id": "b", "source": "s", "holder": "w4", "status": "paused", "history": []}
-        ]});
-        assert_eq!(row_of("w3", &more, 1, 30).state, "done");
-        assert_eq!(row_of("w4", &more, 1, 30).state, "paused");
-    }
-
-    #[test]
-    fn row_shows_minutes_on_the_task() {
-        let b = json!({"tasks": [
-            {"id": "r#1", "source": "s", "holder": "w1", "status": "running",
-             "history": [{"from": null, "to": "w1", "by": "lead", "at": 600.0}], "report": null}
-        ]});
-        let r = row_of("w1", &b, 1200, 30);
-        assert_eq!(r.minutes, Some(10));
-        // A worker with no task has no minutes.
-        assert_eq!(row_of("w2", &b, 1200, 30).minutes, None);
-        // A task that has not moved past the limit reads as stalled.
-        assert_eq!(row_of("w1", &b, 600 + 31 * 60, 30).state, "stalled 31 min");
-    }
-
-    #[test]
-    fn row_of_carries_minutes_into_sidebar_item() {
-        let b = json!({"tasks": [
-            {"id": "r#1", "source": "s", "holder": "w1", "status": "running",
-             "history": [{"from": null, "to": "w1", "by": "lead", "at": 1000.0}], "report": null}
-        ]});
-        let r = row_of("w1", &b, 1120, 30);
-        assert_eq!(r.minutes, Some(2));
-        let items = worker_items(&r, &BTreeMap::new(), &BTreeSet::new());
-        assert_eq!(items[0]["minutes"], json!(2));
-        let idle = row_of("w2", &b, 1120, 30);
-        let items = worker_items(&idle, &BTreeMap::new(), &BTreeSet::new());
-        assert!(items[0]["minutes"].is_null());
-    }
-
-    #[test]
-    fn stalled_row_names_minutes() {
-        assert_eq!(state_label("busy", Some(45), 30), "stalled 45 min");
-        assert_eq!(state_label("busy", Some(5), 30), "busy");
-        assert_eq!(state_label("done", Some(45), 30), "done");
-    }
-
-    #[test]
-    fn worker_ids_are_the_groups_members_then_the_registrys_holders() {
-        let mut groups = BTreeMap::new();
-        groups.insert("g".to_string(), vec!["w1".to_string()]);
-        let tasks = json!({"tasks": [
-            {"id": "a", "holder": "w1", "status": "running"},
-            {"id": "b", "holder": "w9", "status": "running"},
-            {"id": "c", "holder": {"subtree": "sub"}, "status": "running"},
-            {"id": "d", "holder": null, "status": "waiting"}
-        ]});
-        assert_eq!(worker_ids(&groups, &tasks), ["w1", "w9"]);
-        assert_eq!(worker_ids(&groups, &json!({"error": "down"})), ["w1"]);
-    }
-
-    #[test]
-    fn connections_never_contain_key_values() {
-        std::env::set_var("TEAM58_TEST_SECRET", "hunter2");
-        let c = connections(&["TEAM58_TEST_SECRET".to_string()]);
-        let s = serde_json::to_string(&c).unwrap();
-        assert!(!s.contains("hunter2"));
-        assert_eq!(c[0].status, "present");
-    }
-
     #[test]
     fn open_worker_or_subagent_returns_fullscreen_chat_targeting_only_it() {
         for id in ["w1", "s1"] {
@@ -1180,132 +528,6 @@ mod tests {
             assert_eq!(v["cell"]["kind"], "chat", "{id}");
             assert_eq!(v["cell"]["target"], id, "{id}");
         }
-    }
-
-    #[test]
-    fn toggle_flips_only_that_worker() {
-        let empty = BTreeSet::new();
-        let a = toggle(&empty, "w1");
-        assert!(a.contains("w1"));
-        assert!(!a.contains("w2"));
-        let b = toggle(&a, "w1");
-        assert!(b.is_empty());
-    }
-
-    fn members() -> BTreeMap<String, Member> {
-        let m = |parent: &str, kind: &str| Member {
-            parent: parent.into(),
-            kind: kind.into(),
-            status: "ok".into(),
-        };
-        let mut out = BTreeMap::new();
-        out.insert("s1".to_string(), m("w1", "gh_exec"));
-        out.insert("s2".to_string(), m("w1", "git"));
-        out.insert("s3".to_string(), m("w2", "reviewer"));
-        out.insert("x".to_string(), m("elsewhere", "git"));
-        out
-    }
-
-    fn subs_of(rows: &[Row]) -> BTreeMap<String, Vec<Sub>> {
-        rows.iter()
-            .map(|r| (r.id.clone(), subagents_of(&members(), &r.id)))
-            .collect()
-    }
-
-    fn group_items(sb: &Value, gid: &str) -> Vec<Value> {
-        sb["groups"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|g| g["id"] == gid)
-            .unwrap()["items"]
-            .as_array()
-            .unwrap()
-            .clone()
-    }
-
-    #[test]
-    fn subagents_of_lists_direct_children_only() {
-        let s = subagents_of(&members(), "w1");
-        let ids: Vec<&str> = s.iter().map(|x| x.id.as_str()).collect();
-        assert_eq!(ids, vec!["s1", "s2"]);
-        assert_eq!(s[0].kind, "gh_exec");
-        assert_eq!(s[0].status, "ok");
-    }
-
-    #[test]
-    fn sidebar_subagent_lists_start_collapsed() {
-        let mut groups = BTreeMap::new();
-        groups.insert("A".to_string(), vec!["w1".to_string(), "w2".to_string()]);
-        let rows = rows_w();
-        let subs = subs_of(&rows);
-        let sb = sidebar(
-            "team",
-            &groups,
-            &rows,
-            &subs,
-            &BTreeSet::new(),
-            &Value::Null,
-        );
-        let items = group_items(&sb, "A");
-        let exp = items
-            .iter()
-            .find(|i| i["kind"] == "subagents" && i["worker"] == "w1")
-            .unwrap();
-        assert_eq!(exp["expanded"], json!(false));
-        assert_eq!(exp["count"], json!(2));
-        assert!(!items.iter().any(|i| i["kind"] == "subagent"));
-    }
-
-    #[test]
-    fn expanding_one_worker_keeps_others_collapsed() {
-        let mut groups = BTreeMap::new();
-        groups.insert("A".to_string(), vec!["w1".to_string(), "w2".to_string()]);
-        let rows = rows_w();
-        let subs = subs_of(&rows);
-        let open = toggle(&BTreeSet::new(), "w1");
-        let sb = sidebar("team", &groups, &rows, &subs, &open, &Value::Null);
-        let items = group_items(&sb, "A");
-        let shown: Vec<&Value> = items.iter().filter(|i| i["kind"] == "subagent").collect();
-        assert_eq!(shown.len(), 2);
-        assert!(shown.iter().all(|i| i["worker"] == "w1"));
-        let w2 = items
-            .iter()
-            .find(|i| i["kind"] == "subagents" && i["worker"] == "w2")
-            .unwrap();
-        assert_eq!(w2["expanded"], json!(false));
-        let again = toggle(&open, "w1");
-        let sb2 = sidebar("team", &groups, &rows, &subs, &again, &Value::Null);
-        assert!(!group_items(&sb2, "A")
-            .iter()
-            .any(|i| i["kind"] == "subagent"));
-    }
-
-    #[test]
-    fn workers_and_subagents_are_siblings_with_different_style() {
-        let mut groups = BTreeMap::new();
-        groups.insert("A".to_string(), vec!["w1".to_string(), "w2".to_string()]);
-        let rows = rows_w();
-        let subs = subs_of(&rows);
-        let open = toggle(&BTreeSet::new(), "w1");
-        let sb = sidebar("team", &groups, &rows, &subs, &open, &Value::Null);
-        let items = group_items(&sb, "A");
-        // Flat: every item is a leaf of the one list, with no nested children.
-        assert!(items.iter().all(|i| i.get("children").is_none()));
-        let w1 = items
-            .iter()
-            .position(|i| i["kind"] == "worker" && i["id"] == "w1")
-            .unwrap();
-        let sub = items
-            .iter()
-            .position(|i| i["kind"] == "subagent" && i["id"] == "s1")
-            .unwrap();
-        assert!(w1 < sub);
-        assert_eq!(items[w1]["style"], "worker");
-        assert_eq!(items[sub]["style"], "subagent");
-        assert_ne!(items[w1]["style"], items[sub]["style"]);
-        assert_eq!(items[sub]["tool"], "gh_exec");
-        assert_eq!(items[sub]["status"], "ok");
     }
 
     #[test]
@@ -1326,27 +548,6 @@ mod tests {
         g
     }
 
-    fn rows_w() -> Vec<Row> {
-        vec![row_of("w1", &tasks(), 0, 30), row_of("w2", &tasks(), 0, 30)]
-    }
-
-    #[test]
-    fn tree_of_a_group_is_the_group_with_its_workers_no_fake_team() {
-        let t = subtree("team", &groups_a(), &rows_w(), "A");
-        assert_eq!(t["kind"], "group");
-        assert_eq!(t["id"], "A");
-        let kids = t["children"].as_array().unwrap();
-        assert_eq!(kids.len(), 1);
-        assert_eq!(kids[0]["row"]["id"], "w1");
-    }
-
-    #[test]
-    fn tree_of_a_worker_is_its_row() {
-        let t = subtree("team", &groups_a(), &rows_w(), "w2");
-        assert_eq!(t["kind"], "worker");
-        assert_eq!(t["row"]["id"], "w2");
-    }
-
     #[test]
     fn open_classifies_team_group_worker_with_one_helper() {
         let g = groups_a();
@@ -1354,8 +555,6 @@ mod tests {
         assert_eq!(kind_of("A", "team", &g), "group");
         assert_eq!(kind_of("w1", "team", &g), "worker");
         assert_eq!(kind_of("nope", "team", &g), "worker");
-        let e = subtree("team", &g, &rows_w(), "nope");
-        assert!(e["error"].as_str().is_some());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1539,87 +738,6 @@ mod tests {
         kernel.stop().await;
     }
 
-    fn load_full() -> Value {
-        json!({
-            "workers": {"busy": 1, "idle": 2, "stalled": 2},
-            "tasks": {"held": 1, "in_review": 3, "done": 2, "blocked": 0, "queued": 3},
-            "done_last_hour": 2,
-            "digest_bytes_per_hour": 480,
-        })
-    }
-
-    fn sidebar_of(rows: &[Row], load: &Value) -> Value {
-        let mut groups = BTreeMap::new();
-        groups.insert("A".to_string(), vec!["w1".to_string(), "w2".to_string()]);
-        sidebar(
-            "team",
-            &groups,
-            rows,
-            &subs_of(rows),
-            &BTreeSet::new(),
-            load,
-        )
-    }
-
-    #[test]
-    fn sidebar_load_carries_digest_bytes_per_hour() {
-        let sb = sidebar_of(&rows_w(), &load_full());
-        assert_eq!(sb["load"]["digest_bytes_per_hour"], 480);
-        let mut bare = load_full();
-        bare.as_object_mut()
-            .unwrap()
-            .remove("digest_bytes_per_hour");
-        let sb = sidebar_of(&rows_w(), &bare);
-        assert!(sb["load"].get("digest_bytes_per_hour").is_none(), "{sb}");
-    }
-
-    #[test]
-    fn sidebar_worker_item_has_minutes() {
-        let mut rows = rows_w();
-        rows[0].minutes = Some(2);
-        let sb = sidebar_of(&rows, &Value::Null);
-        let items = group_items(&sb, "A");
-        let w1 = items
-            .iter()
-            .find(|i| i["kind"] == "worker" && i["id"] == "w1")
-            .unwrap();
-        assert_eq!(w1["minutes"], 2);
-        let w2 = items
-            .iter()
-            .find(|i| i["kind"] == "worker" && i["id"] == "w2")
-            .unwrap();
-        assert!(w2["minutes"].is_null(), "{w2}");
-    }
-
-    #[test]
-    fn sidebar_overview_counts_prs_waiting_and_stalled() {
-        let sb = sidebar_of(&rows_w(), &load_full());
-        assert_eq!(sb["waiting"], json!({"prs": 3, "stalled": 2}));
-    }
-
-    #[test]
-    fn sidebar_without_load_has_no_waiting() {
-        let sb = sidebar_of(&rows_w(), &Value::Null);
-        assert!(sb.get("waiting").is_none(), "{sb}");
-    }
-
-    #[test]
-    fn sidebar_marks_a_stalled_worker() {
-        let mut rows = rows_w();
-        rows[0].state = "stalled 45 min".into();
-        let sb = sidebar_of(&rows, &Value::Null);
-        let items = group_items(&sb, "A");
-        let get = |id: &str| {
-            items
-                .iter()
-                .find(|i| i["kind"] == "worker" && i["id"] == id)
-                .unwrap()
-                .clone()
-        };
-        assert_eq!(get("w1")["stalled"], json!(true));
-        assert_eq!(get("w2")["stalled"], json!(false));
-    }
-
     #[test]
     fn control_accepts_hand_task_add_and_remove_worker() {
         for action in [
@@ -1754,7 +872,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn control_via_kernel_add_worker_creates_the_agent_and_lists_it_in_the_tree() {
+    async fn control_via_kernel_add_worker_creates_the_agent_and_lists_it_in_its_group() {
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = kernel_with_groups(dir.path()).await;
         let out = ask_kernel(
@@ -1793,14 +911,6 @@ mod tests {
             meta_of(&kernel, "dispatcher")["groups"],
             json!({"g": ["w1", "w2"]})
         );
-        let tree = ask_kernel(&kernel, "dispatcher", json!({"type": "tree"})).await;
-        let ids: Vec<&str> = tree["children"][0]["children"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|c| c["row"]["id"].as_str().unwrap())
-            .collect();
-        assert!(ids.contains(&"w2"), "{tree}");
         kernel.stop().await;
     }
 
@@ -1963,67 +1073,9 @@ mod tests {
         kernel.stop().await;
     }
 
-    fn register_load(reg: &mut fantastic_kernel::BundleRegistry) {
-        reg.register("load_test.tools", LoadBundle);
-    }
-
-    /// A sidebar answers with the cadencer's load (cost per hour) when it replies.
-    struct LoadBundle;
-
-    fantastic_kernel::stand_in_verbs!(load_verbs { StatusV "status" {} });
-
-    #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Handler for LoadBundle {
-        stand_in_body!(load_verbs);
-
-        fn name(&self) -> &str {
-            "load_test.tools"
-        }
-
-        async fn handle(
-            &self,
-            _agent_id: &fantastic_kernel::AgentId,
-            call: Self::Call,
-            _kernel: &Arc<fantastic_kernel::Kernel>,
-        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
-        {
-            let payload = &call.payload();
-            Ok(match payload["type"].as_str() {
-                Some("status") => Some(json!({"load": {
-                    "tasks": {"in_review": 2}, "workers": {"stalled": 1},
-                    "digest_bytes_per_hour": 99}})),
-                _ => None,
-            })
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_via_kernel_takes_the_cost_per_hour_from_the_cadencer() {
-        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
-        use fantastic_kernel::Item;
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = boot_at(dir.path(), Seed::Stock, &[register_load], None).await;
-        for item in [
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
-                "handler_module": HANDLER_MODULE, "can_call": {"cadencer": "*"}}),
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "cadencer",
-                "handler_module": "load_test.tools", "callable_by": {"dispatcher": "*"}}),
-        ] {
-            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
-        }
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert_eq!(sb["load"]["digest_bytes_per_hour"], 99, "{sb}");
-        assert_eq!(sb["waiting"], json!({"prs": 2, "stalled": 1}), "{sb}");
-        kernel.stop().await;
-    }
-
-    /// A registry stand-in: answers `get_count` with {running: 2}, or with a
-    /// refusal when its `fail` field is set.
+    /// A plain agent's stand-in (the leg, the lead and its child): answers `get_count`
+    /// with {running: 2}.
     struct CountBundle;
-
-    fn register_count(reg: &mut fantastic_kernel::BundleRegistry) {
-        reg.register("count_test.tools", CountBundle);
-    }
 
     fantastic_kernel::stand_in_verbs!(count_verbs { GetCountV "get_count" { bundle: Option<String> } });
 
@@ -2037,76 +1089,17 @@ mod tests {
 
         async fn handle(
             &self,
-            agent_id: &fantastic_kernel::AgentId,
+            _agent_id: &fantastic_kernel::AgentId,
             call: Self::Call,
-            kernel: &Arc<fantastic_kernel::Kernel>,
+            _kernel: &Arc<fantastic_kernel::Kernel>,
         ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
         {
             let payload = &call.payload();
-            let fail = kernel
-                .agents
-                .get(agent_id)
-                .is_some_and(|a| a.meta.read().unwrap().get("fail").is_some());
             Ok(match payload["type"].as_str() {
-                Some("get_count") if fail => Some(json!({"error": "disabled"})),
                 Some("get_count") => Some(json!({"running": 2})),
                 _ => None,
             })
         }
-    }
-
-    /// A kernel with a dispatcher (its `bundles` meta set to `bundles`, when given) and a
-    /// registry stand-in `reg` (it refuses `get_count` when `fail`).
-    async fn kernel_with_registry(
-        dir: &std::path::Path,
-        bundles: Option<&str>,
-        fail: bool,
-    ) -> Booted {
-        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
-        use fantastic_kernel::Item;
-        let kernel = boot_at(dir, Seed::Stock, &[register_count], None).await;
-        let mut d = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
-            "handler_module": HANDLER_MODULE, "can_call": {"reg": "*"}});
-        if let Some(r) = bundles {
-            d["bundles"] = json!(r);
-        }
-        let mut r = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "reg",
-            "handler_module": "count_test.tools", "callable_by": {"dispatcher": "*"}});
-        if fail {
-            r["fail"] = json!(true);
-        }
-        for item in [d, r] {
-            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
-        }
-        kernel
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_carries_fleet_when_a_registry_answers() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_registry(dir.path(), Some("reg"), false).await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert_eq!(sb["fleet"], json!({"running": 2}), "{sb}");
-        kernel.stop().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_has_no_fleet_without_a_registry() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_registry(dir.path(), None, false).await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert!(sb.get("fleet").is_none(), "{sb}");
-        assert!(sb["team"].is_string(), "{sb}");
-        kernel.stop().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_has_no_fleet_when_the_registry_refuses() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_registry(dir.path(), Some("reg"), true).await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert!(sb.get("fleet").is_none(), "{sb}");
-        kernel.stop().await;
     }
 
     #[test]
@@ -2122,110 +1115,6 @@ mod tests {
     // ---- the page's chat surface, run in node against a stub DOM ----
 
     // ---- bundles mode: the agents list and the plan (#185) ----
-
-    fn node(id: &str, bundle: &str, state: &str, kids: Vec<Value>) -> Value {
-        json!({"id": id, "bundle": bundle, "state": state, "children": kids})
-    }
-
-    fn ids(list: &[Value]) -> Vec<String> {
-        list.iter()
-            .map(|a| a["id"].as_str().unwrap().to_string())
-            .collect()
-    }
-
-    #[test]
-    fn agent_list_puts_the_lead_first() {
-        // The lead sits in the middle of the fleet: it is still item 0.
-        let bundles = json!({"lead": "pl", "tree": node("root", "", "active", vec![
-            node("w0", "worker", "active", vec![]),
-            node("pl", "project_lead", "active", vec![node("w1", "worker", "active", vec![])]),
-            node("w2", "worker", "done", vec![]),
-        ])});
-        let list = agent_list(&bundles);
-        assert_eq!(list[0]["id"], "pl", "{list:?}");
-        assert_eq!(list[0]["lead"], true);
-        assert_eq!(list[0]["label"], "Lead");
-        assert_eq!(list.iter().filter(|a| a["lead"] == true).count(), 1);
-    }
-
-    #[test]
-    fn agent_list_nests_children_depth_first_with_bundles_and_states() {
-        let bundles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
-            node("sub", "project_lead", "paused", vec![node("w1", "worker", "done", vec![])]),
-            node("w2", "worker", "active", vec![]),
-        ])});
-        let list = agent_list(&bundles);
-        assert_eq!(ids(&list), ["pl", "sub", "w1", "w2"]);
-        let depth: Vec<u64> = list.iter().map(|a| a["depth"].as_u64().unwrap()).collect();
-        assert_eq!(depth, [0, 1, 2, 1]);
-        let state: Vec<&str> = list.iter().map(|a| a["state"].as_str().unwrap()).collect();
-        assert_eq!(state, ["active", "paused", "done", "active"]);
-        assert_eq!(list[2]["bundle"], "worker");
-        assert_eq!(list[2]["label"], "worker");
-        assert_eq!(list[2]["indent"], 2);
-        assert_eq!(list[2]["guides"], 2);
-        assert_eq!(list[2]["lead"], false);
-    }
-
-    #[test]
-    fn agent_list_labels_a_bundleless_agent_by_its_id_and_defaults_the_state() {
-        let bundles = json!({"lead": "pl", "tree": {"id": "pl", "children": [{"id": "x1"}]}});
-        let list = agent_list(&bundles);
-        assert_eq!(list[1]["label"], "x1");
-        assert_eq!(list[1]["state"], "active");
-        assert_eq!(list[0]["bundle"], "project_lead");
-    }
-
-    #[test]
-    fn agent_list_caps_the_indent_but_keeps_depth() {
-        let mut tree = node("n7", "worker", "active", vec![]);
-        for i in (0..7).rev() {
-            tree = node(&format!("n{i}"), "project_lead", "active", vec![tree]);
-        }
-        let list = agent_list(&json!({"lead": "n0", "tree": tree}));
-        assert_eq!(list.len(), 8);
-        for (d, a) in list.iter().enumerate() {
-            assert_eq!(a["depth"], d, "{a}");
-            assert_eq!(a["indent"], d.min(INDENT_CAP), "{a}");
-            assert_eq!(a["guides"], a["indent"]);
-        }
-        assert_eq!(list[7]["indent"], INDENT_CAP);
-        assert_eq!(list[7]["depth"], 7);
-    }
-
-    #[test]
-    fn agent_list_with_only_a_lead_id_and_no_tree() {
-        let list = agent_list(&json!({"lead": "pl", "tree": null}));
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0]["id"], "pl");
-        assert_eq!(list[0]["lead"], true);
-        assert_eq!(list[0]["state"], "active");
-        assert_eq!(list[0]["bundle"], "project_lead");
-        assert!(agent_list(&json!({"lead": null, "tree": null})).is_empty());
-    }
-
-    #[test]
-    fn agent_list_empty_without_bundles_mode() {
-        assert!(agent_list(&Value::Null).is_empty());
-        assert!(agent_list(&json!({})).is_empty());
-    }
-
-    #[test]
-    fn plan_of_carries_tasks_holder_and_fleet() {
-        let bundles = json!({"lead": "pl", "fleet": {"running": 2}, "tasks": [
-            {"id": "o/r#1", "source": "gh:o/r#1", "holder": "w1", "status": "in_work", "extra": 1},
-            {"id": "o/r#2", "source": "gh:o/r#2", "holder": {"subtree": "sub"}, "status": "open"},
-        ]});
-        let plan = plan_of(&bundles);
-        assert_eq!(plan["lead"], "pl");
-        assert_eq!(plan["fleet"], json!({"running": 2}));
-        assert_eq!(
-            plan["tasks"][0],
-            json!({"id": "o/r#1", "source": "gh:o/r#1", "holder": "w1", "status": "in_work"})
-        );
-        assert_eq!(plan["tasks"][1]["holder"], "subtree:sub");
-        assert_eq!(plan_of(&Value::Null)["tasks"], json!([]));
-    }
 
     /// A registry stand-in for the plan's reads: as the bundles registry it answers `fleet`
     /// with the `fleet` its meta holds and `get_count` with {running: 2}; as the task
@@ -2320,52 +1209,51 @@ mod tests {
             "tasks": [{"id": "o/r#1", "source": "gh:o/r#1", "holder": "c1", "status": "running"}]})
     }
 
+    /// A file row of the tree (#351): the page makes the file's view agent with the files bridge's `open_view`,
+    /// then `open` on that id grants the page leg `reflect`, `read` and `watch` on it and nothing else; an agent
+    /// that is not a file view gets no such grant.
     #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_in_bundles_mode_carries_agents_and_plan() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_in_bundles_mode(dir.path(), Some(lead_section())).await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert_eq!(sb["agents"][0]["id"], "pl", "{sb}");
-        assert_eq!(sb["agents"][0]["label"], "Lead");
-        assert_eq!(sb["agents"][1]["id"], "c1");
-        assert_eq!(sb["agents"][1]["bundle"], "worker", "{sb}");
-        assert_eq!(sb["plan"]["tasks"][0]["id"], "o/r#1", "{sb}");
-        assert_eq!(sb["plan"]["lead"], "pl");
-        assert_eq!(
-            sb["fleet"],
-            json!({"running": 2}),
-            "the registry's count: {sb}"
-        );
-        kernel.stop().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_without_bundles_mode_has_neither_agents_nor_plan() {
+    async fn open_of_a_file_view_grants_the_leg_its_reads_and_only_those() {
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = kernel_in_bundles_mode(dir.path(), None).await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert!(sb.get("agents").is_none(), "{sb}");
-        assert!(sb.get("plan").is_none(), "{sb}");
-        assert!(sb["team"].is_string());
-        kernel.stop().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_in_bundles_mode_grants_chat_to_the_lead_and_its_children() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_in_bundles_mode(dir.path(), Some(lead_section())).await;
-        let chat = json!(crate::tree::CHAT_VERBS);
-        let before = meta_of(&kernel, "team_ws");
-        assert!(before.get("can_call").is_none_or(|c| c.get("pl").is_none()));
-        ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        let made = ask_kernel(
+            &kernel,
+            "files",
+            json!({"type": "open_view", "kind": "file", "path": "a.txt"}),
+        )
+        .await;
+        let vid = made["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{made}"))
+            .to_string();
+        let out = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": vid})).await;
+        assert_eq!(out["kind"], "file", "{out}");
         let ws = meta_of(&kernel, "team_ws");
-        for id in ["pl", "c1"] {
-            assert_eq!(ws["can_call"][id], chat, "team_ws -> {id}");
-            let m = meta_of(&kernel, id);
-            assert_eq!(m["callable_by"]["team_ws"], chat, "{id}");
-            assert_eq!(m["callable_by"]["dispatcher_view"], json!(null));
-        }
-        assert!(ws["can_call"].get("*").is_none());
+        assert_eq!(
+            ws["can_call"][&vid],
+            json!(["reflect", "read", "watch"]),
+            "{ws:?}"
+        );
+        let view = meta_of(&kernel, &vid);
+        assert_eq!(
+            view["callable_by"]["team_ws"],
+            json!(["reflect", "read", "watch"])
+        );
+        // a second `open` changes nothing; an agent that is no file view is not granted
+        ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": vid})).await;
+        assert_eq!(
+            meta_of(&kernel, "team_ws")["can_call"][&vid],
+            json!(["reflect", "read", "watch"])
+        );
+        ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "open", "node": "files"}),
+        )
+        .await;
+        assert!(meta_of(&kernel, "team_ws")["can_call"]
+            .get("files")
+            .is_none());
         kernel.stop().await;
     }
 
@@ -2405,23 +1293,18 @@ mod tests {
                     "callable_by": {"team_ws": ["list"], "lead": "*"}}),
             )])
             .await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert!(
-            ids_of(&sb["services"]).contains(&pair("tr", "tasks")),
-            "the registry is a service: {sb}"
-        );
         let out = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": "tr"})).await;
         assert_eq!(out["view"], "html", "{out}");
         assert_eq!(out["target"], "tr");
         assert_eq!(out["fullscreen"], true);
-        let want = json!(["list", "reflect", "get"]);
+        let want = json!(["list", "reflect", "watch", "get"]);
         let tasks = meta_of(&kernel, "tr");
         assert_eq!(tasks["callable_by"]["team_ws"], want, "{tasks:?}");
         assert_eq!(tasks["callable_by"]["lead"], "*", "another grant is kept");
         let ws = meta_of(&kernel, "team_ws");
         assert_eq!(
             ws["can_call"]["tr"],
-            json!(["reflect", "list", "get"]),
+            json!(["reflect", "watch", "list", "get"]),
             "{ws:?}"
         );
         assert!(ws["can_call"].get("*").is_none());
@@ -2432,230 +1315,19 @@ mod tests {
             .remove(0)
             .result;
         assert_eq!(refl["view"]["kind"], "html", "{refl}");
-        assert_eq!(refl["view"]["calls"], json!({"tr": ["list", "get"]}));
+        assert_eq!(
+            refl["view"]["calls"],
+            json!({"tr": ["watch", "list", "get"]})
+        );
         // again: nothing is written twice
         assert_eq!(crate::declared_views::grant_views(&kernel), 0);
-        kernel.stop().await;
-    }
-
-    fn register_services_mocks(reg: &mut fantastic_kernel::BundleRegistry) {
-        reg.register("team_github.tools", StubGithub);
-        reg.register("count_test.tools", CountBundle);
-    }
-
-    /// A github connector stand-in: answers `reflect` with the `reflect` its meta holds.
-    struct StubGithub;
-
-    mod gh_verbs {
-        fantastic_kernel::verbs!();
-    }
-
-    #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Handler for StubGithub {
-        stand_in_body!(gh_verbs);
-
-        fn name(&self) -> &str {
-            "team_github.tools"
-        }
-
-        async fn handle(
-            &self,
-            agent_id: &fantastic_kernel::AgentId,
-            call: Self::Call,
-            kernel: &Arc<fantastic_kernel::Kernel>,
-        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
-        {
-            if !matches!(call, gh_verbs::Call::Reflect(_)) {
-                return Ok(None);
-            }
-            let m = kernel
-                .agents
-                .get(agent_id)
-                .map(|a| a.meta.read().unwrap().clone())
-                .unwrap_or_default();
-            if m.contains_key("fail") {
-                return Ok(Some(json!({"error": format!("boom {}", secret_text())})));
-            }
-            Ok(Some(m.get("reflect").cloned().unwrap_or(json!({}))))
-        }
-    }
-
-    /// A token-shaped text, built from pieces so no literal sits in the source.
-    fn secret_text() -> String {
-        format!("{}{}{}", "gh", "s_", "Zq9x".repeat(9))
-    }
-
-    /// A kernel with a dispatcher (one group `g` with `w1`), a task registry `tasks` (no
-    /// store: its `reflect` still carries its view), and (when `gh`) a github stand-in;
-    /// `fail` makes the github stand-in error.
-    async fn kernel_with_services(dir: &std::path::Path, gh: bool, fail: bool) -> Booted {
-        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
-        use fantastic_kernel::Item;
-        let kernel = boot_at(dir, Seed::Stock, &[register_services_mocks], None).await;
-        let mut items = vec![
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
-                "handler_module": HANDLER_MODULE, "groups": {"g": ["w1"]},
-                "can_call": {"github": "*", "tasks": "*"}}),
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "tasks",
-                "handler_module": team_task_registry::HANDLER_MODULE,
-                "callable_by": {"dispatcher": "*"}}),
-        ];
-        if gh {
-            let mut g = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "github",
-                "handler_module": "team_github.tools", "callable_by": {"dispatcher": ["reflect"]},
-                "reflect": {
-                    "repos": ["acme/widgets"], "api_url": "https://api.github.com",
-                    "recent_calls": [{"verb": "issue_view", "target": "acme/widgets#3", "result": "ok"}],
-                    "rate": {"limit": 5000, "remaining": 4990, "reset": 1760000000u64},
-                    "token": secret_text(), "private_key": format!("-----BEGIN {} KEY-----", "RSA PRIVATE"),
-                    "authorization": format!("Bearer {}", secret_text())}});
-            if fail {
-                g["fail"] = json!(true);
-            }
-            items.push(g);
-        }
-        for item in items {
-            let o = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
-            assert!(o[0].result.get("error").is_none(), "{:?}", o[0].result);
-        }
-        kernel
-    }
-
-    fn ids_of(services: &Value) -> Vec<(String, String)> {
-        services
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|s| {
-                (
-                    s["id"].as_str().unwrap().to_string(),
-                    s["kind"].as_str().unwrap().to_string(),
-                )
-            })
-            .collect()
-    }
-
-    fn pair(a: &str, b: &str) -> (String, String) {
-        (a.to_string(), b.to_string())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_carries_services_in_every_mode() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), true, false).await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        let want = vec![
-            pair("dispatcher", "dispatcher"),
-            pair("tasks", "tasks"),
-            pair("github", "github"),
-        ];
-        assert_eq!(ids_of(&sb["services"]), want, "{sb}");
-        assert_eq!(sb["services"][1]["label"], "Tasks (tasks)");
-        assert!(sb.get("agents").is_none(), "this is not bundles mode: {sb}");
-        kernel.stop().await;
-
-        // Bundles mode too (its registries are stand-ins of no listed kind).
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_in_bundles_mode(dir.path(), Some(lead_section())).await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert!(sb["agents"].is_array());
-        assert_eq!(
-            ids_of(&sb["services"]),
-            vec![pair("dispatcher", "dispatcher")],
-            "{sb}"
-        );
-        kernel.stop().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sidebar_services_skip_agents_that_do_not_exist() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), false, false).await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert_eq!(
-            ids_of(&sb["services"]),
-            vec![pair("dispatcher", "dispatcher"), pair("tasks", "tasks")],
-            "no github agent, none listed: {sb}"
-        );
-        // A registry that is gone is not listed.
-        ask_kernel(
-            &kernel,
-            fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
-            json!({"type": "delete_agent", "id": "tasks"}),
-        )
-        .await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert_eq!(
-            ids_of(&sb["services"]),
-            vec![pair("dispatcher", "dispatcher")],
-            "{sb}"
-        );
-        kernel.stop().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn open_of_dispatcher_returns_its_own_workers_and_lanes() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), false, false).await;
-        let out = ask_kernel(
-            &kernel,
-            "dispatcher",
-            json!({"type": "open", "node": "dispatcher"}),
-        )
-        .await;
-        assert_eq!(out["view"], "panel", "{out}");
-        assert_eq!(out["kind"], "dispatcher");
-        assert_eq!(out["model"]["sections"][0]["name"], "workers");
-        assert_eq!(out["model"]["sections"][0]["rows"][0][0], "w1");
-        kernel.stop().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn open_of_github_returns_panel_from_reflect_and_no_token() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), true, false).await;
-        let out = ask_kernel(
-            &kernel,
-            "dispatcher",
-            json!({"type": "open", "node": "github"}),
-        )
-        .await;
-        assert_eq!(out["view"], "panel", "{out}");
-        assert_eq!(out["kind"], "github");
-        let s = out.to_string();
-        assert!(s.contains("acme/widgets#3"), "{s}");
-        assert!(s.contains("4990/5000"), "{s}");
-        assert!(!s.contains(&secret_text()), "{s}");
-        assert!(!s.contains("PRIVATE"), "{s}");
-        assert!(!s.contains("Bearer"), "{s}");
-        kernel.stop().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn open_of_a_peer_that_errors_returns_unavailable_row() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), true, true).await;
-        for node in ["github"] {
-            let out =
-                ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": node})).await;
-            assert_eq!(out["view"], "panel", "{node}: {out}");
-            assert_eq!(
-                out["model"]["sections"][0]["rows"][0][0], "unavailable",
-                "{out}"
-            );
-            let s = out.to_string();
-            assert!(
-                !s.contains(&secret_text()) && !s.contains("boom"),
-                "{node}: {s}"
-            );
-        }
         kernel.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn open_of_worker_and_group_unchanged() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), true, false).await;
+        let kernel = kernel_in_bundles_mode(dir.path(), None).await;
         let w = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": "w1"})).await;
         assert_eq!(w["view"], "chat", "{w}");
         assert_eq!(w["target"], "w1");
@@ -2667,211 +1339,16 @@ mod tests {
         )
         .await;
         assert_eq!(g["view"], "dispatcher", "{g}");
-        assert!(g.get("model").is_none());
         kernel.stop().await;
-    }
-
-    // ---- the right pane, cards, tree and phone ----
-
-    #[test]
-    fn agent_list_marks_rows_with_children() {
-        let bundles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
-            node("a", "worker", "active", vec![]),
-            node("b", "project_lead", "active", vec![node("c", "worker", "active", vec![])]),
-        ])});
-        let list = agent_list(&bundles);
-        let flags: Vec<(&str, bool)> = list
-            .iter()
-            .map(|a| {
-                (
-                    a["id"].as_str().unwrap(),
-                    a["has_children"].as_bool().unwrap(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            flags,
-            [("pl", true), ("a", false), ("b", true), ("c", false)]
-        );
     }
 
     #[test]
-    fn agent_list_has_children_follows_depth_not_order() {
-        // Two siblings in a row: neither has children, though one follows the other.
-        let bundles = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
-            node("a", "worker", "active", vec![]),
-            node("b", "worker", "active", vec![]),
-        ])});
-        let list = agent_list(&bundles);
-        assert_eq!(list[1]["has_children"], false);
-        assert_eq!(list[2]["has_children"], false);
-        // A deep row that is last, and a lead alone.
-        let deep = json!({"lead": "pl", "tree": node("pl", "project_lead", "active", vec![
-            node("s", "project_lead", "active", vec![node("t", "project_lead", "active", vec![node("u", "worker", "active", vec![])])]),
-        ])});
-        let flags: Vec<bool> = agent_list(&deep)
-            .iter()
-            .map(|a| a["has_children"].as_bool().unwrap())
-            .collect();
-        assert_eq!(flags, [true, true, true, false]);
-        let alone = agent_list(&json!({"lead": "pl"}));
-        assert_eq!(alone[0]["has_children"], false);
-    }
-
-    /// A stand-in for a team module: answers every verb with the `reply` its meta holds,
-    /// or with an error carrying a secret when its `fail` field is set.
-    struct StubDeclared(&'static str);
-
-    /// The stand-ins of the three team modules the tests below declare, after the team's own.
-    fn register_declared(reg: &mut fantastic_kernel::BundleRegistry) {
-        for module in ["team_cadencer.tools", "team_git.tools"] {
-            reg.register(module, StubDeclared(module));
-        }
-    }
-
-    fantastic_kernel::stand_in_verbs!(declared_verbs { StatusV "status" {} });
-
-    #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Handler for StubDeclared {
-        stand_in_body!(declared_verbs);
-
-        fn name(&self) -> &str {
-            self.0
-        }
-
-        async fn handle(
-            &self,
-            agent_id: &fantastic_kernel::AgentId,
-            call: Self::Call,
-            kernel: &Arc<fantastic_kernel::Kernel>,
-        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
-        {
-            let payload = &call.payload();
-            if payload["type"] == "boot" {
-                return Ok(None);
-            }
-            let m = kernel
-                .agents
-                .get(agent_id)
-                .map(|a| a.meta.read().unwrap().clone())
-                .unwrap_or_default();
-            if m.contains_key("fail") {
-                return Ok(Some(json!({"error": format!("boom {}", secret_text())})));
-            }
-            Ok(Some(m.get("reply").cloned().unwrap_or(json!({}))))
-        }
-    }
-
-    /// A kernel with a dispatcher and the given `(id, handler_module, reply)` agents, whose
-    /// modules are stand-ins; the dispatcher may call each of them.
-    async fn kernel_with_declared(
-        dir: &std::path::Path,
-        agents: &[(&str, &'static str, Value)],
-    ) -> Booted {
-        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
-        use fantastic_kernel::Item;
-        let kernel = boot_at(dir, Seed::Stock, &[register_declared], None).await;
-        let can_call: serde_json::Map<String, Value> = agents
-            .iter()
-            .map(|(id, _, _)| (id.to_string(), json!("*")))
-            .collect();
-        kernel
-            .send(vec![Item::new(
-                DEFAULT_ROOT_ID,
-                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
-                    "handler_module": HANDLER_MODULE, "can_call": can_call}),
-            )])
-            .await;
-        for (id, module, reply) in agents {
-            kernel
-                .send(vec![Item::new(
-                    DEFAULT_ROOT_ID,
-                    json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": id,
-                        "handler_module": module, "reply": reply,
-                        "callable_by": {"dispatcher": "*"}}),
-                )])
-                .await;
-        }
-        kernel
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn services_list_the_new_kinds_when_live() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_declared(
-            dir.path(),
-            &[
-                ("cad", "team_cadencer.tools", json!({})),
-                ("g1", "team_git.tools", json!({})),
-            ],
-        )
-        .await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert_eq!(
-            ids_of(&sb["services"]),
-            vec![
-                pair("dispatcher", "dispatcher"),
-                pair("cad", "cadencer"),
-                pair("g1", "git")
-            ],
-            "{sb}"
-        );
-        assert_eq!(sb["services"][1]["label"], "Cadencer (cad)");
-        kernel.stop().await;
-
-        // Without the agents, none is listed.
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_declared(dir.path(), &[]).await;
-        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert_eq!(
-            ids_of(&sb["services"]),
-            vec![pair("dispatcher", "dispatcher")],
-            "{sb}"
-        );
-        kernel.stop().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn panel_reply_for_a_declared_kind_returns_the_model() {
-        let status = json!({"settings": {"enabled": true, "cadence": 300, "stall_after": 1800},
-            "ticks": 7, "last_beat_s": 100, "next_beat_s": 400, "digests_sent": 3,
-            "load": {"workers": {"busy": 1, "idle": 0, "stalled": 2}}});
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel =
-            kernel_with_declared(dir.path(), &[("cad", "team_cadencer.tools", status)]).await;
-        let out = ask_kernel(
-            &kernel,
-            "dispatcher",
-            json!({"type": "open", "node": "cad"}),
-        )
-        .await;
-        assert_eq!(out["view"], "panel", "{out}");
-        assert_eq!(out["kind"], "cadencer");
-        assert_eq!(out["target"], "cad");
-        let m = &out["model"];
-        assert_eq!(m["kind"], "cadencer", "{out}");
-        assert_eq!(m["sections"][0]["rows"][0], json!(["on", "true"]), "{out}");
-        assert_eq!(
-            m["sections"][1]["rows"][0],
-            json!(["stalled", "2"]),
-            "{out}"
-        );
-        kernel.stop().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn panel_reply_for_a_refusing_declared_kind_is_unavailable_without_the_error() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_declared(dir.path(), &[("wh", "team_git.tools", json!({}))]).await;
-        kernel.update(&fantastic_kernel::AgentId::from("wh"), {
-            let mut m = serde_json::Map::new();
-            m.insert("fail".into(), json!(true));
-            m
-        });
-        let out = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": "wh"})).await;
-        assert_eq!(out["view"], "panel", "{out}");
-        assert_eq!(out["model"]["summary"], json!(["unavailable"]), "{out}");
-        assert!(!out.to_string().contains(&secret_text()), "{out}");
-        kernel.stop().await;
+    fn plan_ids_are_the_lead_then_its_tree_depth_first() {
+        let plan = json!({"lead": "pl", "tree": {"id": "pl", "children": [
+            {"id": "a", "children": [{"id": "a1", "children": []}]},
+            {"id": "b", "children": []}]}});
+        assert_eq!(plan_ids(&plan), ["pl", "a", "a1", "b"]);
+        assert_eq!(plan_ids(&json!({"lead": "pl", "tree": null})), ["pl"]);
+        assert!(plan_ids(&json!({"lead": null, "tree": null})).is_empty());
     }
 }

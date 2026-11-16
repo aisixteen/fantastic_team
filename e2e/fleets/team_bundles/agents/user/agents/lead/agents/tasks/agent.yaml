@@ -11,4 +11,4 @@ callable_by:
   "$parent": "*"
   dispatcher: [list]
   cadencer: [list]
-  team_ws: [reflect, list, get]
+  team_ws: [reflect, watch, list, get]

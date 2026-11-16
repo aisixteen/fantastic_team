@@ -17,7 +17,6 @@
   .cell { min-width: 0; min-height: calc(100vh - 24px); display: flex; flex-direction: column; padding: 0 6px 6px; border: 1px solid var(--fc-color-line-button); border-radius: 16px; background: var(--fc-color-surface-raised); box-shadow: var(--fc-shadow-bubble); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
   #col-left { flex: 1 1 376px; }
   #col-right { flex: 3 1 560px; }
-  .head.phone-only { display: none; }
   .head { flex: none; display: flex; align-items: center; height: 32px; padding: 0 6px; font: 600 11px/1 var(--fc-font-family-mono); letter-spacing: .5px; text-transform: uppercase; color: var(--fc-color-text-muted); }
   .body { flex: 1; min-height: 0; border-radius: 10px; overflow: hidden; }
   /* The base sidebar view fills the left cell; the opened agent's view fills the right one. */
@@ -30,6 +29,11 @@
   .card .note { color: var(--fc-color-text-muted); }
   .title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .title .sep { opacity: .55; }
+  .title .dim { opacity: .55; }
+  .dots { display: none; flex: none; align-items: center; justify-content: center; min-height: 34px; padding: 4px 12px 14px; border-top: 1px solid var(--fc-color-line-button); background: var(--fc-color-surface-well); }
+  .dots span { display: flex; gap: 6px; }
+  .dots i { display: block; width: 6px; height: 6px; border-radius: 3px; background: var(--fc-color-line-strong); }
+  .dots i.on { width: 16px; background: var(--fc-color-accent-base); }
   .back { position: relative; display: none; flex: none; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: var(--fc-color-text-muted); cursor: pointer; }
   .back .badge { position: absolute; top: 4px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--fc-radius-pill); background: var(--fc-color-accent-base); color: var(--fc-color-accent-on); font: 600 10px/16px var(--fc-font-family-mono); text-align: center; }
   .back .badge[hidden] { display: none; }
@@ -45,6 +49,7 @@
     .cell { min-height: 100vh; height: 100vh; padding: 0; border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
     @supports (height: 100dvh) { .cell { min-height: 100dvh; height: 100dvh; } }
     .body { border-radius: 0; }
+    .dots { display: flex; }
     #layout[data-panel="tree"] #col-right, #layout[data-panel="agent"] #col-left { display: none; }
     #col-right .head { display: flex; padding: 8px 12px 10px 6px; height: auto; border-bottom: 1px solid var(--fc-color-line-button); }
     .back { display: grid; }
@@ -56,10 +61,12 @@
   <section id="col-left" class="cell" aria-label="Agents">
     <div class="head"><span class="title" id="title"><span>team</span></span></div>
     <div class="body" id="body-left"></div>
+    <div class="dots"><span role="img" aria-label="Panel 1 of 2: the team"><i class="on"></i><i></i></span></div>
   </section>
   <section id="col-right" class="cell" aria-label="View">
-    <div class="head phone-only"><button type="button" class="back" id="back" aria-label="Back to the team"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"></path></svg><span class="badge" id="back-badge" hidden></span></button></div>
+    <div class="head"><button type="button" class="back" id="back" aria-label="Back to the team"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"></path></svg><span class="badge" id="back-badge" hidden></span></button><span class="title" id="crumb"></span></div>
     <div class="body" id="body-right"></div>
+    <div class="dots"><span role="img" aria-label="Panel 2 of 2: the agent"><i></i><i class="on"></i></span></div>
   </section>
 </div>
 <script>
@@ -80,10 +87,17 @@
       });
       return Object.keys(askers).length;
     }
+    // A question to the person opened or closed: the sidebar agent follows the kernel and publishes
+    // `{type: 'inquiries_changed', open}` on its own id (`open` how many are open now). A watcher of
+    // `sidebar` also gets a COPY of every call made to it (the sidebar view's `reflect`): only the
+    // event carries a numeric `open`, and only the event counts.
+    function inquiryEvent(ev) {
+      return !!ev && typeof ev === 'object' && ev.type === 'inquiries_changed' && typeof ev.open === 'number';
+    }
     // What the name card of an agent with no view of its own says, from its reflect.
-    function cardOf(id, r) {
+    function cardOf(id, r, bundle) {
       var name = r && typeof r.display_name === 'string' && r.display_name ? r.display_name : id;
-      var tag = r && typeof r.handler_module === 'string' ? r.handler_module : '';
+      var tag = r && typeof r.handler_module === 'string' ? r.handler_module : (typeof bundle === 'string' ? bundle : '');
       return { name: name, tag: tag, note: 'This agent has no view of its own.' };
     }
     // end pure
@@ -103,17 +117,28 @@
     document.getElementById('back').addEventListener('click', function () { panel('tree'); });
 
     // The back button's badge: how many other agents wait for the person (`user` `inquiries`, read as
-    // the page leg). Asked when an agent opens; a refusal leaves the badge hidden.
+    // the page leg). Asked when an agent opens, then again on each `inquiries_changed` the sidebar agent
+    // publishes (the one agent the page watches; never on a copy of a call, never on a clock); a refusal
+    // leaves it hidden.
+    // One read at a time: an event that lands while a read is out reads once more when it is back.
     var badge = document.getElementById('back-badge');
+    var waiting = { except: '', busy: false, again: false };
     function showWaiting(except) {
+      waiting.except = except;
+      if (waiting.busy) { waiting.again = true; return; }
+      waiting.busy = true; waiting.again = false;
+      var done = function () { waiting.busy = false; if (waiting.again) showWaiting(waiting.except); };
       window.fantastic.send('user', { type: 'inquiries' }).then(function (r) {
-        var n = waitingCount(r && r.inquiries, except);
+        var n = waitingCount(r && r.inquiries, waiting.except);
         badge.textContent = String(n);
         badge.hidden = n === 0;
         document.getElementById('back').setAttribute('aria-label',
           n === 0 ? 'Back to the team' : 'Back to the team, ' + n + ' waiting for you');
-      }, function () { badge.hidden = true; });
+      }, function () { badge.hidden = true; }).then(done, done);
     }
+    window.fantastic.watch(SIDEBAR, function (ev) {
+      if (inquiryEvent(ev)) showWaiting(waiting.except);
+    });
 
     // The title bar: the product word and the kernel's own name (the root's display_name).
     window.fantastic.send('kernel', { type: 'reflect' }).then(function (r) {
@@ -132,7 +157,40 @@
       return v && v.kind === 'html' && typeof v.bytes === 'string' ? v : null;
     }
 
-    function open(relay, id) {
+    // What the right cell draws for `r`, the reply of an agent's `reflect`: its html view, or the name card
+    // of an agent with none.
+    function draw(relay, id, r, bundle) {
+      var v = viewOf(r);
+      right.textContent = '';
+      if (!v) {
+        var c = cardOf(id, r, bundle), card = document.createElement('div');
+        card.className = 'opened card';
+        [['name', c.name], ['tag', c.tag], ['note', c.note]].forEach(function (p) {
+          if (!p[1]) return;
+          var e = document.createElement('div');
+          e.className = p[0];
+          e.textContent = p[1];
+          card.appendChild(e);
+        });
+        right.appendChild(card);
+        return null;
+      }
+      return relay.mountView({ mount: right, html: v.bytes, transport: transport, calls: v.calls || {}, cell: 'view_' + id });
+    }
+
+    // The handler module (bundle) of agent `id`, from the root's `list_agents`; '' when the leg may not read it.
+    function bundleOf(id) {
+      return window.fantastic.send('kernel', { type: 'list_agents' }).then(function (r) {
+        var a = (r && Array.isArray(r.agents) ? r.agents : []).filter(function (x) { return x && x.id === id; })[0];
+        return a && typeof a.handler_module === 'string' ? a.handler_module : '';
+      }, function () { return ''; });
+    }
+
+    // Open the agent `id` (or, for a file, the view agent `via` made for it) in the right cell. The agent's own
+    // `reflect` is asked first: the page leg's grants are the records' (the yaml declares each view's calls).
+    // Only a refusal asks the dispatcher's `open` once (it grants the leg the chat of an agent made since) and
+    // reflects again; the dispatcher may not exist, and a team whose records grant everything never needs it.
+    function open(relay, id, via) {
       var shown = null;
       right.setAttribute('data-open', id);
       panel('agent');
@@ -142,30 +200,35 @@
       note.className = 'opened';
       note.textContent = id;
       right.appendChild(note);
-      // the dispatcher's `open` grants the leg the chat's calls on an agent of the team (the view's own
-      // list); a refusal just means the page has no more than it had
-      window.fantastic.send('dispatcher', { type: 'open', node: id }).catch(function () {}).then(function () {
-        return window.fantastic.send(id, { type: 'reflect' });
+      function mine() { return right.getAttribute('data-open') === id; }
+      function refused(r) { return !r || (typeof r.error === 'string' && r.error !== ''); }
+      var target = Promise.resolve(via ? via() : id);
+      target.then(function (t) {
+        var open = function () { return window.fantastic.send('dispatcher', { type: 'open', node: t }).catch(function () {}); };
+        // a refusal is an error frame or a reply with an `error`: both are `null` here
+        var reflect = function () { return window.fantastic.send(t, { type: 'reflect' }).catch(function () { return null; }); };
+        // a file's view agent is new: the dispatcher grants the leg its reads before the first `reflect`
+        if (via) return open().then(reflect);
+        return reflect().then(function (r) { return refused(r) ? open().then(reflect) : r; });
       }).then(function (r) {
-        var v = viewOf(r);
-        if (right.getAttribute('data-open') !== id) return;
-        right.textContent = '';
-        if (!v) {
-          var c = cardOf(id, r), card = document.createElement('div');
-          card.className = 'opened card';
-          [['name', c.name], ['tag', c.tag], ['note', c.note]].forEach(function (p) {
-            if (!p[1]) return;
-            var e = document.createElement('div');
-            e.className = p[0];
-            e.textContent = p[1];
-            card.appendChild(e);
-          });
-          right.appendChild(card);
-          return;
-        }
-        shown = relay.mountView({ mount: right, html: v.bytes, transport: transport, calls: v.calls || {}, cell: 'view_' + id });
-      }, function () { /* the page leg may not reflect this agent: the bare id stays */ });
+        if (!mine() || refused(r)) return; // the page leg may not reflect this agent: the bare id stays
+        if (viewOf(r) || (r && r.handler_module)) { shown = draw(relay, id, r); return; }
+        // an agent with no view whose reflect does not name its bundle (a bridge's): the card gets the bundle
+        // from the kernel's own record of the agent (`list_agents`, the leg's read of the root)
+        return bundleOf(id).then(function (b) { if (mine()) shown = draw(relay, id, r, b); });
+      }, function () { /* the bare id stays */ });
       return function () { if (shown) shown.unmount(); };
+    }
+
+    // A file row: the files agent makes (or reuses) the view agent of the path; that agent's `reflect` is the
+    // file view. The row's id for the cell is the path.
+    function openFile(relay, path) {
+      return open(relay, path, function () {
+        return window.fantastic.send('files', { type: 'open_view', kind: 'file', path: path }).then(function (r) {
+          if (!r || typeof r.id !== 'string') throw new Error('no view for ' + path);
+          return r.id;
+        });
+      });
     }
 
     import('./view_relay.js').then(function (relay) {
@@ -176,13 +239,56 @@
         relay.mountView({
           mount: left, html: v.bytes, transport: transport, calls: v.calls || {}, cell: CELL, keep: relay.pageStore('team.sidebar'),
           // what the view says is the base's `hearSidebar`; the team page has no canvas to open a file on and
-          // its cell does not hide, so a row's `select` is the one thing it hears
+          // its cell does not hide: a row's `select` opens that agent, a file row's `select_file` that file
           onMessage: function (m) {
-            relay.hearSidebar(m, { select: function (id) { closeOpened(); closeOpened = open(relay, id); } });
+            relay.hearSidebar(m, {
+              select: function (id) { closeOpened(); closeOpened = open(relay, id); },
+              selectPath: function (path) { closeOpened(); closeOpened = openFile(relay, path); }
+            });
           }
         });
       });
     }).catch(function () { /* the connection to the team is down: the cell stays empty */ });
+  })();
+  // THE RIGHT CELL'S TITLE BAR: the opened agent's path, `lead / cluster ops / k-rollout` (the mock's
+  // breadcrumb): the ancestors dimmed, the agent itself plain. It follows the right cell's `data-open`
+  // and reads each ancestor's `reflect` (display_name, parent_id) as the page leg; a refusal ends the path.
+  (function () {
+    // pure
+    // The path of names from the ancestors down to the agent: `chain` is [{name}] outermost first.
+    function crumbOf(chain) {
+      return (Array.isArray(chain) ? chain : []).map(function (c) { return c && typeof c.name === 'string' ? c.name : ''; })
+        .filter(function (n) { return n !== ''; });
+    }
+    // end pure
+    var right = document.getElementById('body-right'), crumb = document.getElementById('crumb');
+    function paint(names) {
+      crumb.textContent = '';
+      names.forEach(function (n, i) {
+        var last = i === names.length - 1, e = document.createElement('span');
+        e.textContent = n + (last ? '' : ' / ');
+        if (!last) e.className = 'dim';
+        crumb.appendChild(e);
+      });
+    }
+    function walk(id, chain, seen) {
+      return window.fantastic.send(id, { type: 'reflect' }).then(function (r) {
+        var name = r && (r.display_name || r.id);
+        chain.unshift({ name: typeof name === 'string' && name ? name : id });
+        var up = r && typeof r.parent_id === 'string' ? r.parent_id : '';
+        if (up && up !== 'kernel' && up !== id && !seen[up] && chain.length < 6) { seen[up] = true; return walk(up, chain, seen); }
+        return chain;
+      }, function () { if (chain.length === 0) chain.unshift({ name: id }); return chain; });
+    }
+    new MutationObserver(function () {
+      var id = right.getAttribute('data-open');
+      if (!id) { paint([]); return; }
+      paint([id]);
+      var seen = {}; seen[id] = true;
+      walk(id, [], seen).then(function (chain) {
+        if (right.getAttribute('data-open') === id) paint(crumbOf(chain));
+      });
+    }).observe(right, { attributes: true, attributeFilter: ['data-open'] });
   })();
 </script>
 </body>

@@ -1,4 +1,4 @@
-<div class="head"><span class="t">agentic_resources <span class="sl">/</span> agentic_resources.tools</span><span class="chip" id="run">-</span></div>
+<div class="head"><span class="t">{{agent}} <span class="sl">/</span> agentic_resources.tools</span><span class="chip" id="run">-</span></div>
 <div class="pg" id="pg"></div>
 <script>
 {{helpers}}
@@ -55,7 +55,7 @@ function render(bundles, fleet, total) {
   var rows = kindRows(bundles && bundles.bundles, fleet);
   var sel = chosen(rows, pick);
   pg.textContent = "";
-  put(pg, put(h("div", "ttl"), h("h1", null, "agentic_resources"), pillOf("tool")));
+  put(pg, put(h("div", "ttl"), h("h1", null, AGENT), pillOf("tool")));
 
   var kinds = section("Kinds", "kinds · get_count {kind} · fleet");
   var tbl = h("div", "tbl");
@@ -103,5 +103,7 @@ function refresh() {
   });
 }
 refresh();
-setInterval(refresh, 10000);
+// the registry publishes `fleet_changed` on its own id when an agent on a spawnable bundle is
+// added or removed: re-read then, never on a timer
+follow(AGENT, ["fleet_changed"], refresh);
 </script>

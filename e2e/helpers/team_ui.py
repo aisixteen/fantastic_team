@@ -72,6 +72,24 @@ AGENT_HOLDERS = len({t[1] for t in TASKS if isinstance(t[1], str)})
 SUBTREE_HOLDERS = len({t[1]["subtree"] for t in TASKS if isinstance(t[1], dict)})
 DONE_SHOWN = 3  # the registry view lists three done tasks and folds the rest behind one button
 
+# LIVE: a change made outside the page (a call to the agent, as the operator) shows in the open view
+# within this many seconds, with no reload. The views follow their agent's events (one model, many
+# view-models); the polls they replaced re-read every 5 to 10 s, so a view that still polls misses it.
+LIVE_S = 3.0
+TIMERS = ("setInterval(", "setTimeout(")
+
+
+def view_follows(team, v, agent: str) -> bool:
+    """The html view `agent` serves (its `reflect`'s `view`) follows its agent: its calls name `watch`
+    on it, and its source sets no timer (a view that polls fails here)."""
+    view = op(team, agent, {"type": "reflect"}).get("view") or {}
+    src = view.get("bytes") or ""
+    calls = (view.get("calls") or {}).get(agent) or []
+    found = [t for t in TIMERS if t in src]
+    ok = v.check(f"the view of {agent} watches its agent (its calls name watch)", "watch" in calls, str(calls))
+    return v.check(f"the view of {agent} sets no timer: it re-reads on its agent's events, never on a clock",
+                   bool(src) and not found, str(found) if src else "no view") and ok
+
 
 def holder_text(h) -> str:
     return h if isinstance(h, str) else "subtree " + h["subtree"] if isinstance(h, dict) else "nobody"
@@ -105,6 +123,29 @@ def start(ctx, v, cards: bool = True):
     return port if served else None
 
 
+def report_as_holder(team, tid: str, state: str, errors: list) -> None:
+    """`k_rollout`'s last report on `tid`. The registry takes a report only from its caller or the caller's
+    descendants (the operator's `send` is `mcp`, which k_rollout is not under), so the registry's entry is
+    read back with `get` and its next snapshot, with the `report`, is put among the rows the registry
+    itself keeps in its store (`dump`, then `inject` of the same tables with that one row added)."""
+    got = op(team, "tasks", {"type": "get", "id": tid})
+    entry = {k: v for k, v in got.items() if k != "children"}
+    if entry.get("id") != tid:
+        errors.append(f"get {tid}: {str(got)[:160]}")
+        return
+    entry["report"] = {"from": "k_rollout", "state": state, "result": REPORT, "at": int(time.time()), "usage": None}
+    tables = op(team, "memory", {"type": "dump"}).get("tables") or {}
+    rows = tables.get("rows") or []
+    owner = next((r["owner"] for r in rows if str(r.get("owner")).endswith("|tasks")), "")  # `<guid>|<caller>`
+    last = max((r["row"].get("id", 0) for r in rows if r.get("owner") == owner), default=0)
+    rows.append({"owner": owner, "row": {"id": last + 1, "kind": "task", "task_id": tid, "content": entry}})
+    tables["rows"] = rows
+    r = team.send("memory", {"type": "inject", "tables": tables})
+    seen = op(team, "tasks", {"type": "get", "id": tid}).get("report")
+    if not seen:
+        errors.append(f"report {tid} not kept: inject {str(r)[:200]}; last row {last}")
+
+
 def seed_tasks(ctx, v) -> bool:
     """The registry's tasks, made with its own verbs as the operator. `HELD` gets a history (nobody ->
     ops -> k_rollout), a version and a last report. Checked: the registry lists exactly `TASKS`."""
@@ -122,7 +163,7 @@ def seed_tasks(ctx, v) -> bool:
             call({"type": "assign", "id": tid, "holder": "ops"})
             call({"type": "reassign", "id": tid, "holder": "k_rollout"})
             call({"type": "status", "id": tid, "status": state, "versions": [VERSION]})
-            call({"type": "report", "id": tid, "from": "k_rollout", "state": state, "result": REPORT})
+            report_as_holder(team, tid, state, errors)
             continue
         if holder is not None:
             add["holder"] = holder

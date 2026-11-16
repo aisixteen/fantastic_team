@@ -7,5 +7,4 @@ can_call:
 callable_by:
   "$self": "*"
   "$parent": "*"
-  dispatcher: [status]
-  team_ws: [status, set]
+  team_ws: [reflect, watch, status, set]

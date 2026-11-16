@@ -72,7 +72,8 @@ def clicks(ctx, v, ui):
     ok, _ = ui.settle(lambda: D.OPTIONS[1] in bodies(ctx), True, timeout=30)
     v.check("k-rollout got the answer (its next model request holds it)", ok)
     ok, _ = ui.waits(right.locator(".who.assistant").filter(has_text="Rolling back to v2.3."), timeout=40)
-    v.check("k-rollout's reply to the answer is drawn", ok)
+    v.check("k-rollout's reply to the answer is drawn", ok,
+            "" if ok else f"dialog {ui.texts(right.locator('#dialog > *'))[-6:]}; stop hidden {ui.attr(right.locator('#stop'), 'hidden')!r}; state {ui.texts(right.locator('#state'))}")
     ok, got = ui.settle(lambda: ui.texts(side.locator("#wait .w .who b")), ["m-ads"], timeout=20)
     v.check("'Waiting for you' now lists m-ads alone", ok, str(got))
 

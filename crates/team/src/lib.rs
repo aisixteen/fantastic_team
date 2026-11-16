@@ -24,7 +24,6 @@ macro_rules! stand_in_body {
     };
 }
 
-pub mod agent_views;
 pub mod app_control;
 pub mod cadence_feed;
 pub mod cadencer;
@@ -67,7 +66,7 @@ pub fn register_team(reg: &mut BundleRegistry) {
     );
     reg.register(
         team_agentic_resources::HANDLER_MODULE,
-        team_agentic_resources::AgenticResourcesBundle,
+        team_agentic_resources::AgenticResourcesBundle::default(),
     );
     reg.register(
         team_task_registry::HANDLER_MODULE,
