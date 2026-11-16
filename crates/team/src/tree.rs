@@ -183,6 +183,29 @@ pub fn grant_to(kernel: &Arc<Kernel>, principal: &str, id: &str, verbs: &[&str])
     }
 }
 
+/// The verbs a file's view agent (made by the bridge's `open_view`, `view: file` in its record) answers to the page leg
+/// that draws it: its own `reflect` (the page reads the view from it), then the view's calls on it (`read`, `watch`).
+pub const FILE_VIEW_VERBS: [&str; 3] = ["reflect", "read", "watch"];
+
+/// Is `id` a file's view agent (its record says `view: file`)?
+pub fn is_file_view(kernel: &Kernel, id: &str) -> bool {
+    kernel
+        .agents
+        .get(&fantastic_kernel::AgentId::from(id))
+        .is_some_and(|e| {
+            e.meta
+                .read()
+                .ok()
+                .is_some_and(|m| m.get("view").and_then(Value::as_str) == Some("file"))
+        })
+}
+
+/// Let `principal` (the page's leg) draw the file view agent `id`: [`FILE_VIEW_VERBS`] on both ends through
+/// [`grant_to`] (union, never `*`). Only a file view ([`is_file_view`]) is granted. Returns whether anything was written.
+pub fn grant_file_view(kernel: &Arc<Kernel>, principal: &str, id: &str) -> bool {
+    is_file_view(kernel, id) && grant_to(kernel, principal, id, &FILE_VIEW_VERBS)
+}
+
 /// How many history pages [`grant_cards`] follows.
 const CARD_HISTORY_PAGES: usize = 50;
 

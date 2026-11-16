@@ -237,7 +237,10 @@ mod tests {
     #[test]
     fn the_right_cell_mounts_the_picked_agents_view_through_the_base_relay() {
         let (_, _, js) = split_page(HTML);
-        assert!(js.contains("send(id, { type: 'reflect' })"));
+        // the agent's own `reflect` first (the leg's grants are the records'); the dispatcher's `open` only
+        // after a refusal; a file row's view agent comes from the files bridge's `open_view`
+        assert!(js.contains("send(t, { type: 'reflect' })"));
+        assert!(js.contains("selectPath") && js.contains("kind: 'file'"));
         assert_eq!(
             js.matches("relay.mountView(").count(),
             2,

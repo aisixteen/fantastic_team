@@ -988,6 +988,12 @@ impl fantastic_kernel::bundle::Handler for DispatcherBundle {
                         panel_reply(kernel, &peers, &meta, &team, &groups, limit, now, svc).await;
                     return Ok(Some(out));
                 }
+                // The view agent of a file the person opened (made by the files bridge's `open_view`): the
+                // leg draws it, with `reflect`, `read` and `watch` on it.
+                if crate::tree::is_file_view(kernel, &node) {
+                    crate::tree::grant_file_view(kernel, crate::page::WS_ID, &node);
+                    return Ok(Some(json!({"kind": "file", "id": node})));
+                }
                 let kind = kind_of(&node, &team, &groups);
                 // A spawned lead or child is chatted with like a worker: grant it now.
                 // Only an id the plan's tree names is granted, never an arbitrary one.
@@ -2366,6 +2372,34 @@ mod tests {
             assert_eq!(m["callable_by"]["dispatcher_view"], json!(null));
         }
         assert!(ws["can_call"].get("*").is_none());
+        kernel.stop().await;
+    }
+
+    /// A file row of the tree (#351): the page makes the file's view agent with the files bridge's `open_view`,
+    /// then `open` on that id grants the page leg `reflect`, `read` and `watch` on it and nothing else; an agent
+    /// that is not a file view gets no such grant.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_of_a_file_view_grants_the_leg_its_reads_and_only_those() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kernel = kernel_in_bundles_mode(dir.path(), None).await;
+        let made = ask_kernel(
+            &kernel,
+            "files",
+            json!({"type": "open_view", "kind": "file", "path": "a.txt"}),
+        )
+        .await;
+        let vid = made["id"].as_str().expect(&made.to_string()).to_string();
+        let out = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": vid})).await;
+        assert_eq!(out["kind"], "file", "{out}");
+        let ws = meta_of(&kernel, "team_ws");
+        assert_eq!(ws["can_call"][&vid], json!(["reflect", "read", "watch"]), "{ws:?}");
+        let view = meta_of(&kernel, &vid);
+        assert_eq!(view["callable_by"]["team_ws"], json!(["reflect", "read", "watch"]));
+        // a second `open` changes nothing; an agent that is no file view is not granted
+        ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": vid})).await;
+        assert_eq!(meta_of(&kernel, "team_ws")["can_call"][&vid], json!(["reflect", "read", "watch"]));
+        ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": "files"})).await;
+        assert!(meta_of(&kernel, "team_ws")["can_call"].get("files").is_none());
         kernel.stop().await;
     }
 

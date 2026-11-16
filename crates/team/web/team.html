@@ -81,9 +81,9 @@
       return Object.keys(askers).length;
     }
     // What the name card of an agent with no view of its own says, from its reflect.
-    function cardOf(id, r) {
+    function cardOf(id, r, bundle) {
       var name = r && typeof r.display_name === 'string' && r.display_name ? r.display_name : id;
-      var tag = r && typeof r.handler_module === 'string' ? r.handler_module : '';
+      var tag = r && typeof r.handler_module === 'string' ? r.handler_module : (typeof bundle === 'string' ? bundle : '');
       return { name: name, tag: tag, note: 'This agent has no view of its own.' };
     }
     // end pure
@@ -132,7 +132,40 @@
       return v && v.kind === 'html' && typeof v.bytes === 'string' ? v : null;
     }
 
-    function open(relay, id) {
+    // What the right cell draws for `r`, the reply of an agent's `reflect`: its html view, or the name card
+    // of an agent with none.
+    function draw(relay, id, r, bundle) {
+      var v = viewOf(r);
+      right.textContent = '';
+      if (!v) {
+        var c = cardOf(id, r, bundle), card = document.createElement('div');
+        card.className = 'opened card';
+        [['name', c.name], ['tag', c.tag], ['note', c.note]].forEach(function (p) {
+          if (!p[1]) return;
+          var e = document.createElement('div');
+          e.className = p[0];
+          e.textContent = p[1];
+          card.appendChild(e);
+        });
+        right.appendChild(card);
+        return null;
+      }
+      return relay.mountView({ mount: right, html: v.bytes, transport: transport, calls: v.calls || {}, cell: 'view_' + id });
+    }
+
+    // The handler module (bundle) of agent `id`, from the root's `list_agents`; '' when the leg may not read it.
+    function bundleOf(id) {
+      return window.fantastic.send('kernel', { type: 'list_agents' }).then(function (r) {
+        var a = (r && Array.isArray(r.agents) ? r.agents : []).filter(function (x) { return x && x.id === id; })[0];
+        return a && typeof a.handler_module === 'string' ? a.handler_module : '';
+      }, function () { return ''; });
+    }
+
+    // Open the agent `id` (or, for a file, the view agent `via` made for it) in the right cell. The agent's own
+    // `reflect` is asked first: the page leg's grants are the records' (the yaml declares each view's calls).
+    // Only a refusal asks the dispatcher's `open` once (it grants the leg the chat of an agent made since) and
+    // reflects again; the dispatcher may not exist, and a team whose records grant everything never needs it.
+    function open(relay, id, via) {
       var shown = null;
       right.setAttribute('data-open', id);
       panel('agent');
@@ -142,30 +175,35 @@
       note.className = 'opened';
       note.textContent = id;
       right.appendChild(note);
-      // the dispatcher's `open` grants the leg the chat's calls on an agent of the team (the view's own
-      // list); a refusal just means the page has no more than it had
-      window.fantastic.send('dispatcher', { type: 'open', node: id }).catch(function () {}).then(function () {
-        return window.fantastic.send(id, { type: 'reflect' });
+      function mine() { return right.getAttribute('data-open') === id; }
+      function refused(r) { return !r || (typeof r.error === 'string' && r.error !== ''); }
+      var target = Promise.resolve(via ? via() : id);
+      target.then(function (t) {
+        var open = function () { return window.fantastic.send('dispatcher', { type: 'open', node: t }).catch(function () {}); };
+        // a refusal is an error frame or a reply with an `error`: both are `null` here
+        var reflect = function () { return window.fantastic.send(t, { type: 'reflect' }).catch(function () { return null; }); };
+        // a file's view agent is new: the dispatcher grants the leg its reads before the first `reflect`
+        if (via) return open().then(reflect);
+        return reflect().then(function (r) { return refused(r) ? open().then(reflect) : r; });
       }).then(function (r) {
-        var v = viewOf(r);
-        if (right.getAttribute('data-open') !== id) return;
-        right.textContent = '';
-        if (!v) {
-          var c = cardOf(id, r), card = document.createElement('div');
-          card.className = 'opened card';
-          [['name', c.name], ['tag', c.tag], ['note', c.note]].forEach(function (p) {
-            if (!p[1]) return;
-            var e = document.createElement('div');
-            e.className = p[0];
-            e.textContent = p[1];
-            card.appendChild(e);
-          });
-          right.appendChild(card);
-          return;
-        }
-        shown = relay.mountView({ mount: right, html: v.bytes, transport: transport, calls: v.calls || {}, cell: 'view_' + id });
-      }, function () { /* the page leg may not reflect this agent: the bare id stays */ });
+        if (!mine() || refused(r)) return; // the page leg may not reflect this agent: the bare id stays
+        if (viewOf(r) || (r && r.handler_module)) { shown = draw(relay, id, r); return; }
+        // an agent with no view whose reflect does not name its bundle (a bridge's): the card gets the bundle
+        // from the kernel's own record of the agent (`list_agents`, the leg's read of the root)
+        return bundleOf(id).then(function (b) { if (mine()) shown = draw(relay, id, r, b); });
+      }, function () { /* the bare id stays */ });
       return function () { if (shown) shown.unmount(); };
+    }
+
+    // A file row: the files agent makes (or reuses) the view agent of the path; that agent's `reflect` is the
+    // file view. The row's id for the cell is the path.
+    function openFile(relay, path) {
+      return open(relay, path, function () {
+        return window.fantastic.send('files', { type: 'open_view', kind: 'file', path: path }).then(function (r) {
+          if (!r || typeof r.id !== 'string') throw new Error('no view for ' + path);
+          return r.id;
+        });
+      });
     }
 
     import('./view_relay.js').then(function (relay) {
@@ -176,9 +214,12 @@
         relay.mountView({
           mount: left, html: v.bytes, transport: transport, calls: v.calls || {}, cell: CELL, keep: relay.pageStore('team.sidebar'),
           // what the view says is the base's `hearSidebar`; the team page has no canvas to open a file on and
-          // its cell does not hide, so a row's `select` is the one thing it hears
+          // its cell does not hide: a row's `select` opens that agent, a file row's `select_file` that file
           onMessage: function (m) {
-            relay.hearSidebar(m, { select: function (id) { closeOpened(); closeOpened = open(relay, id); } });
+            relay.hearSidebar(m, {
+              select: function (id) { closeOpened(); closeOpened = open(relay, id); },
+              selectPath: function (path) { closeOpened(); closeOpened = openFile(relay, path); }
+            });
           }
         });
       });

@@ -27,3 +27,11 @@ test("cardOf names the agent, tags its handler, says it has no view", () => {
   assert.equal(cardOf("w1", {}).name, "w1");
   assert.equal(cardOf("w1", null).tag, "");
 });
+
+test("cardOf takes the bundle from the kernel's record when the agent's reflect does not name it", () => {
+  // a bridge's reflect carries no handler_module and no display_name (#351)
+  const c = cardOf("worker_exec", { id: "worker_exec", sentence: "x" }, "exec_bridge.tools");
+  assert.deepEqual(JSON.parse(JSON.stringify(c)), { name: "worker_exec", tag: "exec_bridge.tools", note: "This agent has no view of its own." });
+  // the agent's own reflect wins over the record's
+  assert.equal(cardOf("w1", { handler_module: "a.tools" }, "b.tools").tag, "a.tools");
+});
