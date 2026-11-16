@@ -175,7 +175,7 @@ fn has_grant(rec: &Value, field: &str, who: &str, want: Value) {
     assert_eq!(rec[field][who], want, "{}.{field}.{who}: {rec}", rec["id"]);
 }
 
-const PAGE_USER_VERBS: [&str; 2] = ["inquiries", "answer_inquiry"];
+const PAGE_USER_VERBS: [&str; 3] = ["inquiries", "answer_inquiry", "watch"];
 
 /// The callee-side grants the yaml declares, on the live records.
 async fn assert_the_declared_grants(site: &Site) {

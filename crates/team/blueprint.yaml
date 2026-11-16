@@ -45,6 +45,8 @@ agents:
     team_ws:
     - inquiries
     - answer_inquiry
+    # the page's waiting badge follows the person's inquiry_opened / inquiry_closed
+    - watch
   agents:
   - id: lead
     # the lead is an AI chat (the `lead` bundle, base `ai_chat.tools`). It names no provider: the
@@ -269,6 +271,7 @@ agents:
       user:
       - inquiries
       - answer_inquiry
+      - watch
       # the base sidebar view the page mounts (its `calls`, read verbs only; its `*: [status]`
       # names every agent and a static leg cannot: the rows draw without a chat state)
       sidebar:

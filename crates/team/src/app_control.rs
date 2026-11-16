@@ -215,7 +215,7 @@ mod tests {
                     "unembed"
                 ]),
             ),
-            ("user", json!(["inquiries", "answer_inquiry"])),
+            ("user", json!(["inquiries", "answer_inquiry", "watch"])),
             // the base sidebar view the page mounts: its read calls (#608), no `*`
             ("sidebar", json!(["reflect", "watch"])),
             ("kernel_state", json!(["reflect", "list_agents"])),

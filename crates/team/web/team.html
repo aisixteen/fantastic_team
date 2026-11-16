@@ -87,6 +87,14 @@
       });
       return Object.keys(askers).length;
     }
+    // An inquiry to the person opened or closed: the event `user` publishes on its own id
+    // (`{type, re, asker, holder: 'user'}`). A watcher of `user` also gets a COPY of every call
+    // made to it (this page's own `inquiries` read, another client's `answer_inquiry {re}`): only
+    // the event names its holder and carries a numeric `re` beside it, and only the event counts.
+    function inquiryEvent(ev) {
+      return !!ev && typeof ev === 'object' && (ev.type === 'inquiry_opened' || ev.type === 'inquiry_closed') &&
+        ev.holder === 'user' && typeof ev.re === 'number';
+    }
     // What the name card of an agent with no view of its own says, from its reflect.
     function cardOf(id, r, bundle) {
       var name = r && typeof r.display_name === 'string' && r.display_name ? r.display_name : id;
@@ -110,17 +118,27 @@
     document.getElementById('back').addEventListener('click', function () { panel('tree'); });
 
     // The back button's badge: how many other agents wait for the person (`user` `inquiries`, read as
-    // the page leg). Asked when an agent opens; a refusal leaves the badge hidden.
+    // the page leg). Asked when an agent opens, then again on each inquiry the person's `user` publishes
+    // as opened or closed (never on a copy of a call, never on a clock); a refusal leaves it hidden.
+    // One read at a time: an event that lands while a read is out reads once more when it is back.
     var badge = document.getElementById('back-badge');
+    var waiting = { except: '', busy: false, again: false };
     function showWaiting(except) {
+      waiting.except = except;
+      if (waiting.busy) { waiting.again = true; return; }
+      waiting.busy = true; waiting.again = false;
+      var done = function () { waiting.busy = false; if (waiting.again) showWaiting(waiting.except); };
       window.fantastic.send('user', { type: 'inquiries' }).then(function (r) {
-        var n = waitingCount(r && r.inquiries, except);
+        var n = waitingCount(r && r.inquiries, waiting.except);
         badge.textContent = String(n);
         badge.hidden = n === 0;
         document.getElementById('back').setAttribute('aria-label',
           n === 0 ? 'Back to the team' : 'Back to the team, ' + n + ' waiting for you');
-      }, function () { badge.hidden = true; });
+      }, function () { badge.hidden = true; }).then(done, done);
     }
+    window.fantastic.watch('user', function (ev) {
+      if (inquiryEvent(ev)) showWaiting(waiting.except);
+    });
 
     // The title bar: the product word and the kernel's own name (the root's display_name).
     window.fantastic.send('kernel', { type: 'reflect' }).then(function (r) {

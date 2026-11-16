@@ -5,7 +5,7 @@ can_call:
   "$self": "*"
   dispatcher: [sidebar, tree, open, control]
   cadencer: [status, set]
-  user: [inquiries, answer_inquiry]
+  user: [inquiries, answer_inquiry, watch]
   sidebar: [reflect, watch]
   kernel_state: [reflect, list_agents]
   files: [list, watch, watch_path, unwatch_path, open_view]

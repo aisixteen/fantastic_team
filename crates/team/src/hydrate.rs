@@ -505,10 +505,10 @@ mod tests {
         );
     }
 
-    /// The page leg's grant on `user` holds the two verbs the yaml gives it (fantastic's boot
+    /// The page leg's grant on `user` holds the three verbs the yaml gives it (fantastic's boot
     /// adds `send` to it: every agent's way back).
     fn page_verbs(g: &Value) -> bool {
-        ["inquiries", "answer_inquiry"]
+        ["inquiries", "answer_inquiry", "watch"]
             .iter()
             .all(|v| g.as_array().is_some_and(|a| a.contains(&json!(v))))
     }
@@ -617,7 +617,7 @@ mod tests {
         let user = on("user/agent.yaml");
         assert_eq!(
             user["callable_by"]["team_ws"],
-            json!(["inquiries", "answer_inquiry"])
+            json!(["inquiries", "answer_inquiry", "watch"])
         );
 
         // boot: both ends of each edge, and a real call over it
@@ -648,7 +648,7 @@ mod tests {
                 &format!("{who} -> memory {verb}"),
             );
         }
-        for verb in ["inquiries", "answer_inquiry"] {
+        for verb in ["inquiries", "answer_inquiry", "watch"] {
             admitted(
                 &as_caller(&k, WS_ID, "user", json!({"type": verb})).await,
                 &format!("{WS_ID} -> user {verb}"),
