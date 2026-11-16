@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { runView, verbsSince } from "../../agent_view/tests/view_harness.mjs";
+import { runView, verbsSince, sendsOnCopies } from "../../agent_view/tests/view_harness.mjs";
 
 const VIEW = fileURLToPath(new URL("../src/cadencer/view.html", import.meta.url));
 const ME = "cadencer";
@@ -63,4 +63,19 @@ test("an event while a number is typed waits until the field is left", async () 
   v.document.getElementById("pg").dispatch("focusout");
   await v.settle();
   assert.deepEqual(verbsSince(v, before, ME), ["status"], "read once the field is left");
+});
+
+test("copies of its own calls, and another client's reads, read nothing (the kernel mirrors every call to a watcher)", async () => {
+  const v = runView(VIEW, ME, reply, {}, { mirror: true });
+  await v.settle();
+  assert.deepEqual(verbsSince(v, 0, ME), ["status"], "its own read's copy reads nothing more");
+  assert.equal(await sendsOnCopies(v, [[ME, { type: "status" }], [ME, { type: "set", quiet: true }], [ME, { type: "reflect" }]]), 0);
+  // a published event is one read, and that read's copy is no more
+  const before = v.sends.length;
+  v.deliver(ME, { type: "ticked", ticks: 1, sent: 0, delivery_errors: 0 });
+  await v.settle();
+  const n = v.sends.length - before;
+  assert.ok(n > 0, "the event is read");
+  await v.settle();
+  assert.equal(v.sends.length - before, n, "no read on the copies of that read");
 });

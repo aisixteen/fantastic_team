@@ -56,7 +56,10 @@ function makeDocument() {
 
 /**
  * Run the view `file` as agent `agent`. `reply(target, payload)` answers each send (a value
- * or a promise). `fill` fills more placeholders ({name: text}). Returns:
+ * or a promise). `fill` fills more placeholders ({name: text}). `opts.mirror`: as the kernel
+ * does, every send the view makes also reaches each watcher of its target as a COPY of the
+ * call (the payload alone, as the web leg forwards it), after the reply: a view that acts on
+ * a copy of its own read reads again and again. Returns:
  *   sends     [{target, payload}] every send the view made, in order
  *   watches   [{src}] every watch the view asked for
  *   timers    [{kind, ms}] every setInterval / setTimeout the view set
@@ -64,7 +67,7 @@ function makeDocument() {
  *   settle()  let the view's pending replies land
  *   document  the stand-in document
  */
-export function runView(file, agent, reply, fill = {}) {
+export function runView(file, agent, reply, fill = {}, opts = {}) {
   let src = readFileSync(file, "utf8").split("{{helpers}}").join(HELPERS).split("{{agent}}").join(agent);
   for (const [k, v] of Object.entries(fill)) src = src.split(`{{${k}}}`).join(v);
   const scripts = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
@@ -76,8 +79,12 @@ export function runView(file, agent, reply, fill = {}) {
   const document = makeDocument();
   const fantastic = {
     send(target, payload) {
-      sends.push({ target, payload: JSON.parse(JSON.stringify(payload)) });
-      return Promise.resolve(reply(target, payload));
+      const copy = JSON.parse(JSON.stringify(payload));
+      sends.push({ target, payload: copy });
+      const out = Promise.resolve(reply(target, payload));
+      // the copy lands on a later turn, as a frame from the leg does
+      if (opts.mirror) out.then(() => setImmediate(() => (watchers.get(target) || []).forEach((cb) => cb(JSON.parse(JSON.stringify(copy))))));
+      return out;
     },
     watch(srcId, cb) {
       watches.push({ src: srcId });
@@ -89,7 +96,8 @@ export function runView(file, agent, reply, fill = {}) {
   const ctx = vm.createContext({
     document,
     fantastic,
-    window: {},
+    window: { fantastic },
+    MutationObserver: class { observe() {} },
     console,
     setInterval: (_fn, ms) => { timers.push({ kind: "setInterval", ms }); return timers.length; },
     setTimeout: (_fn, ms) => { timers.push({ kind: "setTimeout", ms }); return timers.length; },
@@ -110,4 +118,18 @@ export function runView(file, agent, reply, fill = {}) {
 /** The verbs (`payload.type`) of the sends made to `target` since `from`. */
 export function verbsSince(view, from, target) {
   return view.sends.slice(from).filter((s) => s.target === target).map((s) => s.payload.type);
+}
+
+/**
+ * THE RULE: a view acts only on the events its agent publishes, never on a copy of a call
+ * made to the agent. Deliver a copy of every call the view made so far (its own reads and
+ * writes, payload alone) and any `others` (another client's calls) to the watchers of each
+ * target, and return how many sends the view made because of them (0 when it keeps the rule).
+ */
+export async function sendsOnCopies(view, others = []) {
+  const before = view.sends.length;
+  const copies = view.sends.slice(0, before).map((s) => [s.target, s.payload]).concat(others);
+  for (const [target, payload] of copies) view.deliver(target, JSON.parse(JSON.stringify(payload)));
+  await view.settle();
+  return view.sends.length - before;
 }
