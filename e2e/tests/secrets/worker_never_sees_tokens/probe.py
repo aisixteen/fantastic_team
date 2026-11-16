@@ -16,8 +16,8 @@ def run(ctx):
     v = Verdict("secrets/worker_never_sees_tokens")
     keys = run_flow.boot(ctx)
     team = ctx.team
-    team.send("puller", {"type": "pull"})
-    played = run_flow.hand_over(ctx, "Run the checks, then do the task in tasks/queue/acme-widgets-1.md")
+    team.send("tasks", {"type": "pull"})
+    played = run_flow.hand_over(ctx, "Run the checks, then do the task acme/widgets#1: its instructions are issue 1 of acme/widgets, read it through github")
     v.check("the scripted model played every turn", played and ctx.model.consumed,
             f"served {ctx.model.served} of {len(ctx.model.turns)}")
     token = ctx.forge.token

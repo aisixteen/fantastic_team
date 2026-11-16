@@ -29,22 +29,24 @@ def run(ctx):
     run_flow.boot(ctx)
     team = ctx.team
 
-    # 1. the puller turns the labelled issue into a task file and a pending state
-    pulled = team.send("puller", {"type": "pull"})
-    v.check("the puller took the issue", pulled["result"].get("created") == ["acme/widgets#1"],
+    # 1. the task registry pulls the labelled issue from the tracker as a waiting task
+    pulled = team.send("tasks", {"type": "pull"})
+    v.check("the registry took the issue", pulled["result"].get("created") == ["acme/widgets#1"],
             str(pulled))
-    task = os.path.join(work, "tasks", "queue", "acme-widgets-1.md")
-    state = os.path.join(work, "tasks", "queue", "acme-widgets-1.state")
-    v.check("queue/acme-widgets-1.md holds the spec comment",
-            os.path.exists(task) and open(task).read().startswith("## SPEC"))
-    v.check("the state file says pending", os.path.exists(state) and open(state).read() == "pending\n")
+    task = team.send("tasks", {"type": "get", "id": "acme/widgets#1"})["result"]
+    v.check("the task waits, held by nobody, with the issue as its source",
+            task.get("status") == "waiting" and task.get("holder") is None
+            and task.get("source") == "gh:acme/widgets#1", str(task))
+    again = team.send("tasks", {"type": "pull"})
+    v.check("a second pull adds nothing", again["result"].get("created") == []
+            and again["result"].get("skipped") == [["acme/widgets#1", "already a task"]], str(again))
 
-    # 2. the lead plays the script: read, worktree, write, run, commit, push
-    played = run_flow.hand_over(ctx, "Do the task in tasks/queue/acme-widgets-1.md")
+    # 2. the lead plays the script: read the issue, worktree, write, run, commit, push
+    played = run_flow.hand_over(ctx, "Do the task acme/widgets#1: its instructions are issue 1 of acme/widgets, read it through github")
     v.check("the scripted model played every turn, none past the end",
             played and ctx.model.consumed, f"served {ctx.model.served} of {len(ctx.model.turns)}")
     seen = T.log_calls(team.log())
-    wanted = [("worker_files", "read"), ("git", "worktree_add"), ("worker_files", "write"),
+    wanted = [("github", "issue_view"), ("git", "worktree_add"), ("worker_files", "write"),
               ("worker_exec", "run"), ("git", "commit"), ("github", "push")]
     v.check("the rows show the calls in order", T.in_order(seen, wanted), str(seen[-40:]))
 

@@ -13,4 +13,6 @@ can_call:
   credentials: "*"
 callable_by:
   "$self": "*"
-  puller: "*"
+  lead: "*"
+  tasks: [reflect, issues]
+  dispatcher: [reflect]

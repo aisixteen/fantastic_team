@@ -30,9 +30,9 @@ There is no config file. A team is agent records, and config is fantastic's: a r
 - **A recipe, then `send`**: `fantastic_team --headless ai anthropic --model M` makes the root AI; further agents are `create_agent` payloads: `fantastic_team send '{"target": "kernel_state", "payload": {"type": "create_agent", ...}}'`.
 - **A directory that already holds `.fantastic/agents/`** (records you wrote or copied).
 
-A `.github/team.yaml` of a repo is the `repo_config` field of the puller's record, keyed by `owner/name`. The agents are record files under `.fantastic/agents/` that the kernel loads at start; change one with `update_agent`.
+The agents are record files under `.fantastic/agents/` that the kernel loads at start; change one with `update_agent`.
 
-The first run of `fantastic_team` in a folder, from the CLI or the desktop app alike (`crates/team/src/hydrate.rs`), writes the blueprint's agents: `lead` (the `lead` bundle) and, under it, `github`, `bundles` (the registry), `worker_exec` and `worker_files`, with the other end of each edge on the home's `memory`, `files`, `credentials` and the root; and the bundles beside them (a bundle you have stays as it is). The ids are fixed, so the bundles' grants (`github`, `bundles`, `worker_exec`, `worker_files`) are true as written. Edit the records afterwards with `update_agent`, as with any agent (replace `owner/name` in `github`). The agents that manage tasks (`tasks`, `queue`, `board`, `dispatcher`, `cadencer`) are not seeded: the lead makes one with `create_agent`, under that id, when it judges it useful (#292). The git connector is not made by the app, because it takes the absolute paths of your clone and your worktrees: make it with `send` (`create_agent`, `handler_module: team_git.tools`, `repo_dir`, `workspace_root`, `remote`, `default_branch`).
+The first run of `fantastic_team` in a folder, from the CLI or the desktop app alike (`crates/team/src/hydrate.rs`), writes the blueprint's agents: `lead` (the `lead` bundle) and, under it, `github`, `bundles` (the registry), `tasks` (the task registry, its tracker `github`), `worker_exec` and `worker_files`, with the other end of each edge on the home's `memory`, `files`, `credentials` and the root; and the bundles beside them (a bundle you have stays as it is). The ids are fixed, so the bundles' grants (`github`, `bundles`, `tasks`, `worker_exec`, `worker_files`) are true as written. Edit the records afterwards with `update_agent`, as with any agent (replace `owner/name` in `github`). The `dispatcher` and the `cadencer` are not seeded: the lead makes one with `create_agent`, under that id, when it judges it useful (#292). The git connector is not made by the app, because it takes the absolute paths of your clone and your worktrees: make it with `send` (`create_agent`, `handler_module: team_git.tools`, `repo_dir`, `workspace_root`, `remote`, `default_branch`).
 
 Every bundle's directive starts with a short section, "How the system works": which agents exist and their ids, what each tool agent is for, that an agent is started with `spawn` and deleted by the agent that spawned it (its own decision, as in fantastic), and that API keys reach every agent on their own (the team runs on fantastic's god mode, `reach`), so there is nothing to grant.
 
@@ -45,7 +45,7 @@ A bundle is a META BUNDLE, fantastic's `bundles/<name>/bundle.yaml` with a `base
 ```yaml
 # .fantastic/bundles/worker/bundle.yaml
 base: anthropic_backend.tools
-sentence: Carries out tasks from the queue, one at a time, and hands each back.
+sentence: Carries out the task its lead hands it and hands it back with one message.
 record:
   can_call: {$self: '*', worker_exec: '*', worker_files: '*'}
   post_system_prompt: |
@@ -55,39 +55,23 @@ record:
 
 The lead starts every worker and sub-lead with `spawn {bundle, model}` on the registry (it creates the agent and sends nothing; the lead then gives it its work with a plain `send`), after it asks `bundles`; it does not use `create_agent` for them. The child runs on its spawner's backend (its handler and provider fields) with the `model` the spawn names (the spawner's own when it names none): the spawner picks the model from its own job prompt. `backend: {handler_module, …}` in `spawn` puts the child on another backend. The bundles name the agents they grant by id (the `project_lead` bundle grants `github`), so make those agents under exactly those ids, as the blueprint does. The dispatcher's sidebar shows the count (`fleet` `{running}`, and "agents N" in its footer line).
 
-The task registry is the agent `tasks` (`task_registry`, this repo's `crates/task_registry`, moved from fantastic in #245; first aisixteen/fantastic#429): a record with `task_store_id`. It is not in the stock tree: a lead makes it under that id when it judges it useful (#292), and the `project_lead` uses its verbs (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`). The `project_lead` also records, with each task, the `versions` it was done against (`{repo, branch, commit}` per repo), the issue's `source_version` and the mark it was forked from (`fork_from`), and passes a child's `usage` up with `report`. The GitHub connector's `staleness` verb gives the facts for reusing a mark (the commits and files since the recorded commit, whether the issue changed) and the lead decides (#194). The `project_lead` records each issue it hands out (source `gh:owner/repo#N`), its holder (an agent or a subtree root) and every reassignment, and pushes updates to the source itself through the GitHub connector; nothing syncs automatically.
+The task registry is the agent `tasks` (`task_registry`, this repo's `crates/task_registry`, moved from fantastic in #245; first aisixteen/fantastic#429), the team's one tasks agent: a record with `task_store_id` (its tables) and `task_tracker_id` (the agent that is the tracker: the `github` connector). It is seeded with the team (#351). `pull` reads the tracker's ready issues (open, labelled `team-ready`, on the repos the connector's record lists) and adds each one that is not a task yet as a waiting task (`owner/name#N`, source `gh:owner/name#N`); the lead and the `project_lead` use its verbs (`pull`, `add`, `assign`, `reassign`, `status`, `report`, `list`, `get`) and write a result back to the issue through the connector. Its own html view (the Board page of the design mock) is what the team page mounts for it. The `project_lead` also records, with each task, the `versions` it was done against (`{repo, branch, commit}` per repo), the issue's `source_version` and the mark it was forked from (`fork_from`), and passes a child's `usage` up with `report`. The GitHub connector's `staleness` verb gives the facts for reusing a mark (the commits and files since the recorded commit, whether the issue changed) and the lead decides (#194). The `project_lead` records each issue it hands out (source `gh:owner/repo#N`), its holder (an agent or a subtree root) and every reassignment, and pushes updates to the source itself through the GitHub connector; nothing syncs automatically.
 
 The memory of every AI agent (the lead, the agents it spawns, workers added from the dispatcher) and the rows of `tasks` live in ONE store agent: the home's `memory`, a `sqlite_store` with one file, `.fantastic/memory.db`, so the history and the task rows survive a restart. The records name it (`memory_store_id`, `task_store_id`); the kernel's own bookkeeping (`kernel_memory`) stays a RAM store. A worker added from the dispatcher (`add_worker {template}`, the template being one of the backend records under the registry record's `tiers`, a field only the dispatcher reads) is granted on the store when it is made; removing it leaves its rows.
 
-With a bundles registry the `board` verb also returns a `bundles` section: the tree below the `project_lead` (each agent's bundle and active/paused/done state, from the `fleet` and the tasks it holds), the registry's `get_count` as `fleet`, and the `tasks` rows (source, holder, status). A team without one keeps the old rows only.
+With a bundles registry the dispatcher's `sidebar` also carries the plan (`crates/team/src/plan.rs`): the tree below the `project_lead` (each agent's bundle and active/paused/done state, from the `fleet` and the tasks it holds), the registry's `get_count` as `fleet`, and the `tasks` rows (source, holder, status), read through the registries' public verbs.
 
 The `project_lead` waits for its children with the kernel's `await_set`; the lead holds `await_set`, `await_cancel`, `create_agent` and `delete_agent` on the root (its record's `can_call`), and a spawn opens them to the child its bundle grants them to.
 
 In bundles mode the team page has two columns: an Agents list (the lead first, labelled Lead, then its tree indented by depth) beside the pane of the opened agent. The lead's pane shows the plan (the task registry's rows) above its chat and redraws it in place; any other agent shows its chat alone. Approval is the user's chat reply to the lead: its bundle says when it asks (a large plan, GitHub writes) and honours "show me the plan first". Not done yet (#185, #198, later): the e2e. A spawned agent that reads a key must still be named on the credential store (it is not a bundle grant).
 
-The sidebar of every team (bundles mode or not) also has a Team section with the team's own services: the queue, the board, the github connector and the dispatcher itself (the sidebar reply's `services`). Opening one answers `{view: panel, kind, target, model}` and the right pane draws the model as tables of text (never markup) and refreshes it every five seconds: the queue by queued, taken and done tasks with title, holder and age (failed ones only in the counts); the board by the lead's agent tree and the registry's tasks (without bundles mode, its agents and the task counts by state); the github connector by its repos, its last calls (verb, target, ok / refused / unreachable / error status) and its rate limit and permissions; the dispatcher by its workers and lanes, with the number of agents running. The github view is built from a whitelist of the connector's `reflect` reply (which now lists `recent_calls` and `rate`) and never shows a token or a key. The TUI shows these agents in its generic panel (the `reflect` reply and the verb entry); a panel of their own there is not part of this.
+The sidebar of every team (bundles mode or not) also has a Team section with the team's own services: the task registry, the github connector and the dispatcher itself (the sidebar reply's `services`). Opening the task registry answers `{view: html}`: the page mounts the registry's own view. Opening another answers `{view: panel, kind, target, model}` and the right pane draws the model as tables of text (never markup) and refreshes it every five seconds: the github connector by its repos, its last calls (verb, target, ok / refused / unreachable / error status) and its rate limit and permissions; the dispatcher by its workers and lanes, with the number of agents running. The github view is built from a whitelist of the connector's `reflect` reply (which now lists `recent_calls` and `rate`) and never shows a token or a key. The TUI shows these agents in its generic panel (the `reflect` reply and the verb entry); a panel of their own there is not part of this.
 
-A repo the puller serves is one in its record's `repos`. Its settings are the `repo_config` field of that record, keyed by `owner/name`:
-
-```yaml
-task_labels: [team-ready]
-paths: [src/**, docs/*.md]
-build: cargo build
-test: cargo test
-review:
-  approvals: 1
-  approvers: [alice]
-```
-
-Every key is optional. A repo with no entry takes the defaults: the label `team-ready`, any path, and one approval from any reviewer.
-
-Two more sets of fields are optional. `groups` (a field of the dispatcher's record) names the worker groups the dispatcher shows, each with its members, and the cadencer's `group_settings` its timing. The board's `repos` names the repos it caches, through the GitHub connector its `github` field names:
+Two sets of fields are optional. `groups` (a field of the dispatcher's record) names the worker groups the dispatcher shows, each with its members, and the cadencer's `group_settings` its timing:
 
 ```yaml
 groups:
   build: [worker_1, worker_2]
-repos: [aisixteen/fantastic_team]
-github: git
 ```
 
 `templates/` holds example directive files to start from.
@@ -114,7 +98,7 @@ fantastic_team send '<item json>'               # one call into the team running
 fantastic_team readme                           # fantastic's own readme
 ```
 
-`ai <backend> …`, `run …`, `system`, `--headless`, `mcp`, `send`, `import`, `migrate-home` and `readme` are fantastic's words; `fantastic readme` documents them. The team page, the board and the dispatcher are agents like any other: the bundles are registered, and an agent comes from a record. `webui [--port N] [--host ADDR]` is the team's own recipe word: it serves the team page (two columns and the agent list) and its socket from the binary, headless like `canvas` (the browser is the View), with the same `--port` and `--host`. Without `--port` it keeps the port recorded here, else picks a free one, and it prints `the team page: <url>` when `--port` is given. A recorded `web` boots in every mode, so a plain `--headless` listens on a free 127.0.0.1 port. `webui` and `canvas` together are refused: both mount a socket leg on the web host's one `/{host_id}/ws` route and the second would win, so run one. The team no longer has its own `--dir`, `--port`, `--tui`, `--instructions` or `--resend-instructions`; they are refused as unknown. Ctrl-C to stop.
+`ai <backend> …`, `run …`, `system`, `--headless`, `mcp`, `send`, `import`, `migrate-home` and `readme` are fantastic's words; `fantastic readme` documents them. The team page, the task registry and the dispatcher are agents like any other: the bundles are registered, and an agent comes from a record. `webui [--port N] [--host ADDR]` is the team's own recipe word: it serves the team page (two columns and the agent list) and its socket from the binary, headless like `canvas` (the browser is the View), with the same `--port` and `--host`. Without `--port` it keeps the port recorded here, else picks a free one, and it prints `the team page: <url>` when `--port` is given. A recorded `web` boots in every mode, so a plain `--headless` listens on a free 127.0.0.1 port. `webui` and `canvas` together are refused: both mount a socket leg on the web host's one `/{host_id}/ws` route and the second would win, so run one. The team no longer has its own `--dir`, `--port`, `--tui`, `--instructions` or `--resend-instructions`; they are refused as unknown. Ctrl-C to stop.
 
 A directive for the lead is its record's `system_prompt_file`, or a message sent to it: `fantastic_team send '{"target": "lead", "payload": {"type": "send", "text": "..."}}'`.
 
@@ -126,9 +110,8 @@ The build packs fantastic's canvas page with a pinned esbuild. With no vendored 
 
 - **Cost and time per task.** Each task records its worker, model, time, tokens and cost, computed from the template's prices. Compare lanes on what a task really costs.
 - **Usage per model and per agent, on demand.** The provider counts it: `fantastic_team send '{"target": "provider", "payload": {"type": "usage"}}'` (the provider's id; no new verb). `by_model` has each model's requests and tokens (input, cache write, cache read, output) with `cost_usd` from the record's `prices` map or `unpriced: true`; `by_agent` the same per calling chat id (kept after the chat is deleted); the top level is the team total. The e2e `cli/usage_report` checks it against a scripted run.
-- **The board** (`team_board.tools`): the shared picture of the work — open issues with their queue state (pending, in work, done, failed) and the agents. Verb `board`.
 - **The worker view** (`team_worker_view.tools`): one canvas per worker, with its task, files, output and chat.
-- **The dispatcher** (`team_dispatcher.tools`): the home screen of the web UI and the app. Workers by group, each with its state, current task, time and cost, and what is waiting for you.
+- **The dispatcher** (`team_dispatcher.tools`): the home screen of the web UI and the app. Workers by group, each with its state, current task and time (from the tasks it holds in the registry), and what is waiting for you.
 - **The web UI** with `webui --port`, or fantastic's terminal UI.
 
 ## The app
@@ -145,7 +128,7 @@ The build packs fantastic's canvas page with a pinned esbuild. With no vendored 
 
 ## The lead
 
-A team is run by **the lead**: an AI agent, an ordinary record, that works from a directive. It spawns worker agents when there is work, gives each a task, checks on them, and deletes workers when the queue is empty. Its model, directive and tiers come from records; no provider or model is named in the code.
+A team is run by **the lead**: an AI agent, an ordinary record, that works from a directive. It spawns worker agents when there is work, gives each a task, checks on them, and deletes workers when no task waits. Its model, directive and tiers come from records; no provider or model is named in the code.
 
 ## Load and progress
 
@@ -159,7 +142,7 @@ at least 1); an unset key follows the global setting, which `set` still changes
 live. A group `cadence` longer than the timer's beat skips beats until it is due; a
 shorter one is held to the beat.
 
-The cadencer works with or without a board (a CLI team has none). It is on by default. A
+The cadencer works with or without a bundles registry (a CLI team has none). It is on by default. A
 cadencer record with `enabled: false` is switched off, and so is one whose groups all set
 `enabled: false`. The
 team page has a "Digests (cadencer)" switch in its header that calls `set
@@ -167,7 +150,7 @@ team page has a "Digests (cadencer)" switch in its header that calls `set
 With a `bundles:` section the digest tree is the spawned tree (the project_lead, its
 sub-leads and their workers, read from the bundles registry, the root's `reflect` and the
 task registry): each lead gets a digest of its own children, with stalls and the
-heartbeat. Without `bundles:` it reads the board's rows, as before. For the digests the
+heartbeat. Without `bundles:` it beats on the tree a `tick` gives it. For the digests the
 cadencer is granted `send` and `status` on the leads the bundles registry lists, at the
 start and before each beat; the `inquiry_from` of a lead's `status` tells it an inquiry is open on that lead.
 
@@ -189,7 +172,7 @@ Workers are fantastic AI agents: Anthropic models over the API with your own key
 Results can stay as files in the team's folder. When work belongs somewhere else, a connector takes it there:
 
 - **git**: a branch pushed to any remote (SSH or HTTPS).
-- **GitHub** (optional): as a GitHub App you register yourself. Draft pull requests, issue comments, labels, reading a task queue from issues. Register with your own app; the private key stays in your credential store.
+- **GitHub** (optional): as a GitHub App you register yourself. Draft pull requests, issue comments, labels, and the tracker the task registry pulls its tasks from. Register with your own app; the private key stays in your credential store.
 
 ## Export and import
 
@@ -219,16 +202,14 @@ CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh w
 |---|---|
 | `fantastic_team` | The program: fantastic's command line (its terminal-shell library) plus the agents below. Its flags are fantastic's. |
 | the lead | An AI agent, an ordinary record. |
-| `queue` agent | Tasks as data: add, list, take, mark done. |
-| `team_puller.tools` | Reads `team-ready` issues from the GitHub connector and writes `queue/<repo>-<n>.md`. `status` gives the source, the last pull and the counts. |
-| connectors | `git` (`team_git.tools`) and `github` (optional, `team_github.tools`). Each is a record, with its directive. |
-| `team_board.tools` | Board: the shared picture of the work. Verbs `pull`, `board`, `task`, `report`, `agent`, `ask`, `audit`. It never assigns. |
+| `tasks` (`task_registry.tools`) | The team's one tasks agent: every task, its holder and its source, pulled from the tracker (`pull`) and moved by the leads (`add`, `assign`, `reassign`, `status`, `report`, `list`, `get`). Its own html view is the Board page. |
+| connectors | `git` (`team_git.tools`) and `github` (optional, `team_github.tools`: the tracker and the source control). Each is a record, with its directive. |
 | `team_worker_view.tools` | Worker view: one vertical canvas per worker. |
 | `team_dispatcher.tools` | The dispatcher: the home screen. It reads and asks; Start, Pause and Stop are its only controls. |
 | cadencer | Sends each group's AI driver a digest of its workers, and reports the load counts in `status`. |
-| declared views | Cadencer, puller, git, github, dispatcher and queue declare their read-only views as data in `declared_views.rs`, and the team page draws the declaration for cadencer, puller and git. The queue, board, github and team pages stay page code (`agent_views.rs`, with the reason). No view shows a secret. |
+| declared views | Cadencer, git, github and dispatcher declare their read-only views as data in `declared_views.rs`, and the team page draws the declaration for cadencer and git. The github and dispatcher panels stay page code (`agent_views.rs`, with the reason); the task registry, the cadencer, the github connector and the bundles registry carry their own html views. No view shows a secret. |
 | `team_app` | The launcher `fantastic_team_app` for the desktop app. See The app. |
-| `crates/team/src/new_team.rs` | The team's fixed ids (the lead, the bundles registry, the GitHub connector, the worker's tools; the blueprint `crates/team/blueprint.yaml` declares them) and the writer of the bundles (`crates/team/bundles/`, embedded in `crates/team/src/bundles.rs`). |
+| `crates/team/src/new_team.rs` | The team's fixed ids (the lead, the bundles registry, the GitHub connector, the task registry, the worker's tools; the blueprint `crates/team/blueprint.yaml` declares them) and the writer of the bundles (`crates/team/bundles/`, embedded in `crates/team/src/bundles.rs`). |
 
 ## Updating fantastic
 

@@ -34,13 +34,13 @@ def run(ctx):
     run_flow.boot(ctx)
     team = ctx.team
 
-    # 1. the puller turns the labelled issue into a task file
-    pulled = team.send("puller", {"type": "pull"})
-    v.check("the puller took the issue", pulled["result"].get("created") == ["acme/widgets#1"],
+    # 1. the task registry pulls the labelled issue from the tracker as a waiting task
+    pulled = team.send("tasks", {"type": "pull"})
+    v.check("the registry took the issue", pulled["result"].get("created") == ["acme/widgets#1"],
             str(pulled))
 
     # 2. the lead gets its task; the model works on its own until it pushes a branch
-    run_flow.kick(ctx, "Do the task in tasks/queue/acme-widgets-1.md")
+    run_flow.kick(ctx, "Do the task acme/widgets#1: its instructions are issue 1 of acme/widgets, read it through github")
     pushed = run_flow.wait_done(ctx, lambda: bool(pushed_branches(bare)), wait_s=WAIT_S)
     m = ctx.model
     v.check("the model pushed a work branch before the wait ran out", pushed,

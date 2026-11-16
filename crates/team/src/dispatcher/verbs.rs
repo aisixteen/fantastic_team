@@ -9,7 +9,7 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct Boot {}
 
-/// Per group one flat list: each worker, its subagents expander, and its subagents when expanded; with a bundles registry the reply also has fleet {running, max}, the registry's get_count, and (bundles mode) agents, the lead first then its tree depth-first [{id, bundle, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: queue|board|github|dispatcher|cadencer|puller|git, label}], the team's own agents that exist.
+/// Per group one flat list: each worker, its subagents expander, and its subagents when expanded; with a bundles registry the reply also has fleet {running, max}, the registry's get_count, and (bundles mode) agents, the lead first then its tree depth-first [{id, bundle, state, depth, indent, guides, lead, label}], and plan {lead, fleet, tasks}; in every mode services [{id, kind: tasks|github|dispatcher|cadencer|git, label}], the team's own agents that exist.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Sidebar {

@@ -77,7 +77,7 @@ function holderText(h) {
 // the same holder as a filter key (two tasks with one holder share it)
 function holderKey(h) { return typeof h === "string" ? "a:" + h : isSubtree(h) ? "s:" + h.subtree : ""; }
 function taskList(reply) { return reply && Array.isArray(reply.tasks) ? reply.tasks.filter(function (t) { return t && typeof t.id === "string"; }) : []; }
-// counts per state, plus total and held (= running, the board's rule)
+// counts per state, plus total and held (= running, the plan's rule)
 function countsOf(tasks) {
   var c = { total: tasks.length, held: 0 };
   STATES.forEach(function (s) { c[s] = 0; });

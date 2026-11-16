@@ -1,11 +1,14 @@
 id: tasks
 handler_module: task_registry.tools
 task_store_id: memory
+task_tracker_id: github
 can_call:
   "$self": "*"
   memory: "*"
+  github: [reflect, issues]
 callable_by:
   "$self": "*"
   "$parent": "*"
-  board: [list]
+  dispatcher: [list]
   cadencer: [list]
+  team_ws: [reflect, list, get]

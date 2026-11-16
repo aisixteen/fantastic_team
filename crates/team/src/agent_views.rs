@@ -1,29 +1,25 @@
-//! The views of the team's own service agents (the queue, the board, the github
-//! connector and the dispatcher) for the team page's right pane. Each function
-//! is pure: it takes a reply a service already gave and returns one model
+//! The views of the team's own service agents (the github connector and the dispatcher)
+//! for the team page's right pane. Each function is pure: it takes a reply a service
+//! already gave and returns one model
 //! `{kind, title, summary: [text], sections: [{name, columns: [text], rows: [[text]]}]}`.
 //! The page draws every value as text (`textContent`), never as markup.
 //!
-//! These stay page code, not declarations (`declared_views`): the queue, board and
-//! dispatcher views read nested object-of-arrays replies (`tasks.pending[]`, the sidebar's
-//! `groups[].items[]`) and compute ages from `now`, which the declared `table` (a
-//! top-level list of rows) and `kv` cannot express, and the github view whitelists
-//! and sanitizes each field (`is_target`, `is_result`) instead of printing
-//! what the connector answers. The kinds a declaration can express (cadencer, puller,
-//! git) are built by `declared_views::model_of`.
+//! These stay page code, not declarations (`declared_views`): the dispatcher view reads
+//! nested object-of-arrays replies (the sidebar's `groups[].items[]`), which the declared
+//! `table` (a top-level list of rows) and `kv` cannot express, and the github view
+//! whitelists and sanitizes each field (`is_target`, `is_result`) instead of printing
+//! what the connector answers. The kinds a declaration can express (cadencer, git) are
+//! built by `declared_views::model_of`. The task registry draws its own html view
+//! (`task_registry::view_of`), which the page mounts from its `reflect`.
 //!
 //! The github view is built from a whitelist of the connector's `reflect` reply, never
 //! from unknown keys.
 
 use serde_json::{json, Value};
 
-use crate::dispatcher::{agent_list, plan_of};
-
-/// The view kind of a team service's handler module, if it has a view here. The queue
-/// is a plain store and is named by the board record's `store`, not by a module.
+/// The view kind of a team service's handler module, if it has a view here.
 pub fn service_kind(handler_module: &str) -> Option<&'static str> {
     match handler_module {
-        "team_board.tools" => Some("board"),
         "team_github.tools" => Some("github"),
         "team_dispatcher.tools" => Some("dispatcher"),
         _ => None,
@@ -78,143 +74,6 @@ pub fn age_text(secs: u64) -> String {
     } else {
         format!("{}h", secs / 3600)
     }
-}
-
-fn tasks_in<'a>(board: &'a Value, status: &str) -> &'a [Value] {
-    board["tasks"][status]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
-}
-
-/// The queue: queued, taken and done tasks with title, holder and age. Failed tasks
-/// are counted in the summary only.
-pub fn queue_view(board: &Value, now: u64) -> Value {
-    let rows_of = |status: &str| -> Vec<Vec<String>> {
-        tasks_in(board, status)
-            .iter()
-            .map(|t| {
-                let title = match text(&t["title"]) {
-                    s if s.is_empty() => text(&t["id"]),
-                    s => s,
-                };
-                let holder = t["claimers"]
-                    .as_array()
-                    .map(|a| a.iter().map(text).collect::<Vec<_>>().join(", "))
-                    .unwrap_or_default();
-                let age = match t["updated"].as_u64() {
-                    Some(u) => age_text(now.saturating_sub(u)),
-                    None => String::new(),
-                };
-                vec![or_dash(title), or_dash(holder), or_dash(age)]
-            })
-            .collect()
-    };
-    let cols = ["title", "holder", "age"];
-    let n = |s: &str| tasks_in(board, s).len();
-    model(
-        "queue",
-        "Queue",
-        vec![format!(
-            "{} queued, {} taken, {} done, {} failed",
-            n("pending"),
-            n("in_work"),
-            n("done"),
-            n("failed")
-        )],
-        vec![
-            section("queued", &cols, rows_of("pending")),
-            section("taken", &cols, rows_of("in_work")),
-            section("done", &cols, rows_of("done")),
-        ],
-    )
-}
-
-/// The board: in bundles mode the lead's agent tree and the registry's tasks; without
-/// `bundles` the board's own agents and the task counts by state.
-pub fn board_view(board: &Value) -> Value {
-    if board["bundles"].is_object() {
-        let bundles = &board["bundles"];
-        let agents: Vec<Vec<String>> = agent_list(bundles)
-            .iter()
-            .map(|a| {
-                let pad = "  ".repeat(a["indent"].as_u64().unwrap_or(0) as usize);
-                vec![
-                    format!("{pad}{}", text(&a["label"])),
-                    or_dash(text(&a["bundle"])),
-                    or_dash(text(&a["state"])),
-                ]
-            })
-            .collect();
-        let plan = plan_of(bundles);
-        let entries: Vec<&Value> = plan["tasks"].as_array().into_iter().flatten().collect();
-        let count = |s: &str| entries.iter().filter(|t| t["status"] == s).count();
-        // the registry's six real states, failed and paused included
-        let by_status: Vec<Vec<String>> = team_task_registry::verbs::State::ALL
-            .iter()
-            .map(|s| vec![s.as_str().to_string(), count(s.as_str()).to_string()])
-            .collect();
-        let tasks: Vec<Vec<String>> = entries
-            .iter()
-            .map(|t| {
-                vec![
-                    or_dash(text(&t["id"])),
-                    or_dash(text(&t["source"])),
-                    or_dash(text(&t["holder"])),
-                    or_dash(text(&t["status"])),
-                ]
-            })
-            .collect();
-        // the mock's subline; held = running, the board's rule (`bundles_load`)
-        let mut summary = vec![
-            format!(
-                "{} tasks · {} held · {} blocked",
-                tasks.len(),
-                count("running"),
-                count("blocked")
-            ),
-            format!("{} agents", agents.len()),
-        ];
-        let f = &bundles["fleet"];
-        if let Some(r) = f["running"].as_u64() {
-            summary.push(format!("fleet {r} running"));
-        }
-        return model(
-            "board",
-            "Board",
-            summary,
-            vec![
-                section("agents", &["agent", "bundle", "state"], agents),
-                section("by status", &["state", "count"], by_status),
-                section("tasks", &["issue", "tracker", "holder", "status"], tasks),
-            ],
-        );
-    }
-    let agents: Vec<Vec<String>> = board["agents"]
-        .as_object()
-        .into_iter()
-        .flatten()
-        .map(|(id, a)| {
-            vec![
-                id.clone(),
-                or_dash(text(&a["state"])),
-                or_dash(text(&a["cost"])),
-            ]
-        })
-        .collect();
-    let counts: Vec<Vec<String>> = ["pending", "in_work", "done", "failed"]
-        .iter()
-        .map(|s| vec![s.to_string(), tasks_in(board, s).len().to_string()])
-        .collect();
-    model(
-        "board",
-        "Board",
-        vec![format!("{} agents", agents.len())],
-        vec![
-            section("agents", &["agent", "state", "cost"], agents),
-            section("tasks by state", &["state", "count"], counts),
-        ],
-    )
 }
 
 /// `owner/name` or `owner/name#N`, nothing else.
@@ -447,139 +306,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn queue_view_sorts_tasks_into_queued_taken_done_with_title_holder_age() {
-        let board = json!({"tasks": {
-            "pending": [{"id": "o/r#1", "title": "first", "claimers": [], "updated": 990}],
-            "in_work": [{"id": "o/r#2", "title": "second", "claimers": ["w1", "w2"], "updated": 700}],
-            "done": [{"id": "o/r#3", "title": "third", "claimers": ["w1"], "updated": 0}],
-            "failed": []}});
-        let m = queue_view(&board, 1000);
-        assert_eq!(m["kind"], "queue");
-        assert_eq!(names(&m), ["queued", "taken", "done"]);
-        assert_eq!(
-            m["sections"][0]["columns"],
-            json!(["title", "holder", "age"])
-        );
-        assert_eq!(rows(&m, 0), vec![row(&["first", "-", "10s"])]);
-        assert_eq!(rows(&m, 1), vec![row(&["second", "w1, w2", "5m"])]);
-        assert_eq!(rows(&m, 2), vec![row(&["third", "w1", "16m"])]);
-    }
-
-    #[test]
-    fn queue_view_age_is_saturating_seconds_minutes_hours() {
-        assert_eq!(age_text(0), "0s");
-        assert_eq!(age_text(59), "59s");
-        assert_eq!(age_text(90), "1m");
-        assert_eq!(age_text(7200), "2h");
-        let board = json!({"tasks": {"pending": [{"title": "t", "updated": 500}]}});
-        assert_eq!(
-            rows(&queue_view(&board, 100), 0),
-            vec![row(&["t", "-", "0s"])]
-        );
-        assert_eq!(
-            rows(&queue_view(&board, 7700), 0),
-            vec![row(&["t", "-", "2h"])]
-        );
-    }
-
-    #[test]
-    fn queue_view_empty_board_has_three_empty_sections_and_zero_counts() {
-        let m = queue_view(&json!({}), 5);
-        assert_eq!(names(&m).len(), 3);
-        for i in 0..3 {
-            assert!(rows(&m, i).is_empty());
-        }
-        assert_eq!(m["summary"][0], "0 queued, 0 taken, 0 done, 0 failed");
-    }
-
-    #[test]
-    fn queue_view_counts_failed_in_summary_but_has_no_failed_section() {
-        let board = json!({"tasks": {"failed": [{"title": "x"}, {"title": "y"}]}});
-        let m = queue_view(&board, 5);
-        assert_eq!(m["summary"][0], "0 queued, 0 taken, 0 done, 2 failed");
-        assert!(!names(&m).iter().any(|n| n.contains("fail")));
-    }
-
-    fn bundles_board() -> Value {
-        json!({"tasks": {}, "agents": {}, "bundles": {
-            "lead": "lead",
-            "fleet": {"running": 2},
-            "tree": {"id": "lead", "bundle": "project_lead", "state": "active", "children": [
-                {"id": "c1", "bundle": "coder", "state": "active", "children": [
-                    {"id": "c2", "bundle": "reviewer", "state": "active", "children": []}]}]},
-            "agents": [],
-            "tasks": [{"id": "t1", "source": "o/r#1", "holder": "c1", "status": "running"},
-                      {"id": "t2", "source": "o/r#2", "holder": {"subtree": "c1"}, "status": "waiting"},
-                      {"id": "t3", "source": "o/r#3", "holder": "c2", "status": "failed"},
-                      {"id": "t4", "source": "o/r#4", "holder": "c2", "status": "paused"}]}})
-    }
-
-    #[test]
-    fn board_view_bundles_mode_lists_agent_tree_and_registry_tasks() {
-        let m = board_view(&bundles_board());
-        assert_eq!(names(&m), ["agents", "by status", "tasks"]);
-        assert_eq!(
-            rows(&m, 0),
-            vec![
-                row(&["Lead", "project_lead", "active"]),
-                row(&["  coder", "coder", "active"]),
-                row(&["    reviewer", "reviewer", "active"]),
-            ]
-        );
-        assert_eq!(
-            m["sections"][2]["columns"],
-            json!(["issue", "tracker", "holder", "status"])
-        );
-        assert_eq!(
-            rows(&m, 2),
-            vec![
-                row(&["t1", "o/r#1", "c1", "running"]),
-                row(&["t2", "o/r#2", "subtree:c1", "waiting"]),
-                row(&["t3", "o/r#3", "c2", "failed"]),
-                row(&["t4", "o/r#4", "c2", "paused"]),
-            ]
-        );
-        assert_eq!(m["summary"][0], "4 tasks · 1 held · 0 blocked");
-        assert!(m["summary"].to_string().contains("fleet 2 running"));
-    }
-
-    #[test]
-    fn board_view_bundles_mode_counts_the_six_real_states_failed_and_paused_included() {
-        let m = board_view(&bundles_board());
-        assert_eq!(
-            rows(&m, 1),
-            vec![
-                row(&["waiting", "1"]),
-                row(&["running", "1"]),
-                row(&["blocked", "0"]),
-                row(&["done", "0"]),
-                row(&["failed", "1"]),
-                row(&["paused", "1"]),
-            ]
-        );
-    }
-
-    #[test]
-    fn board_view_without_bundles_shows_agents_and_status_counts() {
-        let board = json!({
-            "tasks": {"pending": [{"id": "a"}], "in_work": [], "done": [{"id": "b"}, {"id": "c"}], "failed": []},
-            "agents": {"w1": {"state": "coding", "cost": 1.5}}});
-        let m = board_view(&board);
-        assert_eq!(names(&m), ["agents", "tasks by state"]);
-        assert_eq!(rows(&m, 0), vec![row(&["w1", "coding", "1.5"])]);
-        assert_eq!(
-            rows(&m, 1),
-            vec![
-                row(&["pending", "1"]),
-                row(&["in_work", "0"]),
-                row(&["done", "2"]),
-                row(&["failed", "0"])
-            ]
-        );
-        assert!(board_view(&json!({})).is_object());
-    }
-
     fn reflect() -> Value {
         json!({
             "repos": ["acme/widgets", "acme/gadgets"],
@@ -724,8 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn service_kind_maps_the_three_team_modules_and_nothing_else() {
-        assert_eq!(service_kind("team_board.tools"), Some("board"));
+    fn service_kind_maps_the_two_team_modules_and_nothing_else() {
         assert_eq!(service_kind("team_github.tools"), Some("github"));
         assert_eq!(service_kind("team_dispatcher.tools"), Some("dispatcher"));
         assert_eq!(service_kind("ram_store.tools"), None);

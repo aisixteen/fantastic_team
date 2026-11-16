@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 /// Seconds the cost meter reports over.
 const WINDOW_S: u64 = 3600;
 
-/// One plain line of the board's load counts, for a digest. Numbers only: no
-/// mode, no bar, no "x / N". `None` until the board has given task counts.
+/// One plain line of the plan's load counts, for a digest. Numbers only: no
+/// mode, no bar, no "x / N". `None` until the plan has given task counts.
 pub fn load_line(load: &Value) -> Option<String> {
     let tasks = load.get("tasks")?;
     let workers = &load["workers"];

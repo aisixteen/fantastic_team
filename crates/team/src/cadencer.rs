@@ -1,7 +1,8 @@
 //! The cadencer (`team_cadencer.tools`): on a cadence each lead gets a short
 //! digest of the level directly below it. A sub-lead's line rolls up its whole
 //! subtree. Only changes since the last digest plus every stall are sent, and an
-//! empty digest is not sent. A lead with no AI gets its digest on the board.
+//! empty digest is not sent. A lead with no AI and no driver gets none: there is no one
+//! to read it.
 //!
 //! The builder is pure: it takes a snapshot of the tree and the previous
 //! snapshot. The bundle returns the digests; delivering them into each lead's
@@ -9,7 +10,7 @@
 //! and beats with the last tree given by a `tick`.
 //!
 //! Quiet mode still sends a short heartbeat digest every `HEARTBEAT_EVERY` beats
-//! to a lead that has an idle member while work waits in the queue, so a driver
+//! to a lead that has an idle member while tasks wait in the registry, so a driver
 //! never sleeps through queued work. Each group of the record's `group_settings` may set its own
 //! `cadence`, `stall_after`, `quiet` and `enabled`; an unset key follows the
 //! global setting (changed live by `set`).
@@ -24,7 +25,7 @@ use serde_json::{json, Value};
 use tokio::task::JoinHandle;
 
 use crate::cadence_feed::{self, CostMeter};
-use crate::puller::{KernelPeers, Peers};
+use crate::peers::{KernelPeers, Peers};
 
 /// The handler module name this bundle registers under.
 pub const HANDLER_MODULE: &str = "team_cadencer.tools";
@@ -41,7 +42,6 @@ pub mod verbs;
 const VIEW: &str = include_str!("cadencer/view.html");
 /// The verbs the view calls on the cadencer: its state, and the switch and settings.
 pub const VIEW_CALLS: [&str; 2] = ["status", "set"];
-const BOARD: &str = "board";
 
 /// One agent in a snapshot of the tree.
 #[derive(Clone, Debug, PartialEq)]
@@ -169,10 +169,10 @@ fn holds_task(n: &Node) -> bool {
     !n.task.is_empty() || n.open_inquiry
 }
 
-/// Stalled only while holding a task and idle past the threshold (the board's
-/// one definition, shared with the load counts).
+/// Stalled only while holding a task and idle past the threshold (the plan's one
+/// definition, shared with the load counts).
 fn stalled(n: &Node, s: &Settings) -> bool {
-    crate::board::is_stalled(holds_task(n), n.idle_s, s.stall_after_s)
+    crate::plan::is_stalled(holds_task(n), n.idle_s, s.stall_after_s)
 }
 
 fn changed(now: &Node, prev: Option<&Node>) -> bool {
@@ -245,14 +245,15 @@ pub(crate) fn build(tree: &[Node], prev: &[Node], s: &Settings) -> Vec<Digest> {
         .collect()
 }
 
-/// Where a lead's digest goes: its driver, else the lead itself when it has an AI, else the board.
-fn target_of(lead: &Node) -> String {
+/// Where a lead's digest goes: its driver, else the lead itself when it has an AI; a lead
+/// with neither has no reader, so it gets none.
+fn target_of(lead: &Node) -> Option<String> {
     if !lead.driver.is_empty() {
-        lead.driver.clone()
+        Some(lead.driver.clone())
     } else if lead.has_ai {
-        lead.id.clone()
+        Some(lead.id.clone())
     } else {
-        BOARD.to_string()
+        None
     }
 }
 
@@ -286,16 +287,13 @@ fn build_with(
                 rollup_line(&c.id, &group, s)
             });
         }
+        let Some(to) = target_of(lead) else {
+            continue;
+        };
         if lines.is_empty() {
             continue;
         }
-        out.push((
-            lead.id.clone(),
-            Digest {
-                to: target_of(lead),
-                lines,
-            },
-        ));
+        out.push((lead.id.clone(), Digest { to, lines }));
     }
     out
 }
@@ -321,16 +319,18 @@ fn heartbeat(
             .iter()
             .filter(|c| c.state == "idle" && !holds_task(c))
             .count();
+        let to = target_of(lead);
         let due = s.quiet
+            && to.is_some()
             && !global.off.contains(&lead.id)
             && !group_disabled(groups, &lead.id)
             && !got.iter().any(|(l, _)| *l == lead.id)
             && idle > 0
             && queued > 0;
-        if !due {
+        let Some(to) = to.filter(|_| due) else {
             counters.remove(&lead.id);
             continue;
-        }
+        };
         let c = counters.entry(lead.id.clone()).or_insert(0);
         *c += 1;
         if *c >= HEARTBEAT_EVERY {
@@ -338,7 +338,7 @@ fn heartbeat(
             out.push((
                 lead.id.clone(),
                 Digest {
-                    to: target_of(lead),
+                    to,
                     lines: vec![format!("heartbeat: {idle} idle, {queued} queued")],
                 },
             ));
@@ -623,7 +623,7 @@ fn beat(inner: &mut Inner) -> Vec<Digest> {
 }
 
 /// The spawned tree (bundles mode) as nodes, with its load: the registries' reads
-/// through the public verbs ([`crate::board::bundles_tree_rows`]), and the `status` of
+/// through the public verbs ([`crate::plan::tree_rows`]), and the `status` of
 /// each lead, whose `inquiry_from` says an inquiry is open on it. `None` when the
 /// project_lead's branch could not be read, so the last tree stays.
 async fn read_bundles(
@@ -632,7 +632,7 @@ async fn read_bundles(
     stall_after_s: u64,
 ) -> Option<(Vec<Node>, Value)> {
     let now = fantastic_ai_core::helpers::now_secs() as u64;
-    let (rows, load) = crate::board::bundles_tree_rows(peers, bundles, now, stall_after_s).await;
+    let (rows, load) = crate::plan::tree_rows(peers, bundles, now, stall_after_s).await;
     if rows.is_empty() {
         return None;
     }
@@ -1039,12 +1039,15 @@ mod tests {
     }
 
     #[test]
-    fn lead_without_ai_digest_goes_to_board() {
+    fn lead_without_ai_or_driver_gets_no_digest() {
         let mut t = two_by_three();
-        t[1].has_ai = false; // A has no AI
+        t[1].has_ai = false; // A has no AI and no driver: nobody reads a digest for it
         let ds = build(&t, &[], &Settings::default());
         assert!(digest_for(&ds, "A").is_none());
-        assert_eq!(digest_for(&ds, BOARD).unwrap().lines.len(), 3);
+        assert_eq!(ds.len(), 2, "the other leads keep theirs: {ds:?}");
+        t[1].driver = "drv".into(); // with a driver, the driver reads it
+        let ds = build(&t, &[], &Settings::default());
+        assert_eq!(digest_for(&ds, "drv").unwrap().lines.len(), 3);
     }
 
     #[test]
@@ -1381,8 +1384,8 @@ mod tests {
     }
 
     /// The load object for a fixed list (`done` tasks done, `pending` queued), or for a
-    /// refilling queue when `recent`: its done tasks finished in the last hour.
-    fn board_load(done: usize, pending: usize, recent: bool) -> Value {
+    /// refilling registry when `recent`: its done tasks finished in the last hour.
+    fn plan_load(done: usize, pending: usize, recent: bool) -> Value {
         json!({
             "workers": {"busy": 1, "idle": 0, "stalled": 0},
             "tasks": {"held": 0, "in_review": 0, "done": done, "blocked": 0, "queued": pending},
@@ -1447,7 +1450,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn scripted_driver_receives_the_beat_digest_via_deliver() {
         // A fixed list: 12 done, 17 queued.
-        let (fixed, fb) = beat_and_deliver(board_load(12, 17, false), "12 / 29 done").await;
+        let (fixed, fb) = beat_and_deliver(plan_load(12, 17, false), "12 / 29 done").await;
         let seen = fixed.seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 1, "one digest to the driver");
         assert!(seen[0].contains("queued 17"), "{}", seen[0]);
@@ -1457,7 +1460,7 @@ mod tests {
 
         // A refilling queue: 5 queued, 12 done in the last hour, no fixed total.
         let (queue, qb) = beat_and_deliver(
-            board_load(12, 5, true),
+            plan_load(12, 5, true),
             "load: 5 queued, 12 done in the last hour",
         )
         .await;
@@ -1676,13 +1679,13 @@ mod tests {
         assert_eq!(b.groups, a.groups);
     }
 
-    /// The live check the issue asks for: after a real beat (the board read, the
+    /// The live check the issue asks for: after a real beat (the plan read, the
     /// digest built and delivered to the driver) `status` shows the digest bytes per
     /// hour. The fake `Peers` stands in for the driver, since no stock agent
     /// answers `send`.
     #[tokio::test(start_paused = true)]
     async fn status_shows_digest_bytes_per_hour_after_a_live_beat() {
-        let load = board_load(12, 17, false);
+        let load = plan_load(12, 17, false);
         let (driver, b) = beat_and_deliver(load, "ok").await;
         let seen = driver.seen.lock().unwrap().clone();
         assert_eq!(seen.len(), 1);

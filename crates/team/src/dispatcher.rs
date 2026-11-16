@@ -2,7 +2,7 @@
 //! group one flat list in which each worker is followed by its subagents
 //! expander, and the subagents (kernel agents whose parent is that worker) show
 //! only when the worker is expanded. A tree (`tree`) of nodes (team → group →
-//! worker), each row with state, current task, time and cost; per team its
+//! worker), each row with state, current task and time; per team its
 //! connections (present/missing, never values); and what is waiting for the
 //! person. The dispatcher only reads and asks: no verb assigns work. Opening a
 //! worker or a subagent returns a full-screen chat for that agent alone; opening
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::puller::{KernelPeers, Peers};
+use crate::peers::{KernelPeers, Peers};
 
 /// The bundle's handler module name.
 pub const HANDLER_MODULE: &str = "team_dispatcher.tools";
@@ -25,21 +25,17 @@ const MAN: &str = "The main view of the team's web UI: the sidebar (workers per 
 pub mod record;
 pub mod verbs;
 
-/// One worker as the dispatcher shows it.
+/// One worker as the dispatcher shows it, from the tasks it holds in the task registry.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Row {
     /// The worker's agent id.
     pub id: String,
-    /// `busy`, `idle`, `stalled N min`, `done`, `failed`.
+    /// `busy`, `idle`, `stalled N min`, `done`, `paused`.
     pub state: String,
-    /// The current task (`repo#number`), if any.
+    /// The current task (the registry's id, `owner/name#N`), if any.
     pub task: Option<String>,
-    /// Minutes since the last change, when it is known.
+    /// Minutes since the task last moved, when it holds one.
     pub minutes: Option<u64>,
-    /// The number of the pull request of its task, when the task has a link.
-    pub pr: Option<u64>,
-    /// Its cost so far.
-    pub cost: f64,
 }
 
 /// One connection of a team: its name and whether it is set. Never its value.
@@ -51,87 +47,51 @@ pub struct Connection {
     pub status: &'static str,
 }
 
-/// The state label for a row. A task that has not moved past `limit` minutes
-/// reads as stalled.
-pub fn state_label(task_status: &str, minutes: Option<u64>, limit: u64) -> String {
-    if task_status == "in_work" {
+/// The state label for a row: the plan's state ([`crate::plan::rows`]), except that a
+/// busy worker whose task has not moved past `limit` minutes reads as stalled.
+pub fn state_label(state: &str, minutes: Option<u64>, limit: u64) -> String {
+    if state == "busy" {
         if let Some(m) = minutes {
             if m > limit {
                 return format!("stalled {m} min");
             }
         }
-        return "busy".into();
     }
-    match task_status {
-        "done" => "done".into(),
-        "failed" => "failed".into(),
-        _ => "idle".into(),
-    }
+    state.to_string()
 }
 
-/// The pull request number in a task's `pr` link: the digits after `/pull/`, or
-/// after a trailing `#` (`owner/repo#7`). None for anything else.
-pub fn pr_number(link: &str) -> Option<u64> {
-    let link = link.trim().trim_end_matches('/');
-    let digits = |rest: &str| -> Option<u64> {
-        let d: String = rest.chars().take_while(char::is_ascii_digit).collect();
-        d.parse().ok()
-    };
-    if let Some(i) = link.rfind("/pull/") {
-        return digits(&link[i + 6..]);
-    }
-    let i = link.rfind('#')?;
-    let rest = &link[i + 1..];
-    (!rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())).then(|| digits(rest))?
+/// The rows of `workers` from the task registry's `list` reply: each worker's state, task
+/// and minutes are the plan's one rule ([`crate::plan::rows`], over the workers as the
+/// children of one node), the state labelled by [`state_label`].
+pub fn rows_from(workers: &[String], tasks: &Value, now: u64, limit: u64) -> Vec<Row> {
+    let kids: Vec<Value> = workers
+        .iter()
+        .map(|w| json!({"id": w, "children": []}))
+        .collect();
+    let tree = json!({"id": "", "children": kids});
+    crate::plan::rows(&tree, tasks, now)
+        .into_iter()
+        .filter(|r| !r["parent"].is_null())
+        .map(|r| {
+            let task = r["task"].as_str().filter(|t| !t.is_empty()).map(str::to_string);
+            let minutes = task
+                .as_ref()
+                .map(|_| r["idle_s"].as_u64().unwrap_or(0) / 60);
+            Row {
+                id: r["id"].as_str().unwrap_or("").to_string(),
+                state: state_label(r["state"].as_str().unwrap_or("idle"), minutes, limit),
+                task,
+                minutes,
+            }
+        })
+        .collect()
 }
 
-/// Build the row for one worker from the board's snapshot.
-pub fn row_of(worker: &str, board: &Value, now: u64, limit: u64) -> Row {
-    let agent = &board["agents"][worker];
-    let cost = agent["cost"].as_f64().unwrap_or(0.0);
-    // The worker's current task: the first in-work task it claims.
-    let mut task = None;
-    let mut status = "pending";
-    let mut updated = 0u64;
-    let mut pr = None;
-    if let Some(tasks) = board["tasks"]["in_work"].as_array() {
-        for t in tasks {
-            let claimed = t["claimers"]
-                .as_array()
-                .is_some_and(|c| c.iter().any(|x| x.as_str() == Some(worker)));
-            if claimed {
-                task = t["id"].as_str().map(str::to_string);
-                status = "in_work";
-                updated = t["updated"].as_u64().unwrap_or(0);
-                pr = t["pr"].as_str().and_then(pr_number);
-                break;
-            }
-        }
-    }
-    if pr.is_none() && status != "in_work" {
-        // No task in work: the newest done task it claimed that has a pull request.
-        let mut newest = 0u64;
-        for t in board["tasks"]["done"].as_array().into_iter().flatten() {
-            let mine = t["claimers"]
-                .as_array()
-                .is_some_and(|c| c.iter().any(|x| x.as_str() == Some(worker)));
-            let n = t["pr"].as_str().and_then(pr_number);
-            let at = t["updated"].as_u64().unwrap_or(0);
-            if mine && n.is_some() && (pr.is_none() || at >= newest) {
-                pr = n;
-                newest = at;
-            }
-        }
-    }
-    let minutes = (updated > 0).then(|| now.saturating_sub(updated) / 60);
-    Row {
-        id: worker.into(),
-        state: state_label(status, minutes, limit),
-        task,
-        minutes,
-        pr,
-        cost,
-    }
+/// The row of one worker ([`rows_from`] for it alone).
+pub fn row_of(worker: &str, tasks: &Value, now: u64, limit: u64) -> Row {
+    rows_from(&[worker.to_string()], tasks, now, limit)
+        .pop()
+        .expect("one worker, one row")
 }
 
 /// The tree of a team: the team, its groups (each with its workers), and the
@@ -230,7 +190,7 @@ fn worker_items(
     let mut out = vec![json!({
         "kind": "worker", "style": "worker", "id": r.id, "state": r.state,
         "task": r.task, "busy": r.state == "busy",
-        "minutes": r.minutes, "pr": r.pr,
+        "minutes": r.minutes,
         "stalled": r.state.starts_with("stalled"),
     })];
     out.push(json!({
@@ -340,14 +300,6 @@ pub fn view_open(node: &str) -> Value {
     })
 }
 
-/// The handler module of a live agent, if any.
-fn module_of(kernel: &fantastic_kernel::Kernel, id: &str) -> Option<String> {
-    kernel
-        .agents
-        .get(&fantastic_kernel::AgentId::from(id))
-        .and_then(|e| e.value().handler_module.clone())
-}
-
 /// What a click shows: a worker or subagent opens its full-screen chat; a group
 /// or team opens a dispatcher bound to that node.
 pub fn open_target(node: &str, kind: &str) -> Value {
@@ -447,41 +399,39 @@ pub fn subtree(
     }
 }
 
-/// The rows of every worker the team knows: those in its groups and those on the board.
-async fn rows_of(
-    peers: &dyn Peers,
-    board: &str,
-    groups: &BTreeMap<String, Vec<String>>,
-    limit: u64,
-    now: u64,
-) -> Vec<Row> {
-    let snap = peers.ask(board, json!({"type": "board"})).await;
-    rows_from(&snap, groups, limit, now)
-}
-
-/// [`rows_of`] from a board snapshot already in hand.
-fn rows_from(
-    snap: &Value,
-    groups: &BTreeMap<String, Vec<String>>,
-    limit: u64,
-    now: u64,
-) -> Vec<Row> {
+/// The ids the rows cover: the workers of the groups, then every agent that holds a task
+/// in the registry (a string `holder`) and is in no group, in the order met.
+fn worker_ids(groups: &BTreeMap<String, Vec<String>>, tasks: &Value) -> Vec<String> {
     let mut ids: Vec<String> = groups.values().flatten().cloned().collect();
-    if let Some(agents) = snap["agents"].as_object() {
-        for k in agents.keys() {
-            if !ids.contains(k) {
-                ids.push(k.clone());
+    for t in tasks["tasks"].as_array().into_iter().flatten() {
+        if let Some(h) = t["holder"].as_str() {
+            if !ids.iter().any(|i| i == h) {
+                ids.push(h.to_string());
             }
         }
     }
-    ids.iter().map(|w| row_of(w, snap, now, limit)).collect()
+    ids
+}
+
+/// The rows of every worker the team knows ([`worker_ids`]), from the task registry's
+/// `list` (an error reply gives rows that hold nothing).
+async fn rows_of(
+    peers: &dyn Peers,
+    groups: &BTreeMap<String, Vec<String>>,
+    limit: u64,
+    now: u64,
+) -> Vec<Row> {
+    let tasks = peers
+        .ask(crate::tree::TASKS_ID, json!({"type": "list"}))
+        .await;
+    rows_from(&worker_ids(groups, &tasks), &tasks, now, limit)
 }
 
 /// How many levels the page indents an agent row at most.
 pub const INDENT_CAP: usize = 4;
 
-/// The agents of bundles mode as one flat depth-first list for the page, from the board's
-/// `bundles` section: the lead first (`lead: true`, label "Lead"), then every node of the
+/// The agents of bundles mode as one flat depth-first list for the page, from the plan
+/// ([`crate::plan::read`]): the lead first (`lead: true`, label "Lead"), then every node of the
 /// tree in its child order. Each item is {id, bundle, state, depth, indent, guides, lead,
 /// label, has_children}; `indent` and `guides` stop at [`INDENT_CAP`], `depth` keeps counting. With no
 /// tree but a lead id, just the lead; with neither, nothing.
@@ -553,8 +503,8 @@ pub fn agent_list(bundles: &Value) -> Vec<Value> {
     out
 }
 
-/// The plan the lead's pane draws, from the board's `bundles` section: {lead, fleet,
-/// tasks}; each task is {id, source, holder, status} with the holder as text (an agent id,
+/// The plan the lead's pane draws, from the plan's section ([`crate::plan::read`]): {lead,
+/// fleet, tasks}; each task is {id, source, holder, status} with the holder as text (an agent id,
 /// or "subtree:<id>").
 pub fn plan_of(bundles: &Value) -> Value {
     let tasks: Vec<Value> = bundles["tasks"]
@@ -815,20 +765,17 @@ async fn remove_worker(
 
 /// The sidebar reply without `services`: the groups, workers, load, and in bundles mode the
 /// fleet, the agents and the plan.
-#[allow(clippy::too_many_arguments)]
 async fn sidebar_reply(
     kernel: &Arc<fantastic_kernel::Kernel>,
     peers: &KernelPeers,
     meta: &serde_json::Map<String, Value>,
-    board: &str,
     team: &str,
     groups: &BTreeMap<String, Vec<String>>,
     limit: u64,
     now: u64,
     expanded: &Option<Vec<String>>,
 ) -> Value {
-    let snap = peers.ask(board, json!({"type": "board"})).await;
-    let rows = rows_from(&snap, groups, limit, now);
+    let rows = rows_of(peers, groups, limit, now).await;
     let agents = agent_table(kernel);
     let subs: BTreeMap<String, Vec<Sub>> = rows
         .iter()
@@ -843,67 +790,45 @@ async fn sidebar_reply(
         load = cad["load"].clone();
     }
     let mut out = sidebar(team, groups, &rows, &subs, &expanded_of(expanded), &load);
-    // The bundles registry's count (agents running, and the cap), when the
-    // team has a registry and it answers.
+    // Bundles mode: the plan read through the registries' public verbs gives the count
+    // (agents running), the lead and its agents, and the tasks.
     if let Some(bundles) = meta.get("bundles").and_then(Value::as_str) {
-        let c = peers.ask(bundles, json!({"type": "get_count"})).await;
-        if let Some(f) = fleet_of(&c) {
-            out["fleet"] = f;
+        let plan = crate::plan::read(peers, bundles).await;
+        if !plan["fleet"].is_null() {
+            out["fleet"] = plan["fleet"].clone();
         }
-        // The lead and its agents, and the plan, from the board's bundles section.
-        if snap["bundles"].is_object() {
-            let list = agent_list(&snap["bundles"]);
-            grant_agents(kernel, &list);
-            out["agents"] = json!(list);
-            out["plan"] = plan_of(&snap["bundles"]);
-        }
+        let list = agent_list(&plan);
+        grant_agents(kernel, &list);
+        out["agents"] = json!(list);
+        out["plan"] = plan_of(&plan);
     }
     out
 }
 
 /// The team's own services the page lists under "Team" and opens in the right pane:
-/// the dispatcher itself, the board, the queue (the board's store) and each github
-/// connector. Only agents that exist are listed.
-pub fn services_of(kernel: &fantastic_kernel::Kernel, me: &str, board: &str) -> Vec<Value> {
-    let live = |id: &str| {
-        kernel
-            .agents
-            .contains_key(&fantastic_kernel::AgentId::from(id))
-    };
+/// the dispatcher itself, each task registry (kind `tasks`: it opens as its own html
+/// view), each github connector, and the kinds a declaration draws. Only agents that
+/// exist are listed.
+pub fn services_of(kernel: &fantastic_kernel::Kernel, me: &str) -> Vec<Value> {
     let mut out = vec![json!({"id": me, "kind": "dispatcher", "label": "Dispatcher"})];
-    if live(board) {
-        out.push(json!({"id": board, "kind": "board", "label": "Board"}));
-        let store = kernel
+    let by_module = |module: &str| -> Vec<String> {
+        let mut ids: Vec<String> = kernel
             .agents
-            .get(&fantastic_kernel::AgentId::from(board))
-            .and_then(|e| {
-                e.meta
-                    .read()
-                    .ok()
-                    .and_then(|m| m.get("store").and_then(Value::as_str).map(str::to_string))
-            });
-        if let Some(q) = store.filter(|q| live(q)) {
-            out.push(json!({"id": q, "kind": "queue", "label": "Queue"}));
-        }
+            .iter()
+            .filter(|e| e.value().handler_module.as_deref() == Some(module))
+            .map(|e| e.value().id.0.clone())
+            .collect();
+        ids.sort();
+        ids
+    };
+    for id in by_module(team_task_registry::HANDLER_MODULE) {
+        out.push(json!({"id": id, "kind": "tasks", "label": format!("Tasks ({id})")}));
     }
-    let mut gh: Vec<String> = kernel
-        .agents
-        .iter()
-        .filter(|e| {
-            e.value()
-                .handler_module
-                .as_deref()
-                .and_then(crate::agent_views::service_kind)
-                == Some("github")
-        })
-        .map(|e| e.value().id.0.clone())
-        .collect();
-    gh.sort();
-    for id in gh {
+    for id in by_module(team_github_connector::HANDLER_MODULE) {
         out.push(json!({"id": id, "kind": "github", "label": format!("GitHub ({id})")}));
     }
-    // The kinds a declaration draws (`declared_views`): cadencer, puller
-    // and git, in that order, each by id.
+    // The kinds a declaration draws (`declared_views`): cadencer and git, in that order,
+    // each by id.
     let declared = crate::declared_views::declared_agents(kernel);
     for kind in crate::declared_views::WEB_KINDS {
         for (id, d) in declared.iter().filter(|(_, d)| d.kind == kind) {
@@ -920,7 +845,6 @@ async fn panel_reply(
     kernel: &Arc<fantastic_kernel::Kernel>,
     peers: &KernelPeers,
     meta: &serde_json::Map<String, Value>,
-    board: &str,
     team: &str,
     groups: &BTreeMap<String, Vec<String>>,
     limit: u64,
@@ -932,16 +856,6 @@ async fn panel_reply(
     let kind = svc["kind"].as_str().unwrap_or("");
     let ok = |r: &Value| r.is_object() && r.get("error").is_none();
     let model = match kind {
-        "queue" | "board" => {
-            let snap = peers.ask(board, json!({"type": "board"})).await;
-            if !ok(&snap) {
-                v::unavailable(kind, svc["label"].as_str().unwrap_or(kind))
-            } else if kind == "queue" {
-                v::queue_view(&snap, now)
-            } else {
-                v::board_view(&snap)
-            }
-        }
         "github" => {
             let r = peers.ask(node, json!({"type": "reflect"})).await;
             if ok(&r) {
@@ -951,18 +865,7 @@ async fn panel_reply(
             }
         }
         "dispatcher" => {
-            let sb = sidebar_reply(
-                kernel,
-                peers,
-                meta,
-                board,
-                team,
-                groups,
-                limit,
-                now,
-                &None,
-            )
-            .await;
+            let sb = sidebar_reply(kernel, peers, meta, team, groups, limit, now, &None).await;
             v::dispatcher_view(&sb)
         }
         other => match crate::declared_views::decl_by_kind(other) {
@@ -1031,7 +934,6 @@ impl fantastic_kernel::bundle::Handler for DispatcherBundle {
                 .and_then(|v| v.as_str().map(str::to_string))
                 .unwrap_or_default()
         };
-        let board = text("board");
         let team = text("team");
         let limit = record::RECORD
             .get(&meta, "stall_minutes")
@@ -1048,42 +950,42 @@ impl fantastic_kernel::bundle::Handler for DispatcherBundle {
             verbs::Call::Reflect(_) => json!({"id": agent_id.as_str(), "sentence": MAN}),
             verbs::Call::Tree(a) => {
                 let node = a.node.unwrap_or_else(|| team.clone());
-                let rows = rows_of(&peers, &board, &groups, limit, now).await;
+                let rows = rows_of(&peers, &groups, limit, now).await;
                 subtree(&team, &groups, &rows, &node)
             }
             verbs::Call::Sidebar(a) => {
                 let mut out = sidebar_reply(
-                    kernel, &peers, &meta, &board, &team, &groups, limit, now, &a.expanded,
+                    kernel, &peers, &meta, &team, &groups, limit, now, &a.expanded,
                 )
                 .await;
-                out["services"] = json!(services_of(kernel, agent_id.as_str(), &board));
+                out["services"] = json!(services_of(kernel, agent_id.as_str()));
                 out
             }
             verbs::Call::Open(a) => {
                 let node = a.node;
-                let services = services_of(kernel, agent_id.as_str(), &board);
+                let services = services_of(kernel, agent_id.as_str());
                 if let Some(svc) = services.iter().find(|s| s["id"] == node.as_str()) {
-                    let out = panel_reply(
-                        kernel, &peers, &meta, &board, &team, &groups, limit, now, svc,
-                    )
-                    .await;
+                    // A task registry opens as its own html view (its `reflect` carries
+                    // it): the page's leg gets `reflect` and the view's two reads on it,
+                    // nothing else (the one view grant, as at boot; a registry made since
+                    // then gets it here).
+                    if svc["kind"] == "tasks" {
+                        crate::declared_views::grant_views(kernel);
+                        return Ok(Some(view_open(&node)));
+                    }
+                    let out =
+                        panel_reply(kernel, &peers, &meta, &team, &groups, limit, now, svc).await;
                     return Ok(Some(out));
-                }
-                // A task registry opens as its own html view (its `reflect` carries it): the
-                // page's leg gets `reflect` and the view's two reads on it, nothing else (the
-                // one view grant, as at boot; a registry made since then gets it here).
-                if module_of(kernel, &node).as_deref() == Some(team_task_registry::HANDLER_MODULE) {
-                    crate::declared_views::grant_views(kernel);
-                    return Ok(Some(view_open(&node)));
                 }
                 let kind = kind_of(&node, &team, &groups);
                 // A spawned lead or child is chatted with like a worker: grant it now.
-                // Only an id the board's bundles tree names is granted, never an arbitrary one.
-                if kind == "worker" && meta.get("bundles").is_some() {
-                    let snap = peers.ask(&board, json!({"type": "board"})).await;
-                    let list = agent_list(&snap["bundles"]);
-                    if list.iter().any(|a| a["id"] == node.as_str()) {
-                        grant_agents(kernel, &list);
+                // Only an id the plan's tree names is granted, never an arbitrary one.
+                if let Some(bundles) = meta.get("bundles").and_then(Value::as_str) {
+                    if kind == "worker" {
+                        let list = agent_list(&crate::plan::read(&peers, bundles).await);
+                        if list.iter().any(|a| a["id"] == node.as_str()) {
+                            grant_agents(kernel, &list);
+                        }
                     }
                 }
                 let mut out = open_target(&node, kind);
@@ -1161,18 +1063,19 @@ mod tests {
     use super::*;
     use crate::test_boot::{boot_at, Booted, Seed};
 
-    fn board() -> Value {
-        json!({
-            "tasks": {"in_work": [{"id": "r#1", "claimers": ["w1"], "updated": 0}], "done": [], "pending": [], "failed": []},
-            "agents": {"w1": {"state": "coding", "cost": 1.5}, "w2": {"state": "", "cost": 0.0}}
-        })
+    /// The task registry's `list`: `w1` runs `r#1` since 0; `w2` holds nothing.
+    fn tasks() -> Value {
+        json!({"tasks": [
+            {"id": "r#1", "source": "gh:r#1", "holder": "w1", "status": "running",
+             "history": [{"from": null, "to": "w1", "by": "lead", "at": 0.0}], "report": null}
+        ]})
     }
 
     #[test]
     fn tree_groups_workers_under_groups_under_teams() {
         let mut groups = BTreeMap::new();
         groups.insert("g1".to_string(), vec!["w1".to_string()]);
-        let rows = vec![row_of("w1", &board(), 0, 30), row_of("w2", &board(), 0, 30)];
+        let rows = vec![row_of("w1", &tasks(), 0, 30), row_of("w2", &tasks(), 0, 30)];
         let t = build_tree("team", &groups, &rows);
         assert_eq!(t["kind"], "team");
         assert_eq!(t["children"][0]["kind"], "group");
@@ -1181,63 +1084,41 @@ mod tests {
     }
 
     #[test]
-    fn row_shows_state_task_time_cost() {
-        let r = row_of("w1", &board(), 600, 30);
+    fn row_shows_state_and_task_from_the_registry() {
+        let r = row_of("w1", &tasks(), 600, 30);
         assert_eq!(r.task.as_deref(), Some("r#1"));
-        assert_eq!(r.cost, 1.5);
+        assert_eq!(r.state, "busy");
+        let idle = row_of("w2", &tasks(), 600, 30);
+        assert_eq!((idle.state.as_str(), idle.task.as_deref()), ("idle", None));
+        // the plan's states pass through: done and paused
+        let more = json!({"tasks": [
+            {"id": "a", "source": "s", "holder": "w3", "status": "done", "history": []},
+            {"id": "b", "source": "s", "holder": "w4", "status": "paused", "history": []}
+        ]});
+        assert_eq!(row_of("w3", &more, 1, 30).state, "done");
+        assert_eq!(row_of("w4", &more, 1, 30).state, "paused");
     }
 
     #[test]
     fn row_shows_minutes_on_the_task() {
-        let b = json!({
-            "tasks": {"in_work": [{"id": "r#1", "claimers": ["w1"], "updated": 600}], "done": [], "pending": [], "failed": []},
-            "agents": {}
-        });
+        let b = json!({"tasks": [
+            {"id": "r#1", "source": "s", "holder": "w1", "status": "running",
+             "history": [{"from": null, "to": "w1", "by": "lead", "at": 600.0}], "report": null}
+        ]});
         let r = row_of("w1", &b, 1200, 30);
         assert_eq!(r.minutes, Some(10));
         // A worker with no task has no minutes.
         assert_eq!(row_of("w2", &b, 1200, 30).minutes, None);
-    }
-
-    #[test]
-    fn row_carries_the_pr_number_of_its_done_task() {
-        let b = json!({
-            "tasks": {"in_work": [], "pending": [], "failed": [], "done": [
-                {"id": "r#1", "claimers": ["w1"], "updated": 100, "pr": "https://github.com/o/r/pull/7"},
-                {"id": "r#2", "claimers": ["w1"], "updated": 300, "pr": "https://github.com/o/r/pull/9"},
-                {"id": "r#3", "claimers": ["w1"], "updated": 900},
-                {"id": "r#4", "claimers": ["w3"], "updated": 400, "pr": "https://github.com/o/r/pull/11"}
-            ]},
-            "agents": {}
-        });
-        // The most recently updated done task that has a PR.
-        assert_eq!(row_of("w1", &b, 1000, 30).pr, Some(9));
-        assert_eq!(row_of("w2", &b, 1000, 30).pr, None);
-        // A task in hand with a PR shows that PR.
-        let held = json!({
-            "tasks": {"in_work": [{"id": "r#5", "claimers": ["w2"], "updated": 10, "pr": "o/r#12"}], "done": [], "pending": [], "failed": []},
-            "agents": {}
-        });
-        assert_eq!(row_of("w2", &held, 100, 30).pr, Some(12));
-    }
-
-    #[test]
-    fn pr_number_reads_url_and_hash_forms() {
-        assert_eq!(pr_number("https://github.com/o/r/pull/9"), Some(9));
-        assert_eq!(pr_number("https://github.com/o/r/pull/9/"), Some(9));
-        assert_eq!(pr_number("o/r#42"), Some(42));
-        assert_eq!(pr_number("#7"), Some(7));
-        assert_eq!(pr_number("https://github.com/o/r/pull/"), None);
-        assert_eq!(pr_number("not a pr"), None);
-        assert_eq!(pr_number(""), None);
+        // A task that has not moved past the limit reads as stalled.
+        assert_eq!(row_of("w1", &b, 600 + 31 * 60, 30).state, "stalled 31 min");
     }
 
     #[test]
     fn row_of_carries_minutes_into_sidebar_item() {
-        let b = json!({
-            "tasks": {"in_work": [{"id": "r#1", "claimers": ["w1"], "updated": 1000}], "done": []},
-            "agents": {"w1": {"cost": 0.0}}
-        });
+        let b = json!({"tasks": [
+            {"id": "r#1", "source": "s", "holder": "w1", "status": "running",
+             "history": [{"from": null, "to": "w1", "by": "lead", "at": 1000.0}], "report": null}
+        ]});
         let r = row_of("w1", &b, 1120, 30);
         assert_eq!(r.minutes, Some(2));
         let items = worker_items(&r, &BTreeMap::new(), &BTreeSet::new());
@@ -1245,13 +1126,27 @@ mod tests {
         let idle = row_of("w2", &b, 1120, 30);
         let items = worker_items(&idle, &BTreeMap::new(), &BTreeSet::new());
         assert!(items[0]["minutes"].is_null());
-        assert!(items[0]["pr"].is_null());
     }
 
     #[test]
     fn stalled_row_names_minutes() {
-        assert_eq!(state_label("in_work", Some(45), 30), "stalled 45 min");
-        assert_eq!(state_label("in_work", Some(5), 30), "busy");
+        assert_eq!(state_label("busy", Some(45), 30), "stalled 45 min");
+        assert_eq!(state_label("busy", Some(5), 30), "busy");
+        assert_eq!(state_label("done", Some(45), 30), "done");
+    }
+
+    #[test]
+    fn worker_ids_are_the_groups_members_then_the_registrys_holders() {
+        let mut groups = BTreeMap::new();
+        groups.insert("g".to_string(), vec!["w1".to_string()]);
+        let tasks = json!({"tasks": [
+            {"id": "a", "holder": "w1", "status": "running"},
+            {"id": "b", "holder": "w9", "status": "running"},
+            {"id": "c", "holder": {"subtree": "sub"}, "status": "running"},
+            {"id": "d", "holder": null, "status": "waiting"}
+        ]});
+        assert_eq!(worker_ids(&groups, &tasks), ["w1", "w9"]);
+        assert_eq!(worker_ids(&groups, &json!({"error": "down"})), ["w1"]);
     }
 
     #[test]
@@ -1421,7 +1316,7 @@ mod tests {
     }
 
     fn rows_w() -> Vec<Row> {
-        vec![row_of("w1", &board(), 0, 30), row_of("w2", &board(), 0, 30)]
+        vec![row_of("w1", &tasks(), 0, 30), row_of("w2", &tasks(), 0, 30)]
     }
 
     #[test]
@@ -1668,10 +1563,9 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_worker_item_has_minutes_and_pr() {
+    fn sidebar_worker_item_has_minutes() {
         let mut rows = rows_w();
         rows[0].minutes = Some(2);
-        rows[0].pr = Some(9);
         let sb = sidebar_of(&rows, &Value::Null);
         let items = group_items(&sb, "A");
         let w1 = items
@@ -1679,12 +1573,11 @@ mod tests {
             .find(|i| i["kind"] == "worker" && i["id"] == "w1")
             .unwrap();
         assert_eq!(w1["minutes"], 2);
-        assert_eq!(w1["pr"], 9);
         let w2 = items
             .iter()
             .find(|i| i["kind"] == "worker" && i["id"] == "w2")
             .unwrap();
-        assert!(w2["minutes"].is_null() && w2["pr"].is_null(), "{w2}");
+        assert!(w2["minutes"].is_null(), "{w2}");
     }
 
     #[test]
@@ -1801,7 +1694,7 @@ mod tests {
     }
 
     /// A kernel with a dispatcher (the agent verbs on the root, `bundles` naming the
-    /// registry), a bundles registry whose `tiers` field holds the tier `t`, a board record,
+    /// registry), a bundles registry whose `tiers` field holds the tier `t`,
     /// the stock tree's store `memory`, and one group `g` with `w1`.
     async fn kernel_with_groups(dir: &std::path::Path) -> Booted {
         use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
@@ -1812,8 +1705,6 @@ mod tests {
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
                 "handler_module": HANDLER_MODULE, "can_call": can_call,
                 "bundles": "bundles", "groups": {"g": ["w1"]}}),
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
-                "handler_module": "ram_store.tools"}),
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "bundles",
                 "handler_module": "agentic_resources.tools",
                 "tiers": {"t": {"handler_module": "ai_chat.tools", "model": "m",
@@ -2103,9 +1994,7 @@ mod tests {
         let kernel = boot_at(dir.path(), Seed::Stock, &[register_load], None).await;
         for item in [
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
-                "handler_module": HANDLER_MODULE, "can_call": {"board": "*", "cadencer": "*"}}),
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
-                "handler_module": "load_test.tools", "callable_by": {"dispatcher": "*"}}),
+                "handler_module": HANDLER_MODULE, "can_call": {"cadencer": "*"}}),
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "cadencer",
                 "handler_module": "load_test.tools", "callable_by": {"dispatcher": "*"}}),
         ] {
@@ -2327,22 +2216,26 @@ mod tests {
         assert_eq!(plan_of(&Value::Null)["tasks"], json!([]));
     }
 
-    /// A board stand-in: answers `board` with the `bundles` section its meta holds (when any).
-    struct BundlesBoard;
+    /// A registry stand-in for the plan's reads: as the bundles registry it answers `fleet`
+    /// with the `fleet` its meta holds and `get_count` with {running: 2}; as the task
+    /// registry it answers `list` with the `tasks` its meta holds.
+    struct PlanPeer;
 
     fn register_bundles_mocks(reg: &mut fantastic_kernel::BundleRegistry) {
         reg.register("count_test.tools", CountBundle);
-        reg.register("bundles_board_test.tools", BundlesBoard);
+        reg.register("plan_test.tools", PlanPeer);
     }
 
-    fantastic_kernel::stand_in_verbs!(bundles_board_verbs { BoardV "board" {} });
+    fantastic_kernel::stand_in_verbs!(plan_verbs {
+        FleetV "fleet" {}, CountV "get_count" {}, ListV "list" {}
+    });
 
     #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Handler for BundlesBoard {
-        stand_in_body!(bundles_board_verbs);
+    impl fantastic_kernel::bundle::Handler for PlanPeer {
+        stand_in_body!(plan_verbs);
 
         fn name(&self) -> &str {
-            "bundles_board_test.tools"
+            "plan_test.tools"
         }
 
         async fn handle(
@@ -2352,56 +2245,68 @@ mod tests {
             kernel: &Arc<fantastic_kernel::Kernel>,
         ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
         {
-            let payload = &call.payload();
-            if payload["type"] != "board" {
-                return Ok(None);
-            }
-            let mut out = json!({"tasks": {"in_work": [], "done": [], "pending": [], "failed": []}, "agents": {}});
-            if let Some(r) = kernel
+            let m = kernel
                 .agents
                 .get(agent_id)
-                .and_then(|a| a.meta.read().unwrap().get("bundles_section").cloned())
-            {
-                out["bundles"] = r;
-            }
+                .map(|a| a.meta.read().unwrap().clone())
+                .unwrap_or_default();
+            let out = match call {
+                plan_verbs::Call::FleetV(_) => m.get("fleet").cloned().unwrap_or(json!({})),
+                plan_verbs::Call::CountV(_) => json!({"running": 2}),
+                plan_verbs::Call::ListV(_) => {
+                    json!({"tasks": m.get("tasks").cloned().unwrap_or(json!([]))})
+                }
+                _ => return Ok(None),
+            };
             Ok(Some(out))
         }
     }
 
-    /// A kernel with a dispatcher (bundles mode when `section` is given), a board stand-in,
-    /// the `team_ws` leg, and the agents `pl` (the lead) and `c1` (its child), made after
-    /// the start so nobody granted them a chat.
-    async fn kernel_in_bundles_mode(dir: &std::path::Path, section: Option<Value>) -> Booted {
+    /// A kernel with a dispatcher (bundles mode when `plan` is given: its registry `reg`
+    /// lists the project_lead `pl`, the task registry `tasks` holds the plan's tasks, and
+    /// the root's `reflect` gives the tree), the `team_ws` leg, and the agents `pl` (the
+    /// lead) and `c1` (its child), made after the start so nobody granted them a chat.
+    async fn kernel_in_bundles_mode(dir: &std::path::Path, plan: Option<Value>) -> Booted {
         use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
         let kernel = boot_at(dir, Seed::Stock, &[register_bundles_mocks], None).await;
         let mut d = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
-            "handler_module": HANDLER_MODULE, "can_call": {"reg": "*", "board": "*"}});
-        let mut b = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
-            "handler_module": "bundles_board_test.tools", "callable_by": {"dispatcher": "*"}});
-        if let Some(s) = section {
+            "handler_module": HANDLER_MODULE,
+            "can_call": {"reg": "*", "tasks": "*", (DEFAULT_ROOT_ID): ["reflect"]}});
+        let mut reg = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "reg",
+            "handler_module": "plan_test.tools", "callable_by": {"dispatcher": "*"}});
+        let mut tasks = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "tasks",
+            "handler_module": "plan_test.tools", "callable_by": {"dispatcher": "*"}});
+        if let Some(p) = plan {
             d["bundles"] = json!("reg");
-            b["bundles_section"] = s;
+            reg["fleet"] = json!({"bundles": {"project_lead": [{"id": p["lead"]}],
+                "worker": [{"id": "c1"}]}});
+            tasks["tasks"] = p["tasks"].clone();
         }
-        let reg = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "reg",
-            "handler_module": "count_test.tools", "callable_by": {"dispatcher": "*"}});
         let ws = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "team_ws",
             "handler_module": "count_test.tools"});
         let pl = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "pl",
             "handler_module": "count_test.tools"});
         let c1 = json!({"type": "create_agent", "parent_id": "pl", "id": "c1",
             "handler_module": "count_test.tools"});
-        for item in [d, b, reg, ws, pl, c1] {
-            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
+        for item in [d, reg, tasks, ws, pl, c1] {
+            let o = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
+            assert!(o[0].result.get("error").is_none(), "{:?}", o[0].result);
         }
+        // the root's end of the dispatcher's `reflect` on it (an operator write)
+        kernel
+            .edit_callable_by(&fantastic_kernel::AgentId::from(DEFAULT_ROOT_ID), |cb| {
+                cb.insert("dispatcher".into(), json!(["reflect"]));
+                true
+            })
+            .unwrap();
         kernel
     }
 
+    /// The plan the stand-ins serve: `pl` leads `c1`, which holds `o/r#1`.
     fn lead_section() -> Value {
-        json!({"lead": "pl", "fleet": {"running": 2},
-            "tree": node("pl", "project_lead", "active", vec![node("c1", "worker", "paused", vec![])]),
-            "agents": [{"id": "c1", "bundle": "worker", "state": "paused", "parent": "pl"}],
-            "tasks": [{"id": "o/r#1", "source": "gh:o/r#1", "holder": "c1", "status": "in_work"}]})
+        json!({"lead": "pl",
+            "tasks": [{"id": "o/r#1", "source": "gh:o/r#1", "holder": "c1", "status": "running"}]})
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2412,8 +2317,10 @@ mod tests {
         assert_eq!(sb["agents"][0]["id"], "pl", "{sb}");
         assert_eq!(sb["agents"][0]["label"], "Lead");
         assert_eq!(sb["agents"][1]["id"], "c1");
+        assert_eq!(sb["agents"][1]["bundle"], "worker", "{sb}");
         assert_eq!(sb["plan"]["tasks"][0]["id"], "o/r#1", "{sb}");
         assert_eq!(sb["plan"]["lead"], "pl");
+        assert_eq!(sb["fleet"], json!({"running": 2}), "the registry's count: {sb}");
         kernel.stop().await;
     }
 
@@ -2478,85 +2385,47 @@ mod tests {
         kernel
             .send(vec![Item::new(
                 DEFAULT_ROOT_ID,
-                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "tasks",
+                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "tr",
                     "handler_module": team_task_registry::HANDLER_MODULE,
                     "callable_by": {"team_ws": ["list"], "lead": "*"}}),
             )])
             .await;
-        let out = ask_kernel(
-            &kernel,
-            "dispatcher",
-            json!({"type": "open", "node": "tasks"}),
-        )
-        .await;
+        let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
+        assert!(
+            ids_of(&sb["services"]).contains(&pair("tr", "tasks")),
+            "the registry is a service: {sb}"
+        );
+        let out = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": "tr"})).await;
         assert_eq!(out["view"], "html", "{out}");
-        assert_eq!(out["target"], "tasks");
+        assert_eq!(out["target"], "tr");
         assert_eq!(out["fullscreen"], true);
         let want = json!(["list", "reflect", "get"]);
-        let tasks = meta_of(&kernel, "tasks");
+        let tasks = meta_of(&kernel, "tr");
         assert_eq!(tasks["callable_by"]["team_ws"], want, "{tasks:?}");
         assert_eq!(tasks["callable_by"]["lead"], "*", "another grant is kept");
         let ws = meta_of(&kernel, "team_ws");
         assert_eq!(
-            ws["can_call"]["tasks"],
+            ws["can_call"]["tr"],
             json!(["reflect", "list", "get"]),
             "{ws:?}"
         );
         assert!(ws["can_call"].get("*").is_none());
         // the leg now reads the view the registry's reflect carries
         let refl = kernel
-            .send(vec![Item::new("tasks", json!({"type": "reflect"}))])
+            .send(vec![Item::new("tr", json!({"type": "reflect"}))])
             .await
             .remove(0)
             .result;
         assert_eq!(refl["view"]["kind"], "html", "{refl}");
-        assert_eq!(refl["view"]["calls"], json!({"tasks": ["list", "get"]}));
+        assert_eq!(refl["view"]["calls"], json!({"tr": ["list", "get"]}));
         // again: nothing is written twice
         assert_eq!(crate::declared_views::grant_views(&kernel), 0);
         kernel.stop().await;
     }
 
-    /// A board stand-in for the service views: answers `board` with the `board_reply` its
-    /// meta holds, or with an error carrying a secret when its `fail` field is set.
-    struct ViewsBoard;
-
     fn register_services_mocks(reg: &mut fantastic_kernel::BundleRegistry) {
-        reg.register("views_board_test.tools", ViewsBoard);
         reg.register("team_github.tools", StubGithub);
         reg.register("count_test.tools", CountBundle);
-    }
-
-    fantastic_kernel::stand_in_verbs!(views_board_verbs { BoardV "board" {} });
-
-    #[async_trait::async_trait]
-    impl fantastic_kernel::bundle::Handler for ViewsBoard {
-        stand_in_body!(views_board_verbs);
-
-        fn name(&self) -> &str {
-            "views_board_test.tools"
-        }
-
-        async fn handle(
-            &self,
-            agent_id: &fantastic_kernel::AgentId,
-            call: Self::Call,
-            kernel: &Arc<fantastic_kernel::Kernel>,
-        ) -> Result<fantastic_kernel::bundle::Reply, fantastic_kernel::bundle::BundleError>
-        {
-            let payload = &call.payload();
-            if payload["type"] != "board" {
-                return Ok(None);
-            }
-            let m = kernel
-                .agents
-                .get(agent_id)
-                .map(|a| a.meta.read().unwrap().clone())
-                .unwrap_or_default();
-            if m.contains_key("fail") {
-                return Ok(Some(json!({"error": format!("boom {}", secret_text())})));
-            }
-            Ok(Some(m.get("board_reply").cloned().unwrap_or(json!({}))))
-        }
     }
 
     /// A github connector stand-in: answers `reflect` with the `reflect` its meta holds.
@@ -2601,30 +2470,21 @@ mod tests {
         format!("{}{}{}", "gh", "s_", "Zq9x".repeat(9))
     }
 
-    /// A kernel with a dispatcher, a board stand-in (store `queue`), the queue, and
-    /// (when `gh`) a github stand-in; `fail` makes the board and github stand-ins error.
-    async fn kernel_with_services(
-        dir: &std::path::Path,
-        board_reply: Value,
-        gh: bool,
-        fail: bool,
-    ) -> Booted {
+    /// A kernel with a dispatcher (one group `g` with `w1`), a task registry `tasks` (no
+    /// store: its `reflect` still carries its view), and (when `gh`) a github stand-in;
+    /// `fail` makes the github stand-in error.
+    async fn kernel_with_services(dir: &std::path::Path, gh: bool, fail: bool) -> Booted {
         use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
         use fantastic_kernel::Item;
         let kernel = boot_at(dir, Seed::Stock, &[register_services_mocks], None).await;
         let mut items = vec![
             json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "dispatcher",
-                "handler_module": HANDLER_MODULE,
-                "can_call": {"board": "*", "github": "*", "queue": "*"}}),
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "board",
-                "handler_module": "views_board_test.tools", "store": "queue",
-                "board_reply": board_reply, "callable_by": {"dispatcher": "*"}}),
-            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "queue",
-                "handler_module": "count_test.tools"}),
+                "handler_module": HANDLER_MODULE, "groups": {"g": ["w1"]},
+                "can_call": {"github": "*", "tasks": "*"}}),
+            json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "tasks",
+                "handler_module": team_task_registry::HANDLER_MODULE,
+                "callable_by": {"dispatcher": "*"}}),
         ];
-        if fail {
-            items[1]["fail"] = json!(true);
-        }
         if gh {
             let mut g = json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "github",
                 "handler_module": "team_github.tools", "callable_by": {"dispatcher": ["reflect"]},
@@ -2640,7 +2500,8 @@ mod tests {
             items.push(g);
         }
         for item in items {
-            kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
+            let o = kernel.send(vec![Item::new(DEFAULT_ROOT_ID, item)]).await;
+            assert!(o[0].result.get("error").is_none(), "{:?}", o[0].result);
         }
         kernel
     }
@@ -2666,26 +2527,26 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn sidebar_carries_services_in_every_mode() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), json!({}), true, false).await;
+        let kernel = kernel_with_services(dir.path(), true, false).await;
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
         let want = vec![
             pair("dispatcher", "dispatcher"),
-            pair("board", "board"),
-            pair("queue", "queue"),
+            pair("tasks", "tasks"),
             pair("github", "github"),
         ];
         assert_eq!(ids_of(&sb["services"]), want, "{sb}");
+        assert_eq!(sb["services"][1]["label"], "Tasks (tasks)");
         assert!(sb.get("agents").is_none(), "this is not bundles mode: {sb}");
         kernel.stop().await;
 
-        // Bundles mode too.
+        // Bundles mode too (its registries are stand-ins of no listed kind).
         let dir = tempfile::TempDir::new().unwrap();
         let kernel = kernel_in_bundles_mode(dir.path(), Some(lead_section())).await;
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
         assert!(sb["agents"].is_array());
         assert_eq!(
             ids_of(&sb["services"]),
-            vec![pair("dispatcher", "dispatcher"), pair("board", "board")],
+            vec![pair("dispatcher", "dispatcher")],
             "{sb}"
         );
         kernel.stop().await;
@@ -2694,86 +2555,25 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn sidebar_services_skip_agents_that_do_not_exist() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), json!({}), false, false).await;
+        let kernel = kernel_with_services(dir.path(), false, false).await;
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
         assert_eq!(
             ids_of(&sb["services"]),
-            vec![
-                pair("dispatcher", "dispatcher"),
-                pair("board", "board"),
-                pair("queue", "queue")
-            ],
+            vec![pair("dispatcher", "dispatcher"), pair("tasks", "tasks")],
             "no github agent, none listed: {sb}"
         );
-        // A board whose store is gone lists no queue.
+        // A registry that is gone is not listed.
         ask_kernel(
             &kernel,
             fantastic_kernel::bootstrap::DEFAULT_ROOT_ID,
-            json!({"type": "delete_agent", "id": "queue"}),
+            json!({"type": "delete_agent", "id": "tasks"}),
         )
         .await;
         let sb = ask_kernel(&kernel, "dispatcher", json!({"type": "sidebar"})).await;
-        assert!(
-            !ids_of(&sb["services"]).iter().any(|(_, k)| k == "queue"),
+        assert_eq!(
+            ids_of(&sb["services"]),
+            vec![pair("dispatcher", "dispatcher")],
             "{sb}"
-        );
-        kernel.stop().await;
-    }
-
-    fn queue_board() -> Value {
-        json!({"tasks": {
-            "pending": [{"id": "o/r#1", "title": "first", "claimers": [], "updated": 0}],
-            "in_work": [{"id": "o/r#2", "title": "second", "claimers": ["w1"], "updated": 0}],
-            "done": [], "failed": []}, "agents": {"w1": {"state": "coding", "cost": 0.5}}})
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn open_of_queue_returns_panel_model_from_the_board() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), queue_board(), false, false).await;
-        let out = ask_kernel(
-            &kernel,
-            "dispatcher",
-            json!({"type": "open", "node": "queue"}),
-        )
-        .await;
-        assert_eq!(out["view"], "panel", "{out}");
-        assert_eq!(out["kind"], "queue");
-        assert_eq!(out["target"], "queue");
-        let m = &out["model"];
-        assert_eq!(m["kind"], "queue");
-        assert_eq!(m["sections"][0]["name"], "queued");
-        assert_eq!(m["sections"][0]["rows"][0][0], "first");
-        assert_eq!(m["sections"][1]["rows"][0][1], "w1");
-        kernel.stop().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn open_of_board_in_bundles_mode_returns_tree_and_tasks() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let mut b = queue_board();
-        b["bundles"] = lead_section();
-        let kernel = kernel_with_services(dir.path(), b, false, false).await;
-        let out = ask_kernel(
-            &kernel,
-            "dispatcher",
-            json!({"type": "open", "node": "board"}),
-        )
-        .await;
-        assert_eq!(out["view"], "panel", "{out}");
-        assert_eq!(out["kind"], "board");
-        let m = &out["model"];
-        assert_eq!(m["sections"][0]["name"], "agents");
-        assert_eq!(m["sections"][0]["rows"][0][0], "Lead");
-        assert_eq!(m["sections"][1]["name"], "by status");
-        assert_eq!(m["sections"][2]["name"], "tasks");
-        assert_eq!(
-            m["sections"][2]["columns"],
-            json!(["issue", "tracker", "holder", "status"])
-        );
-        assert_eq!(
-            m["sections"][2]["rows"][0],
-            json!(["o/r#1", "gh:o/r#1", "c1", "in_work"])
         );
         kernel.stop().await;
     }
@@ -2781,7 +2581,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn open_of_dispatcher_returns_its_own_workers_and_lanes() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), queue_board(), false, false).await;
+        let kernel = kernel_with_services(dir.path(), false, false).await;
         let out = ask_kernel(
             &kernel,
             "dispatcher",
@@ -2798,7 +2598,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn open_of_github_returns_panel_from_reflect_and_no_token() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), json!({}), true, false).await;
+        let kernel = kernel_with_services(dir.path(), true, false).await;
         let out = ask_kernel(
             &kernel,
             "dispatcher",
@@ -2819,8 +2619,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn open_of_a_peer_that_errors_returns_unavailable_row() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), json!({}), true, true).await;
-        for node in ["queue", "board", "github"] {
+        let kernel = kernel_with_services(dir.path(), true, true).await;
+        for node in ["github"] {
             let out =
                 ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": node})).await;
             assert_eq!(out["view"], "panel", "{node}: {out}");
@@ -2840,7 +2640,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn open_of_worker_and_group_unchanged() {
         let dir = tempfile::TempDir::new().unwrap();
-        let kernel = kernel_with_services(dir.path(), queue_board(), true, false).await;
+        let kernel = kernel_with_services(dir.path(), true, false).await;
         let w = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": "w1"})).await;
         assert_eq!(w["view"], "chat", "{w}");
         assert_eq!(w["target"], "w1");
@@ -2909,7 +2709,7 @@ mod tests {
 
     /// The stand-ins of the three team modules the tests below declare, after the team's own.
     fn register_declared(reg: &mut fantastic_kernel::BundleRegistry) {
-        for module in ["team_cadencer.tools", "team_git.tools", "team_puller.tools"] {
+        for module in ["team_cadencer.tools", "team_git.tools"] {
             reg.register(module, StubDeclared(module));
         }
     }
@@ -3048,7 +2848,7 @@ mod tests {
     async fn panel_reply_for_a_refusing_declared_kind_is_unavailable_without_the_error() {
         let dir = tempfile::TempDir::new().unwrap();
         let kernel =
-            kernel_with_declared(dir.path(), &[("wh", "team_puller.tools", json!({}))]).await;
+            kernel_with_declared(dir.path(), &[("wh", "team_git.tools", json!({}))]).await;
         kernel.update(&fantastic_kernel::AgentId::from("wh"), {
             let mut m = serde_json::Map::new();
             m.insert("fail".into(), json!(true));

@@ -185,6 +185,8 @@ mod tests {
         let cc = read_can_call(dir.path());
         for (target, verbs) in [
             ("cadencer", json!(["status", "set"])),
+            // the task registry's own html view: its reflect, then the view's two reads
+            ("tasks", json!(["reflect", "list", "get"])),
             ("user", json!(["inquiries", "answer_inquiry"])),
             // the base sidebar view the page mounts: its read calls (#608), no `*`
             ("sidebar", json!(["reflect", "watch"])),
@@ -206,6 +208,7 @@ mod tests {
                     "$self",
                     "dispatcher",
                     "cadencer",
+                    "tasks",
                     "user",
                     "sidebar",
                     "kernel_state",
@@ -218,7 +221,7 @@ mod tests {
                 assert_ne!(cc[k], json!("*"), "{k}");
             }
         }
-        for id in ["kernel", "queue", "tasks"] {
+        for id in ["kernel", "memory", "github", "bundles"] {
             assert!(cc.get(id).is_none(), "{id}: {cc}");
         }
     }

@@ -14,9 +14,9 @@ def run(ctx):
     v = Verdict("task/github_pr_through_connector")
     run_flow.boot(ctx)
     team = ctx.team
-    pulled = team.send("puller", {"type": "pull"})
-    v.check("the puller took the issue", pulled["result"].get("created") == ["acme/widgets#1"], str(pulled))
-    played = run_flow.hand_over(ctx, "Do the task in tasks/queue/acme-widgets-1.md")
+    pulled = team.send("tasks", {"type": "pull"})
+    v.check("the registry took the issue", pulled["result"].get("created") == ["acme/widgets#1"], str(pulled))
+    played = run_flow.hand_over(ctx, "Do the task acme/widgets#1: its instructions are issue 1 of acme/widgets, read it through github")
     v.check("the scripted model played every turn", played and ctx.model.consumed,
             f"served {ctx.model.served} of {len(ctx.model.turns)}")
     token = ctx.forge.token

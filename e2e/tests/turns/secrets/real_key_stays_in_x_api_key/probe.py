@@ -25,8 +25,8 @@ def run(ctx):
     keys = run_flow.boot(ctx)
     team = ctx.team
     bare = os.path.join(ctx.run_dir, "forge", "acme", "widgets.git")
-    team.send("puller", {"type": "pull"})
-    run_flow.kick(ctx, "Run the checks, then do the task in tasks/queue/acme-widgets-1.md")
+    team.send("tasks", {"type": "pull"})
+    run_flow.kick(ctx, "Run the checks, then do the task acme/widgets#1: its instructions are issue 1 of acme/widgets, read it through github")
     run_flow.wait_done(ctx, lambda: bool(pushed_branches(bare)), wait_s=WAIT_S)
     m = ctx.model
     v.check("the model answered at least once, none errored", m.served >= 1 and not m.errored,

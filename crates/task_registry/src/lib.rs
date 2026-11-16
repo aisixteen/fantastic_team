@@ -1,9 +1,17 @@
-//! `task_registry` — which agent or subtree holds which task, and where it came from.
+//! `task_registry` — the team's one tasks agent: which agent or subtree holds which
+//! task, where it came from, and the intake from the tracker.
 //!
-//! A generic extension between agents and task sources (gh, jira, ...): it makes NO
-//! outbound call. `source` and `update_to` are opaque strings; the LLM reads them and
-//! pushes updates itself. An instance whose record has no `task_store_id` refuses
-//! every verb `disabled`.
+//! A generic extension between agents and a task tracker. `source` and `update_to` are
+//! opaque strings; the LLM reads them and pushes updates itself through the tracker's
+//! own verbs. An instance whose record has no `task_store_id` refuses every verb
+//! `disabled`.
+//!
+//! THE TRACKER. The record's `task_tracker_id` names the agent that is the tracker
+//! (today the github connector): `pull` reads its ready issues (open, labelled
+//! [`READY_LABEL`], on each repo the tracker's `reflect` lists) and adds each one that
+//! is not a task yet as a waiting task; the tracker's update and close verbs take the
+//! write-back, called by the lead. Without a `task_tracker_id`, `pull` is refused
+//! `disabled`; the other verbs do not need one.
 //!
 //! STORAGE IS ABSTRACT. The registry keeps its tables in the store agent named by its
 //! record's `task_store_id`, through the store interface the agent memory uses
@@ -28,7 +36,7 @@
 //! defaults (`[]`, null, null, null).
 //!
 //! Verbs: `reflect`, `add`, `assign`, `reassign`,
-//! `status`, `report`, `list`, `get`.
+//! `status`, `report`, `list`, `get`, `pull`.
 //!
 //! HOW IT IS DRAWN. `reflect` carries the registry's own html view (`view.html`,
 //! compiled in, no record field): the tasks by state, the holders, the grouped table,
@@ -56,7 +64,10 @@ pub const HANDLER_MODULE: &str = "task_registry.tools";
 
 /// What the bundle is for: its one short man text; how to call it is rendered from its
 /// declared verbs (`docs`, `reflect`).
-pub const MAN: &str = "A registry of tasks: who holds each one and where it came from. It makes no outbound call; it keeps its tables in the store agent its record names.";
+pub const MAN: &str = "The team's tasks: who holds each one and where it came from, pulled from the tracker its record names; it keeps its tables in the store agent its record names.";
+
+/// The label on the tracker that marks an issue as ready for the team: what `pull` takes.
+pub const READY_LABEL: &str = "team-ready";
 
 /// How many rows one store read asks for.
 const PAGE: u64 = 500;
@@ -141,12 +152,35 @@ fn not_found_task(verb: &str, id: &str) -> Value {
 
 // ── the store ───────────────────────────────────────────────────────
 
-/// The store agent's id, or `None` when the registry is not configured.
-fn store_id(meta: &Map<String, Value>) -> Option<String> {
-    meta.get("task_store_id")
+/// The agent a record field names, or `None` when the field is absent or empty.
+fn agent_field(meta: &Map<String, Value>, field: &str) -> Option<String> {
+    meta.get(field)
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+/// The store agent's id, or `None` when the registry is not configured.
+fn store_id(meta: &Map<String, Value>) -> Option<String> {
+    agent_field(meta, "task_store_id")
+}
+
+/// The tracker agent's id, or `None` when the registry has no tracker.
+fn tracker_id(meta: &Map<String, Value>) -> Option<String> {
+    agent_field(meta, "task_tracker_id")
+}
+
+/// ONE gated send to any peer, as the registry: the reply as the peer gave it (a refusal
+/// is a value with `error`; a failed dispatch is one too, with the status as its text).
+async fn peer_call(kernel: &Arc<Kernel>, to: &str, payload: Value) -> Value {
+    let out = kernel
+        .send(vec![Item::new(AgentId::from(to), payload)])
+        .await
+        .remove(0);
+    if out.status.as_str() != "completed" && out.result.get("error").is_none() {
+        return json!({"error": out.status.as_str()});
+    }
+    out.result
 }
 
 /// ONE gated send to the store, as the registry. A refusal or a failed dispatch is
@@ -296,11 +330,13 @@ impl Handler for TaskRegistryBundle {
         };
         let meta = meta_of(&me);
         let store = store_id(&meta);
+        let tracker = tracker_id(&meta);
         if let verbs::Call::Reflect(_) = call {
             return Ok(Some(json!({
                 "id": agent_id.as_str(),
                 "sentence": MAN,
                 "enabled": store.is_some(),
+                "tracker": tracker,
                 "view": view_of(agent_id.as_str()),
             })));
         }
@@ -331,6 +367,14 @@ impl Handler for TaskRegistryBundle {
                     }
                     verbs::Call::Status(a) => flat(status_inner(kernel, &store, a).await),
                     verbs::Call::Report(a) => flat(report_inner(kernel, &store, &caller, a).await),
+                    verbs::Call::Pull(_) => match tracker {
+                        Some(t) => flat(pull_inner(kernel, &store, &t).await),
+                        None => refusal::refusal_hint(
+                            refusal::DISABLED,
+                            "pull is disabled: the record has no task_tracker_id".to_string(),
+                            "set task_tracker_id on the record",
+                        ),
+                    },
                     _ => Value::Null,
                 }
             }
@@ -385,6 +429,63 @@ async fn add_inner(
     }
     save(kernel, store, &entry).await?;
     Ok(entry)
+}
+
+/// One pass over the tracker: the repos its `reflect` lists, each one's open issues
+/// labelled [`READY_LABEL`], and a waiting task with no holder per issue that is not a
+/// task yet (id `owner/name#N`, source and update_to `gh:owner/name#N`). A repo whose
+/// listing fails is skipped with the tracker's error as the reason; an issue that is a
+/// task already is skipped `already a task`.
+async fn pull_inner(kernel: &Arc<Kernel>, store: &str, tracker: &str) -> Result<Value, Value> {
+    let refl = peer_call(kernel, tracker, json!({"type": "reflect"})).await;
+    if let Some(e) = refl.get("error") {
+        return Err(refusal::refusal(
+            refusal::NOT_FOUND,
+            format!("pull: tracker {} did not reflect: {e}", py_repr(tracker)),
+        ));
+    }
+    let repos: Vec<String> = refl
+        .get("repos")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.as_str().map(str::to_string))
+        .collect();
+    let mut tasks = load(kernel, store, None).await?;
+    let mut created: Vec<String> = Vec::new();
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    for repo in repos {
+        let listed = peer_call(
+            kernel,
+            tracker,
+            json!({"type": "issues", "repo": repo, "label": READY_LABEL, "state": "open"}),
+        )
+        .await;
+        let Some(issues) = listed.get("issues").and_then(Value::as_array) else {
+            skipped.push((repo.clone(), format!("issues: {listed}")));
+            continue;
+        };
+        for issue in issues {
+            let Some(number) = issue.get("number").and_then(Value::as_u64) else {
+                continue;
+            };
+            let id = format!("{repo}#{number}");
+            if tasks.contains_key(&id) {
+                skipped.push((id, "already a task".to_string()));
+                continue;
+            }
+            let source = format!("gh:{id}");
+            let entry = json!({
+                "id": id, "parent": null, "source": source, "update_to": source,
+                "holder": null, "history": [], "status": State::Waiting.as_str(), "report": null,
+                "versions": [], "source_version": null, "fork_from": null, "usage": null,
+            });
+            save(kernel, store, &entry).await?;
+            tasks.insert(id.clone(), entry);
+            created.push(id);
+        }
+    }
+    Ok(json!({"created": created, "skipped": skipped}))
 }
 
 async fn assign_inner(

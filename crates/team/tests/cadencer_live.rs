@@ -1,5 +1,5 @@
 //! Live test (#112): the cadencer's settings survive a restart of a real kernel. Boots the
-//! team registry the way the binary does, creates a board and a cadencer.
+//! team registry the way the binary does and creates a cadencer.
 
 mod common;
 
@@ -19,20 +19,7 @@ async fn call(k: &Arc<Kernel>, to: &str, payload: Value) -> Value {
         .unwrap_or(Value::Null)
 }
 
-async fn create_cadencer_and_board(kernel: &Arc<Kernel>) {
-    call(
-        kernel,
-        DEFAULT_ROOT_ID,
-        json!({
-            "type": "create_agent",
-            "parent_id": DEFAULT_ROOT_ID,
-            "id": "board",
-            "handler_module": "team_board.tools",
-            "github": "gh_absent",
-            "store": "store"
-        }),
-    )
-    .await;
+async fn create_cadencer(kernel: &Arc<Kernel>) {
     call(
         kernel,
         DEFAULT_ROOT_ID,
@@ -50,7 +37,7 @@ async fn create_cadencer_and_board(kernel: &Arc<Kernel>) {
 async fn set_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
     let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
-    create_cadencer_and_board(&kernel).await;
+    create_cadencer(&kernel).await;
     let set = call(
         &kernel,
         "cad",
@@ -71,7 +58,7 @@ async fn set_survives_restart() {
 async fn configure_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
     let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
-    create_cadencer_and_board(&kernel).await;
+    create_cadencer(&kernel).await;
     call(
         &kernel,
         "cad",
@@ -104,7 +91,7 @@ async fn configure_survives_restart() {
 async fn off_list_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
     let kernel = boot_at(dir.path(), Seed::Stock, &[], None).await;
-    create_cadencer_and_board(&kernel).await;
+    create_cadencer(&kernel).await;
     let set = call(
         &kernel,
         "cad",

@@ -1,6 +1,6 @@
 [
  {
-  "say": "Reading the issues, the board and my room.",
+  "say": "Reading the issues, the tasks and my room.",
   "calls": [
    {
     "target": "github",

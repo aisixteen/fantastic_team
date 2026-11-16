@@ -6,3 +6,4 @@ callable_by:
   user: "*"
   lead: "*"
   bundles: "*"
+  tasks: "*"

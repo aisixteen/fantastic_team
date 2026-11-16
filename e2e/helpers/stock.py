@@ -4,7 +4,7 @@ The team binary is fantastic's command line (`--headless`, `webui --port N`) and
 file and no blueprint. A test names its fleet in its `test.yaml` (`fleet: <layer> ...`): the layers
 of `e2e/fleets/` and the test's own `fleet/` folder are copied into the run folder's `.fantastic/`
 before the first start (`cli.lay_test_fleet`), so the kernel loads the lead, the credential store,
-the worker's exec and files, the connectors, the puller, the board, the dispatcher, the cadencer, the
+the worker's exec and files, the connectors, the task registry, the dispatcher, the cadencer, the
 bundles registry and the team page from record files, under the fixed ids the product's code and the
 bundle cards name. The tests that run on the product's own seed (`seeded=True`) name no fleet.
 

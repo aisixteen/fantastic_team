@@ -14,5 +14,5 @@ can_call:
 callable_by:
   "$self": "*"
   lead: "*"
-  board: "*"
+  tasks: [reflect, issues]
   dispatcher: [reflect]

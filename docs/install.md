@@ -88,9 +88,9 @@ The terminal UI (needs a terminal):
 
 ## 6. Label a first issue, watch, review
 
-1. In the target repo, label an issue `team-ready`.
-2. Add a comment that starts with `## SPEC` and holds the task. The puller takes it only when the latest label event is by the maintainer and the `## SPEC` comment is by the maintainer or the app.
-3. The team's puller (`team_puller.tools`) reads it and writes `queue/<repo>-<n>.md` plus a pending `.state`. Its `status` verb shows progress.
+1. In the target repo, label an issue `team-ready`. The issue's text is the task.
+2. The team's task registry (`tasks`, `task_registry.tools`) reads it with `pull` and adds it as a waiting task; `list` shows every task with its holder and state.
+3. The lead hands the task to a worker, which reads the issue through the `github` connector.
 4. The team opens a **draft** pull request. Review it on GitHub. Merging stays human.
 
 ## 7. Troubleshooting
