@@ -135,6 +135,8 @@ refresh();
 // the connector publishes `call_served` on its own id after each call it serves (the recent calls,
 // the rate and the auth it read): re-read then, never on a timer. A field being typed is not
 // redrawn under the cursor: the read waits until it is left.
+// This view's own pr_status lookup is a served call too: it brings one `call_served` and one
+// reflect after it; reflect publishes nothing, so it ends there (one repeat, no loop).
 var stale = false;
 follow(AGENT, ["call_served"], function () {
   var a = document.activeElement;

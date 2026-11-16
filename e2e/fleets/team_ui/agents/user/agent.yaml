@@ -9,6 +9,6 @@ can_call:
 callable_by:
   exec: "*"
   files: "*"
-  team_ws: [inquiries, answer_inquiry, watch]
+  team_ws: [inquiries, answer_inquiry]
   k_rollout: [inquiry]
   m_ads: [inquiry]

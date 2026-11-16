@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import { runView, verbsSince, sendsOnCopies } from "../../agent_view/tests/view_harness.mjs";
+import { runView, verbsSince, watched, sendsOnOthers, ownCopiesReadNothing } from "../../agent_view/tests/views.mjs";
 
 const src = readFileSync(fileURLToPath(new URL("../web/team.html", import.meta.url)), "utf8");
 const from = src.indexOf("// pure\n");
@@ -45,59 +45,59 @@ test("crumbOf is the names of the path, outermost first, none blank", () => {
   assert.deepEqual(JSON.parse(JSON.stringify(c2.crumbOf(undefined))), []);
 });
 
-test("inquiryEvent is the person's inquiry_opened / inquiry_closed, never a copy of a call to user", () => {
-  assert.equal(inquiryEvent({ type: "inquiry_opened", re: 4, asker: "lead", holder: "user" }), true);
-  assert.equal(inquiryEvent({ type: "inquiry_closed", re: 4, asker: "lead", holder: "user" }), true);
-  // copies of calls made to `user`: the page's own read, another client's answer
-  assert.equal(inquiryEvent({ type: "inquiries" }), false);
-  assert.equal(inquiryEvent({ type: "answer_inquiry", re: 4, answer: "yes" }), false);
-  // a call that only borrows the name carries no holder and no numeric re
-  assert.equal(inquiryEvent({ type: "inquiry_opened" }), false);
-  assert.equal(inquiryEvent({ type: "inquiry_opened", re: "4", holder: "user" }), false);
-  // another holder's inquiry, a refusal, nothing
-  assert.equal(inquiryEvent({ type: "inquiry_opened", re: 4, holder: "lead" }), false);
+test("inquiryEvent is the sidebar's inquiries_changed, never a copy of a call to the sidebar", () => {
+  assert.equal(inquiryEvent({ type: "inquiries_changed", open: 2 }), true);
+  assert.equal(inquiryEvent({ type: "inquiries_changed", open: 0 }), true);
+  // copies of calls made to `sidebar`: the sidebar view's own read, another client's
+  assert.equal(inquiryEvent({ type: "reflect" }), false);
+  assert.equal(inquiryEvent({ type: "watch" }), false);
+  // a call that only borrows the name carries no numeric open
+  assert.equal(inquiryEvent({ type: "inquiries_changed" }), false);
+  assert.equal(inquiryEvent({ type: "inquiries_changed", open: "2" }), false);
+  // the sidebar's other events, a refusal, nothing
+  assert.equal(inquiryEvent({ type: "tree_changed" }), false);
+  assert.equal(inquiryEvent({ type: "status_changed", agent: "lead", phase: "thinking" }), false);
   assert.equal(inquiryEvent({ error: "denied", reason: "denied" }), false);
   assert.equal(inquiryEvent(null), false);
 });
 
-// THE BADGE FOLLOWS THE PERSON'S INQUIRIES (#351): the page run whole, `user` watched once, its
-// `inquiries` read again on each published inquiry_opened / inquiry_closed and on no copy of a call.
+// THE BADGE FOLLOWS THE SIDEBAR AGENT (#351): the page run whole, `sidebar` watched once (never
+// `user`), the person's `inquiries` read again on each `inquiries_changed` the sidebar publishes and
+// on no copy of a call.
 const PAGE = fileURLToPath(new URL("../web/team.html", import.meta.url));
 let open = [];
 const pageReply = (t, p) => (t === "user" && p.type === "inquiries" ? { inquiries: open } : { error: "no", reason: "denied" });
 
-test("the page watches user once, sets no timer and reads its inquiries on each published change", async () => {
+test("the page watches the sidebar once, sets no timer and reads the inquiries on each published change", async () => {
   open = [];
-  const v = runView(PAGE, "", pageReply, {}, { mirror: true });
+  const v = runView(PAGE, "", pageReply);
   await v.settle();
-  assert.deepEqual(v.watches.map((w) => w.src), ["user"]);
-  assert.deepEqual(v.timers, [], "a page that sets a timer polls");
+  assert.deepEqual(watched(v), [["sidebar", 1]]);
+  assert.deepEqual(v.intervals, [], "a page that sets a timer polls");
   open = [{ re: 4, asker: "lead" }, { re: 5, asker: "ops" }];
   let before = v.sends.length;
-  v.deliver("user", { type: "inquiry_opened", re: 5, asker: "ops", holder: "user" });
-  await v.settle();
+  await v.publish("sidebar", { type: "inquiries_changed", open: 2 });
   assert.deepEqual(verbsSince(v, before, "user"), ["inquiries"], "one read, and none on its copy");
   const badge = v.document.getElementById("back-badge");
   assert.equal(badge.textContent, "2");
   assert.equal(badge.hidden, false);
   open = [];
   before = v.sends.length;
-  v.deliver("user", { type: "inquiry_closed", re: 5, asker: "ops", holder: "user" });
-  await v.settle();
+  await v.publish("sidebar", { type: "inquiries_changed", open: 0 });
   assert.deepEqual(verbsSince(v, before, "user"), ["inquiries"]);
   assert.equal(badge.hidden, true);
 });
 
-test("copies of the page's own inquiries read, and another client's reads and answers, read nothing", async () => {
+test("copies of the page's own reads, and another client's calls to the sidebar, read nothing", async () => {
   open = [];
-  const v = runView(PAGE, "", pageReply, {}, { mirror: true });
+  const v = runView(PAGE, "", pageReply);
   await v.settle();
-  v.deliver("user", { type: "inquiry_opened", re: 1, asker: "lead", holder: "user" });
-  await v.settle();
-  assert.equal(await sendsOnCopies(v, [
-    ["user", { type: "inquiries" }],
-    ["user", { type: "status" }],
-    ["user", { type: "answer_inquiry", re: 1, answer: "yes" }],
-    ["user", { error: "the leg may not call user watch", reason: "denied" }],
+  await v.publish("sidebar", { type: "inquiries_changed", open: 1 });
+  await ownCopiesReadNothing(v);
+  assert.equal(await sendsOnOthers(v, [
+    ["sidebar", { type: "reflect" }],
+    ["sidebar", { type: "watch" }],
+    ["sidebar", { type: "tree_changed" }],
+    ["sidebar", { error: "the leg may not call sidebar watch", reason: "denied" }],
   ]), 0);
 });

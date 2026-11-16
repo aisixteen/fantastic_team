@@ -42,11 +42,10 @@
 agents:
 - id: user
   callable_by:
+    # the base chat view's inquiry reads and answers (the waiting badge follows the sidebar)
     team_ws:
     - inquiries
     - answer_inquiry
-    # the page's waiting badge follows the person's inquiry_opened / inquiry_closed
-    - watch
   agents:
   - id: lead
     # the lead is an AI chat (the `lead` bundle, base `ai_chat.tools`). It names no provider: the
@@ -203,7 +202,7 @@ agents:
         $parent: '*'
 # THE WEB HOST. `web` mounts the leg by asking it for its routes, and serves the page by
 # reading `read_stream` as itself: both ends of both edges. The leg is the page's one
-# principal: it may call the dispatcher's page verbs, and the verbs the page sends to the
+# principal: it may call the dispatcher's `open`, and the verbs the page sends to the
 # other tool agents (the cadencer toggle, the user's inquiry panel) of
 # the agents that the person or the cards make; the other end of each of those is on the
 # agent it names (its own `callable_by`, written where it is made).
@@ -229,11 +228,9 @@ agents:
     ingress_rule: allow_all_ingress
     can_call:
       $self: '*'
+      # the page asks the dispatcher's `open` when an agent's reflect is refused
       dispatcher:
-      - sidebar
-      - tree
       - open
-      - control
       cadencer:
       - watch
       - status
@@ -271,9 +268,9 @@ agents:
       user:
       - inquiries
       - answer_inquiry
-      - watch
-      # the base sidebar view the page mounts (its `calls`, read verbs only; its `*: [status]`
-      # names every agent and a static leg cannot: the rows draw without a chat state)
+      # the base sidebar view the page mounts: it watches its own agent alone (the agent follows
+      # the kernel and publishes the tree's changes and each chat's phase); the page's waiting
+      # badge follows the same agent's `inquiries_changed`
       sidebar:
       - reflect
       - watch
@@ -282,7 +279,6 @@ agents:
       - list_agents
       files:
       - list
-      - watch
       - watch_path
       - unwatch_path
       - open_view
@@ -317,7 +313,6 @@ agents:
   callable_by:
     team_ws:
     - list
-    - watch
     - watch_path
     - unwatch_path
     - open_view

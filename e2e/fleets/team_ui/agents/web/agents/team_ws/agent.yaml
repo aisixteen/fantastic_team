@@ -7,15 +7,15 @@ handler_module: web_ws.tools
 ingress_rule: allow_all_ingress
 can_call:
   "$self": "*"
-  dispatcher: [sidebar, tree, open, control]
+  dispatcher: [open]
   cadencer: [reflect, watch, status, set]
   tasks: [reflect, watch, list, get]
   github: [reflect, watch, pr_status]
   bundles: [reflect, watch, bundles, bundle, fleet, get_count]
-  user: [inquiries, answer_inquiry, watch]
+  user: [inquiries, answer_inquiry]
   sidebar: [reflect, watch]
   kernel_state: [reflect, list_agents]
-  files: [list, watch, watch_path, unwatch_path, open_view]
+  files: [list, watch_path, unwatch_path, open_view]
   worker_exec: [reflect]
   lead: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]
   ops: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]

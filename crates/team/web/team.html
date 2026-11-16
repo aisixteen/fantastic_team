@@ -87,13 +87,12 @@
       });
       return Object.keys(askers).length;
     }
-    // An inquiry to the person opened or closed: the event `user` publishes on its own id
-    // (`{type, re, asker, holder: 'user'}`). A watcher of `user` also gets a COPY of every call
-    // made to it (this page's own `inquiries` read, another client's `answer_inquiry {re}`): only
-    // the event names its holder and carries a numeric `re` beside it, and only the event counts.
+    // A question to the person opened or closed: the sidebar agent follows the kernel and publishes
+    // `{type: 'inquiries_changed', open}` on its own id (`open` how many are open now). A watcher of
+    // `sidebar` also gets a COPY of every call made to it (the sidebar view's `reflect`): only the
+    // event carries a numeric `open`, and only the event counts.
     function inquiryEvent(ev) {
-      return !!ev && typeof ev === 'object' && (ev.type === 'inquiry_opened' || ev.type === 'inquiry_closed') &&
-        ev.holder === 'user' && typeof ev.re === 'number';
+      return !!ev && typeof ev === 'object' && ev.type === 'inquiries_changed' && typeof ev.open === 'number';
     }
     // What the name card of an agent with no view of its own says, from its reflect.
     function cardOf(id, r, bundle) {
@@ -118,8 +117,9 @@
     document.getElementById('back').addEventListener('click', function () { panel('tree'); });
 
     // The back button's badge: how many other agents wait for the person (`user` `inquiries`, read as
-    // the page leg). Asked when an agent opens, then again on each inquiry the person's `user` publishes
-    // as opened or closed (never on a copy of a call, never on a clock); a refusal leaves it hidden.
+    // the page leg). Asked when an agent opens, then again on each `inquiries_changed` the sidebar agent
+    // publishes (the one agent the page watches; never on a copy of a call, never on a clock); a refusal
+    // leaves it hidden.
     // One read at a time: an event that lands while a read is out reads once more when it is back.
     var badge = document.getElementById('back-badge');
     var waiting = { except: '', busy: false, again: false };
@@ -136,7 +136,7 @@
           n === 0 ? 'Back to the team' : 'Back to the team, ' + n + ' waiting for you');
       }, function () { badge.hidden = true; }).then(done, done);
     }
-    window.fantastic.watch('user', function (ev) {
+    window.fantastic.watch(SIDEBAR, function (ev) {
       if (inquiryEvent(ev)) showWaiting(waiting.except);
     });
 

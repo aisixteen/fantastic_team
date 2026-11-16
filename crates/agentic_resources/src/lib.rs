@@ -29,10 +29,11 @@
 //! else is written. `spawn` sends nothing and has no task: the caller kick-starts the child
 //! with a plain `send`.
 //!
-//! Verbs: `reflect`, `bundles`, `bundle`, `spawn`, `fleet`, `get_count`.
+//! Verbs: `boot`, `reflect`, `bundles`, `bundle`, `spawn`, `fleet`, `get_count`.
 //!
 //! WHAT IT PUBLISHES. The fleet is the tree, so the registry follows the kernel's own
-//! lifecycle stream (`added` / `removed`) from its first call on, and emits
+//! lifecycle stream (`added` / `removed`) from its `boot` on (the kernel sends it when it
+//! creates or loads the registry), and emits
 //! [`FLEET_CHANGED`] `{type, change: "added"|"removed", agent, bundle}` on its own id
 //! whenever an agent on a spawnable bundle is made (a `spawn`, a clone, a
 //! `create_agent`) or deleted. Its view watches the registry and re-reads on each one.
@@ -261,13 +262,16 @@ impl Handler for AgenticResourcesBundle {
         call: Self::Call,
         kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
-        let Some(me) = agent_of(kernel, agent_id) else {
+        if agent_of(kernel, agent_id).is_none() {
             return Ok(None);
-        };
-        let _ = me;
-        // from its first call on, the registry publishes its fleet's changes
-        self.follow_once(agent_id, kernel);
+        }
         let reply = match call {
+            // the kernel creates or loads the registry: from here on it publishes its fleet's
+            // changes
+            verbs::Call::Boot(_) => {
+                self.follow_once(agent_id, kernel);
+                json!({"following": true})
+            }
             verbs::Call::Reflect(_) => {
                 let names: Vec<String> = cards_of(kernel).0.into_iter().map(|c| c.name).collect();
                 json!({

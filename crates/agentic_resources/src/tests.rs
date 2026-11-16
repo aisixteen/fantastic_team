@@ -1838,8 +1838,7 @@ async fn a_spawn_and_a_delete_each_publish_fleet_changed_on_the_registry() {
         .watch(&AgentId::from(r.reg.as_str()), w)
         .await
         .is_none());
-    // the view's first read starts the registry's tap
-    r.op(json!({"type": "fleet"})).await;
+    // the registry follows from its create on (its `boot`): no call to it comes first
     let id = id_of(&r.spawn_as(&lead, json!({"bundle": "writer"})).await);
     assert_eq!(
         next_fleet(&mut rx).await,
@@ -1899,27 +1898,39 @@ async fn the_registrys_delete_removes_its_fleet_tap_from_the_kernel() {
     let me = AgentId::from(r.reg.as_str());
     let w = AgentId::from("_t_view");
     let mut rx = r.kernel.ensure_inbox(&w);
-    assert!(r.kernel.watch(&me, w).await.is_none());
-    // a bundle of its own (the kernel's is never called here): its tap publishes an agent
-    // made on a spawnable bundle
-    let b = AgenticResourcesBundle::default();
-    assert!(b.follow_once(&me, &r.kernel));
+    assert!(r.kernel.watch(&me, w.clone()).await.is_none());
+    // the registry follows from its create on (its boot)
     create(
         &r.kernel,
         json!({"handler_module": "plainer", "id": "w_one"}),
     )
     .await;
     assert_eq!(next_fleet(&mut rx).await["agent"], "w_one");
-    // the registry's delete hook: the kernel no longer feeds the tap, nothing is published
-    Handler::on_delete(&b, &me, &r.kernel).await.unwrap();
-    assert!(b.taps.lock().unwrap().is_empty());
+    // the registry's delete removes its tap; made again under that id, it follows again, once
+    let gone = send(
+        &r.kernel,
+        "kernel_state",
+        json!({"type": "delete_agent", "id": r.reg}),
+    )
+    .await;
+    assert_eq!(gone["deleted"], true, "{gone}");
+    create(
+        &r.kernel,
+        json!({"handler_module": HANDLER_MODULE, "id": r.reg}),
+    )
+    .await;
+    let _ = fleet_so_far(&mut rx).await;
+    assert!(r.kernel.watch(&me, w).await.is_none());
     create(
         &r.kernel,
         json!({"handler_module": "plainer", "id": "w_two"}),
     )
     .await;
-    assert_eq!(fleet_so_far(&mut rx).await, Vec::<Value>::new());
-    // a registry made again under that id follows again
+    let got = fleet_so_far(&mut rx).await;
+    let two: Vec<&Value> = got.iter().filter(|e| e["agent"] == "w_two").collect();
+    assert_eq!(two.len(), 1, "one tap, the deleted registry's is gone: {got:?}");
+    // the shutdown hook drops the tap too
+    let b = AgenticResourcesBundle::default();
     assert!(b.follow_once(&me, &r.kernel));
     Handler::on_shutdown(&b, &me, &r.kernel).await.unwrap();
     assert!(b.taps.lock().unwrap().is_empty());

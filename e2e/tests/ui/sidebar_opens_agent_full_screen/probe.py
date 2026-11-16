@@ -1,10 +1,11 @@
-"""The page's socket, driven end to end: workers and their subagents are siblings in one
-list with different styles, subagents start collapsed and expand one worker at a time, `open`
-answers that agent's chat, and a message sent over the page's socket reaches that agent alone.
+"""The dispatcher's sidebar and the page's socket, driven end to end: workers and their
+subagents are siblings in one list with different styles, subagents start collapsed and expand
+one worker at a time (the dispatcher's `sidebar`, read by the operator: the page never calls
+it), `open` answers that agent's chat, and a message sent over the page's socket reaches that
+agent alone.
 
-The page itself is two empty columns for now (ui/layout_two_columns draws it in a browser);
-this test speaks to the team over the page's real leg, `/team_ws/ws`, with its real grants,
-the way the page's shim does. The team serves the page with the `webui` word."""
+The open and the messages go over the page's real leg, `/team_ws/ws`, with its real grants, the
+way the page's shim does. The team serves the page with the `webui` word."""
 
 import json
 import secrets
@@ -43,8 +44,12 @@ def run(ctx):
         def leg(target, payload):
             return ws.call(target, payload, timeout=30)
 
+        def sidebar(expanded):
+            # the dispatcher's sidebar, read by the operator (the page leg holds `open` only)
+            return team.send("dispatcher", {"type": "sidebar", "expanded": expanded}, timeout=30).get("result", {})
+
         # b. same level, different styles; c. collapsed by default
-        first = leg("dispatcher", {"type": "sidebar", "expanded": []})
+        first = sidebar([])
         items = next((g["items"] for g in first.get("groups", []) if g["id"] == "fantastic"), [])
         v.check("the sidebar reply lists both workers and both expanders in one flat list of group fantastic",
                 [(i["kind"], i.get("id") or i.get("worker")) for i in items]
@@ -54,7 +59,7 @@ def run(ctx):
         v.check("collapsed by default: no subagent is listed", "sub_a" not in json.dumps(first), str(items))
 
         # d. expand one worker only
-        second = leg("dispatcher", {"type": "sidebar", "expanded": ["w2"]})
+        second = sidebar(["w2"])
         text = json.dumps(second)
         v.check("expanded: [w2] lists sub_a and sub_b",
                 "sub_a" in text and "sub_b" in text, text[:400])

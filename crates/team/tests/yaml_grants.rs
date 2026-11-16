@@ -175,7 +175,7 @@ fn has_grant(rec: &Value, field: &str, who: &str, want: Value) {
     assert_eq!(rec[field][who], want, "{}.{field}.{who}: {rec}", rec["id"]);
 }
 
-const PAGE_USER_VERBS: [&str; 3] = ["inquiries", "answer_inquiry", "watch"];
+const PAGE_USER_VERBS: [&str; 2] = ["inquiries", "answer_inquiry"];
 
 /// The callee-side grants the yaml declares, on the live records.
 async fn assert_the_declared_grants(site: &Site) {
@@ -218,7 +218,7 @@ async fn assert_the_declared_grants(site: &Site) {
         &files,
         "callable_by",
         "team_ws",
-        json!(["list", "watch", "watch_path", "unwatch_path", "open_view"]),
+        json!(["list", "watch_path", "unwatch_path", "open_view"]),
     );
     // the callee end of the page leg's view reads (#351): the lead's chat, the connector's and the bundles
     // registry's views, each by the verbs of its view
