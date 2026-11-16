@@ -24,7 +24,16 @@ function load(file, mark, names) {
   return ctx.api;
 }
 
-const shared = load(null, "", ["txt", "count", "secText", "bytesText", "resultClass", "barParts"]);
+const shared = load(null, "", ["txt", "count", "secText", "bytesText", "resultClass", "barParts", "isEvent"]);
+
+test("isEvent takes only the named events an agent publishes: a mirrored call or a refusal is none", () => {
+  assert.equal(shared.isEvent({ type: "task_changed", task: "a" }, ["task_changed"]), true);
+  assert.equal(shared.isEvent({ type: "list" }, ["task_changed"]), false);
+  assert.equal(shared.isEvent({ error: "denied", reason: "denied" }, ["task_changed"]), false);
+  assert.equal(shared.isEvent(null, ["task_changed"]), false);
+  assert.equal(shared.isEvent("task_changed", ["task_changed"]), false);
+  assert.equal(shared.isEvent({ type: "ticked" }, undefined), false);
+});
 
 test("count is a whole non-negative number, else 0", () => {
   assert.equal(shared.count(5), 5);

@@ -536,3 +536,57 @@ async fn no_workspace_root_means_the_default_folder_made_at_the_first_worktree()
 fn the_default_folder_is_the_temp_one() {
     assert!(crate::default_workspace_root("g").ends_with("fantastic_team/worktrees/g"));
 }
+
+// ---- what the connector publishes (one model, many view-models) ----
+
+/// Every `repo_changed` a watcher of the connector got so far.
+fn changes(rx: &mut fantastic_kernel::inbox::InboxReceiver) -> Vec<Value> {
+    let mut out = Vec::new();
+    while let Some(item) = rx.try_recv() {
+        if item.payload["type"] == crate::REPO_CHANGED {
+            out.push(item.payload);
+        }
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_write_that_took_publishes_repo_changed_and_a_read_or_refusal_nothing() {
+    let f = fx(json!({}), None).await;
+    let w = AgentId::from("_t_view");
+    let mut rx = f.k.ensure_inbox(&w);
+    assert!(f.k.watch(&AgentId::from("git"), w).await.is_none());
+    let ev = |c: &str| json!({"type": "repo_changed", "change": c});
+    f.call(
+        json!({"type": "worktree_add", "path": "w1", "branch": "work/one", "base": "origin/main"}),
+    )
+    .await;
+    assert_eq!(changes(&mut rx), vec![ev("worktree_add")]);
+    std::fs::write(f.ws.join("w1").join("new.txt"), "x\n").unwrap();
+    f.call(json!({"type": "commit", "path": "w1", "message": "add"}))
+        .await;
+    assert_eq!(changes(&mut rx), vec![ev("commit")]);
+    let p = f
+        .call(json!({"type": "push", "path": "w1", "branch": "work/one"}))
+        .await;
+    assert_eq!(p["pushed"], true, "{p}");
+    assert_eq!(changes(&mut rx), vec![ev("push")]);
+    f.call(json!({"type": "fetch"})).await;
+    assert_eq!(changes(&mut rx), vec![ev("fetch")]);
+    // the reads and a refusal publish nothing
+    f.call(json!({"type": "status", "path": "w1"})).await;
+    f.call(json!({"type": "diff_stat", "path": "w1"})).await;
+    f.call(json!({"type": "reflect"})).await;
+    let again = f
+        .call(json!({"type": "commit", "path": "w1", "message": "again"}))
+        .await;
+    assert!(again.get("error").is_some(), "{again}");
+    let main = f
+        .call(json!({"type": "push", "path": "w1", "branch": "main"}))
+        .await;
+    assert!(main.get("error").is_some(), "{main}");
+    assert_eq!(changes(&mut rx), Vec::<Value>::new());
+    f.call(json!({"type": "worktree_remove", "path": "w1"}))
+        .await;
+    assert_eq!(changes(&mut rx), vec![ev("worktree_remove")]);
+}

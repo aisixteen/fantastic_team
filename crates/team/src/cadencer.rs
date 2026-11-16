@@ -14,6 +14,12 @@
 //! never sleeps through queued work. Each group of the record's `group_settings` may set its own
 //! `cadence`, `stall_after`, `quiet` and `enabled`; an unset key follows the
 //! global setting (changed live by `set`).
+//!
+//! WHAT IT PUBLISHES (the kernel's `emit` on its own id, so every watcher of the agent
+//! follows it): [`SETTINGS_CHANGED`] `{type, settings}` after a `set` or `configure` that
+//! took, and [`TICKED`] `{type, ticks, sent, delivery_errors}` after every beat (a `tick`
+//! call, or the timer's beat once its digests went out). Its view watches the agent and
+//! re-reads `status` on each one.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -40,8 +46,14 @@ pub mod verbs;
 /// The cadencer's own html view (the design mock's cadencer page): the team page draws it
 /// from `reflect`. `{{agent}}` is the agent's id, filled at reflect time.
 const VIEW: &str = include_str!("cadencer/view.html");
-/// The verbs the view calls on the cadencer: its state, and the switch and settings.
-pub const VIEW_CALLS: [&str; 2] = ["status", "set"];
+/// The verbs the view calls on the cadencer: `watch` (it follows the cadencer's own
+/// events), its state, and the switch and settings.
+pub const VIEW_CALLS: [&str; 3] = ["watch", "status", "set"];
+
+/// The event a `set` or `configure` that took emits on the cadencer's own id.
+pub const SETTINGS_CHANGED: &str = "settings_changed";
+/// The event every beat emits on the cadencer's own id.
+pub const TICKED: &str = "ticked";
 
 /// One agent in a snapshot of the tree.
 #[derive(Clone, Debug, PartialEq)]
@@ -522,6 +534,8 @@ struct Inner {
     bundles: Option<String>,
     /// The kernel, for the grants to the spawned leads (set with the peers).
     kernel: Option<Arc<Kernel>>,
+    /// The cadencer's own id (set with the peers): where its events are emitted.
+    self_id: Option<AgentId>,
     /// The groups' own settings (the record's `group_settings`), by group name.
     groups: Groups,
     /// Consecutive quiet beats with idle members and queued work, per lead.
@@ -649,6 +663,23 @@ async fn read_bundles(
     Some((nodes, load))
 }
 
+/// The [`TICKED`] event of the beat just made.
+fn ticked(inner: &Inner, sent: usize) -> Value {
+    json!({"type": TICKED, "ticks": inner.ticks, "sent": sent, "delivery_errors": inner.delivery_errors})
+}
+
+/// Emit `ev` on the cadencer's own id, so every watcher of it follows. Nothing before the
+/// first call told the cadencer its kernel and id.
+async fn publish(shared: &Arc<Mutex<Inner>>, ev: Value) {
+    let (kernel, me) = {
+        let g = shared.lock().expect("cadencer state");
+        (g.kernel.clone(), g.self_id.clone())
+    };
+    if let (Some(k), Some(me)) = (kernel, me) {
+        k.emit(&me, ev).await;
+    }
+}
+
 /// Send each digest to its target. A failed send is counted, never fatal.
 /// The lock is not held across the await.
 async fn deliver(shared: &Arc<Mutex<Inner>>, peers: Option<Arc<dyn Peers>>, digests: Vec<Digest>) {
@@ -702,7 +733,10 @@ async fn beat_once(shared: &Arc<Mutex<Inner>>) {
         let digests = beat(&mut g);
         (digests, g.peers.clone())
     };
+    let sent = digests.len();
     deliver(shared, peers, digests).await;
+    let ev = ticked(&shared.lock().expect("cadencer state"), sent);
+    publish(shared, ev).await;
 }
 
 /// Stop the old timer and, when enabled with a cadence, start a new one.
@@ -864,6 +898,7 @@ impl Handler for CadencerBundle {
             let mut g = self.inner.lock().expect("cadencer state");
             g.peers = Some(Arc::new(KernelPeers(kernel.clone())));
             g.kernel = Some(kernel.clone());
+            g.self_id = Some(agent_id.clone());
         }
         match call {
             verbs::Call::Boot(_) => {
@@ -887,14 +922,26 @@ impl Handler for CadencerBundle {
             }))),
             call => {
                 let persists = matches!(call, verbs::Call::Configure(_) | verbs::Call::Set(_));
+                let ticks = matches!(call, verbs::Call::Tick(_));
                 let reply = dispatch(&self.inner, call);
                 if persists && reply.get("error").is_none() {
                     // The lock is dropped before the record write.
-                    let patch = {
+                    let (patch, settings) = {
                         let g = self.inner.lock().expect("cadencer state");
-                        record_patch(&g)
+                        (record_patch(&g), settings_json(&g.settings))
                     };
                     let _ = kernel.update(agent_id, patch);
+                    kernel
+                        .emit(
+                            agent_id,
+                            json!({"type": SETTINGS_CHANGED, "settings": settings}),
+                        )
+                        .await;
+                }
+                if ticks {
+                    let sent = reply["sent"].as_u64().unwrap_or(0) as usize;
+                    let ev = ticked(&self.inner.lock().expect("cadencer state"), sent);
+                    kernel.emit(agent_id, ev).await;
                 }
                 Ok(Some(reply))
             }
@@ -1067,6 +1114,89 @@ mod tests {
             rows.push(json!({"id": id, "parent": "g1", "has_ai": true, "state": state, "task": task, "idle_s": idle_s}));
         }
         rows.iter().filter_map(node_from).collect()
+    }
+
+    // ---- what the cadencer publishes (one model, many view-models) ----
+
+    /// Every payload a watcher of the cadencer got that is one of its events.
+    fn published(rx: &mut fantastic_kernel::inbox::InboxReceiver) -> Vec<Value> {
+        let mut out = Vec::new();
+        while let Some(item) = rx.try_recv() {
+            let t = &item.payload["type"];
+            if t == SETTINGS_CHANGED || t == TICKED {
+                out.push(item.payload);
+            }
+        }
+        out
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_set_and_a_tick_publish_their_events_on_the_cadencer_and_a_read_nothing() {
+        use fantastic_kernel::bootstrap::DEFAULT_ROOT_ID;
+        use fantastic_kernel::Item;
+        let dir = tempfile::tempdir().unwrap();
+        let kernel =
+            crate::test_boot::boot_at(dir.path(), crate::test_boot::Seed::Stock, &[], None).await;
+        let made = kernel
+            .send(vec![Item::new(
+                DEFAULT_ROOT_ID,
+                json!({"type": "create_agent", "parent_id": DEFAULT_ROOT_ID, "id": "cad",
+                       "handler_module": HANDLER_MODULE}),
+            )])
+            .await
+            .remove(0)
+            .result;
+        assert!(made.get("error").is_none(), "{made}");
+        let w = AgentId::from("_t_view");
+        let mut rx = kernel.ensure_inbox(&w);
+        assert!(kernel.watch(&AgentId::from("cad"), w).await.is_none());
+        let ask = |p: Value| {
+            let k = kernel.kernel();
+            async move { k.send(vec![Item::new("cad", p)]).await.remove(0).result }
+        };
+        let set = ask(json!({"type": "set", "quiet": true})).await;
+        assert!(set.get("error").is_none(), "{set}");
+        let got = published(&mut rx);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0]["type"], SETTINGS_CHANGED);
+        assert_eq!(got[0]["settings"]["quiet"], true, "{got:?}");
+        let ticks = ask(json!({"type": "status"})).await["ticks"]
+            .as_u64()
+            .unwrap();
+        ask(json!({"type": "tick", "tree": []})).await;
+        assert_eq!(
+            published(&mut rx),
+            vec![json!({"type": TICKED, "ticks": ticks + 1, "sent": 0, "delivery_errors": 0})]
+        );
+        // a read publishes nothing
+        ask(json!({"type": "status"})).await;
+        assert_eq!(published(&mut rx), Vec::<Value>::new());
+        // a refused set publishes nothing
+        let refused = fantastic_kernel::test_support::as_agent(
+            "stranger",
+            ask(json!({"type": "set", "quiet": false})),
+        )
+        .await;
+        assert!(refused.get("error").is_some(), "{refused}");
+        assert_eq!(published(&mut rx), Vec::<Value>::new());
+        // the timer's own beat publishes `ticked` too, once its digests went out
+        ask(json!({"type": "set", "enabled": true, "cadence": 1})).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let mut beats = 0;
+        while beats == 0 {
+            let left = deadline
+                .checked_duration_since(tokio::time::Instant::now())
+                .expect("no timer beat published within 10 s");
+            let item = tokio::time::timeout(left, rx.recv())
+                .await
+                .expect("no timer beat published within 10 s")
+                .expect("inbox open");
+            if item.payload["type"] == TICKED {
+                beats += 1;
+            }
+        }
+        ask(json!({"type": "set", "enabled": false})).await;
+        kernel.stop().await;
     }
 
     #[tokio::test]

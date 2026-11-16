@@ -1215,6 +1215,48 @@ async fn reflect_lists_recent_calls_with_verb_target_result() {
     );
 }
 
+/// Every `call_served` a watcher of the connector got so far.
+fn served(rx: &mut fantastic_kernel::inbox::InboxReceiver) -> Vec<Value> {
+    let mut out = Vec::new();
+    while let Some(item) = rx.try_recv() {
+        if item.payload["type"] == crate::CALL_SERVED {
+            out.push(item.payload);
+        }
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_logged_call_publishes_call_served_and_reflect_publishes_nothing() {
+    let f = fx(json!({})).await;
+    mock_app(&f.gh).await;
+    mock_issue(&f, 3, 200).await;
+    let w = AgentId::from("_t_view");
+    let mut rx = f.k.ensure_inbox(&w);
+    assert!(f.k.watch(&AgentId::from("github"), w).await.is_none());
+    f.call(json!({"type": "issue_view", "repo": "acme/widgets", "number": 3}))
+        .await;
+    assert_eq!(
+        served(&mut rx),
+        vec![
+            json!({"type": "call_served", "verb": "issue_view", "target": "acme/widgets#3", "result": "ok"})
+        ]
+    );
+    // a refused call is logged, so it is published too
+    f.call(json!({"type": "issues", "repo": "evil/other"}))
+        .await;
+    assert_eq!(
+        served(&mut rx),
+        vec![
+            json!({"type": "call_served", "verb": "issues", "target": "evil/other", "result": "refused"})
+        ]
+    );
+    // the unlogged verbs (the view's own reflect among them) publish nothing
+    f.call(json!({"type": "reflect"})).await;
+    f.call(json!({"type": "directive"})).await;
+    assert_eq!(served(&mut rx), Vec::<Value>::new());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn reflect_logs_a_refused_repo_as_refused_without_a_request() {
     let f = fx(json!({})).await;
@@ -1546,7 +1588,10 @@ async fn reflect_carries_the_html_view_and_exactly_its_calls() {
     let view = &r["view"];
     assert_eq!(view["kind"], "html", "{r}");
     let id = r["id"].as_str().unwrap();
-    assert_eq!(view["calls"], json!({ id: ["reflect", "pr_status"] }));
+    assert_eq!(
+        view["calls"],
+        json!({ id: ["watch", "reflect", "pr_status"] })
+    );
     let html = view["bytes"].as_str().unwrap();
     assert!(!html.contains("{{"), "every placeholder is filled");
     // the verbs the page lists are the connector's own

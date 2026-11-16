@@ -8,4 +8,4 @@ callable_by:
   "$self": "*"
   "$parent": "*"
   dispatcher: [status]
-  team_ws: [status, set]
+  team_ws: [watch, status, set]

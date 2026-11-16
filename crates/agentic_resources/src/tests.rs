@@ -239,7 +239,7 @@ fn new_kernel() -> Kernel {
     kernel.bundles.register("forkable.tools", ForkBundle);
     kernel
         .bundles
-        .register(HANDLER_MODULE, AgenticResourcesBundle);
+        .register(HANDLER_MODULE, AgenticResourcesBundle::default());
     kernel
 }
 
@@ -1787,10 +1787,105 @@ async fn reflect_carries_the_html_view_and_exactly_its_calls() {
     assert_eq!(view["kind"], "html", "{out}");
     assert_eq!(
         view["calls"],
-        json!({ r.reg.as_str(): ["bundles", "bundle", "fleet", "get_count"] })
+        json!({ r.reg.as_str(): ["watch", "bundles", "bundle", "fleet", "get_count"] })
     );
     let html = view["bytes"].as_str().unwrap();
     assert!(!html.contains("{{"), "every placeholder is filled");
     // the view only reads: it never calls spawn
     assert!(!view["calls"].to_string().contains("spawn"));
+}
+
+// ── what the registry publishes (one model, many view-models) ────────
+
+/// The next `fleet_changed` a watcher of the registry got, waiting up to 5 s.
+async fn next_fleet(rx: &mut fantastic_kernel::inbox::InboxReceiver) -> Value {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let left = deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .expect("no fleet_changed within 5 s");
+        let item = tokio::time::timeout(left, rx.recv())
+            .await
+            .expect("no fleet_changed within 5 s")
+            .expect("inbox open");
+        if item.payload["type"] == FLEET_CHANGED {
+            return item.payload;
+        }
+    }
+}
+
+/// Every `fleet_changed` that landed so far, after the tap had a moment to run.
+async fn fleet_so_far(rx: &mut fantastic_kernel::inbox::InboxReceiver) -> Vec<Value> {
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let mut out = Vec::new();
+    while let Some(item) = rx.try_recv() {
+        if item.payload["type"] == FLEET_CHANGED {
+            out.push(item.payload);
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn a_spawn_and_a_delete_each_publish_fleet_changed_on_the_registry() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
+    let lead = r.callers[0].clone();
+    let w = AgentId::from("_t_view");
+    let mut rx = r.kernel.ensure_inbox(&w);
+    assert!(r
+        .kernel
+        .watch(&AgentId::from(r.reg.as_str()), w)
+        .await
+        .is_none());
+    // the view's first read starts the registry's tap
+    r.op(json!({"type": "fleet"})).await;
+    let id = id_of(&r.spawn_as(&lead, json!({"bundle": "writer"})).await);
+    assert_eq!(
+        next_fleet(&mut rx).await,
+        json!({"type": FLEET_CHANGED, "change": "added", "agent": id, "bundle": "writer"})
+    );
+    let gone = send(
+        &r.kernel,
+        "kernel_state",
+        json!({"type": "delete_agent", "id": id}),
+    )
+    .await;
+    assert_eq!(gone["deleted"], true, "{gone}");
+    assert_eq!(
+        next_fleet(&mut rx).await,
+        json!({"type": FLEET_CHANGED, "change": "removed", "agent": id, "bundle": "writer"})
+    );
+}
+
+#[tokio::test]
+async fn an_agent_on_no_spawnable_bundle_changes_no_fleet_and_the_tap_starts_once() {
+    let tmp = TempDir::new().unwrap();
+    let r = rig(&tmp, &["lead"], &[("writer.md", WRITER)]).await;
+    let w = AgentId::from("_t_view");
+    let mut rx = r.kernel.ensure_inbox(&w);
+    assert!(r
+        .kernel
+        .watch(&AgentId::from(r.reg.as_str()), w)
+        .await
+        .is_none());
+    r.op(json!({"type": "fleet"})).await;
+    r.op(json!({"type": "bundles"})).await;
+    create(
+        &r.kernel,
+        json!({"handler_module": "caller.tools", "id": "plain"}),
+    )
+    .await;
+    send(
+        &r.kernel,
+        "kernel_state",
+        json!({"type": "delete_agent", "id": "plain"}),
+    )
+    .await;
+    assert_eq!(fleet_so_far(&mut rx).await, Vec::<Value>::new());
+    // two calls, one tap: a spawn is published once
+    let id = id_of(&r.spawn_as(&r.callers[0], json!({"bundle": "writer"})).await);
+    let got = fleet_so_far(&mut rx).await;
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0]["agent"], json!(id));
 }

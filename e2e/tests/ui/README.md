@@ -13,6 +13,10 @@ All are free (scripted model, no key) and need Playwright with Chrome: `python3 
 python3 e2e/run.py --only ui/main_opens_each_agent --bin /ABSOLUTE/path/fantastic_team
 ```
 
+## Live, never polled
+
+An agent is the model; each view is a view-model that watches its own agent and re-reads when the agent publishes a change (`task_changed`, `settings_changed` / `ticked`, `call_served`, `fleet_changed`). `tasks_view_counts_and_detail` and `tool_views_real_data` change the agent outside the page (an operator call) and check the open view shows it within `team_ui.LIVE_S` (3 s) with no reload, and `team_ui.view_follows` fails a view whose served source sets a timer or whose calls do not name `watch`.
+
 ## The fleet's grants
 
 The page's leg `team_ws` holds, per agent, the calls of that agent's view (`fleets/team_ui/agents/web/agents/team_ws/agent.yaml`), declared in the records on both ends. `seeded_page_opens_agents` declares nothing: it shows what the product's seed lets the page open.

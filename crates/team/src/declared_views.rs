@@ -921,9 +921,17 @@ mod tests {
         }
         assert!(grant_views(&kernel) > 0);
         let cc = field_of(&kernel, leg, "can_call");
-        assert_eq!(cc["cad"], json!(["reflect", "status", "set"]), "{cc}");
-        assert_eq!(cc["gh"], json!(["reflect", "pr_status"]), "{cc}");
-        assert_eq!(cc["tasks"], json!(["reflect", "list", "get"]), "{cc}");
+        assert_eq!(
+            cc["cad"],
+            json!(["reflect", "watch", "status", "set"]),
+            "{cc}"
+        );
+        assert_eq!(cc["gh"], json!(["reflect", "watch", "pr_status"]), "{cc}");
+        assert_eq!(
+            cc["tasks"],
+            json!(["reflect", "watch", "list", "get"]),
+            "{cc}"
+        );
         for (id, calls) in views {
             let want = json!(page_verbs(calls));
             assert_eq!(cc[id], want, "{cc}");

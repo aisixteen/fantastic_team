@@ -67,7 +67,7 @@ pub fn register_team(reg: &mut BundleRegistry) {
     );
     reg.register(
         team_agentic_resources::HANDLER_MODULE,
-        team_agentic_resources::AgenticResourcesBundle,
+        team_agentic_resources::AgenticResourcesBundle::default(),
     );
     reg.register(
         team_task_registry::HANDLER_MODULE,

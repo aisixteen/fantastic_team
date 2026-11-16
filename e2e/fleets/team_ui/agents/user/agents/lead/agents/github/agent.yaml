@@ -16,4 +16,4 @@ callable_by:
   "$parent": "*"
   tasks: [reflect, issues]
   dispatcher: [reflect]
-  team_ws: [reflect, pr_status]
+  team_ws: [reflect, watch, pr_status]

@@ -119,9 +119,11 @@ agents:
         tasks:
         - reflect
         - issues
-        # the page leg draws the connector's view: its reflect, then the view's calls
+        # the page leg draws the connector's view: its reflect, then the view's calls (`watch`:
+        # the view follows the connector's own events)
         team_ws:
         - reflect
+        - watch
         - pr_status
     - id: github_credentials
       # the github connector's credential by env ref (#303): a personal token read from GH_TOKEN
@@ -155,6 +157,7 @@ agents:
         # the page leg draws the registry's view: its reflect, then the view's calls
         team_ws:
         - reflect
+        - watch
         - bundles
         - bundle
         - fleet
@@ -177,6 +180,7 @@ agents:
         $parent: '*'
         team_ws:
         - reflect
+        - watch
         - list
         - get
     - id: worker_exec
@@ -229,20 +233,25 @@ agents:
       - open
       - control
       cadencer:
+      - watch
       - status
       - set
       # the html views the page mounts, each agent's own `reflect`, then the view's calls: the task
       # registry's two reads, the connector's, the bundles registry's, the lead's chat (the base chat
-      # view's calls). The other end of each is on the agent (its `callable_by` above).
+      # view's calls; each view's `watch` follows its own agent's events). The other end of each is on
+      # the agent (its `callable_by` above).
       tasks:
       - reflect
+      - watch
       - list
       - get
       github:
       - reflect
+      - watch
       - pr_status
       bundles:
       - reflect
+      - watch
       - bundles
       - bundle
       - fleet

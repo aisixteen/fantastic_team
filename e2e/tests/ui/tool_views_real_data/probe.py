@@ -80,6 +80,19 @@ def clicks(ctx, v, ui):
             pass
         ok, got = ui.settle(lambda: settings(ctx).get("cadence"), 45)
         v.check("a cadence typed in the view (45) is set on the cadencer", ok, str(got))
+        # live: a change made outside the page shows without a reload, and the view polls nothing
+        D.view_follows(team, v, "cadencer")
+        try:
+            right.locator(".kpis").first.click(timeout=4000)  # leave the field: a focused number is not redrawn
+        except Exception:
+            pass
+        D.op(team, "cadencer", {"type": "set", "quiet": False, "stall_after": 240})
+        ok, got = ui.settle(lambda: ui.attr(right.locator('button[role=switch]').filter(has_text="Quiet"), "aria-checked"),
+                            "false", timeout=D.LIVE_S)
+        v.check(f"'Quiet' switched off outside the page (an operator set) reads off within {D.LIVE_S:g} s", ok, str(got))
+        ok, got = ui.settle(lambda: right.locator('input[aria-label="stall after"]').first.input_value(timeout=1000),
+                            "240", timeout=D.LIVE_S)
+        v.check(f"and the stall threshold set with it (240 s) shows within {D.LIVE_S:g} s", ok, str(got))
 
     # ---- the GitHub connector ----
     v.check("a click on the GitHub connector's row opens it", ui.open("github"), ui.right_now())
@@ -108,6 +121,16 @@ def clicks(ctx, v, ui):
         ok, got = ui.waits(right.locator(".sec").filter(has_text="Pull request").locator("dl.kv dd").first, lambda t: t.startswith(str(pr.get("state"))), timeout=20)
         v.check(f"a pull request looked up in the view shows the state the connector reports ({pr.get('state')})",
                 ok and bool(pr.get("state")), f"shown {got!r} connector {str(pr)[:200]}")
+        # live: a call made outside the page is in the view's recent calls without a reload
+        D.view_follows(team, v, "github")
+        try:
+            right.locator(".kpis, .ttl").first.click(timeout=4000)  # leave the lookup fields
+        except Exception:
+            pass
+        D.op(team, "github", {"type": "issues", "repo": "other-org/live"})
+        first = lambda: ui.texts(right.locator(".tbl .tr:not(.th)").first.locator("span"))
+        ok, got = ui.settle(lambda: first()[:2], ["issues", "other-org/live"], timeout=D.LIVE_S)
+        v.check(f"a call to the connector outside the page is the newest recent call within {D.LIVE_S:g} s", ok, str(got))
 
     # ---- the bundles registry ----
     v.check("a click on the bundles registry's row opens it", ui.open("bundles"), ui.right_now())
@@ -129,3 +152,18 @@ def clicks(ctx, v, ui):
         v.check(f"a click on the kind '{pick}' shows that card's directive", ok, got[:120])
         heads = ui.texts(right.locator(".sec h2"))
         v.check(f"the detail is headed by the kind picked ({pick})", pick in heads, str(heads))
+        # live: an agent spawned and deleted outside the page changes the count without a reload
+        D.view_follows(team, v, "bundles")
+        made = D.op(team, "bundles", {"type": "spawn", "bundle": pick, "provider": "provider"})
+        kid = made.get("id")
+        if v.check(f"the operator spawns one {pick}", isinstance(kid, str) and kid != "", str(made)[:200]):
+            ok, got = ui.waits(right.locator("#run"), f"{running + 1} running", exact=True, timeout=D.LIVE_S)
+            v.check(f"the spawned agent is counted on the page within {D.LIVE_S:g} s", ok, got)
+            ok, got = ui.waits(right.locator(".sec").filter(has_text="Running agents").locator(".pill"),
+                               lambda t: True, timeout=D.LIVE_S)
+            pills = ui.texts(right.locator(".sec").filter(has_text="Running agents").locator(".pill"))
+            v.check(f"and listed under the picked kind's running agents", kid in pills, str(pills))
+            gone = D.op(team, "kernel", {"type": "delete_agent", "id": kid})
+            ok, got = ui.waits(right.locator("#run"), f"{running} running", exact=True, timeout=D.LIVE_S)
+            v.check(f"deleted outside the page, it is no longer counted within {D.LIVE_S:g} s", ok and gone.get("deleted") is True,
+                    f"{got} {str(gone)[:200]}")

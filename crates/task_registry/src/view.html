@@ -181,7 +181,7 @@ function errorText(reply) {
 // end pure
 
 var ME = "{{agent}}";
-var st = { tasks: [], status: "", holder: "", moreOpen: false, selected: "", entry: null, error: "", busy: false };
+var st = { tasks: [], status: "", holder: "", moreOpen: false, selected: "", entry: null, error: "", busy: false, again: false };
 var $ = function (id) { return document.getElementById(id); };
 function now() { return Date.now() / 1000; }
 
@@ -296,18 +296,22 @@ function select(id) {
     st.entry = errorText(r) ? null : r; paintDetail();
   });
 }
+// one read at a time: an event that lands while a read is out reads again once it is back
 function refresh() {
-  if (st.busy) return; st.busy = true;
+  if (st.busy) { st.again = true; return; }
+  st.busy = true; st.again = false;
+  var done = function () { st.busy = false; if (st.again) refresh(); };
   call(ME, { type: "list" }).then(function (r) {
     st.error = errorText(r); st.tasks = st.error ? [] : taskList(r);
     if (st.selected && !st.tasks.some(function (t) { return t.id === st.selected; })) { st.selected = ""; st.entry = null; }
     paint();
     return st.selected ? select(st.selected) : null;
-  }).then(function () { st.busy = false; }, function () { st.busy = false; });
+  }).then(done, done);
 }
 $("f-status").addEventListener("change", function () { st.status = $("f-status").value; paintTable(); });
 $("f-holder").addEventListener("change", function () { st.holder = $("f-holder").value; paintTable(); });
 paint();
 refresh();
-setInterval(refresh, 5000);
+// the registry publishes `task_changed` on its own id after every write: re-read then, never on a timer
+follow(ME, ["task_changed"], refresh);
 </script>

@@ -12,4 +12,4 @@ callable_by:
   lead: "*"
   dispatcher: [list]
   cadencer: [list]
-  team_ws: [reflect, list, get]
+  team_ws: [reflect, watch, list, get]

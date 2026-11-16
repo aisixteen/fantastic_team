@@ -49,8 +49,13 @@ pub const HANDLER_MODULE: &str = "team_github.tools";
 /// The connector's own html view (the design mock's github page): the team page draws it
 /// from `reflect`. `{{agent}}` and `{{verbs}}` are filled at reflect time.
 const VIEW: &str = include_str!("view.html");
-/// The verbs the view calls on the connector: its state and the PR lookup. Both read.
-pub const VIEW_CALLS: [&str; 2] = ["reflect", "pr_status"];
+/// The verbs the view calls on the connector: `watch` (it follows the connector's own
+/// events), its state and the PR lookup. All read.
+pub const VIEW_CALLS: [&str; 3] = ["watch", "reflect", "pr_status"];
+
+/// The event every logged call emits on the connector's own id once it is served: the
+/// recent calls (and the rate and auth state the call read) changed.
+pub const CALL_SERVED: &str = "call_served";
 
 /// The connector's `view` for `reflect`: the page of [`VIEW`] with the agent's id, and the
 /// connector's own verbs as the list the page shows.

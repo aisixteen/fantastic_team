@@ -2392,14 +2392,31 @@ mod tests {
         let out = ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": vid})).await;
         assert_eq!(out["kind"], "file", "{out}");
         let ws = meta_of(&kernel, "team_ws");
-        assert_eq!(ws["can_call"][&vid], json!(["reflect", "read", "watch"]), "{ws:?}");
+        assert_eq!(
+            ws["can_call"][&vid],
+            json!(["reflect", "read", "watch"]),
+            "{ws:?}"
+        );
         let view = meta_of(&kernel, &vid);
-        assert_eq!(view["callable_by"]["team_ws"], json!(["reflect", "read", "watch"]));
+        assert_eq!(
+            view["callable_by"]["team_ws"],
+            json!(["reflect", "read", "watch"])
+        );
         // a second `open` changes nothing; an agent that is no file view is not granted
         ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": vid})).await;
-        assert_eq!(meta_of(&kernel, "team_ws")["can_call"][&vid], json!(["reflect", "read", "watch"]));
-        ask_kernel(&kernel, "dispatcher", json!({"type": "open", "node": "files"})).await;
-        assert!(meta_of(&kernel, "team_ws")["can_call"].get("files").is_none());
+        assert_eq!(
+            meta_of(&kernel, "team_ws")["can_call"][&vid],
+            json!(["reflect", "read", "watch"])
+        );
+        ask_kernel(
+            &kernel,
+            "dispatcher",
+            json!({"type": "open", "node": "files"}),
+        )
+        .await;
+        assert!(meta_of(&kernel, "team_ws")["can_call"]
+            .get("files")
+            .is_none());
         kernel.stop().await;
     }
 
@@ -2448,14 +2465,14 @@ mod tests {
         assert_eq!(out["view"], "html", "{out}");
         assert_eq!(out["target"], "tr");
         assert_eq!(out["fullscreen"], true);
-        let want = json!(["list", "reflect", "get"]);
+        let want = json!(["list", "reflect", "watch", "get"]);
         let tasks = meta_of(&kernel, "tr");
         assert_eq!(tasks["callable_by"]["team_ws"], want, "{tasks:?}");
         assert_eq!(tasks["callable_by"]["lead"], "*", "another grant is kept");
         let ws = meta_of(&kernel, "team_ws");
         assert_eq!(
             ws["can_call"]["tr"],
-            json!(["reflect", "list", "get"]),
+            json!(["reflect", "watch", "list", "get"]),
             "{ws:?}"
         );
         assert!(ws["can_call"].get("*").is_none());
@@ -2466,7 +2483,10 @@ mod tests {
             .remove(0)
             .result;
         assert_eq!(refl["view"]["kind"], "html", "{refl}");
-        assert_eq!(refl["view"]["calls"], json!({"tr": ["list", "get"]}));
+        assert_eq!(
+            refl["view"]["calls"],
+            json!({"tr": ["watch", "list", "get"]})
+        );
         // again: nothing is written twice
         assert_eq!(crate::declared_views::grant_views(&kernel), 0);
         kernel.stop().await;

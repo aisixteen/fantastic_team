@@ -184,15 +184,22 @@ mod tests {
         hydrate::seed(dir.path()).unwrap();
         let cc = read_can_call(dir.path());
         for (target, verbs) in [
-            ("cadencer", json!(["status", "set"])),
+            ("cadencer", json!(["watch", "status", "set"])),
             // the task registry's own html view: its reflect, then the view's two reads
-            ("tasks", json!(["reflect", "list", "get"])),
+            ("tasks", json!(["reflect", "watch", "list", "get"])),
             // the connector's, the bundles registry's and the lead's chat views (#351): each agent's
             // `reflect`, then its view's calls (the crates' `VIEW_CALLS`, the base chat view's)
-            ("github", json!(["reflect", "pr_status"])),
+            ("github", json!(["reflect", "watch", "pr_status"])),
             (
                 "bundles",
-                json!(["reflect", "bundles", "bundle", "fleet", "get_count"]),
+                json!([
+                    "reflect",
+                    "watch",
+                    "bundles",
+                    "bundle",
+                    "fleet",
+                    "get_count"
+                ]),
             ),
             (
                 "lead",

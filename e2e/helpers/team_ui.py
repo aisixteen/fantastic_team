@@ -72,6 +72,24 @@ AGENT_HOLDERS = len({t[1] for t in TASKS if isinstance(t[1], str)})
 SUBTREE_HOLDERS = len({t[1]["subtree"] for t in TASKS if isinstance(t[1], dict)})
 DONE_SHOWN = 3  # the registry view lists three done tasks and folds the rest behind one button
 
+# LIVE: a change made outside the page (a call to the agent, as the operator) shows in the open view
+# within this many seconds, with no reload. The views follow their agent's events (one model, many
+# view-models); the polls they replaced re-read every 5 to 10 s, so a view that still polls misses it.
+LIVE_S = 3.0
+TIMERS = ("setInterval(", "setTimeout(")
+
+
+def view_follows(team, v, agent: str) -> bool:
+    """The html view `agent` serves (its `reflect`'s `view`) follows its agent: its calls name `watch`
+    on it, and its source sets no timer (a view that polls fails here)."""
+    view = op(team, agent, {"type": "reflect"}).get("view") or {}
+    src = view.get("bytes") or ""
+    calls = (view.get("calls") or {}).get(agent) or []
+    found = [t for t in TIMERS if t in src]
+    ok = v.check(f"the view of {agent} watches its agent (its calls name watch)", "watch" in calls, str(calls))
+    return v.check(f"the view of {agent} sets no timer: it re-reads on its agent's events, never on a clock",
+                   bool(src) and not found, str(found) if src else "no view") and ok
+
 
 def holder_text(h) -> str:
     return h if isinstance(h, str) else "subtree " + h["subtree"] if isinstance(h, dict) else "nobody"

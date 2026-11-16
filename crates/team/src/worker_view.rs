@@ -3,6 +3,11 @@
 //! files, output, preview) and takes the rest of the height; the worker's chat
 //! is the last cell, locked at the bottom. The view stores only the worker id,
 //! and its chat targets that id only.
+//!
+//! WHAT IT PUBLISHES: [`VIEW_CHANGED`] `{type, change: "open"|"place", worker}` on its
+//! own id (the kernel's `emit`) when an `open` made a worker's view or a `place` added
+//! a cell; a watcher re-reads that worker's view then. The reads and a refusal emit
+//! nothing.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -21,6 +26,9 @@ const MAN: &str = "A worker's view: one list of cells per worker (task card, fil
 
 pub mod record;
 pub mod verbs;
+/// The event a change of one worker's view emits on the agent's own id.
+pub const VIEW_CHANGED: &str = "view_changed";
+
 /// The layout of fantastic's canvas this view uses (canvas | mobile).
 pub const LAYOUT: &str = "mobile";
 /// The group a view joins when `open` names none.
@@ -144,13 +152,34 @@ impl Handler for WorkerViewBundle {
         &self,
         agent_id: &AgentId,
         call: Self::Call,
-        _kernel: &Arc<Kernel>,
+        kernel: &Arc<Kernel>,
     ) -> Result<Reply, BundleError> {
+        let (out, changed) = self.answer(call, agent_id);
+        if let Some((change, worker)) = changed {
+            let ev = json!({"type": VIEW_CHANGED, "change": change, "worker": worker});
+            kernel.emit(agent_id, ev).await;
+        }
+        Ok(Some(out))
+    }
+}
+
+impl WorkerViewBundle {
+    /// The reply to `call`, and the change it made to a worker's view (the change and the
+    /// worker), if any. The lock is held here only, never across an await.
+    fn answer(
+        &self,
+        call: verbs::Call,
+        agent_id: &AgentId,
+    ) -> (Value, Option<(&'static str, String)>) {
         let mut views = self.views.lock().expect("worker view state");
+        let mut changed = None;
         let out = match call {
             verbs::Call::Reflect(_) => json!({"id": agent_id.as_str(), "sentence": MAN}),
             verbs::Call::Open(a) => {
                 let group = a.group.unwrap_or_else(|| DEFAULT_GROUP.to_string());
+                if !views.contains_key(&a.worker) {
+                    changed = Some(("open", a.worker.clone()));
+                }
                 let view = views.entry(a.worker.clone()).or_insert_with(|| View {
                     worker: a.worker.clone(),
                     group,
@@ -170,7 +199,10 @@ impl Handler for WorkerViewBundle {
                         locked: a.cell.locked,
                     };
                     match place(view, cell) {
-                        Ok(()) => json!(view),
+                        Ok(()) => {
+                            changed = Some(("place", a.worker.clone()));
+                            json!(view)
+                        }
                         Err(e) => json!({"error": e}),
                     }
                 }
@@ -178,7 +210,7 @@ impl Handler for WorkerViewBundle {
             verbs::Call::Next(a) => cycled(&views, &a.worker, 1),
             verbs::Call::Prev(a) => cycled(&views, &a.worker, -1),
         };
-        Ok(Some(out))
+        (out, changed)
     }
 }
 
@@ -213,6 +245,72 @@ mod tests {
         let after = send(&b, json!({"type": "open", "worker": "w1"})).await;
         assert_eq!(before, after);
         assert_eq!(b.views.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_open_that_makes_a_view_and_a_place_publish_view_changed_and_nothing_else_does() {
+        use fantastic_kernel::verbs::Parse;
+        let tmp = tempfile::tempdir().unwrap();
+        let kernel = Arc::new(Kernel::new());
+        let me = AgentId::from("wv");
+        kernel.register(fantastic_kernel::Agent::new(
+            me.clone(),
+            Some(HANDLER_MODULE.to_string()),
+            None,
+            serde_json::Map::new(),
+            tmp.path().join(".fantastic"),
+            false,
+        ));
+        let w = AgentId::from("_t_view");
+        let mut rx = kernel.ensure_inbox(&w);
+        assert!(kernel.watch(&me, w).await.is_none());
+        let b = WorkerViewBundle::default();
+        let call = |p: Value| <verbs::Call as Parse>::parse("worker_view", &p, &[]).unwrap();
+        let mut published = || -> Vec<Value> {
+            std::iter::from_fn(|| rx.try_recv())
+                .map(|i| i.payload)
+                .filter(|p| p["type"] == VIEW_CHANGED)
+                .collect()
+        };
+        b.handle(&me, call(json!({"type": "open", "worker": "w1"})), &kernel)
+            .await
+            .unwrap();
+        assert_eq!(
+            published(),
+            vec![json!({"type": VIEW_CHANGED, "change": "open", "worker": "w1"})]
+        );
+        // the view exists: a second open changes nothing
+        b.handle(&me, call(json!({"type": "open", "worker": "w1"})), &kernel)
+            .await
+            .unwrap();
+        assert_eq!(published(), Vec::<Value>::new());
+        let cell = json!({"kind": "preview", "label": "Preview"});
+        b.handle(
+            &me,
+            call(json!({"type": "place", "worker": "w1", "cell": cell})),
+            &kernel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            published(),
+            vec![json!({"type": VIEW_CHANGED, "change": "place", "worker": "w1"})]
+        );
+        // the reads and a refused place publish nothing
+        b.handle(&me, call(json!({"type": "cells", "worker": "w1"})), &kernel)
+            .await
+            .unwrap();
+        b.handle(&me, call(json!({"type": "next", "worker": "w1"})), &kernel)
+            .await
+            .unwrap();
+        b.handle(
+            &me,
+            call(json!({"type": "place", "worker": "w9", "cell": cell})),
+            &kernel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(published(), Vec::<Value>::new());
     }
 
     #[tokio::test]

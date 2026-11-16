@@ -43,6 +43,13 @@
 //! one task's facts, history and last report. The view reads `list` and `get` on its
 //! own agent ([`VIEW_CALLS`]) and nothing else; a page mounts it the way it mounts
 //! the base sidebar and chat views.
+//!
+//! WHAT IT PUBLISHES. Every write that changed a task emits [`CHANGED`] on the
+//! registry's own id (the kernel's `emit`, so every watcher of the agent gets it):
+//! `{type: "task_changed", change: <verb>, task: <id>}` after `add`, `assign`,
+//! `reassign`, `status` and `report`, and `{type: "task_changed", change: "pull",
+//! tasks: [<id>...]}` after a `pull` that created any. A refusal emits nothing. The
+//! view watches its agent and re-reads `list` (and the selected task) on each one.
 
 #![deny(missing_docs)]
 
@@ -74,8 +81,29 @@ const PAGE: u64 = 500;
 /// `reflect` returns it with `{{agent}}` and `{{helpers}}` filled.
 const VIEW: &str = include_str!("view.html");
 
-/// The verbs the view calls on its own agent: the two reads, never a write.
-pub const VIEW_CALLS: [&str; 2] = ["list", "get"];
+/// The verbs the view calls on its own agent: `watch` (it follows the agent's events)
+/// and the two reads, never a write.
+pub const VIEW_CALLS: [&str; 3] = ["watch", "list", "get"];
+
+/// The event a write that changed a task emits on the registry's own id.
+pub const CHANGED: &str = "task_changed";
+
+/// What the registry publishes after a write `verb` answered `reply`: the tasks it
+/// changed, or `None` for a refusal or a `pull` that created nothing.
+fn changed_event(verb: &str, reply: &Value) -> Option<Value> {
+    if reply.get("error").is_some() {
+        return None;
+    }
+    if verb == "pull" {
+        let created = reply.get("created").and_then(Value::as_array)?;
+        if created.is_empty() {
+            return None;
+        }
+        return Some(json!({"type": CHANGED, "change": verb, "tasks": created}));
+    }
+    let id = reply.get("id").and_then(Value::as_str)?;
+    Some(json!({"type": CHANGED, "change": verb, "task": id}))
+}
 
 /// The `view` a registry's `reflect` carries: `{kind: "html", bytes, calls}`, the page of
 /// [`VIEW`] for `id` and the calls naming `id` with [`VIEW_CALLS`].
@@ -352,7 +380,16 @@ impl Handler for TaskRegistryBundle {
                 let lock = self.lock_of(agent_id);
                 let _held = lock.lock().await;
                 let caller = current_origin();
-                match write {
+                let verb = match &write {
+                    verbs::Call::Add(_) => "add",
+                    verbs::Call::Assign(_) => "assign",
+                    verbs::Call::Reassign(_) => "reassign",
+                    verbs::Call::Status(_) => "status",
+                    verbs::Call::Report(_) => "report",
+                    verbs::Call::Pull(_) => "pull",
+                    _ => "",
+                };
+                let reply = match write {
                     verbs::Call::Add(a) => flat(add_inner(kernel, &store, &caller, a).await),
                     verbs::Call::Assign(a) => {
                         let f = facts_of(a.versions, a.source_version, a.fork_from);
@@ -373,7 +410,11 @@ impl Handler for TaskRegistryBundle {
                         ),
                     },
                     _ => Value::Null,
+                };
+                if let Some(ev) = changed_event(verb, &reply) {
+                    kernel.emit(agent_id, ev).await;
                 }
+                reply
             }
         };
         Ok(Some(reply))

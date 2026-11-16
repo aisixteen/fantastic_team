@@ -122,9 +122,13 @@ function refresh() {
   });
 }
 refresh();
-setInterval(function () {
+// the cadencer publishes `settings_changed` and `ticked` on its own id: re-read then, never on a
+// timer. A number being typed is not redrawn under the cursor: the read waits until it is left.
+var stale = false;
+follow(AGENT, ["settings_changed", "ticked"], function () {
   var a = document.activeElement;
-  if (a && a.tagName === "INPUT") return;
+  if (a && a.tagName === "INPUT") { stale = true; return; }
   refresh();
-}, 5000);
+});
+pg.addEventListener("focusout", function () { if (stale) { stale = false; refresh(); } });
 </script>

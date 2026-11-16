@@ -20,19 +20,26 @@ const LABEL_TEXT: &str =
 const DRAFT_TEXT: &str =
     "team_github pr_create: pull requests are opened as drafts only — a person marks one ready";
 
-/// Route one call to its handler, and log it for `reflect`.
+/// Route one call to its handler, and log it for `reflect`. A logged call is then
+/// published on the connector's own id ([`crate::CALL_SERVED`] `{type, verb, target,
+/// result}`, the kernel's `emit`): every watcher of the connector re-reads its `reflect`
+/// (the recent calls, the rate and the auth state the call just used).
 pub(crate) async fn dispatch(call: Call, id: &AgentId, kernel: &Arc<Kernel>, cfg: &Cfg) -> Value {
     let logged = !matches!(call, Call::Reflect(_) | Call::Directive(_) | Call::Boot(_));
     let (verb, target) = (verb_of(&call), crate::callog::target_of(&call));
     let reply = route(call, id, kernel, cfg).await;
     if logged {
+        let result = crate::callog::result_of(&reply);
         crate::callog::push(
             &id.to_string(),
             &cfg.api_url,
             verb,
-            target,
-            crate::callog::result_of(&reply),
+            target.clone(),
+            result.clone(),
         );
+        let ev =
+            json!({"type": crate::CALL_SERVED, "verb": verb, "target": target, "result": result});
+        kernel.emit(id, ev).await;
     }
     reply
 }

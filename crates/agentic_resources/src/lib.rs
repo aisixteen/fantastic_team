@@ -30,6 +30,12 @@
 //! with a plain `send`.
 //!
 //! Verbs: `reflect`, `bundles`, `bundle`, `spawn`, `fleet`, `get_count`.
+//!
+//! WHAT IT PUBLISHES. The fleet is the tree, so the registry follows the kernel's own
+//! lifecycle stream (`added` / `removed`) from its first call on, and emits
+//! [`FLEET_CHANGED`] `{type, change: "added"|"removed", agent, bundle}` on its own id
+//! whenever an agent on a spawnable bundle is made (a `spawn`, a clone, a
+//! `create_agent`) or deleted. Its view watches the registry and re-reads on each one.
 
 #![deny(missing_docs)]
 
@@ -58,8 +64,12 @@ pub const MAN: &str = "A registry of spawnable bundles (meta bundles): list them
 /// The registry's own html view (the design mock's agentic_resources page): the team page
 /// draws it from `reflect`. `{{agent}}` is the agent's id, filled at reflect time.
 const VIEW: &str = include_str!("view.html");
-/// The verbs the view calls on the registry: its kinds, one kind, the fleet and the count.
-pub const VIEW_CALLS: [&str; 4] = ["bundles", "bundle", "fleet", "get_count"];
+/// The verbs the view calls on the registry: `watch` (it follows the registry's own
+/// events), its kinds, one kind, the fleet and the count.
+pub const VIEW_CALLS: [&str; 5] = ["watch", "bundles", "bundle", "fleet", "get_count"];
+
+/// The event the registry emits on its own id when its fleet changed.
+pub const FLEET_CHANGED: &str = "fleet_changed";
 
 /// What a parent holds over every agent it spawns: it controls it and assigns its work
 /// with a plain `send` (spawn itself sends nothing).
@@ -68,8 +78,81 @@ const PARENT_VERBS: [&str; 4] = ["pause", "resume", "stop", "send"];
 /// What every spawned agent holds on its parent: it tells it with a message.
 const CHILD_VERBS: [&str; 1] = ["send"];
 
-/// The agentic_resources bundle.
-pub struct AgenticResourcesBundle;
+/// The agentic_resources bundle. It holds no state of its own: only which registry
+/// agents already follow their kernel's lifecycle stream (one tap each).
+#[derive(Default)]
+pub struct AgenticResourcesBundle {
+    taps: std::sync::Mutex<Vec<(std::sync::Weak<Kernel>, AgentId)>>,
+}
+
+impl AgenticResourcesBundle {
+    /// Start the fleet tap of registry `me` on `kernel` once: true when this call started it.
+    fn follow_once(&self, me: &AgentId, kernel: &Arc<Kernel>) -> bool {
+        let mut taps = self.taps.lock().expect("taps poisoned");
+        taps.retain(|(k, _)| k.strong_count() > 0);
+        let weak = Arc::downgrade(kernel);
+        if taps.iter().any(|(k, id)| k.ptr_eq(&weak) && id == me) {
+            return false;
+        }
+        taps.push((weak, me.clone()));
+        drop(taps);
+        follow_fleet(kernel, me.clone());
+        true
+    }
+}
+
+/// What a lifecycle event of the kernel is to the fleet: `added` with its id, or
+/// `removed` with its id; anything else is not a fleet change.
+fn lifecycle_of(ev: &Value) -> Option<(&'static str, String)> {
+    let id = ev.get("agent_id").and_then(Value::as_str)?.to_string();
+    match ev.get("kind").and_then(Value::as_str)? {
+        "added" => Some(("added", id)),
+        "removed" => Some(("removed", id)),
+        _ => None,
+    }
+}
+
+/// THE FLEET TAP: the kernel's lifecycle stream, queued (the kernel is not touched from
+/// inside its own publish), then each add or removal of an agent on a spawnable bundle
+/// emitted as [`FLEET_CHANGED`] on the registry's own id. A removal names no bundle, so
+/// the tap remembers the bundle of every fleet member it has seen.
+fn follow_fleet(kernel: &Arc<Kernel>, me: AgentId) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(&'static str, String)>();
+    kernel.add_state_subscriber(Arc::new(move |ev: &Value, _body| {
+        if let Some(c) = lifecycle_of(ev) {
+            let _ = tx.send(c);
+        }
+    }));
+    let mut known: BTreeMap<String, String> = spawned(kernel)
+        .into_iter()
+        .map(|s| (s.id.as_str().to_string(), s.bundle))
+        .collect();
+    let weak = Arc::downgrade(kernel);
+    tokio::spawn(async move {
+        while let Some((change, id)) = rx.recv().await {
+            let Some(k) = weak.upgrade() else { return };
+            let bundle = if change == "added" {
+                let names: Vec<String> = cards::of(&k).into_iter().map(|c| c.name).collect();
+                let b = k
+                    .agents
+                    .get(&AgentId::from(id.as_str()))
+                    .and_then(|a| a.value().handler_module.clone())
+                    .filter(|b| names.contains(b));
+                if let Some(b) = &b {
+                    known.insert(id.clone(), b.clone());
+                }
+                b
+            } else {
+                known.remove(&id)
+            };
+            if let Some(bundle) = bundle {
+                let ev =
+                    json!({"type": FLEET_CHANGED, "change": change, "agent": id, "bundle": bundle});
+                k.emit(&me, ev).await;
+            }
+        }
+    });
+}
 
 // ── record helpers ──────────────────────────────────────────────────
 
@@ -162,6 +245,8 @@ impl Handler for AgenticResourcesBundle {
             return Ok(None);
         };
         let _ = me;
+        // from its first call on, the registry publishes its fleet's changes
+        self.follow_once(agent_id, kernel);
         let reply = match call {
             verbs::Call::Reflect(_) => {
                 let names: Vec<String> = cards_of(kernel).0.into_iter().map(|c| c.name).collect();

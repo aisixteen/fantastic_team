@@ -103,5 +103,7 @@ function refresh() {
   });
 }
 refresh();
-setInterval(refresh, 10000);
+// the registry publishes `fleet_changed` on its own id when an agent on a spawnable bundle is
+// added or removed: re-read then, never on a timer
+follow(AGENT, ["fleet_changed"], refresh);
 </script>

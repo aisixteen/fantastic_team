@@ -242,13 +242,20 @@ async fn assert_the_declared_grants(site: &Site) {
         &site.record("github").await,
         "callable_by",
         "team_ws",
-        json!(["reflect", "pr_status"]),
+        json!(["reflect", "watch", "pr_status"]),
     );
     has_grant(
         &site.record("bundles").await,
         "callable_by",
         "team_ws",
-        json!(["reflect", "bundles", "bundle", "fleet", "get_count"]),
+        json!([
+            "reflect",
+            "watch",
+            "bundles",
+            "bundle",
+            "fleet",
+            "get_count"
+        ]),
     );
 }
 

@@ -8,10 +8,10 @@ ingress_rule: allow_all_ingress
 can_call:
   "$self": "*"
   dispatcher: [sidebar, tree, open, control]
-  cadencer: [reflect, status, set]
-  tasks: [reflect, list, get]
-  github: [reflect, pr_status]
-  bundles: [reflect, bundles, bundle, fleet, get_count]
+  cadencer: [reflect, watch, status, set]
+  tasks: [reflect, watch, list, get]
+  github: [reflect, watch, pr_status]
+  bundles: [reflect, watch, bundles, bundle, fleet, get_count]
   user: [inquiries, answer_inquiry]
   sidebar: [reflect, watch]
   kernel_state: [reflect, list_agents]

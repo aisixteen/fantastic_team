@@ -132,9 +132,14 @@ function refresh() {
   });
 }
 refresh();
-setInterval(function () {
+// the connector publishes `call_served` on its own id after each call it serves (the recent calls,
+// the rate and the auth it read): re-read then, never on a timer. A field being typed is not
+// redrawn under the cursor: the read waits until it is left.
+var stale = false;
+follow(AGENT, ["call_served"], function () {
   var a = document.activeElement;
-  if (a && a.tagName === "INPUT") return;
+  if (a && a.tagName === "INPUT") { stale = true; return; }
   refresh();
-}, 10000);
+});
+pg.addEventListener("focusout", function () { if (stale) { stale = false; refresh(); } });
 </script>

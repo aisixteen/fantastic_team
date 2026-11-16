@@ -370,11 +370,11 @@ mod tests {
         );
         assert_eq!(
             tasks["callable_by"][WS_ID],
-            json!(["reflect", "list", "get"])
+            json!(["reflect", "watch", "list", "get"])
         );
         assert_eq!(
             disk_record(dir.path(), WS_ID)["can_call"][TASKS],
-            json!(["reflect", "list", "get"])
+            json!(["reflect", "watch", "list", "get"])
         );
         assert_eq!(
             disk_record(dir.path(), WEB_ID)["can_call"][PAGE_ID],

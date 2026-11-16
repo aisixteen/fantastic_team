@@ -20,6 +20,11 @@ function resultClass(r) {
 function barParts(parts) {
   return (parts || []).filter(function (p) { return p && p.n > 0; });
 }
+// one of the events `names` the agent published: a watcher of an agent also sees every
+// call made to it (a view's own reads among them), and those are never re-read on
+function isEvent(ev, names) {
+  return !!ev && typeof ev === "object" && typeof ev.type === "string" && (names || []).indexOf(ev.type) >= 0;
+}
 // end pure
 function h(tag, cls, text) {
   var n = document.createElement(tag);
@@ -64,3 +69,8 @@ function bar(parts) {
   return b;
 }
 function call(target, p) { return fantastic.send(target, p).then(function (r) { return r; }, function () { return null; }); }
+// follow the agent: `fn(ev)` on each event of `names` it publishes (the kernel's emit on its id),
+// never on a timer. The view's `calls` name `watch` on its agent.
+function follow(agent, names, fn) {
+  return fantastic.watch(agent, function (ev) { if (isEvent(ev, names)) fn(ev); });
+}
