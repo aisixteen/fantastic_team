@@ -177,8 +177,8 @@ mod tests {
     }
 
     /// The page leg's end of every edge is the blueprint's: the seeded `team_ws` may call
-    /// the dispatcher's `open` and the `cadencer` and `user` verbs the team's page
-    /// uses, and the base sidebar view's read calls, nothing else and never `*`. The other end is on the agent the person makes
+    /// the dispatcher's `open`, each mounted html view's agent's `reflect` and that view's
+    /// calls, the `user` verbs the team's page uses, and the base sidebar view's read calls, nothing else and never `*`. The other end is on the agent the person makes
     /// (its own `callable_by`).
     #[tokio::test(flavor = "multi_thread")]
     async fn the_seeded_page_leg_may_call_exactly_its_blueprint_verbs() {
@@ -186,7 +186,8 @@ mod tests {
         hydrate::seed(dir.path()).unwrap();
         let cc = read_can_call(dir.path());
         for (target, verbs) in [
-            ("cadencer", json!(["watch", "status", "set"])),
+            // the cadencer's html view: its reflect, then the view's calls
+            ("cadencer", json!(["reflect", "watch", "status", "set"])),
             // the task registry's own html view: its reflect, then the view's two reads
             ("tasks", json!(["reflect", "watch", "list", "get"])),
             // the connector's, the bundles registry's and the lead's chat views (#351): each agent's

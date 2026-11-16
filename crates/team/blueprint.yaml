@@ -202,9 +202,8 @@ agents:
         $parent: '*'
 # THE WEB HOST. `web` mounts the leg by asking it for its routes, and serves the page by
 # reading `read_stream` as itself: both ends of both edges. The leg is the page's one
-# principal: it may call the dispatcher's `open`, and the verbs the page sends to the
-# other tool agents (the cadencer toggle, the user's inquiry panel) of
-# the agents that the person or the cards make; the other end of each of those is on the
+# principal: it may call the dispatcher's `open`, and on each agent whose html view the page
+# mounts that agent's `reflect` and the view's calls; the other end of each of those is on the
 # agent it names (its own `callable_by`, written where it is made).
 - id: web
   handler_module: web.tools
@@ -231,7 +230,9 @@ agents:
       # the page asks the dispatcher's `open` when an agent's reflect is refused
       dispatcher:
       - open
+      # the cadencer's html view: its `reflect`, then the view's calls (`cadencer::VIEW_CALLS`)
       cadencer:
+      - reflect
       - watch
       - status
       - set
