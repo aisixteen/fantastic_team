@@ -194,6 +194,7 @@ The older groups (`task`, `secrets`, `dispatcher`, `bundles`, `ui`, `app`, `turn
 - `ui/sidebar_opens_agent_full_screen` (free): the page's socket `/team_ws/ws` end to end (sidebar lists, `open`, a message reaching one agent alone), no page DOM.
 - `ui/layout_two_columns` (free): the page in headless Chromium at 1440x900 (two cells side by side) and 390x844 (stacked, no sideways scroll); needs Playwright: `python3 -m pip install --user playwright==1.55.0`.
 - `tests/ui/`: the web UI (the team page on a web host, its websocket via `helpers/web.py`).
+- `ui/main_opens_each_agent`, `ui/tasks_view_counts_and_detail`, `ui/tool_views_real_data`, `ui/file_row_opens_file`, `ui/phone_one_panel`, `ui/chat_send_and_answer`, `ui/agent_states_in_tree`, `ui/seeded_page_opens_agents` (free, #351): the page used like a person, function only (`tests/ui/README.md`); the fleet layer `fleets/team_ui`, the shared steps `helpers/team_ui.py`; they need Playwright too.
 - `runs/`: one folder per run, gitignored (it holds model output).
 
 ## The app and the dispatcher's web UI (#37)

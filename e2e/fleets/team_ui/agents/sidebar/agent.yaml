@@ -1,0 +1,5 @@
+id: sidebar
+handler_module: sidebar.tools
+callable_by:
+  user: "*"
+  team_ws: [reflect, watch]

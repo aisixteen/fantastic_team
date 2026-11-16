@@ -1,0 +1,16 @@
+id: ops
+display_name: cluster ops
+handler_module: ai_chat.tools
+provider_id: provider
+model: "{{model_name}}"
+memory_store_id: memory
+can_call:
+  "$self": "*"
+  provider: [complete, watch]
+  memory: "*"
+  k_rollout: [send]
+  k_scale: [send]
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  team_ws: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]

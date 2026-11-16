@@ -1,0 +1,21 @@
+# Settings a person set: on, every 60 s, stalled after 300 s, not quiet, digests off for m_ads.
+id: cadencer
+handler_module: team_cadencer.tools
+enabled: true
+cadence: 60
+stall_after: 300
+quiet: false
+"off": [m_ads]
+group_settings: {}
+bundles: bundles
+can_call:
+  "$self": "*"
+  lead: [send]
+  bundles: [fleet, get_count]
+  tasks: [list]
+  kernel_state: [reflect]
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  dispatcher: [status]
+  team_ws: [reflect, status, set]

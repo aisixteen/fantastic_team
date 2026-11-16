@@ -1,0 +1,81 @@
+[
+ {
+  "lane": "ops",
+  "say": "Handing k-rollout its task.",
+  "calls": [
+   {
+    "target": "k_rollout",
+    "type": "send",
+    "args": {
+     "text": "[lane:krollout] Roll out api v2.4 to prod-eu, one pod at a time. Stop and ask if a pod is not ready in 5 minutes."
+    }
+   }
+  ]
+ },
+ {
+  "lane": "ops",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "lane": "krollout",
+  "say": "Pod 3 cannot pull the image. I stopped at 2 of 3 and left v2.3 serving on the third pod.",
+  "calls": [
+   {
+    "target": "user",
+    "type": "inquiry",
+    "args": {
+     "text": "Pod 3 can't pull api:2.4.0 in eu. What should I do?",
+     "kind": "single",
+     "options": [
+      "Copy the image to eu, then retry",
+      "Roll back to v2.3",
+      "Leave it at 2 of 3"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "lane": "krollout",
+  "say": "I wait for your answer.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "lane": "mads",
+  "say": "The search campaign is over its daily cap.",
+  "calls": [
+   {
+    "target": "user",
+    "type": "inquiry",
+    "args": {
+     "text": "Budget is over the cap: raise it or pause?"
+    }
+   }
+  ]
+ },
+ {
+  "lane": "mads",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "WORKING_ON_IT",
+  "delay": 45,
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ }
+]

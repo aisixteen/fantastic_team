@@ -1,0 +1,28 @@
+# The page's one principal. Its grants are DECLARED here, per agent, as the records of a team are
+# written (each view's own calls, never `*`): the blueprint's (dispatcher, cadencer, tasks, user,
+# sidebar, the root, files), then every agent of this fleet that has a view the page mounts, and
+# `reflect` on one agent with no view (the name card).
+id: team_ws
+handler_module: web_ws.tools
+ingress_rule: allow_all_ingress
+can_call:
+  "$self": "*"
+  dispatcher: [sidebar, tree, open, control]
+  cadencer: [reflect, status, set]
+  tasks: [reflect, list, get]
+  github: [reflect, pr_status]
+  bundles: [reflect, bundles, bundle, fleet, get_count]
+  user: [inquiries, answer_inquiry]
+  sidebar: [reflect, watch]
+  kernel_state: [reflect, list_agents]
+  files: [list, watch, watch_path, unwatch_path, open_view]
+  worker_exec: [reflect]
+  lead: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]
+  ops: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]
+  k_rollout: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]
+  k_scale: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]
+  mkt: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]
+  m_ads: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]
+callable_by:
+  "$self": "*"
+  web: [get_routes]
