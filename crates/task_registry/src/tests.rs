@@ -1397,7 +1397,7 @@ impl Handler for TrackerBundle {
         Ok(Some(match verb.as_str() {
             "reflect" => json!({"id": agent_id.as_str(), "repos": meta.get("repos").cloned().unwrap_or(json!([]))}),
             "issues" => {
-                assert_eq!(payload["label"], READY_LABEL, "pull asks for the ready label");
+                assert!(payload.get("label").is_none(), "pull sends no label");
                 assert_eq!(payload["state"], "open", "pull asks for open issues");
                 let repo = payload["repo"].as_str().unwrap_or("");
                 match meta.get("issues").and_then(|i| i.get(repo)) {

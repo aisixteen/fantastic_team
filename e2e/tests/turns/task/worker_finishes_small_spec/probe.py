@@ -34,7 +34,7 @@ def run(ctx):
     run_flow.boot(ctx)
     team = ctx.team
 
-    # 1. the task registry pulls the labelled issue from the tracker as a waiting task
+    # 1. the task registry pulls the open issue from the tracker as a waiting task
     pulled = team.send("tasks", {"type": "pull"})
     v.check("the registry took the issue", pulled["result"].get("created") == ["acme/widgets#1"],
             str(pulled))

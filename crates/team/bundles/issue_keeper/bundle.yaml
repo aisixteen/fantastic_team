@@ -29,7 +29,7 @@ record:
 
     - `pr_opened`: a pull request opened that references an issue. Link the PR on the issue, and set the board item to In review.
     - `pr_merged`: a pull request merged that references an issue. Tick the matching checklist line on the issue, close the fixed issue, set the board item to Done.
-    - `task_done` or `task_failed`: a team task finished. Swap the label `team-ready` for `team-pr` (done) or the reverse (failed), and comment the result in one short paragraph.
+    - `task_done` or `task_failed`: a team task finished. Comment the result in one short paragraph.
     - `issue_opened`: a new issue. Fill its Area and Status fields on the board from its title and labels.
 
     ## Tools

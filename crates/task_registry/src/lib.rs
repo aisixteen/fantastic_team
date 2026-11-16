@@ -7,8 +7,8 @@
 //! `disabled`.
 //!
 //! THE TRACKER. The record's `task_tracker_id` names the agent that is the tracker
-//! (today the github connector): `pull` reads its ready issues (open, labelled
-//! [`READY_LABEL`], on each repo the tracker's `reflect` lists) and adds each one that
+//! (today the github connector): `pull` reads its issues (every open issue, on each
+//! repo the tracker's `reflect` lists) and adds each one that
 //! is not a task yet as a waiting task; the tracker's update and close verbs take the
 //! write-back, called by the lead. Without a `task_tracker_id`, `pull` is refused
 //! `disabled`; the other verbs do not need one.
@@ -65,9 +65,6 @@ pub const HANDLER_MODULE: &str = "task_registry.tools";
 /// What the bundle is for: its one short man text; how to call it is rendered from its
 /// declared verbs (`docs`, `reflect`).
 pub const MAN: &str = "The team's tasks: who holds each one and where it came from, pulled from the tracker its record names; it keeps its tables in the store agent its record names.";
-
-/// The label on the tracker that marks an issue as ready for the team: what `pull` takes.
-pub const READY_LABEL: &str = "team-ready";
 
 /// How many rows one store read asks for.
 const PAGE: u64 = 500;
@@ -432,7 +429,7 @@ async fn add_inner(
 }
 
 /// One pass over the tracker: the repos its `reflect` lists, each one's open issues
-/// labelled [`READY_LABEL`], and a waiting task with no holder per issue that is not a
+/// (no label filter), and a waiting task with no holder per issue that is not a
 /// task yet (id `owner/name#N`, source and update_to `gh:owner/name#N`). A repo whose
 /// listing fails is skipped with the tracker's error as the reason; an issue that is a
 /// task already is skipped `already a task`.
@@ -458,7 +455,7 @@ async fn pull_inner(kernel: &Arc<Kernel>, store: &str, tracker: &str) -> Result<
         let listed = peer_call(
             kernel,
             tracker,
-            json!({"type": "issues", "repo": repo, "label": READY_LABEL, "state": "open"}),
+            json!({"type": "issues", "repo": repo, "state": "open"}),
         )
         .await;
         let Some(issues) = listed.get("issues").and_then(Value::as_array) else {

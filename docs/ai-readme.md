@@ -42,7 +42,7 @@ Keys are never written in a record. Name the credential ref, set the environment
 
 ## 4. Give it work
 
-Work comes from GitHub issues. A maintainer adds the label `team-ready` to an issue; the issue's text is the task's instructions. The task registry's `pull` (`crates/task_registry`, the agent `tasks`) reads the open `team-ready` issues of the repos the `github` connector's record lists and adds each one that is not a task yet as a waiting task (`owner/name#N`, source `gh:owner/name#N`); the lead hands them out (`assign`, `status`) and reads each issue through the connector. `list` on `tasks` shows what was taken and by whom.
+Work comes from GitHub issues. Every open issue of the tracker is work; the issue's text is the task's instructions. The task registry's `pull` (`crates/task_registry`, the agent `tasks`) reads the open issues of the repos the `github` connector's record lists and adds each one that is not a task yet as a waiting task (`owner/name#N`, source `gh:owner/name#N`); the lead hands them out (`assign`, `status`) and reads each issue through the connector. `list` on `tasks` shows what was taken and by whom.
 
 ## 5. Rules
 
