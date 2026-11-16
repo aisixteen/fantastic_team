@@ -284,3 +284,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `b1fee77`
 
 `Cargo.lock` pins fantastic `b1fee77` (base PR #705: the AI chat keeps its behaviour and takes the redesign only).
+
+## Pin at `2f915e9`
+
+`Cargo.lock` pins fantastic `2f915e9`: every AI chat call's events land on the agent's inbox (one model, many view-models).
