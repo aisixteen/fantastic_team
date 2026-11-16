@@ -56,7 +56,8 @@ def run(ctx):
                 v.check("its Kernels rail, Agents nav and Files switch (off) are there",
                         view.locator("nav[aria-label=Kernels]").count() == 1
                         and view.locator("nav[aria-label=Agents]").count() == 1
-                        and view.locator("button[role=switch]").get_attribute("aria-checked") == "false")
+                        and view.locator("#sw").get_attribute("aria-checked") == "false"
+                        and view.locator("#full").get_attribute("aria-checked") == "false")
 
                 # 2. agent rows: the lead and its child
                 ids = view.locator(ROW).evaluate_all("els => els.map(e => e.dataset.id).filter(Boolean)")
@@ -71,7 +72,7 @@ def run(ctx):
                 # 3. the Files switch puts the project's files in the tree
                 v.check("no file row while the switch is off",
                         view.locator("[data-path]").count() == 0)
-                view.locator("button[role=switch]").click()
+                view.locator("#sw").click()
                 try:
                     view.locator("[data-path='notes.txt']").wait_for(timeout=20000)
                     shown = True
@@ -80,7 +81,29 @@ def run(ctx):
                 v.check("the Files switch shows the project's files as rows (notes.txt, docs)",
                         shown and view.locator("[data-path='docs']").count() == 1)
 
-                # 4. a click on an agent opens it
+                # 4. the Full switch shows the whole kernel tree; off again, compact comes back
+                view.locator("#full").click()
+                try:
+                    view.locator("#tree [data-id=files]").wait_for(timeout=10000)
+                    full = True
+                except Exception:
+                    full = False
+                tree_ids = view.locator("#tree [role=treeitem]").evaluate_all("els => els.map(e => e.dataset.id).filter(Boolean)")
+                v.check("Full: the whole kernel tree, with the agents of the tools group and files in their places",
+                        full and "child_one" in tree_ids and "lead" in tree_ids and view.locator("#pins").is_hidden(),
+                        str(tree_ids))
+                view.locator("#full").click()
+                try:
+                    view.locator("#pins").wait_for(state="visible", timeout=10000)
+                    compact = True
+                except Exception:
+                    compact = False
+                tree_ids = view.locator("#tree [role=treeitem]").evaluate_all("els => els.map(e => e.dataset.id).filter(Boolean)")
+                v.check("Full off: compact again (files and the tools group pinned below, not in the tree)",
+                        compact and "files" not in tree_ids and view.locator("#full").get_attribute("aria-checked") == "false",
+                        str(tree_ids))
+
+                # 5. a click on an agent opens it
                 view.locator("#tree [data-id=lead] .main").click()
                 try:
                     page.wait_for_selector("#body-right[data-open=lead]", timeout=10000)
