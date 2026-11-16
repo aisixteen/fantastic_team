@@ -276,3 +276,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `203fab2`
 
 `Cargo.lock` pins fantastic `203fab2` (base PR #703: the chat view shows Stop for any running turn and draws the reply after an answered question; #702: macOS/Windows path handling and races).
+
+## Pin at `106bfa7`
+
+`Cargo.lock` pins fantastic `106bfa7` (base PR #704: the AI chat's reflect carries display_name).
