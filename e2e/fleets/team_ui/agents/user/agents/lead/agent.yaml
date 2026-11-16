@@ -1,0 +1,23 @@
+id: lead
+display_name: Lead
+handler_module: ai_chat.tools
+provider_id: provider
+model: "{{model_name}}"
+memory_store_id: memory
+can_call:
+  "$self": "*"
+  provider: [complete, watch]
+  memory: "*"
+  "$subtree": "*"
+  credentials: "*"
+  worker_exec: "*"
+  worker_files: "*"
+  git: "*"
+  github: "*"
+  bundles: [bundles, bundle, spawn, get_count, fleet]
+  tasks: "*"
+callable_by:
+  "$self": "*"
+  "$parent": "*"
+  cadencer: [send]
+  team_ws: [watch, reflect, history, rows, status, send, stop, context_clear, unembed]

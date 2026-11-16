@@ -1,0 +1,14 @@
+id: memory
+handler_module: sqlite_store.tools
+path: "@state/memory.db"
+admins: [kernel]
+callable_by:
+  user: "*"
+  lead: "*"
+  bundles: "*"
+  tasks: "*"
+  ops: "*"
+  k_rollout: "*"
+  k_scale: "*"
+  mkt: "*"
+  m_ads: "*"

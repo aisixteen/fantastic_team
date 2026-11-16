@@ -1,0 +1,77 @@
+[
+ {
+  "lane": "krollout",
+  "say": "Pod 3 cannot pull the image. I stopped at 2 of 3 and left v2.3 serving on the third pod.",
+  "calls": [
+   {
+    "target": "user",
+    "type": "inquiry",
+    "args": {
+     "text": "Pod 3 can't pull api:2.4.0 in eu. What should I do?",
+     "kind": "single",
+     "options": [
+      "Copy the image to eu, then retry",
+      "Roll back to v2.3",
+      "Leave it at 2 of 3"
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "lane": "krollout",
+  "say": "I wait for your answer.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "lane": "mads",
+  "say": "The search campaign is over its daily cap.",
+  "calls": [
+   {
+    "target": "user",
+    "type": "inquiry",
+    "args": {
+     "text": "Budget is over the cap: raise it or pause?"
+    }
+   }
+  ]
+ },
+ {
+  "lane": "mads",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "lane": "krollout",
+  "say": "Rolling back to v2.3.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "lane": "mads",
+  "say": "Pausing the campaign.",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ },
+ {
+  "say": "REPLY_FROM_THE_LEAD",
+  "calls": [
+   {
+    "name": "done"
+   }
+  ]
+ }
+]

@@ -1,0 +1,9 @@
+# The root, named as the mock names its kernel: the page's title bar and the sidebar's head read it.
+id: kernel_state
+handler_module: kernel_state.tools
+display_name: launch-week
+callable_by:
+  "$self": "*"
+  dispatcher: [create_agent, update_agent, delete_agent, reflect]
+  cadencer: [reflect]
+  team_ws: [reflect, list_agents]
