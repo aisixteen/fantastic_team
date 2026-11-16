@@ -17,7 +17,6 @@
   .cell { min-width: 0; min-height: calc(100vh - 24px); display: flex; flex-direction: column; padding: 0 6px 6px; border: 1px solid var(--fc-color-line-button); border-radius: 16px; background: var(--fc-color-surface-raised); box-shadow: var(--fc-shadow-bubble); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
   #col-left { flex: 1 1 376px; }
   #col-right { flex: 3 1 560px; }
-  .head.phone-only { display: none; }
   .head { flex: none; display: flex; align-items: center; height: 32px; padding: 0 6px; font: 600 11px/1 var(--fc-font-family-mono); letter-spacing: .5px; text-transform: uppercase; color: var(--fc-color-text-muted); }
   .body { flex: 1; min-height: 0; border-radius: 10px; overflow: hidden; }
   /* The base sidebar view fills the left cell; the opened agent's view fills the right one. */
@@ -30,6 +29,11 @@
   .card .note { color: var(--fc-color-text-muted); }
   .title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .title .sep { opacity: .55; }
+  .title .dim { opacity: .55; }
+  .dots { display: none; flex: none; align-items: center; justify-content: center; min-height: 34px; padding: 4px 12px 14px; border-top: 1px solid var(--fc-color-line-button); background: var(--fc-color-surface-well); }
+  .dots span { display: flex; gap: 6px; }
+  .dots i { display: block; width: 6px; height: 6px; border-radius: 3px; background: var(--fc-color-line-strong); }
+  .dots i.on { width: 16px; background: var(--fc-color-accent-base); }
   .back { position: relative; display: none; flex: none; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 10px; background: transparent; color: var(--fc-color-text-muted); cursor: pointer; }
   .back .badge { position: absolute; top: 4px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--fc-radius-pill); background: var(--fc-color-accent-base); color: var(--fc-color-accent-on); font: 600 10px/16px var(--fc-font-family-mono); text-align: center; }
   .back .badge[hidden] { display: none; }
@@ -45,6 +49,7 @@
     .cell { min-height: 100vh; height: 100vh; padding: 0; border: 0; border-radius: 0; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
     @supports (height: 100dvh) { .cell { min-height: 100dvh; height: 100dvh; } }
     .body { border-radius: 0; }
+    .dots { display: flex; }
     #layout[data-panel="tree"] #col-right, #layout[data-panel="agent"] #col-left { display: none; }
     #col-right .head { display: flex; padding: 8px 12px 10px 6px; height: auto; border-bottom: 1px solid var(--fc-color-line-button); }
     .back { display: grid; }
@@ -56,10 +61,12 @@
   <section id="col-left" class="cell" aria-label="Agents">
     <div class="head"><span class="title" id="title"><span>team</span></span></div>
     <div class="body" id="body-left"></div>
+    <div class="dots"><span role="img" aria-label="Panel 1 of 2: the team"><i class="on"></i><i></i></span></div>
   </section>
   <section id="col-right" class="cell" aria-label="View">
-    <div class="head phone-only"><button type="button" class="back" id="back" aria-label="Back to the team"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"></path></svg><span class="badge" id="back-badge" hidden></span></button></div>
+    <div class="head"><button type="button" class="back" id="back" aria-label="Back to the team"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"></path></svg><span class="badge" id="back-badge" hidden></span></button><span class="title" id="crumb"></span></div>
     <div class="body" id="body-right"></div>
+    <div class="dots"><span role="img" aria-label="Panel 2 of 2: the agent"><i></i><i class="on"></i></span></div>
   </section>
 </div>
 <script>
@@ -224,6 +231,46 @@
         });
       });
     }).catch(function () { /* the connection to the team is down: the cell stays empty */ });
+  })();
+  // THE RIGHT CELL'S TITLE BAR: the opened agent's path, `lead / cluster ops / k-rollout` (the mock's
+  // breadcrumb): the ancestors dimmed, the agent itself plain. It follows the right cell's `data-open`
+  // and reads each ancestor's `reflect` (display_name, parent_id) as the page leg; a refusal ends the path.
+  (function () {
+    // pure
+    // The path of names from the ancestors down to the agent: `chain` is [{name}] outermost first.
+    function crumbOf(chain) {
+      return (Array.isArray(chain) ? chain : []).map(function (c) { return c && typeof c.name === 'string' ? c.name : ''; })
+        .filter(function (n) { return n !== ''; });
+    }
+    // end pure
+    var right = document.getElementById('body-right'), crumb = document.getElementById('crumb');
+    function paint(names) {
+      crumb.textContent = '';
+      names.forEach(function (n, i) {
+        var last = i === names.length - 1, e = document.createElement('span');
+        e.textContent = n + (last ? '' : ' / ');
+        if (!last) e.className = 'dim';
+        crumb.appendChild(e);
+      });
+    }
+    function walk(id, chain, seen) {
+      return window.fantastic.send(id, { type: 'reflect' }).then(function (r) {
+        var name = r && (r.display_name || r.id);
+        chain.unshift({ name: typeof name === 'string' && name ? name : id });
+        var up = r && typeof r.parent_id === 'string' ? r.parent_id : '';
+        if (up && up !== 'kernel' && up !== id && !seen[up] && chain.length < 6) { seen[up] = true; return walk(up, chain, seen); }
+        return chain;
+      }, function () { if (chain.length === 0) chain.unshift({ name: id }); return chain; });
+    }
+    new MutationObserver(function () {
+      var id = right.getAttribute('data-open');
+      if (!id) { paint([]); return; }
+      paint([id]);
+      var seen = {}; seen[id] = true;
+      walk(id, [], seen).then(function (chain) {
+        if (right.getAttribute('data-open') === id) paint(crumbOf(chain));
+      });
+    }).observe(right, { attributes: true, attributeFilter: ['data-open'] });
   })();
 </script>
 </body>

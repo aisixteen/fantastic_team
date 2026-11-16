@@ -35,3 +35,11 @@ test("cardOf takes the bundle from the kernel's record when the agent's reflect 
   // the agent's own reflect wins over the record's
   assert.equal(cardOf("w1", { handler_module: "a.tools" }, "b.tools").tag, "a.tools");
 });
+
+test("crumbOf is the names of the path, outermost first, none blank", () => {
+  const c2 = vm.createContext({});
+  const at = src.indexOf("function crumbOf");
+  vm.runInContext(`${src.slice(at, src.indexOf("// end pure", at))}\nthis.crumbOf = crumbOf;`, c2);
+  assert.deepEqual(JSON.parse(JSON.stringify(c2.crumbOf([{ name: "lead" }, { name: "" }, { name: "k-rollout" }, null]))), ["lead", "k-rollout"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(c2.crumbOf(undefined))), []);
+});
