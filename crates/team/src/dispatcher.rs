@@ -768,6 +768,7 @@ async fn remove_worker(
 
 /// The sidebar reply without `services`: the groups, workers, load, and in bundles mode the
 /// fleet, the agents and the plan.
+#[allow(clippy::too_many_arguments)]
 async fn sidebar_reply(
     kernel: &Arc<fantastic_kernel::Kernel>,
     peers: &KernelPeers,
