@@ -218,7 +218,7 @@ function paintFilters() {
 }
 // the holder's small avatar, the mock's robot head as a glyph on the token colours
 function avatarOf() {
-  var a = h("span", "hav");
+  var a = h("i", "hav");
   var ns = "http://www.w3.org/2000/svg", v = document.createElementNS(ns, "svg"), d = document.createElementNS(ns, "path");
   v.setAttribute("viewBox", "0 0 16 16"); v.setAttribute("aria-hidden", "true");
   d.setAttribute("d", "M4 5.5h8a1 1 0 0 1 1 1V11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6.5a1 1 0 0 1 1-1zM8 5.5V3.5M6 8.5v.5M10 8.5v.5");
@@ -241,7 +241,7 @@ function paintTable() {
     } else if (r.kind === "item") {
       var b = h("button", "tr" + (st.selected === r.id ? " on" : "")); b.type = "button"; b.setAttribute("role", "row"); b.title = r.id;
       var id = h("span", "m ell", r.id); id.setAttribute("role", "cell");
-      var who = h("span", "who"), wn = h("span", "m ell" + (r.nobody ? " dim" : ""), r.holder); who.setAttribute("role", "cell");
+      var who = h("div", "who"), wn = h("span", "m ell" + (r.nobody ? " dim" : ""), r.holder); who.setAttribute("role", "cell");
       if (!r.nobody) who.appendChild(avatarOf());
       who.appendChild(wn);
       var s = h("span"); s.setAttribute("role", "cell"); s.appendChild(statePill(r.state));

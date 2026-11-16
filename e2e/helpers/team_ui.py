@@ -119,6 +119,9 @@ def report_as_holder(team, tid: str, state: str, errors: list) -> None:
     r = team.send("memory", {"type": "append", "rows": [{"kind": "task", "task_id": tid, "content": entry}]})
     if r.get("status") != "completed" or (r.get("result") or {}).get("error"):
         errors.append(f"append report {tid}: {str(r)[:160]}")
+    seen = op(team, "tasks", {"type": "get", "id": tid}).get("report")
+    if not seen:
+        errors.append(f"report {tid} not kept: append {str(r)[:200]}")
 
 
 def seed_tasks(ctx, v) -> bool:
