@@ -1889,3 +1889,38 @@ async fn an_agent_on_no_spawnable_bundle_changes_no_fleet_and_the_tap_starts_onc
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0]["agent"], json!(id));
 }
+
+#[tokio::test]
+async fn the_registrys_delete_removes_its_fleet_tap_from_the_kernel() {
+    let tmp = TempDir::new().unwrap();
+    // a card with no `$registry` grant: an agent made on it directly is a plain create
+    let plain = "---\nname: plainer\npurpose: Plain.\n---\nYou help.\n";
+    let r = rig(&tmp, &["lead"], &[("plainer.md", plain)]).await;
+    let me = AgentId::from(r.reg.as_str());
+    let w = AgentId::from("_t_view");
+    let mut rx = r.kernel.ensure_inbox(&w);
+    assert!(r.kernel.watch(&me, w).await.is_none());
+    // a bundle of its own (the kernel's is never called here): its tap publishes an agent
+    // made on a spawnable bundle
+    let b = AgenticResourcesBundle::default();
+    assert!(b.follow_once(&me, &r.kernel));
+    create(
+        &r.kernel,
+        json!({"handler_module": "plainer", "id": "w_one"}),
+    )
+    .await;
+    assert_eq!(next_fleet(&mut rx).await["agent"], "w_one");
+    // the registry's delete hook: the kernel no longer feeds the tap, nothing is published
+    Handler::on_delete(&b, &me, &r.kernel).await.unwrap();
+    assert!(b.taps.lock().unwrap().is_empty());
+    create(
+        &r.kernel,
+        json!({"handler_module": "plainer", "id": "w_two"}),
+    )
+    .await;
+    assert_eq!(fleet_so_far(&mut rx).await, Vec::<Value>::new());
+    // a registry made again under that id follows again
+    assert!(b.follow_once(&me, &r.kernel));
+    Handler::on_shutdown(&b, &me, &r.kernel).await.unwrap();
+    assert!(b.taps.lock().unwrap().is_empty());
+}

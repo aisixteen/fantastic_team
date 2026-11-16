@@ -49,7 +49,7 @@ use fantastic_bundle::py_repr;
 use fantastic_kernel::bundle::{BundleError, Handler, Reply};
 use fantastic_kernel::grants::union;
 use fantastic_kernel::refusal;
-use fantastic_kernel::{current_origin, Agent, AgentId, Item, Kernel};
+use fantastic_kernel::{current_origin, Agent, AgentId, Item, Kernel, SubscriberToken};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -78,26 +78,45 @@ const PARENT_VERBS: [&str; 4] = ["pause", "resume", "stop", "send"];
 /// What every spawned agent holds on its parent: it tells it with a message.
 const CHILD_VERBS: [&str; 1] = ["send"];
 
+/// One registry's fleet tap: its kernel, its id and the kernel's token for the tap.
+type Tap = (std::sync::Weak<Kernel>, AgentId, SubscriberToken);
+
 /// The agentic_resources bundle. It holds no state of its own: only which registry
-/// agents already follow their kernel's lifecycle stream (one tap each).
+/// agents already follow their kernel's lifecycle stream (one tap each, removed with
+/// the registry).
 #[derive(Default)]
 pub struct AgenticResourcesBundle {
-    taps: std::sync::Mutex<Vec<(std::sync::Weak<Kernel>, AgentId)>>,
+    taps: std::sync::Mutex<Vec<Tap>>,
 }
 
 impl AgenticResourcesBundle {
     /// Start the fleet tap of registry `me` on `kernel` once: true when this call started it.
     fn follow_once(&self, me: &AgentId, kernel: &Arc<Kernel>) -> bool {
         let mut taps = self.taps.lock().expect("taps poisoned");
-        taps.retain(|(k, _)| k.strong_count() > 0);
+        taps.retain(|(k, _, _)| k.strong_count() > 0);
         let weak = Arc::downgrade(kernel);
-        if taps.iter().any(|(k, id)| k.ptr_eq(&weak) && id == me) {
+        if taps.iter().any(|(k, id, _)| k.ptr_eq(&weak) && id == me) {
             return false;
         }
-        taps.push((weak, me.clone()));
-        drop(taps);
-        follow_fleet(kernel, me.clone());
+        let token = follow_fleet(kernel, me.clone());
+        taps.push((weak, me.clone(), token));
         true
+    }
+
+    /// Stop the fleet tap of registry `me` on `kernel` (its delete or shutdown): the
+    /// kernel drops the subscriber, and with it the tap's queue and task.
+    fn unfollow(&self, me: &AgentId, kernel: &Arc<Kernel>) {
+        let weak = Arc::downgrade(kernel);
+        self.taps
+            .lock()
+            .expect("taps poisoned")
+            .retain(|(k, id, token)| {
+                let mine = k.ptr_eq(&weak) && id == me;
+                if mine {
+                    kernel.remove_state_subscriber(*token);
+                }
+                !mine && k.strong_count() > 0
+            });
     }
 }
 
@@ -116,9 +135,9 @@ fn lifecycle_of(ev: &Value) -> Option<(&'static str, String)> {
 /// inside its own publish), then each add or removal of an agent on a spawnable bundle
 /// emitted as [`FLEET_CHANGED`] on the registry's own id. A removal names no bundle, so
 /// the tap remembers the bundle of every fleet member it has seen.
-fn follow_fleet(kernel: &Arc<Kernel>, me: AgentId) {
+fn follow_fleet(kernel: &Arc<Kernel>, me: AgentId) -> SubscriberToken {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(&'static str, String)>();
-    kernel.add_state_subscriber(Arc::new(move |ev: &Value, _body| {
+    let token = kernel.add_state_subscriber(Arc::new(move |ev: &Value, _body| {
         if let Some(c) = lifecycle_of(ev) {
             let _ = tx.send(c);
         }
@@ -152,6 +171,7 @@ fn follow_fleet(kernel: &Arc<Kernel>, me: AgentId) {
             }
         }
     });
+    token
 }
 
 // ── record helpers ──────────────────────────────────────────────────
@@ -271,6 +291,22 @@ impl Handler for AgenticResourcesBundle {
             verbs::Call::GetCount(a) => get_count_reply(kernel, a.bundle.as_deref()),
         };
         Ok(Some(reply))
+    }
+
+    /// The registry is deleted: its fleet tap goes with it.
+    async fn on_delete(&self, agent_id: &AgentId, kernel: &Arc<Kernel>) -> Result<(), BundleError> {
+        self.unfollow(agent_id, kernel);
+        Ok(())
+    }
+
+    /// The kernel shuts down: the registry's fleet tap goes with it.
+    async fn on_shutdown(
+        &self,
+        agent_id: &AgentId,
+        kernel: &Arc<Kernel>,
+    ) -> Result<(), BundleError> {
+        self.unfollow(agent_id, kernel);
+        Ok(())
     }
 }
 
