@@ -2,7 +2,7 @@
 person is marked in the tree, and stays counted on its branch when the branch is folded; an agent whose
 turn runs is marked as working, its chat offers Stop, and Stop ends the turn. Function only.
 
-Not here, on purpose (no source yet, see the README): stalled, paused, failed, done."""
+A finished call leaves its end on the row (done, fantastic#714). Not here: stalled, paused, failed."""
 
 import threading
 
@@ -45,7 +45,9 @@ def clicks(ctx, v, ui):
     marks = {id: ui.texts(ui.item(id).locator(".badge.ask")) for id in D.NAMES}
     v.check("exactly the two agents that asked are marked as asking",
             marks == {id: (["?"] if id in ("k_rollout", "m_ads") else []) for id in D.NAMES}, str(marks))
-    v.check("an agent that asks nothing and runs nothing shows no state", ui.texts(ui.item("k_scale").locator(".sub")) == [],
+    # k-scale ran its calls during the set-up and asks nothing: its row shows its last call's end (fantastic#714)
+    v.check("an agent that asks nothing and runs nothing shows its last call done",
+            ui.texts(ui.item("k_scale").locator(".sub")) == ["done"] and ui.item("k_scale").locator(".badge.done").count() == 1,
             str(ui.texts(ui.item("k_scale").locator(".sub"))))
     ui.click(side.locator('#tree [aria-label="Fold cluster ops"]'))
     ok, got = ui.settle(lambda: ui.item("k_rollout").count(), 0)
