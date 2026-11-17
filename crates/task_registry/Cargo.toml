@@ -18,6 +18,7 @@ schemars.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+fantastic-tui.workspace = true
 fantastic-kernel = { workspace = true, features = ["test-support"] }
 fantastic-core.workspace = true
 fantastic-ram-store = { workspace = true, features = ["test-support"] }

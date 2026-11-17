@@ -5612,6 +5612,7 @@ dependencies = [
  "fantastic-core",
  "fantastic-kernel",
  "fantastic-ram-store",
+ "fantastic-tui",
  "schemars 0.8.22",
  "serde",
  "serde_json",
