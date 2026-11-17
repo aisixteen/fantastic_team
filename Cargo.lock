@@ -5539,6 +5539,7 @@ dependencies = [
 name = "team-agent-view"
 version = "0.1.0"
 dependencies = [
+ "fantastic-tui",
  "serde_json",
 ]
 
