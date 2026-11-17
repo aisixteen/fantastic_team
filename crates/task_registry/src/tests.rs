@@ -1455,19 +1455,12 @@ async fn a_pull_that_creates_tasks_publishes_them_once_and_an_empty_one_nothing(
 
 #[test]
 fn every_colour_of_the_view_is_a_skin_token() {
-    // the day skin's tokens live in the ONE `:root{}` block of the team's shared view look
-    // (team_agent_view); the registry's own stylesheet names them and never a colour
+    // the host passes the skin (fantastic#698): the page carries no token block, and the
+    // registry's own stylesheet names only tokens every base view skin defines, never a colour
     let page = view_of("x")["bytes"].as_str().unwrap().to_string();
-    assert_eq!(page.matches(":root{").count(), 1, "one token block");
-    let root_at = page.find(":root{").unwrap();
-    let root_end = root_at + page[root_at..].find('}').unwrap();
-    let tokens = &page[root_at..root_end];
+    assert!(!page.contains(":root"), "the page carries no token block");
     let own_end = VIEW.find("</style>").expect("the view has a stylesheet");
     let own = &VIEW[..own_end];
-    assert!(
-        !own.contains(":root"),
-        "the view carries no token block of its own"
-    );
     for literal in ["rgb(", "rgba(", "hsl(", "#"] {
         assert!(
             !own.contains(literal),
@@ -1477,10 +1470,12 @@ fn every_colour_of_the_view_is_a_skin_token() {
     for line in own.lines().filter(|l| l.contains("--fc-")) {
         for name in line.split("var(--fc-").skip(1) {
             let token = format!("--fc-{}", name.split([')', ',']).next().unwrap_or(""));
-            assert!(
-                tokens.contains(&format!("{token}:")),
-                "the view uses {token}, which the shared token block does not define"
-            );
+            for (skin, css) in fantastic_tui::VIEW_SKINS {
+                assert!(
+                    css.contains(&format!("{token}:")),
+                    "the view uses {token}, which the {skin} skin does not define"
+                );
+            }
         }
     }
     // the javascript's swatches are tokens too, and the shared helpers are in the page
