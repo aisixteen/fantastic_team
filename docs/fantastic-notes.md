@@ -300,3 +300,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `82148d9`
 
 `Cargo.lock` pins fantastic `82148d9` (base PR #710: html views follow the host's skin; the canvas dark by default).
+
+## Pin at `4152b78`
+
+`Cargo.lock` pins fantastic `4152b78` (base PR #712: the tree view has no hide button; a host hides its cell or column).
