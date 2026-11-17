@@ -12,7 +12,7 @@ a{color:var(--accent)}a:hover{color:var(--text)}
 [data-theme]{--sans:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
 [data-theme="light"]{--bg:#EDEDED;--page:radial-gradient(circle at 1px 1px,rgb(0 0 0/.14) 1px,transparent 1.6px) 0 0/22px 22px,radial-gradient(70% 55% at 12% -5%,#fff 0,transparent 70%),radial-gradient(55% 60% at 105% 105%,rgb(0 0 0/.16) 0,transparent 70%),#EDEDED;--panel:rgb(255 255 255/.58);--panel-flat:rgb(255 255 255/.72);--side:rgb(0 0 0/.03);--surface:rgb(255 255 255/.72);--sunken:rgb(0 0 0/.06);--hover:rgb(0 0 0/.09);--line:rgb(0 0 0/.10);--line2:rgb(0 0 0/.18);--text:#0B0B0B;--text2:#454545;--text3:#6B6B6B;--accent:#111111;--accent-weak:rgb(0 0 0/.08);--accent-line:rgb(0 0 0/.30);--on-accent:#FFFFFF;--ok:#1B7446;--warn:#8F5200;--bad:#B3261E;--knock:#F8F8F8;--head:rgb(0 0 0/.70);--chip:rgb(0 0 0/.05);--chip-line:rgb(0 0 0/.06);--ext:rgb(0 0 0/.12);--ext-line:rgb(0 0 0/.40);--bubble:rgb(255 255 255/.60);--bubble-user:rgb(0 0 0/.10);--code:rgb(0 0 0/.045);--well:rgb(0 0 0/.06);--input:rgb(0 0 0/.06);--shadow-bezel:0 10px 30px rgb(0 0 0/.10),0 1px 2px rgb(0 0 0/.06);--shadow-bubble:inset 0 0 0 1px rgb(0 0 0/.07)}
 [data-theme="dark"]{--bg:#050505;--page:radial-gradient(circle at 1px 1px,rgb(255 255 255/.14) 1px,transparent 1.6px) 0 0/22px 22px,radial-gradient(70% 55% at 12% -5%,rgb(255 255 255/.20) 0,transparent 70%),radial-gradient(55% 60% at 105% 105%,rgb(255 255 255/.10) 0,transparent 70%),#050505;--panel:rgb(20 20 20/.58);--panel-flat:rgb(20 20 20/.74);--side:rgb(255 255 255/.03);--surface:rgb(255 255 255/.07);--sunken:rgb(255 255 255/.07);--hover:rgb(255 255 255/.10);--line:rgb(255 255 255/.10);--line2:rgb(255 255 255/.18);--text:#F2F2F2;--text2:#B8B8B8;--text3:#8E8E8E;--accent:#F5F5F5;--accent-weak:rgb(255 255 255/.10);--accent-line:rgb(255 255 255/.32);--on-accent:#0B0B0B;--ok:#72D6A2;--warn:#F0B75A;--bad:#FF9288;--knock:#0E0E0E;--head:rgb(255 255 255/.70);--chip:rgb(255 255 255/.05);--chip-line:rgb(255 255 255/.06);--ext:rgb(255 255 255/.14);--ext-line:rgb(255 255 255/.42);--bubble:rgb(255 255 255/.07);--bubble-user:rgb(255 255 255/.16);--code:rgb(0 0 0/.35);--well:rgb(0 0 0/.38);--input:rgb(255 255 255/.06);--shadow-bezel:0 10px 30px rgb(0 0 0/.45),0 1px 2px rgb(0 0 0/.30);--shadow-bubble:inset 0 1px 0 rgb(255 255 255/.10)}
-[data-theme]{--ok-weak:color-mix(in srgb,var(--ok) 12%,transparent);--warn-weak:color-mix(in srgb,var(--warn) 12%,transparent);--warn-line:color-mix(in srgb,var(--warn) 45%,transparent);--bad-weak:color-mix(in srgb,var(--bad) 12%,transparent);--bad-line:color-mix(in srgb,var(--bad) 45%,transparent)}
+[data-theme]{--stall:color-mix(in srgb,var(--warn) 40%,var(--bad));--ok-weak:color-mix(in srgb,var(--ok) 12%,transparent);--warn-weak:color-mix(in srgb,var(--warn) 12%,transparent);--warn-line:color-mix(in srgb,var(--warn) 45%,transparent);--bad-weak:color-mix(in srgb,var(--bad) 12%,transparent);--bad-line:color-mix(in srgb,var(--bad) 45%,transparent)}
 .hov:hover{background:var(--hover) !important}
 .field:focus-within{border-color:var(--accent-line) !important;box-shadow:inset 0 0 0 1px var(--accent-line) !important}
 button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -20,7 +20,12 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 .ns{flex:none;display:inline-flex;align-items:center;gap:4px;padding:0 6px;border:1px dashed var(--ext-line);border-radius:6px;font:500 10px/16px var(--mono);color:var(--text2);white-space:nowrap}
 .ns b{font-weight:700;color:var(--text)}
 @keyframes spin{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+@property --ray{syntax:'<angle>';initial-value:0deg;inherits:false}
+@keyframes ray{to{--ray:360deg}}
+.ol::before{content:"";position:absolute;inset:-3px;border-radius:var(--olr);padding:1.5px;background:var(--olc);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none}
+.ol.dash::before{background:repeating-conic-gradient(var(--olc) 0 9deg,transparent 9deg 15deg)}
+.ol.ray::before{background:conic-gradient(from var(--ray),var(--accent-line) 0 62%,var(--accent) 86%,var(--accent-line) 100%);animation:ray 1.6s linear infinite}
+@media (prefers-reduced-motion:reduce){.spin,.ol.ray::before{animation:none}}
 </style>
 <style>body>[data-theme]{min-height:100vh !important}</style>
 </head>
@@ -114,7 +119,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 <div style="display: flex; align-items: center; padding-left: 0px; border-radius: 8px; background: transparent; box-shadow: none">
 <button type="button" class="hov" aria-label="Fold Lead" style="visibility: visible; flex: none; display: grid; place-items: center; width: 18px; height: 28px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text3)"><svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate(0deg)"><path d="M2 3.5l3 3 3-3"></path></svg></button>
 <button type="button" class="hov" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 8px 4px 4px; border: 0; border-radius: 8px; background: transparent; text-align: left">
-<span style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak)">
+<span class="ol ray" style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak); --olc: var(--accent); --olr: 11px">
 <img src="robo-head.png" alt="" style="width: 18px; height: auto; filter: none">
 <span class="spin" style="position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 13px; height: 13px; border-radius: 50%; font: 700 9px/1 var(--sans); color: transparent; background: var(--knock); border: 2px solid var(--accent); border-top-color: transparent; box-shadow: 0 0 0 1.5px var(--knock)"></span>
 </span>
@@ -132,7 +137,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 <div style="display: flex; align-items: center; padding-left: 14px; border-radius: 8px; background: transparent; box-shadow: none">
 <button type="button" class="hov" aria-label="Unfold design" style="visibility: visible; flex: none; display: grid; place-items: center; width: 18px; height: 28px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text3)"><svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate(-90deg)"><path d="M2 3.5l3 3 3-3"></path></svg></button>
 <button type="button" class="hov" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 8px 4px 4px; border: 0; border-radius: 8px; background: transparent; text-align: left">
-<span style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak)">
+<span class="ol ray" style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak); --olc: var(--accent); --olr: 11px">
 <img src="robo-head.png" alt="" style="width: 18px; height: auto; filter: none">
 <span class="spin" style="position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 13px; height: 13px; border-radius: 50%; font: 700 9px/1 var(--sans); color: transparent; background: var(--knock); border: 2px solid var(--accent); border-top-color: transparent; box-shadow: 0 0 0 1.5px var(--knock)"></span>
 </span>
@@ -150,7 +155,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 <div style="display: flex; align-items: center; padding-left: 14px; border-radius: 8px; background: transparent; box-shadow: none">
 <button type="button" class="hov" aria-label="Fold cluster ops" style="visibility: visible; flex: none; display: grid; place-items: center; width: 18px; height: 28px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text3)"><svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate(0deg)"><path d="M2 3.5l3 3 3-3"></path></svg></button>
 <button type="button" class="hov" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 8px 4px 4px; border: 0; border-radius: 8px; background: transparent; text-align: left">
-<span style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak)">
+<span class="ol ray" style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak); --olc: var(--accent); --olr: 11px">
 <img src="robo-head.png" alt="" style="width: 18px; height: auto; filter: none">
 <span class="spin" style="position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 13px; height: 13px; border-radius: 50%; font: 700 9px/1 var(--sans); color: transparent; background: var(--knock); border: 2px solid var(--accent); border-top-color: transparent; box-shadow: 0 0 0 1.5px var(--knock)"></span>
 </span>
@@ -168,7 +173,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 <div style="display: flex; align-items: center; padding-left: 28px; border-radius: 8px; background: transparent; box-shadow: none">
 <button type="button" class="hov" aria-label="Fold k-rollout" style="visibility: visible; flex: none; display: grid; place-items: center; width: 18px; height: 28px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text3)"><svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate(0deg)"><path d="M2 3.5l3 3 3-3"></path></svg></button>
 <button type="button" class="hov" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 8px 4px 4px; border: 0; border-radius: 8px; background: transparent; text-align: left">
-<span style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak)">
+<span class="ol" style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak); --olc: var(--warn); --olr: 11px">
 <img src="robo-head.png" alt="" style="width: 18px; height: auto; filter: none">
 <span class="" style="position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 13px; height: 13px; border-radius: 50%; font: 700 9px/1 var(--sans); color: var(--knock); background: var(--warn); border: 0 solid transparent; border-top-color: transparent; box-shadow: 0 0 0 2px var(--knock)">?</span>
 </span>
@@ -246,13 +251,13 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 <div style="display: flex; align-items: center; padding-left: 28px; border-radius: 8px; background: transparent; box-shadow: none">
 <button type="button" class="hov" aria-label="Unfold k-scale" style="visibility: visible; flex: none; display: grid; place-items: center; width: 18px; height: 28px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text3)"><svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate(-90deg)"><path d="M2 3.5l3 3 3-3"></path></svg></button>
 <button type="button" class="hov" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 8px 4px 4px; border: 0; border-radius: 8px; background: transparent; text-align: left">
-<span style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak)">
+<span class="ol dash" style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak); --olc: var(--stall); --olr: 11px">
 <img src="robo-head.png" alt="" style="width: 18px; height: auto; filter: none">
-<span class="" style="position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 13px; height: 13px; border-radius: 50%; font: 700 9px/1 var(--sans); color: var(--knock); background: var(--warn); border: 0 solid transparent; border-top-color: transparent; box-shadow: 0 0 0 2px var(--knock)">!</span>
+<span class="" style="position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 13px; height: 13px; border-radius: 50%; font: 700 9px/1 var(--sans); color: var(--knock); background: var(--stall); border: 0 solid transparent; border-top-color: transparent; box-shadow: 0 0 0 2px var(--knock)">!</span>
 </span>
 <span style="flex: 1; min-width: 0; display: flex; flex-direction: column">
 <span style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">k-scale</span>
-<span style="display: flex; align-items: center; gap: 6px; min-width: 0"><span style="flex: none; font-size: 12px; color: var(--warn); white-space: nowrap">stalled</span><span class="ns" style="flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis"><b>needs source:</b> stalled</span></span>
+<span style="display: flex; align-items: center; gap: 6px; min-width: 0"><span style="flex: none; font-size: 12px; color: var(--stall); white-space: nowrap">stalled</span><span class="ns" style="flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis"><b>needs source:</b> stalled</span></span>
 </span>
 <span style="flex: none; font: 500 11px/1 var(--mono); color: var(--text3)"></span>
 </button>
@@ -276,7 +281,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 <div style="display: flex; align-items: center; padding-left: 14px; border-radius: 8px; background: transparent; box-shadow: none">
 <button type="button" class="hov" aria-label="Unfold marketing" style="visibility: visible; flex: none; display: grid; place-items: center; width: 18px; height: 28px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text3)"><svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="transform: rotate(-90deg)"><path d="M2 3.5l3 3 3-3"></path></svg></button>
 <button type="button" class="hov" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 8px 4px 4px; border: 0; border-radius: 8px; background: transparent; text-align: left">
-<span style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak)">
+<span class="ol ray" style="position: relative; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-weak); --olc: var(--accent); --olr: 11px">
 <img src="robo-head.png" alt="" style="width: 18px; height: auto; filter: none">
 <span class="spin" style="position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center; width: 13px; height: 13px; border-radius: 50%; font: 700 9px/1 var(--sans); color: transparent; background: var(--knock); border: 2px solid var(--accent); border-top-color: transparent; box-shadow: 0 0 0 1.5px var(--knock)"></span>
 </span>
