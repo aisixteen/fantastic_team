@@ -1,6 +1,6 @@
 [package]
 name = "team-agent-view"
-description = "The one look and the few helpers the team's own agents' html views share (the day skin's tokens, the mock's parts)."
+description = "The one look and the few helpers the team's own agents' html views share (the mock's parts on the base's skin tokens)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,3 +12,6 @@ path = "src/lib.rs"
 
 [dependencies]
 serde_json.workspace = true
+
+[dev-dependencies]
+fantastic-tui.workspace = true

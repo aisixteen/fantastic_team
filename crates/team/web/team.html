@@ -6,8 +6,9 @@
 <link rel="icon" href="icon.svg">
 <title>Team</title>
 <style>
-  /* No colour, font or radius is written here: the day skin's tokens (--fc-color-*, --fc-font-family-*,
-     --fc-radius-*, --fc-shadow-*) are the base views' one block, served ahead of this sheet as page.css. */
+  /* No colour, font or radius is written here: the base's view skins (--fc-color-*, --fc-font-family-*,
+     --fc-radius-*, --fc-shadow-*), light and dark by the viewer's colour scheme, are served ahead of this
+     sheet as page.css; the views this page mounts get the same skin from it (fantastic issue 698). */
   *, *::before, *::after { box-sizing: border-box; }
   html { background: var(--fc-color-page-bg); }
   body { margin: 0; min-height: 100vh; background: transparent; color: var(--fc-color-text-primary); font: 13px/1.45 var(--fc-font-family-sans); -webkit-font-smoothing: antialiased; }
@@ -145,6 +146,24 @@
     // the views draw no title row of their own where this page's title bar already says it (the base views' contract)
     var HOST_HEAD = "document.documentElement.setAttribute('data-host-head', '');";
 
+    // THE SKIN (fantastic#698): light or dark by the viewer's colour scheme (the page's own sheet
+    // follows the same media query). Every view mounted here gets the skin's token block, and the new
+    // one when the scheme changes; `VIEW_SKINS` is the base's blocks, put ahead of this script.
+    var scheme = window.matchMedia('(prefers-color-scheme: dark)');
+    function skinNow() { return VIEW_SKINS[scheme.matches ? 'dark' : 'light']; }
+    var shownViews = [];
+    function mountSkinned(relay, opts) {
+      opts.skin = skinNow();
+      var v = relay.mountView(opts), unmount = v.unmount;
+      shownViews.push(v);
+      v.unmount = function () { shownViews = shownViews.filter(function (x) { return x !== v; }); unmount(); };
+      return v;
+    }
+    scheme.addEventListener('change', function () {
+      var css = skinNow();
+      shownViews.forEach(function (v) { v.skin(css); });
+    });
+
     // The page's end of the relay: sends and watches go over the leg (shim.js).
     var transport = {
       send: function (target, payload) { return window.fantastic.send(target, payload); },
@@ -227,7 +246,7 @@
         right.appendChild(card);
         return null;
       }
-      return relay.mountView({ mount: right, html: v.bytes, transport: transport, calls: v.calls || {}, cell: 'view_' + id, extra: HOST_HEAD });
+      return mountSkinned(relay, { mount: right, html: v.bytes, transport: transport, calls: v.calls || {}, cell: 'view_' + id, extra: HOST_HEAD });
     }
 
     // The kernel's tree and its AI agents, read once per opened agent (the title bar's path, the card's parent).
@@ -328,7 +347,7 @@
         var v = viewOf(got);
         if (!v) return; // no sidebar agent: no column
         var closeOpened = function () {};
-        relay.mountView({
+        mountSkinned(relay, {
           mount: left, html: v.bytes, transport: transport, calls: v.calls || {}, cell: CELL, keep: relay.pageStore('team.sidebar'), extra: HOST_HEAD,
           // what the view says is the base's `hearSidebar`; the team page has no canvas to open a file on: a
           // row's `select` opens that agent, a file row's `select_file` that file, `hide_tree` hides the tree

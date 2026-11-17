@@ -96,15 +96,40 @@ pub fn index_html() -> String {
         .replacen("</head>", "<script src=\"shim.js\"></script>\n</head>", 1)
 }
 
+/// The base's view skin `name` (`fantastic_tui::VIEW_SKINS`): its `:root { … }` token block.
+fn skin(name: &str) -> &'static str {
+    fantastic_tui::VIEW_SKINS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, css)| *css)
+        .expect("the base ships the light and dark view skins")
+}
+
+/// The page's sheet: the light skin, the dark one under the viewer's dark colour scheme, then the
+/// page's own rules on them (fantastic#698).
+pub fn page_css() -> String {
+    format!(
+        "{}@media (prefers-color-scheme: dark) {{\n{}}}\n{}",
+        skin("light"),
+        skin("dark"),
+        split_page(HTML).1
+    )
+}
+
+/// The page's script: the two skins it passes to the views it mounts (`VIEW_SKINS`), then its own.
+pub fn page_js() -> String {
+    let skins = json!({"light": skin("light"), "dark": skin("dark")});
+    format!("var VIEW_SKINS = {skins};\n{}", split_page(HTML).2)
+}
+
 /// The bytes of one served file, or `None` for a path the page does not serve.
 pub fn file_bytes(path: &str) -> Option<Vec<u8>> {
     Some(
         match path {
             "index.html" => index_html(),
-            // the day skin's one token block (the base views' and the team's own views'), then the page's sheet
-            "page.css" => format!("{}\n{}", team_agent_view::TOKENS, split_page(HTML).1),
+            "page.css" => page_css(),
             "shim.js" => SHIM.to_string(),
-            "page.js" => split_page(HTML).2,
+            "page.js" => page_js(),
             "view_relay.js" => fantastic_tui::VIEW_RELAY_JS.to_string(),
             "icon.svg" => ICON.to_string(),
             _ => return None,
@@ -242,9 +267,14 @@ mod tests {
         assert!(js.contains("send(t, { type: 'reflect' })"));
         assert!(js.contains("selectPath") && js.contains("kind: 'file'"));
         assert_eq!(
-            js.matches("relay.mountView(").count(),
+            js.matches("mountSkinned(relay, {").count(),
             2,
             "the sidebar and the opened agent"
+        );
+        assert_eq!(
+            js.matches("relay.mountView(").count(),
+            1,
+            "one mount, with the skin"
         );
         assert!(js.contains("mount: right") && js.contains("calls: v.calls"));
         assert!(!js.contains("history") && !js.contains("'send'") && !js.contains("\"send\""));
@@ -264,6 +294,83 @@ mod tests {
         assert!(js.contains("send('kernel', { type: 'reflect' })"));
     }
 
+    /// THE SKIN (fantastic#698): the page follows the viewer's colour scheme, light or dark, and so do
+    /// the views it mounts: each gets the skin's token block, and the new one on a change.
+    #[test]
+    fn the_page_and_its_views_follow_the_viewers_colour_scheme() {
+        let css = page_css();
+        assert!(css.starts_with(skin("light")));
+        assert!(css.contains(&format!(
+            "@media (prefers-color-scheme: dark) {{\n{}}}",
+            skin("dark")
+        )));
+        let js = page_js();
+        let first = js.lines().next().unwrap();
+        assert!(first.starts_with("var VIEW_SKINS = {") && first.ends_with("};"));
+        let skins: Value = serde_json::from_str(
+            first
+                .trim_start_matches("var VIEW_SKINS = ")
+                .trim_end_matches(';'),
+        )
+        .unwrap();
+        assert_eq!(skins["light"], skin("light"));
+        assert_eq!(skins["dark"], skin("dark"));
+        assert!(js.contains("matchMedia('(prefers-color-scheme: dark)')"));
+        assert!(js.contains("opts.skin = skinNow()") && js.contains("v.skin(css)"));
+    }
+
+    /// Every view of the team's own agents draws with the base's skin tokens only: no token block
+    /// and no literal colour of its own (the page passes the skin, fantastic#698).
+    #[test]
+    fn the_team_views_draw_with_skin_tokens_only() {
+        for (file, html) in [
+            (
+                "task_registry",
+                include_str!("../../task_registry/src/view.html"),
+            ),
+            (
+                "github_connector",
+                include_str!("../../github_connector/src/view.html"),
+            ),
+            (
+                "agentic_resources",
+                include_str!("../../agentic_resources/src/view.html"),
+            ),
+            ("cadencer", include_str!("cadencer/view.html")),
+            ("components", team_agent_view::COMPONENTS),
+        ] {
+            let page = team_agent_view::page(html, "a");
+            assert!(
+                !page.contains(":root{") && !page.contains(":root {"),
+                "{file}"
+            );
+            for name in page
+                .split("var(")
+                .skip(1)
+                .filter_map(|s| s.split([')', ',']).next())
+            {
+                if name.starts_with("--fc-") {
+                    assert!(
+                        skin("light").contains(&format!("{name}:")),
+                        "{file}: {name}"
+                    );
+                }
+            }
+            for decl in page.split("--fc-").skip(1) {
+                let rest = decl.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '-');
+                assert!(
+                    !rest.trim_start().starts_with(':'),
+                    "{file} declares --fc-{}",
+                    &decl[..decl.len().min(30)]
+                );
+            }
+            assert!(
+                !page.contains("rgb(") && !page.contains("rgba(") && !page.contains("hsl("),
+                "{file}"
+            );
+        }
+    }
+
     /// The page writes no colour of its own: its sheet is the shared skin tokens, then rules on them.
     #[test]
     fn the_page_sheet_has_the_shared_tokens_and_no_literal_colour() {
@@ -281,17 +388,18 @@ mod tests {
         }
         assert!(!own.contains(":root"), "tokens come from the shared block");
         let served = String::from_utf8(file_bytes("page.css").unwrap()).unwrap();
-        assert!(served.starts_with(team_agent_view::TOKENS));
-        assert_eq!(served.matches(":root{").count(), 1);
+        assert_eq!(served, page_css());
+        assert_eq!(
+            served.matches(":root {").count(),
+            2,
+            "light, and dark under the media query"
+        );
         for name in own
             .split("var(")
             .skip(1)
             .filter_map(|s| s.split([')', ',']).next())
         {
-            assert!(
-                team_agent_view::TOKENS.contains(&format!("{name}:")),
-                "{name}"
-            );
+            assert!(skin("light").contains(&format!("{name}:")), "{name}");
         }
     }
 
