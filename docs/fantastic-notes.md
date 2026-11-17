@@ -304,3 +304,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `4152b78`
 
 `Cargo.lock` pins fantastic `4152b78` (base PR #712: the tree view has no hide button; a host hides its cell or column).
+
+## Pin at `954704f`
+
+`Cargo.lock` pins fantastic `954704f` (base PR #715: distinct agent status phases, the sidebar boots first, the tree draws the mock's agent states).
