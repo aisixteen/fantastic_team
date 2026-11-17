@@ -271,7 +271,11 @@ mod tests {
             2,
             "the sidebar and the opened agent"
         );
-        assert_eq!(js.matches("relay.mountView(").count(), 1, "one mount, with the skin");
+        assert_eq!(
+            js.matches("relay.mountView(").count(),
+            1,
+            "one mount, with the skin"
+        );
         assert!(js.contains("mount: right") && js.contains("calls: v.calls"));
         assert!(!js.contains("history") && !js.contains("'send'") && !js.contains("\"send\""));
     }
@@ -303,8 +307,12 @@ mod tests {
         let js = page_js();
         let first = js.lines().next().unwrap();
         assert!(first.starts_with("var VIEW_SKINS = {") && first.ends_with("};"));
-        let skins: Value =
-            serde_json::from_str(first.trim_start_matches("var VIEW_SKINS = ").trim_end_matches(';')).unwrap();
+        let skins: Value = serde_json::from_str(
+            first
+                .trim_start_matches("var VIEW_SKINS = ")
+                .trim_end_matches(';'),
+        )
+        .unwrap();
         assert_eq!(skins["light"], skin("light"));
         assert_eq!(skins["dark"], skin("dark"));
         assert!(js.contains("matchMedia('(prefers-color-scheme: dark)')"));
@@ -316,24 +324,50 @@ mod tests {
     #[test]
     fn the_team_views_draw_with_skin_tokens_only() {
         for (file, html) in [
-            ("task_registry", include_str!("../../task_registry/src/view.html")),
-            ("github_connector", include_str!("../../github_connector/src/view.html")),
-            ("agentic_resources", include_str!("../../agentic_resources/src/view.html")),
+            (
+                "task_registry",
+                include_str!("../../task_registry/src/view.html"),
+            ),
+            (
+                "github_connector",
+                include_str!("../../github_connector/src/view.html"),
+            ),
+            (
+                "agentic_resources",
+                include_str!("../../agentic_resources/src/view.html"),
+            ),
             ("cadencer", include_str!("cadencer/view.html")),
             ("components", team_agent_view::COMPONENTS),
         ] {
             let page = team_agent_view::page(html, "a");
-            assert!(!page.contains(":root{") && !page.contains(":root {"), "{file}");
-            for name in page.split("var(").skip(1).filter_map(|s| s.split([')', ',']).next()) {
+            assert!(
+                !page.contains(":root{") && !page.contains(":root {"),
+                "{file}"
+            );
+            for name in page
+                .split("var(")
+                .skip(1)
+                .filter_map(|s| s.split([')', ',']).next())
+            {
                 if name.starts_with("--fc-") {
-                    assert!(skin("light").contains(&format!("{name}:")), "{file}: {name}");
+                    assert!(
+                        skin("light").contains(&format!("{name}:")),
+                        "{file}: {name}"
+                    );
                 }
             }
             for decl in page.split("--fc-").skip(1) {
                 let rest = decl.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '-');
-                assert!(!rest.trim_start().starts_with(':'), "{file} declares --fc-{}", &decl[..decl.len().min(30)]);
+                assert!(
+                    !rest.trim_start().starts_with(':'),
+                    "{file} declares --fc-{}",
+                    &decl[..decl.len().min(30)]
+                );
             }
-            assert!(!page.contains("rgb(") && !page.contains("rgba(") && !page.contains("hsl("), "{file}");
+            assert!(
+                !page.contains("rgb(") && !page.contains("rgba(") && !page.contains("hsl("),
+                "{file}"
+            );
         }
     }
 
@@ -355,7 +389,11 @@ mod tests {
         assert!(!own.contains(":root"), "tokens come from the shared block");
         let served = String::from_utf8(file_bytes("page.css").unwrap()).unwrap();
         assert_eq!(served, page_css());
-        assert_eq!(served.matches(":root {").count(), 2, "light, and dark under the media query");
+        assert_eq!(
+            served.matches(":root {").count(),
+            2,
+            "light, and dark under the media query"
+        );
         for name in own
             .split("var(")
             .skip(1)
