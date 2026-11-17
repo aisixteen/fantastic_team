@@ -292,3 +292,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `3a1f32c`
 
 `Cargo.lock` pins fantastic `3a1f32c` (base PR #707: agents publish, views watch, no polling).
+
+## Pin at `d1f7782`
+
+`Cargo.lock` pins fantastic `d1f7782` (base PR #708: views in the design mock's look; the tree compact by default with a Full switch).

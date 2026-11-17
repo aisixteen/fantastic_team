@@ -11,8 +11,8 @@ const from = src.indexOf("// pure\n");
 const to = src.indexOf("// end pure", from);
 assert.ok(from >= 0 && to > from);
 const ctx = vm.createContext({});
-vm.runInContext(`${src.slice(from, to)}\nthis.api = { waitingCount, cardOf, inquiryEvent };`, ctx);
-const { waitingCount, cardOf, inquiryEvent } = ctx.api;
+vm.runInContext(`${src.slice(from, to)}\nthis.api = { waitingCount, cardOf, inquiryEvent, pathTo, crumbPath };`, ctx);
+const { waitingCount, cardOf, inquiryEvent, pathTo, crumbPath } = ctx.api;
 
 test("waitingCount counts askers once, other than the open agent", () => {
   const inq = [{ asker: "a" }, { asker: "a" }, { asker: "b" }, { asker: "c" }, { text: "x" }, null];
@@ -24,7 +24,8 @@ test("waitingCount counts askers once, other than the open agent", () => {
 
 test("cardOf names the agent, tags its handler, says it has no view", () => {
   const c = cardOf("w1", { display_name: "Worker", handler_module: "worker.tools" });
-  assert.deepEqual(JSON.parse(JSON.stringify(c)), { name: "Worker", tag: "worker.tools", note: "This agent has no view of its own." });
+  assert.deepEqual(JSON.parse(JSON.stringify(c)), { name: "Worker", up: "", tag: "worker.tools", note: "This agent has no view of its own." });
+  assert.equal(cardOf("w1", {}, "", "Lead").up, "Lead", "the parent's name over it");
   assert.equal(cardOf("w1", {}).name, "w1");
   assert.equal(cardOf("w1", null).tag, "");
 });
@@ -32,7 +33,7 @@ test("cardOf names the agent, tags its handler, says it has no view", () => {
 test("cardOf takes the bundle from the kernel's record when the agent's reflect does not name it", () => {
   // a bridge's reflect carries no handler_module and no display_name (#351)
   const c = cardOf("worker_exec", { id: "worker_exec", sentence: "x" }, "exec_bridge.tools");
-  assert.deepEqual(JSON.parse(JSON.stringify(c)), { name: "worker_exec", tag: "exec_bridge.tools", note: "This agent has no view of its own." });
+  assert.deepEqual(JSON.parse(JSON.stringify(c)), { name: "worker_exec", up: "", tag: "exec_bridge.tools", note: "This agent has no view of its own." });
   // the agent's own reflect wins over the record's
   assert.equal(cardOf("w1", { handler_module: "a.tools" }, "b.tools").tag, "a.tools");
 });
@@ -43,6 +44,20 @@ test("crumbOf is the names of the path, outermost first, none blank", () => {
   vm.runInContext(`${src.slice(at, src.indexOf("// end pure", at))}\nthis.crumbOf = crumbOf;`, c2);
   assert.deepEqual(JSON.parse(JSON.stringify(c2.crumbOf([{ name: "lead" }, { name: "" }, { name: "k-rollout" }, null]))), ["lead", "k-rollout"]);
   assert.deepEqual(JSON.parse(JSON.stringify(c2.crumbOf(undefined))), []);
+});
+
+test("the title bar's path: the AI agents above the agent, then its name, from the kernel's tree", () => {
+  const tree = { id: "kernel_state", display_name: "launch-week", children: [
+    { id: "user", children: [{ id: "lead", display_name: "Lead", children: [
+      { id: "tasks", children: [] },
+      { id: "ops", display_name: "cluster ops", children: [{ id: "k_rollout", display_name: "k-rollout", children: [] }] }] }] }] };
+  const chats = { lead: true, ops: true, k_rollout: true };
+  const plain = (x) => JSON.parse(JSON.stringify(x));
+  assert.deepEqual(plain(pathTo(tree, "k_rollout")).map((n) => n.id), ["user", "lead", "ops", "k_rollout"], "the root is left out");
+  assert.deepEqual(plain(crumbPath(pathTo(tree, "k_rollout"), chats)), ["Lead", "cluster ops", "k-rollout"]);
+  assert.deepEqual(plain(crumbPath(pathTo(tree, "tasks"), chats)), ["Lead", "tasks"], "an agent that is not an AI agent keeps its own name");
+  assert.deepEqual(plain(pathTo(tree, "nope")), []);
+  assert.deepEqual(plain(pathTo(null, "lead")), []);
 });
 
 test("inquiryEvent is the sidebar's inquiries_changed, never a copy of a call to the sidebar", () => {

@@ -1,4 +1,4 @@
-<div class="head"><span class="t">{{agent}} <span class="sl">/</span> agentic_resources.tools</span><span class="chip" id="run">-</span></div>
+<span class="chip" id="run" hidden>-</span>
 <div class="pg" id="pg"></div>
 <script>
 {{helpers}}
@@ -55,7 +55,9 @@ function render(bundles, fleet, total) {
   var rows = kindRows(bundles && bundles.bundles, fleet);
   var sel = chosen(rows, pick);
   pg.textContent = "";
-  put(pg, put(h("div", "ttl"), h("h1", null, AGENT), pillOf("tool")));
+  // the chip sits at the end of the name row (the page's title bar says the path)
+  put(pg, put(h("div", "ttl"), h("h1", null, AGENT), pillOf("tool"), h("span", "gap"), runChip));
+  runChip.hidden = false;
 
   var kinds = section("Kinds", "kinds · get_count {kind} · fleet");
   var tbl = h("div", "tbl");
