@@ -205,7 +205,8 @@ def note(p):
         f.write(json.dumps(row) + "\\n")
     if row.get("error"):
         enough.set()
-    elif p.get("type") == "status" and p.get("phase") == "done" and p.get("client_id") == client:
+    # a call's end: `done` (ok, cancelled) or `failed` (error, timeout, gave_up) — fantastic#714
+    elif p.get("type") == "status" and p.get("phase") in ("done", "failed") and p.get("client_id") == client:
         done["n"] += 1
         if done["n"] >= flags["until"]:
             enough.set()
