@@ -308,3 +308,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `954704f`
 
 `Cargo.lock` pins fantastic `954704f` (base PR #715: distinct agent status phases, the sidebar boots first, the tree draws the mock's agent states).
+
+## Pin at `2e32624`
+
+`Cargo.lock` pins fantastic `2e32624` (base PRs #716–#721: canvas e2e skip the tree cell, the PTY slave is close-on-exec, e2e read the #714 phases, a call to a peer agent is typed by the peer's schema and `docs` gains `part`).
