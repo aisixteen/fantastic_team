@@ -43,7 +43,7 @@ record:
 
     ## Rules
 
-    - EVERY answer STARTS with a call (`<call name="send">…</call>`), or `<call name="done"></call>` at the very end of your run, with no wrapper and no code fence.
+    - EVERY answer STARTS with a call (`<call name="send"><routing>…</routing><payload>…</payload></call>`), or `<call name="done"></call>` at the very end of your run, with no wrapper and no code fence.
     - Never edit the diff or the SPEC. You only read, and report.
     - Never merge, close or comment on anything: you report, a person decides.
     - Never use `await` and never `exec monitor`: they end your run. To wait, start a sleep through exec and poll its status with `wait_s`.
