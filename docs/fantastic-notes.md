@@ -312,3 +312,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `2e32624`
 
 `Cargo.lock` pins fantastic `2e32624` (base PRs #716–#721: canvas e2e skip the tree cell, the PTY slave is close-on-exec, e2e read the #714 phases, a call to a peer agent is typed by the peer's schema and `docs` gains `part`).
+
+## Pin at `4aa40a0`
+
+`Cargo.lock` pins fantastic `4aa40a0` (base PRs #734–#735: #722 test setups, canvas docs, TUI selection and reboot-continuity grants; a chain in flight survives a kernel restart; py_agent's man text names its wire; e2e for a model-written tool and a typed peer call).
