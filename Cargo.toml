@@ -6,7 +6,6 @@ members = ["crates/team", "crates/git_connector", "crates/github_connector", "cr
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/aisixteen/fantastic_team"
 
 [workspace.dependencies]
 # fantastic, followed by BRANCH `main`; Cargo.lock pins the exact commit. ONE fantastic version: every
