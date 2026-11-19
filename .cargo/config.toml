@@ -1,0 +1,5 @@
+# Cargo resolves a registry dependency only to a version published at least 14 days
+# ago (fantastic#661; Cargo 1.100, `registry.global-min-publish-age`). A version already
+# in Cargo.lock stays usable; `cargo update` will not pick a newer one inside the window.
+[registry]
+global-min-publish-age = "14 days"

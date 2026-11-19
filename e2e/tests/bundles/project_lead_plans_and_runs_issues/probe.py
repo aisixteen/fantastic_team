@@ -115,18 +115,15 @@ def run(ctx):
                 str(opened_to["github"].get("callable_by")))
         task = f"Your id is the id in your own reflect. Your task is acme/widgets#{n}. Work on issue {n}."
         team.send(wid, {"type": "send", "text": task})
-        settle(ctx, started + 3)  # the worker's send, the project_lead's turn it starts, the worker's close
+        settle(ctx, started + 3)  # the worker's pr_create and send, the project_lead's turn it starts, the worker's close
         woke = ctx.model.raw_bodies[started + 1] if len(ctx.model.raw_bodies) > started + 1 else ""
         v.check(f"worker {n}'s send to its parent started the project_lead's turn",
                 f"Issue {n} is done: PR opened for issue {n}." in woke and all(t in woke for t in TITLES),
                 woke[-300:])
-        # `title` is a routing field of a model call, so a worker's call cannot carry the
-        # connector's `title` argument (see the README): the PR is opened through the
-        # connector as the operator once the worker has told its parent.
-        opened = team.send("github", {"type": "pr_create", "repo": "acme/widgets",
-                                      "branch": f"team/issue-{n}", "title": TITLES[n - 1],
-                                      "body": f"Work for issue {n}."})["result"]
-        v.check(f"the connector opened the PR for issue {n}", opened.get("draft") is True, str(opened))
+        mine = [x["json"] for x in forge.pulls() if x["json"].get("head") == f"team/issue-{n}"]
+        v.check(f"worker {n}'s own pr_create opened its draft PR, the title its payload's",
+                len(mine) == 1 and mine[0].get("draft") is True and mine[0].get("title") == TITLES[n - 1],
+                str(mine))
     # 3. the last word
     team.send(pl, {"type": "send", "text": "continue"})
     settle(ctx, len(ctx.model.turns))

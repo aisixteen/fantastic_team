@@ -3,7 +3,6 @@ never held the token."""
 
 import os
 
-from helpers import forge as F
 from helpers import run_flow
 from helpers.verdict import Verdict
 
@@ -20,9 +19,6 @@ def run(ctx):
     v.check("the scripted model played every turn", played and ctx.model.consumed,
             f"served {ctx.model.served} of {len(ctx.model.turns)}")
     token = ctx.forge.token
-    pr = team.send("github", {"type": "pr_create", "repo": F.REPO, "branch": BRANCH,
-                              "title": "Add a greeting file", "body": "Adds greeting.txt."})
-    v.check("pr_create answered with the forge's number", pr["result"].get("number") == 7, str(pr))
     pulls = ctx.forge.pulls()
     v.check("the forge got exactly one POST /pulls", len(pulls) == 1)
     if pulls:

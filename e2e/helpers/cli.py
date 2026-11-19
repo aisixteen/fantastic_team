@@ -213,18 +213,25 @@ MODEL = "scripted-model"
 # A lead's check-ins: its own scheduler wakes it to look at its agents (the team's lead bundles
 # carry the same paragraph). Given only on a model test (costs gpu): a script follows no prompt.
 CHECK_INS = (
-    "Check-ins: before your first spawn or message to an agent, make your own scheduler (`create_agent` on "
-    "`kernel_state`: `handler_module: scheduler.tools`, `parent_id`: your id, `can_call: {\"$parent\": [\"send\"]}`, "
-    "`callable_by: {\"$parent\": \"*\"}`) and `schedule` on it `{target: <your id>, payload: {type: send, text: "
-    "\"[check-in agents] check your agents\"}, interval_seconds: 120}`; start every schedule's text with "
-    "`[check-in <name>]` so you know what ticked, and change an interval when the pace changes (`unschedule`, "
-    "then `schedule`). On each check-in look at every agent you started: one that loops or is stuck you halt "
-    "(`stop`) and report `task failed: <agent>: <why>` to your parent. Stuck is: NOT generating (its `status`) "
-    "and no new row since your last check-in, two check-ins in a row; the same step or error over and over is "
-    "looping. An agent that is generating is busy, never stuck. Keep the check-ins until your task is complete: unscheduling every schedule "
-    "(`unschedule`) is your very last call, after every other step and wait, right before you end; the "
-    "scheduler agent stays. Never end your run while an agent you started is still working; its report or your "
-    "next check-in wakes you. To wait, end your turn with `await`; never start a timer or sleep job to wait.")
+    "Check-ins: before your first spawn or message to an agent, make your own scheduler with "
+    "`<call name=\"send\"><routing><target_id>kernel_state</target_id></routing>"
+    "<payload><type>create_agent</type><handler_module>scheduler.tools</handler_module><parent_id>YOUR_ID</parent_id>"
+    "<can_call><$parent><item>send</item></$parent></can_call><callable_by><$parent>*</$parent></callable_by>"
+    "</payload></call>` (YOUR_ID is your own id; the `id` in the reply is SCHEDULER) and schedule your check-in on it with "
+    "`<call name=\"send\"><routing><target_id>SCHEDULER</target_id></routing>"
+    "<payload><type>schedule</type><target>YOUR_ID</target>"
+    "<payload><type>send</type><text>[check-in agents] check your agents</text></payload>"
+    "<interval_seconds>120</interval_seconds></payload></call>`; "
+    "start every schedule's text with `[check-in <name>]` so you know what ticked, and change an "
+    "interval when the pace changes (`unschedule`, then `schedule`). On each check-in look at every "
+    "agent you started: one that loops or is stuck you halt (`stop`) and report `task failed: "
+    "<agent>: <why>` to your parent. Stuck is: NOT generating (its `status`) and no new row since "
+    "your last check-in, two check-ins in a row; the same step or error over and over is looping. An "
+    "agent that is generating is busy, never stuck. Keep the check-ins until your task is complete: "
+    "unscheduling every schedule (`unschedule`) is your very last call, after every other step and "
+    "wait, right before you end; the scheduler agent stays. Never end your run while an agent you "
+    "started is still working; its report or your next check-in wakes you. To wait, end your turn "
+    "with `await`; never start a timer or sleep job to wait.")
 
 
 def check_ins_on(ctx) -> bool:

@@ -60,7 +60,7 @@ def run(ctx):
     v.check("the commit author is the team bot", author == "Team Bot <team-bot@example.invalid>",
             author)
 
-    # 4. the draft PR request, sent as the operator (see README item 5)
+    # 4. the draft PR request, sent as the operator: the task does not ask the model for a PR
     pr = team.send("github", {"type": "pr_create", "repo": F.REPO, "branch": branch,
                               "title": TITLE, "body": BODY})
     v.check("pr_create answered with a draft", pr["result"].get("draft") is True, str(pr))

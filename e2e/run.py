@@ -289,6 +289,16 @@ def selftest() -> int:
         v.check("the plug streams a call turn that a plain parser decodes", s1 == 200 and
                 t1.startswith('<call name="send">') and "<target_id>git</target_id>" in t1
                 and "<list><item>a</item><item>b</item></list>" in t1, t1)
+        pr = scripted.render_call({"target": "github", "type": "pr_create", "routing": {"timeout": 30},
+                                   "args": {"title": "T", "id": "x"}})
+        v.check("a send's args are its payload whole, its routing names are in <routing>",
+                "<routing><target_id>github</target_id><timeout>30</timeout></routing>" in pr
+                and "<payload><type>pr_create</type><title>T</title><id>x</id></payload>" in pr, pr)
+        try:
+            scripted.render_call({"target": "git", "type": "status", "routing": {"path": "/x"}})
+            v.check("a name that is not a routing name is refused in routing", False)
+        except ValueError:
+            v.check("a name that is not a routing name is refused in routing", True)
         s2, b2 = post(2)
         v.check("the plug fills placeholders", scripted.parse_stream(b2) == "all done for me")
         s3, _ = post(3)

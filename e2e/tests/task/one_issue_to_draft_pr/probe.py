@@ -41,13 +41,13 @@ def run(ctx):
     v.check("a second pull adds nothing", again["result"].get("created") == []
             and again["result"].get("skipped") == [["acme/widgets#1", "already a task"]], str(again))
 
-    # 2. the lead plays the script: read the issue, worktree, write, run, commit, push
+    # 2. the lead plays the script: read the issue, worktree, write, run, commit, push, pr_create
     played = run_flow.hand_over(ctx, "Do the task acme/widgets#1: its instructions are issue 1 of acme/widgets, read it through github")
     v.check("the scripted model played every turn, none past the end",
             played and ctx.model.consumed, f"served {ctx.model.served} of {len(ctx.model.turns)}")
     seen = T.log_calls(team.log())
     wanted = [("github", "issue_view"), ("git", "worktree_add"), ("worker_files", "write"),
-              ("worker_exec", "run"), ("git", "commit"), ("github", "push")]
+              ("worker_exec", "run"), ("git", "commit"), ("github", "push"), ("github", "pr_create")]
     v.check("the rows show the calls in order", T.in_order(seen, wanted), str(seen[-40:]))
 
     # 3. the worktree and the commit
@@ -70,14 +70,7 @@ def run(ctx):
             any(r.get("authorized") for r in gitreqs)
             and all(r.get("authorized") or "authorization" not in r["headers"] for r in gitreqs))
 
-    # 3b. no PR yet: the model never asked for one
-    v.check("no pull request was made by the push", len(ctx.forge.pulls()) == 0)
-
-    # 4. the draft PR request the github connector sends
-    pr = team.send("github", {"type": "pr_create", "repo": F.REPO, "branch": BRANCH,
-                              "title": TITLE, "body": BODY})
-    v.check("pr_create answered with the forge's number", pr["result"].get("number") == 7
-            and pr["result"].get("draft") is True, str(pr))
+    # 4. the draft PR request the github connector sent for the model's pr_create
     pulls = ctx.forge.pulls()
     v.check("the forge got exactly one POST /pulls", len(pulls) == 1)
     if pulls:

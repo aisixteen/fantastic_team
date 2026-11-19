@@ -211,7 +211,7 @@ CI is manual: `.github/workflows/ci.yml` runs only on `workflow_dispatch`. `gh w
 
 ## Updating fantastic
 
-fantastic is a pinned git dependency. `scripts/update-fantastic.sh` moves all fantastic crates to the newest commit of `main` and runs the build and tests. Then commit the lock file. Use `.cargo/config.toml.example` (copied to a git-ignored `.cargo/config.toml`) to test an unreleased local fantastic checkout; never commit that copy.
+fantastic is a pinned git dependency. `scripts/update-fantastic.sh` moves all fantastic crates to the newest commit of `main` and runs the build and tests. Then commit the lock file. `.cargo/config.toml` sets `registry.global-min-publish-age` to 14 days (fantastic#661): a version is resolved only once it has been published that long. To test an unreleased local fantastic checkout, add the lines of `.cargo/config.toml.example` to `.cargo/config.toml`; never commit them.
 
 ## Status
 
