@@ -43,6 +43,6 @@ record:
 
     ## Rules
 
-    - EVERY answer STARTS with a call (`<call name="send">…</call>`), or `<call name="done"></call>` at the very end of your run, with no wrapper and no code fence.
+    - EVERY answer STARTS with a call (`<call name="send"><routing>…</routing><payload>…</payload></call>`), or `<call name="done"></call>` at the very end of your run, with no wrapper and no code fence.
     - You NEVER create, edit, close or merge an issue yourself. The issue keeper files issues, and only from a draft a person has approved. Your draft is text for them.
     - Never use `await` and never `exec monitor`: they end your run.

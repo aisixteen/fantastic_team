@@ -463,6 +463,34 @@ mod tests {
         }
     }
 
+    /// Every whole call a card shows (a backtick span, `…` placeholders aside) is fantastic's
+    /// routing form and parses as ONE send whose payload keeps its own fields, `<id>` included
+    /// (fantastic#528).
+    #[test]
+    fn every_call_a_card_shows_is_a_routing_form_send_that_parses() {
+        use fantastic_ai_core::tool_parse::{extract_tool_calls, malformed_calls};
+        let mut seen = 0;
+        for (file, _) in ALL {
+            let d = card(file).directive;
+            for span in d.split('`').skip(1).step_by(2) {
+                if !span.starts_with("<call name=\"send\">") || span.contains('…') {
+                    continue;
+                }
+                assert!(span.contains("<routing>"), "{file}: {span}");
+                assert!(malformed_calls(span).is_empty(), "{file}: {span}");
+                let calls = extract_tool_calls(span);
+                assert_eq!(calls.len(), 1, "{file}: {span}");
+                let payload = calls[0].arguments["payload"].as_object().unwrap();
+                assert!(payload.contains_key("type"), "{file}: {span}");
+                if span.contains("<id>") {
+                    assert!(payload.contains_key("id"), "{file}: {span}");
+                }
+                seen += 1;
+            }
+        }
+        assert!(seen > 20, "{seen} calls");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn the_bundle_bundles_load_as_the_registrys_bundles() {
         // embedded: the kernel's registry holds them, no folder is read
