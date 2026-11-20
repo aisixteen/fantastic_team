@@ -133,7 +133,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 
 `Cargo.lock` now pins fantastic `5449402`.
 
-- **The routing form** (#527, #529). A `send` may carry `<routing>` (how the call travels: `target_id`, `to`, `reply_to`, `title`, `timeout`, …) and `<payload>` (the target's message, delivered whole, nothing inside it read or reserved): `<call name="send"><routing><target_id>github</target_id></routing><payload><type>pr_create</type><title>…</title></payload></call>`. Inline calls still parse. The system prompt teaches the routing form; the stock roles' examples and the spawn note use it, and so does the scripted e2e model.
+- **The routing form** (#527, #529). A `send` may carry `<routing>` (how the call travels: `target_id`, `to`, `reply_to`, `title`, `timeout`, …) and `<payload>` (the target's message, delivered whole, nothing inside it read or reserved): `<call name="send"><routing><target_id>github</target_id></routing><payload><type>pr_create</type><title>…</title></payload></call>`. A `send` written without `<routing>` is refused by the parser (#528), naming the tag and showing the routing form. The system prompt teaches the routing form; the stock roles' examples and the spawn note use it, and so does the scripted e2e model.
 
 ## Pin at `eb37c8d`
 
@@ -316,3 +316,7 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 ## Pin at `4aa40a0`
 
 `Cargo.lock` pins fantastic `4aa40a0` (base PRs #734–#735: #722 test setups, canvas docs, TUI selection and reboot-continuity grants; a chain in flight survives a kernel restart; py_agent's man text names its wire; e2e for a model-written tool and a typed peer call).
+
+## Pin at `0087f69c`
+
+`Cargo.lock` pins fantastic `0087f69c` (base PR #741: an inquiry whose recipient's turn fails tells the asker and the scheduler fires without waiting, #722; the parser refuses the inline call form, #528; a 14-day publish age, #661; the chat's line summary unified with fold titles, #709; only `ts` reaches the model as a local-time head, #652/#653; shared providers, the request knobs on the chat, #632).

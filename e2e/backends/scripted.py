@@ -287,6 +287,8 @@ class ScriptedModel:
     # a team notice, fantastic's await note, and its memory recall row (the kernel's, after a restart)
     NOTICE_HEADS = ("[from cadencer]", "[team] The team of", "Members:", "- `", "[await: nothing to wait for]",
                     "[recall ", "heartbeat: ")
+    # the local-time head every message the model reads opens with (fantastic#653): read past it
+    TS_HEAD = re.compile(r"^\[\d{4}-\d\d-\d\d \d\d:\d\d [+-]\d\d:\d\d\]\n")
     # the cadencer's digest reaches the lead as the operator's message, with no `[from ...]` head: its
     # last line is the load line
     DIGEST_LOAD = re.compile(r"(^|\n)load: busy \d+ idle \d+ stalled \d+")
@@ -319,12 +321,14 @@ class ScriptedModel:
         return any(m.get("role") == "user" and any(cls.is_check_in(b) for b in cls.blocks(m))
                    for m in msgs if isinstance(m, dict))
 
-    @staticmethod
-    def blocks(msg: dict) -> list[str]:
+    @classmethod
+    def blocks(cls, msg: dict) -> list[str]:
+        """The blocks of a message, each read past the local-time head a message opens with
+        (fantastic#653; the wire merges consecutive user messages, so a head may open any block)."""
         c = msg.get("content")
         text = c if isinstance(c, str) else "\n\n".join(
             b.get("text", "") for b in (c or []) if isinstance(b, dict))
-        return [b.strip() for b in text.split("\n\n") if b.strip()]
+        return [b for b in (cls.TS_HEAD.sub("", x.strip()).strip() for x in text.split("\n\n")) if b]
 
     @classmethod
     def notice_only(cls, raw: str) -> bool:
@@ -354,8 +358,8 @@ class ScriptedModel:
         came = [b for b in blocks if b.startswith(("[from ", "[team] The team of"))][-int(arrived.group(1)):]
         return bool(came) and all(cls.is_notice(b) for b in came)
 
-    @staticmethod
-    def rebuild(raw: str) -> bool:
+    @classmethod
+    def rebuild(cls, raw: str) -> bool:
         """Is this the kernel asking the model to rebuild an agent's working context (when a notice
         wakes it after a restart)? Not the agent's own turn: answered with a word the kernel reads as
         no plan, so it keeps its mechanical fit."""
@@ -365,7 +369,7 @@ class ScriptedModel:
         except (ValueError, IndexError, AttributeError, TypeError):
             return False
         text = c if isinstance(c, str) else "".join(b.get("text", "") for b in (c or []) if isinstance(b, dict))
-        return len(msgs) == 1 and text.startswith("You are rebuilding your own working context.")
+        return len(msgs) == 1 and cls.TS_HEAD.sub("", text).startswith("You are rebuilding your own working context.")
 
     def play(self, raw: str, key: str | None = None) -> tuple[str, str | None] | None:
         """Serve one request body: record it, pick the turn of its lane, wait for the lanes the

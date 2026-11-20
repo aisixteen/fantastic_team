@@ -23,6 +23,8 @@ import subprocess
 import tempfile
 import time
 
+from backends import split_knobs
+
 from . import records, run_flow, team as team_mod
 
 FILES = {
@@ -250,10 +252,11 @@ PROVIDER_VERBS = ["complete", "watch"]
 
 
 def provider_record(ctx, parent: str) -> dict:
-    """The provider's record: the plug's AI fields (its `model` is seeded as the default in the
-    provider's store by `add_provider`), the models the run uses (`E2E_MODEL`, and
-    `E2E_WORKER_MODEL` when set) as its list, the key when keyed."""
-    rec = dict(ctx.model.ai_record())
+    """The provider's record: the plug's AI fields but the request knobs, the chats' own
+    (fantastic#632; its `model` is seeded as the default in the provider's store by
+    `add_provider`), the models the run uses (`E2E_MODEL`, and `E2E_WORKER_MODEL` when set) as its
+    list, the key when keyed."""
+    rec, _ = split_knobs(ctx.model.ai_record())
     default = rec.pop("model", None)
     models = list(dict.fromkeys(m for m in (default, worker_model()) if m))
     rec.update({"id": PROVIDER, "parent_id": parent, "models": models,
@@ -319,11 +322,13 @@ def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool 
     `memory` store and its provider (agent -> verbs, `"*"` for every verb). An edge is written on
     both ends: the caller's `can_call` in this payload, the callee's `callable_by` for the callees
     that exist already (a child made later admits its parent through `$parent`). `key` is kept for
-    the callers: the key is the provider's, never a chat's. Returns `id`."""
+    the callers: the key is the provider's, never a chat's. The plug's request knobs are the
+    chat's (fantastic#632). Returns `id`."""
     team = ctx.team
     can_call = {"$self": "*", "memory": "*", PROVIDER: PROVIDER_VERBS, **(grants or {})}
     rec = {"id": id, "parent_id": parent, "handler_module": CHAT, "provider_id": PROVIDER,
-           "memory_store_id": "memory", "can_call": can_call, "callable_by": {"$self": "*", "$parent": "*"}}
+           "memory_store_id": "memory", "can_call": can_call, "callable_by": {"$self": "*", "$parent": "*"},
+           **split_knobs(ctx.model.ai_record())[1]}
     rec.update(extra)
     records.create(team, rec)
     if PROVIDER not in team.agents():

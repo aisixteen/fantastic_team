@@ -43,7 +43,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from backends import PLUGS, available, provides_vars, scripted, why_not  # noqa: E402
+from backends import KNOBS, PLUGS, available, provides_vars, scripted, split_knobs, why_not  # noqa: E402
 from backends import vllm as vllm_mod  # noqa: E402
 from backends import anthropic as relay_mod  # noqa: E402
 from helpers import forge as forge_mod  # noqa: E402
@@ -793,6 +793,12 @@ def selftest_vllm_plug(v: Verdict) -> None:
             v.check("the sampling knobs are the ones beside the plug (the CoT-repetition fix)",
                     runner.get("no_repeat_ngram_size") == 3 and runner.get("repetition_penalty") == 1.05
                     and rec["no_repeat_ngram_size"] == 3 and "thinking_token_budget" not in rec, str(rec))
+            prov, knobs = split_knobs(rec)
+            v.check("the request knobs are the chats' (fantastic#632): the provider's share holds none, the "
+                    "chat's holds the output cap and the sampling knobs",
+                    not set(prov) & set(KNOBS) and prov["endpoint"] == base["VLLM_ENDPOINT"]
+                    and knobs == {"max_tokens": 4096, "no_repeat_ngram_size": 3, "repetition_penalty": 1.05},
+                    f"{prov} {knobs}")
             v.check("the plug is keyed by the NAME of the variable; the credential ref is bound to the endpoint's host",
                     plug.key_env == "VLLM_API_KEY" and plug.keyed and plug.host == "gpu.example.invalid"
                     and plug.real and key not in json.dumps(rec))

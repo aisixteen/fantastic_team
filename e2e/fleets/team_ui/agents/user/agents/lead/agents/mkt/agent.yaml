@@ -2,6 +2,9 @@ id: mkt
 display_name: marketing
 handler_module: ai_chat.tools
 provider_id: provider
+max_tokens: {{max_tokens}}
+no_repeat_ngram_size: {{no_repeat_ngram_size}}
+repetition_penalty: {{repetition_penalty}}
 model: "{{model_name}}"
 memory_store_id: memory
 can_call:

@@ -51,11 +51,26 @@ def available(name: str) -> bool:
 
 SHAPES = {"anthropic_backend.tools": "anthropic", "vllm_backend.tools": "vllm"}
 
+#: The request knobs (fantastic#632): a CHAT's own, sent with each request; a provider record
+#: refuses them. A plug's `ai_record()` may carry some (vllm: `max_tokens` and the sampling knobs);
+#: `split_knobs` puts them on the chat.
+KNOBS = ("temperature", "top_p", "top_k", "min_p", "reasoning_effort", "thinking_token_budget",
+         "presence_penalty", "frequency_penalty", "repetition_penalty", "no_repeat_ngram_size",
+         "seed", "stop", "max_tokens")
+
+
+def split_knobs(rec: dict) -> tuple[dict, dict]:
+    """A plug's `ai_record()` as (the provider's fields, the chat's request knobs)."""
+    return ({k: v for k, v in rec.items() if k not in KNOBS},
+            {k: v for k, v in rec.items() if k in KNOBS})
+
 
 def provides_vars(plug) -> dict:
     """The variables a plug gives a test (`ctx.vars`): its model name, the shape of its provider
-    (`anthropic`, `vllm`, `vllm_keyed`: the name of a fleet layer) and the provider's fields as text
-    ready for a record file (JSON; `null` when the plug has none), all read from `ai_record()`."""
+    (`anthropic`, `vllm`, `vllm_keyed`: the name of a fleet layer), the provider's fields and the
+    chats' request knobs (`max_tokens`, `no_repeat_ngram_size`, `repetition_penalty`: every chat
+    record that names the provider carries them) as text ready for a record file (JSON; `null`
+    when the plug has none), all read from `ai_record()`."""
     rec = plug.ai_record()
     shape = SHAPES[rec["handler_module"]]
     if shape == "vllm" and plug.keyed:
