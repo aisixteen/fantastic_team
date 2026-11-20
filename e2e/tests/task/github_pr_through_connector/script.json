@@ -91,6 +91,20 @@
  {
   "calls": [
    {
+    "target": "github",
+    "type": "pr_create",
+    "args": {
+     "repo": "acme/widgets",
+     "branch": "team/issue-1",
+     "title": "Add a greeting file",
+     "body": "Adds greeting.txt."
+    }
+   }
+  ]
+ },
+ {
+  "calls": [
+   {
     "name": "done"
    }
   ]

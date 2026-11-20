@@ -46,6 +46,16 @@
  {
   "calls": [
    {
+    "target": "github",
+    "type": "pr_create",
+    "args": {
+     "repo": "acme/widgets",
+     "branch": "team/issue-1",
+     "title": "Add a greeting file",
+     "body": "Work for issue 1."
+    }
+   },
+   {
     "target": "{{pl}}",
     "type": "send",
     "args": {
@@ -92,6 +102,16 @@
  },
  {
   "calls": [
+   {
+    "target": "github",
+    "type": "pr_create",
+    "args": {
+     "repo": "acme/widgets",
+     "branch": "team/issue-2",
+     "title": "Add a greeting file 2",
+     "body": "Work for issue 2."
+    }
+   },
    {
     "target": "{{pl}}",
     "type": "send",

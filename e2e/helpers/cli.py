@@ -23,6 +23,8 @@ import subprocess
 import tempfile
 import time
 
+from backends import split_knobs
+
 from . import records, run_flow, team as team_mod
 
 FILES = {
@@ -213,18 +215,25 @@ MODEL = "scripted-model"
 # A lead's check-ins: its own scheduler wakes it to look at its agents (the team's lead bundles
 # carry the same paragraph). Given only on a model test (costs gpu): a script follows no prompt.
 CHECK_INS = (
-    "Check-ins: before your first spawn or message to an agent, make your own scheduler (`create_agent` on "
-    "`kernel_state`: `handler_module: scheduler.tools`, `parent_id`: your id, `can_call: {\"$parent\": [\"send\"]}`, "
-    "`callable_by: {\"$parent\": \"*\"}`) and `schedule` on it `{target: <your id>, payload: {type: send, text: "
-    "\"[check-in agents] check your agents\"}, interval_seconds: 120}`; start every schedule's text with "
-    "`[check-in <name>]` so you know what ticked, and change an interval when the pace changes (`unschedule`, "
-    "then `schedule`). On each check-in look at every agent you started: one that loops or is stuck you halt "
-    "(`stop`) and report `task failed: <agent>: <why>` to your parent. Stuck is: NOT generating (its `status`) "
-    "and no new row since your last check-in, two check-ins in a row; the same step or error over and over is "
-    "looping. An agent that is generating is busy, never stuck. Keep the check-ins until your task is complete: unscheduling every schedule "
-    "(`unschedule`) is your very last call, after every other step and wait, right before you end; the "
-    "scheduler agent stays. Never end your run while an agent you started is still working; its report or your "
-    "next check-in wakes you. To wait, end your turn with `await`; never start a timer or sleep job to wait.")
+    "Check-ins: before your first spawn or message to an agent, make your own scheduler with "
+    "`<call name=\"send\"><routing><target_id>kernel_state</target_id></routing>"
+    "<payload><type>create_agent</type><handler_module>scheduler.tools</handler_module><parent_id>YOUR_ID</parent_id>"
+    "<can_call><$parent><item>send</item></$parent></can_call><callable_by><$parent>*</$parent></callable_by>"
+    "</payload></call>` (YOUR_ID is your own id; the `id` in the reply is SCHEDULER) and schedule your check-in on it with "
+    "`<call name=\"send\"><routing><target_id>SCHEDULER</target_id></routing>"
+    "<payload><type>schedule</type><target>YOUR_ID</target>"
+    "<payload><type>send</type><text>[check-in agents] check your agents</text></payload>"
+    "<interval_seconds>120</interval_seconds></payload></call>`; "
+    "start every schedule's text with `[check-in <name>]` so you know what ticked, and change an "
+    "interval when the pace changes (`unschedule`, then `schedule`). On each check-in look at every "
+    "agent you started: one that loops or is stuck you halt (`stop`) and report `task failed: "
+    "<agent>: <why>` to your parent. Stuck is: NOT generating (its `status`) and no new row since "
+    "your last check-in, two check-ins in a row; the same step or error over and over is looping. An "
+    "agent that is generating is busy, never stuck. Keep the check-ins until your task is complete: "
+    "unscheduling every schedule (`unschedule`) is your very last call, after every other step and "
+    "wait, right before you end; the scheduler agent stays. Never end your run while an agent you "
+    "started is still working; its report or your next check-in wakes you. To wait, end your turn "
+    "with `await`; never start a timer or sleep job to wait.")
 
 
 def check_ins_on(ctx) -> bool:
@@ -243,10 +252,11 @@ PROVIDER_VERBS = ["complete", "watch"]
 
 
 def provider_record(ctx, parent: str) -> dict:
-    """The provider's record: the plug's AI fields (its `model` is seeded as the default in the
-    provider's store by `add_provider`), the models the run uses (`E2E_MODEL`, and
-    `E2E_WORKER_MODEL` when set) as its list, the key when keyed."""
-    rec = dict(ctx.model.ai_record())
+    """The provider's record: the plug's AI fields but the request knobs, the chats' own
+    (fantastic#632; its `model` is seeded as the default in the provider's store by
+    `add_provider`), the models the run uses (`E2E_MODEL`, and `E2E_WORKER_MODEL` when set) as its
+    list, the key when keyed."""
+    rec, _ = split_knobs(ctx.model.ai_record())
     default = rec.pop("model", None)
     models = list(dict.fromkeys(m for m in (default, worker_model()) if m))
     rec.update({"id": PROVIDER, "parent_id": parent, "models": models,
@@ -312,11 +322,13 @@ def make_agent(ctx, id: str, parent: str, grants: dict | None = None, key: bool 
     `memory` store and its provider (agent -> verbs, `"*"` for every verb). An edge is written on
     both ends: the caller's `can_call` in this payload, the callee's `callable_by` for the callees
     that exist already (a child made later admits its parent through `$parent`). `key` is kept for
-    the callers: the key is the provider's, never a chat's. Returns `id`."""
+    the callers: the key is the provider's, never a chat's. The plug's request knobs are the
+    chat's (fantastic#632). Returns `id`."""
     team = ctx.team
     can_call = {"$self": "*", "memory": "*", PROVIDER: PROVIDER_VERBS, **(grants or {})}
     rec = {"id": id, "parent_id": parent, "handler_module": CHAT, "provider_id": PROVIDER,
-           "memory_store_id": "memory", "can_call": can_call, "callable_by": {"$self": "*", "$parent": "*"}}
+           "memory_store_id": "memory", "can_call": can_call, "callable_by": {"$self": "*", "$parent": "*"},
+           **split_knobs(ctx.model.ai_record())[1]}
     rec.update(extra)
     records.create(team, rec)
     if PROVIDER not in team.agents():

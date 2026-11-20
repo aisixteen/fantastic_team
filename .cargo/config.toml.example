@@ -2,8 +2,9 @@
 [env]
 MACOSX_DEPLOYMENT_TARGET = "14.0"
 
-# Copy this file to .cargo/config.toml to build fantastic_team against a
-# local fantastic checkout instead of the git branch. Do not commit the copy.
+# Add these lines to .cargo/config.toml (it holds the registry's publish age) to build
+# fantastic_team against a local fantastic checkout instead of the git branch. Do not
+# commit them.
 # [patch."https://github.com/aisixteen/fantastic"]
 # fantastic-kernel = { path = "../fantastic/src/lib/rust/crates/fantastic-kernel" }
 # fantastic-bundle = { path = "../fantastic/src/lib/rust/crates/fantastic-bundle" }

@@ -11,6 +11,9 @@ A script is a list of turns. A turn is one of:
   {"text": "words"}
   {"calls": [{"target": "git", "type": "worktree_add", "args": {"path": "..."}}],
    "say": "optional words before the calls"}
+A `send` renders in fantastic's routing form: `target` (and a call's `routing`, routing names only:
+`{"routing": {"timeout": 30}}`) goes in `<routing>`, `type` and `args` in `<payload>`, whole, so an
+argument named like a routing field (`id` of `delete_agent`, `title` of `pr_create`) reaches the target.
 Any turn may also carry `"thinking": "words"`: the stream then opens with a `thinking`
 content block (a `thinking_delta` x2, index 0) before the text block (index 1), so a
 reasoning part reaches the team. `parse_stream` still returns the text only.
@@ -82,22 +85,25 @@ def render_value(v) -> str:
     return str(v)
 
 
-# fantastic's routing names (tool_parse::grammar::ROUTING besides target_id): in a script's
-# `args` they are the call's routing, as they were inline, so they go in `<routing>`.
-ROUTING = ("to", "re", "reply_to", "title", "timeout", "retries", "exec_id")
+# fantastic's routing names, as `tool_parse::grammar::ROUTING` lists them: the only tags `<routing>` holds.
+ROUTING = ("target_id", "to", "re", "reply_to", "title", "timeout", "retries", "id")
 
 
 def render_call(c: dict) -> str:
-    """One call element. A `send` is the routing form (fantastic#527): `<routing>` holds the
-    target and any routing name, `<payload>` the verb and its arguments, delivered whole. Any
+    """One call element. A `send` is the routing form (fantastic#527, #528): `<routing>` holds the
+    target and the call's `routing` names, `<payload>` the verb and its `args`, delivered whole. Any
     other call (`done`, `await`, …) is its name with its arguments as child tags."""
     name = c.get("name", "send")
-    args = dict(c.get("args") or {})
+    args = c.get("args") or {}
     if name != "send":
         body = [f"<{k}>{render_value(v)}</{k}>" for k, v in args.items()]
         return "\n".join([f'<call name="{name}">', *body, "</call>"])
+    extra = c.get("routing") or {}
+    wrong = [k for k in extra if k not in ROUTING]
+    if wrong:
+        raise ValueError(f"not routing names: {wrong} (the routing names are {', '.join(ROUTING)})")
     routing = [f"<target_id>{c['target']}</target_id>"] if c.get("target") else []
-    routing += [f"<{k}>{render_value(args.pop(k))}</{k}>" for k in ROUTING if k in args]
+    routing += [f"<{k}>{render_value(v)}</{k}>" for k, v in extra.items()]
     payload = [f"<type>{c['type']}</type>"] if c.get("type") else []
     payload += [f"<{k}>{render_value(v)}</{k}>" for k, v in args.items()]
     return "\n".join([f'<call name="{name}">', f"<routing>{''.join(routing)}</routing>",
@@ -281,6 +287,8 @@ class ScriptedModel:
     # a team notice, fantastic's await note, and its memory recall row (the kernel's, after a restart)
     NOTICE_HEADS = ("[from cadencer]", "[team] The team of", "Members:", "- `", "[await: nothing to wait for]",
                     "[recall ", "heartbeat: ")
+    # the local-time head every message the model reads opens with (fantastic#653): read past it
+    TS_HEAD = re.compile(r"^\[\d{4}-\d\d-\d\d \d\d:\d\d [+-]\d\d:\d\d\]\n")
     # the cadencer's digest reaches the lead as the operator's message, with no `[from ...]` head: its
     # last line is the load line
     DIGEST_LOAD = re.compile(r"(^|\n)load: busy \d+ idle \d+ stalled \d+")
@@ -313,12 +321,14 @@ class ScriptedModel:
         return any(m.get("role") == "user" and any(cls.is_check_in(b) for b in cls.blocks(m))
                    for m in msgs if isinstance(m, dict))
 
-    @staticmethod
-    def blocks(msg: dict) -> list[str]:
+    @classmethod
+    def blocks(cls, msg: dict) -> list[str]:
+        """The blocks of a message, each read past the local-time head a message opens with
+        (fantastic#653; the wire merges consecutive user messages, so a head may open any block)."""
         c = msg.get("content")
         text = c if isinstance(c, str) else "\n\n".join(
             b.get("text", "") for b in (c or []) if isinstance(b, dict))
-        return [b.strip() for b in text.split("\n\n") if b.strip()]
+        return [b for b in (cls.TS_HEAD.sub("", x.strip()).strip() for x in text.split("\n\n")) if b]
 
     @classmethod
     def notice_only(cls, raw: str) -> bool:
@@ -348,8 +358,8 @@ class ScriptedModel:
         came = [b for b in blocks if b.startswith(("[from ", "[team] The team of"))][-int(arrived.group(1)):]
         return bool(came) and all(cls.is_notice(b) for b in came)
 
-    @staticmethod
-    def rebuild(raw: str) -> bool:
+    @classmethod
+    def rebuild(cls, raw: str) -> bool:
         """Is this the kernel asking the model to rebuild an agent's working context (when a notice
         wakes it after a restart)? Not the agent's own turn: answered with a word the kernel reads as
         no plan, so it keeps its mechanical fit."""
@@ -359,7 +369,7 @@ class ScriptedModel:
         except (ValueError, IndexError, AttributeError, TypeError):
             return False
         text = c if isinstance(c, str) else "".join(b.get("text", "") for b in (c or []) if isinstance(b, dict))
-        return len(msgs) == 1 and text.startswith("You are rebuilding your own working context.")
+        return len(msgs) == 1 and cls.TS_HEAD.sub("", text).startswith("You are rebuilding your own working context.")
 
     def play(self, raw: str, key: str | None = None) -> tuple[str, str | None] | None:
         """Serve one request body: record it, pick the turn of its lane, wait for the lanes the

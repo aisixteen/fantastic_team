@@ -28,6 +28,8 @@ poller stops the team, which ends the run.
 The sampling knobs `no_repeat_ngram_size` and `repetition_penalty` come from `sampling.default.json`
 beside this file (`sampling.json` overrides it), as in fantastic: the measured fix for the
 chain-of-thought repetition loop. `thinking_token_budget` is left to the backend's own default.
+They and `max_tokens` are request knobs (fantastic#632): `ai_record()` names them, and the chats
+that name the provider carry them (`split_knobs`), never the provider's record.
 """
 
 from __future__ import annotations
@@ -147,8 +149,8 @@ class VllmPlug:
 
     # -- what the test's AI records say --------------------------------------------------
     def ai_record(self) -> dict:
-        """The fields of an AI record that talks to this server (no credentials: the test adds
-        them when the plug is keyed)."""
+        """The fields of an AI that talks to this server (no credentials: the test adds them when
+        the plug is keyed): the provider's, and the request knobs its chats carry (`split_knobs`)."""
         rec = {"handler_module": "vllm_backend.tools", "model": self.model_name,
                "endpoint": self.endpoint, "max_tokens": self.max_tokens,
                "kv_slots": self.kv_slots, "kv_overflow": self.kv_overflow}

@@ -43,7 +43,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from backends import PLUGS, available, provides_vars, scripted, why_not  # noqa: E402
+from backends import KNOBS, PLUGS, available, provides_vars, scripted, split_knobs, why_not  # noqa: E402
 from backends import vllm as vllm_mod  # noqa: E402
 from backends import anthropic as relay_mod  # noqa: E402
 from helpers import forge as forge_mod  # noqa: E402
@@ -289,6 +289,16 @@ def selftest() -> int:
         v.check("the plug streams a call turn that a plain parser decodes", s1 == 200 and
                 t1.startswith('<call name="send">') and "<target_id>git</target_id>" in t1
                 and "<list><item>a</item><item>b</item></list>" in t1, t1)
+        pr = scripted.render_call({"target": "github", "type": "pr_create", "routing": {"timeout": 30},
+                                   "args": {"title": "T", "id": "x"}})
+        v.check("a send's args are its payload whole, its routing names are in <routing>",
+                "<routing><target_id>github</target_id><timeout>30</timeout></routing>" in pr
+                and "<payload><type>pr_create</type><title>T</title><id>x</id></payload>" in pr, pr)
+        try:
+            scripted.render_call({"target": "git", "type": "status", "routing": {"path": "/x"}})
+            v.check("a name that is not a routing name is refused in routing", False)
+        except ValueError:
+            v.check("a name that is not a routing name is refused in routing", True)
         s2, b2 = post(2)
         v.check("the plug fills placeholders", scripted.parse_stream(b2) == "all done for me")
         s3, _ = post(3)
@@ -783,6 +793,12 @@ def selftest_vllm_plug(v: Verdict) -> None:
             v.check("the sampling knobs are the ones beside the plug (the CoT-repetition fix)",
                     runner.get("no_repeat_ngram_size") == 3 and runner.get("repetition_penalty") == 1.05
                     and rec["no_repeat_ngram_size"] == 3 and "thinking_token_budget" not in rec, str(rec))
+            prov, knobs = split_knobs(rec)
+            v.check("the request knobs are the chats' (fantastic#632): the provider's share holds none, the "
+                    "chat's holds the output cap and the sampling knobs",
+                    not set(prov) & set(KNOBS) and prov["endpoint"] == base["VLLM_ENDPOINT"]
+                    and knobs == {"max_tokens": 4096, "no_repeat_ngram_size": 3, "repetition_penalty": 1.05},
+                    f"{prov} {knobs}")
             v.check("the plug is keyed by the NAME of the variable; the credential ref is bound to the endpoint's host",
                     plug.key_env == "VLLM_API_KEY" and plug.keyed and plug.host == "gpu.example.invalid"
                     and plug.real and key not in json.dumps(rec))

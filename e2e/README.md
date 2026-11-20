@@ -74,7 +74,7 @@ BACKEND=anthropic python3 e2e/run.py --only-gpu --dry-run    # the ten on the an
 
 **This costs real money**: every turn is a paid model call. Run it by hand, one test at a time, and cap it with `E2E_MAX_REQUESTS` (past it the relay answers 429). Its `cost.json` has the relay's own stream counts and an `agents` block: like the vllm plug, the relay asks every `anthropic_backend` agent for its `usage` every two seconds and once before the team stops, and sums requests, input, cache write, cache read, output, prompt and saved tokens, and `cost_usd` (`null`, "unpriced" in the report, unless every record carries both prices); the stream's own count leaves cached input out.
 
-The sampling knobs (`no_repeat_ngram_size`, `repetition_penalty`, the measured fix for the chain-of-thought repetition loop) are `backends/sampling.default.json`'s; a `sampling.json` beside it overrides them. `thinking_token_budget` is left to the backend's own default.
+The sampling knobs (`no_repeat_ngram_size`, `repetition_penalty`, the measured fix for the chain-of-thought repetition loop) are `backends/sampling.default.json`'s; a `sampling.json` beside it overrides them. `thinking_token_budget` is left to the backend's own default. They and `max_tokens` are request knobs (fantastic#632): every chat record that names the provider carries them (`max_tokens: {{max_tokens}}`, …), the provider's record never does.
 
 **Cost.** There is no relay to count with, so the plug asks the team: every vllm agent keeps its counts (the `usage` verb: requests, prompt and output tokens from the replies' `usage` frame), the plug sums them every two seconds and once more before the team stops (a deleted worker keeps the counts last seen). `cost.json` in the run folder has the model, requests, tokens and the USD estimate if priced. It holds no key.
 
@@ -224,7 +224,7 @@ Facts about the web UI at this commit, found while writing these tests:
 
 The launcher makes a bare repo and a seeded clone, starts the fake forge (the repo is `acme/widgets`, one open issue), starts the plug, and starts `fantastic_team --headless` in the run folder with fake keys in ITS environment only (the credential store reads them with `backend: env`). The stock records and the test's blueprint are made with `send` and `import` (see above); the probe then drives the team with `fantastic_team send`.
 
-The anthropic backend sends no `tools` array: a model calls a tool by writing a `<call name="send">` element in its text. So the scripted plug streams Anthropic SSE whose text is that element; a script turn lists `calls`, and the plug renders them.
+The anthropic backend sends no `tools` array: a model calls a tool by writing a `<call name="send">` element in its text. So the scripted plug streams Anthropic SSE whose text is that element; a script turn lists `calls`, and the plug renders them in fantastic's routing form: the target (and a call's `routing` names) in `<routing>`, the verb and its `args`, whole, in `<payload>`.
 
 ## Things the harness works around (found while building it)
 
@@ -234,9 +234,8 @@ These are facts about the binary at the commit this was built on, not decisions 
 2. The binary never calls `prepare_sandbox`: `stock.boot` makes `work/`, `work/wt`, `work/tasks` and `sandbox/home` before the first start. The worker's HOME is the relative `./sandbox/home`.
 3. Agents are record files under fixed ids, so a string field that names another agent (the registry's `task_tracker_id`, the dispatcher's `team`) and a card's grant on `github` or `worker_exec` are true as written (fantastic's import would rename them `_1`).
 4. A spawner grants only what it holds, and the operator is the `mcp` leg: `stock.operator_holds` gives it the grants a card names before a probe spawns a bundle as the operator.
-5. A model cannot pass `title` to `github pr_create`: `title` is a call-level field of the `<call>` grammar. The scripted model therefore stops after the push, and the probe sends `pr_create` itself, as the operator. The PR request is still what the github connector sends.
-6. The bundles registry and the task registry are record files of the fleet, not a start-up step: nothing in the binary plans a tree now.
-7. The team page for the older UI tests is the `team_page` layer (see above).
+5. The bundles registry and the task registry are record files of the fleet, not a start-up step: nothing in the binary plans a tree now.
+6. The team page for the older UI tests is the `team_page` layer (see above).
 
 ## The bundles group
 

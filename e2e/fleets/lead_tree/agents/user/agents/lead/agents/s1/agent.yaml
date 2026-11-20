@@ -1,6 +1,9 @@
 id: s1
 handler_module: ai_chat.tools
 provider_id: provider
+max_tokens: {{max_tokens}}
+no_repeat_ngram_size: {{no_repeat_ngram_size}}
+repetition_penalty: {{repetition_penalty}}
 memory_store_id: memory
 model: "{{model_name}}"
 post_system_prompt: {{check_ins}}

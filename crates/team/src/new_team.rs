@@ -232,10 +232,11 @@ mod tests {
                 // lead's `provider_id` naming it (it runs the provider's default model)
                 lead["provider_id"] = json!("anthropic");
                 lead["model"] = json!("claude-test-5"); // the user's choice for this chat
+                lead["max_tokens"] = json!(1000); // a request knob: the chat's own (fantastic#632)
                 lead["agents"].as_array_mut().unwrap().insert(0, json!({
                     "id": "anthropic", "handler_module": "anthropic_backend.tools", "endpoint": endpoint,
                     "credentials": {"store": CREDENTIALS, "ref": "plug"}, "memory_store_id": "memory",
-                    "max_tokens": 1000, "context_window": 200000,
+                    "context_window": 200000,
                     "can_call": {"$self": "*", CREDENTIALS: ["get"], "memory": "*"},
                     "callable_by": {"$self": "*", "$parent": ["complete", "watch"]}}));
                 let creds = entry_mut(list, CREDENTIALS).unwrap();
