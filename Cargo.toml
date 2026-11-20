@@ -19,7 +19,8 @@ license = "AGPL-3.0-or-later"
 #      `cargo search fantastic-kernel` finds nothing, so the git lines stay active. A missing
 #      crate would break the build.
 #   2. git branch main (today): the lines above, pinned by Cargo.lock.
-#   3. local checkout: copy .cargo/config.toml.example to .cargo/config.toml (uncommitted).
+#   3. local checkout: add the lines of .cargo/config.toml.example to .cargo/config.toml
+#      (do not commit them).
 fantastic-tui = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-kernel = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
 fantastic-web = { git = "https://github.com/aisixteen/fantastic", branch = "main" }
