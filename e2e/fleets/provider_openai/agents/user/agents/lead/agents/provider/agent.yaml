@@ -1,0 +1,11 @@
+id: provider
+handler_module: openai_backend.tools
+endpoint: "{{model_endpoint}}"
+models: {{models}}
+memory_store_id: provider_store
+can_call:
+  "$self": "*"
+  provider_store: "*"
+callable_by:
+  "$self": "*"
+  "$parent": [complete, watch, models, set_default_model]

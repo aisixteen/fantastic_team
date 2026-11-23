@@ -8,17 +8,20 @@ returns an object with `.endpoint`, `.host`, `.start()`, `.stop()`, and:
                  for a real plug, and never writes it to disk);
   `.real`        true when a real model answers.
 
-Three plugs exist:
+Four plugs exist:
   `scripted`  a fake of the Messages wire that plays a script: free, no network.
   `anthropic` a recording relay to a real model (aisixteen/fantastic#302): the turns
               tier, run by hand, skipped without E2E_ANTHROPIC_KEY or ANTHROPIC_API_KEY.
   `vllm`      a vLLM server reached directly, no relay (the gpu tier, `backends/vllm.py`): run by
               hand, skipped without VLLM_ENDPOINT, FANTASTIC_AI_MODEL, VLLM_KV_SLOTS, VLLM_KV_OVERFLOW.
+  `openai`    an OpenAI-compatible `/chat/completions` server reached directly, RAW mode: no tools
+              sent, the `<call>` text parsed by ai-core (the gpu tier, `backends/openai.py`): run by
+              hand, skipped without OPENAI_ENDPOINT, FANTASTIC_AI_MODEL.
 """
 
 import json
 
-from . import anthropic, scripted, vllm
+from . import anthropic, openai, scripted, vllm
 
 
 def _scripted(test_dir, variables):
@@ -33,11 +36,16 @@ def _vllm(test_dir, variables):
     return vllm.make(test_dir, variables)
 
 
-PLUGS = {"scripted": _scripted, "anthropic": _anthropic, "vllm": _vllm}
+def _openai(test_dir, variables):
+    return openai.make(test_dir, variables)
+
+
+PLUGS = {"scripted": _scripted, "anthropic": _anthropic, "vllm": _vllm, "openai": _openai}
 #: Why a plug cannot run here (None when it can): a real plug needs its key or its server's variables.
 WHY_NOT = {"scripted": lambda: None,
            "anthropic": lambda: None if anthropic.available() else "no key in the environment",
-           "vllm": vllm.problem}
+           "vllm": vllm.problem,
+           "openai": openai.problem}
 
 
 def why_not(name: str) -> str | None:
@@ -49,7 +57,7 @@ def available(name: str) -> bool:
     return why_not(name) is None
 
 
-SHAPES = {"anthropic_backend.tools": "anthropic", "vllm_backend.tools": "vllm"}
+SHAPES = {"anthropic_backend.tools": "anthropic", "vllm_backend.tools": "vllm", "openai_backend.tools": "openai"}
 
 #: The request knobs (fantastic#632): a CHAT's own, sent with each request; a provider record
 #: refuses them. A plug's `ai_record()` may carry some (vllm: `max_tokens` and the sampling knobs);
@@ -67,7 +75,7 @@ def split_knobs(rec: dict) -> tuple[dict, dict]:
 
 def provides_vars(plug) -> dict:
     """The variables a plug gives a test (`ctx.vars`): its model name, the shape of its provider
-    (`anthropic`, `vllm`, `vllm_keyed`: the name of a fleet layer), the provider's fields and the
+    (`anthropic`, `vllm`, `vllm_keyed`, `openai`: the name of a fleet layer), the provider's fields and the
     chats' request knobs (`max_tokens`, `no_repeat_ngram_size`, `repetition_penalty`: every chat
     record that names the provider carries them) as text ready for a record file (JSON; `null`
     when the plug has none), all read from `ai_record()`."""
@@ -76,6 +84,7 @@ def provides_vars(plug) -> dict:
     if shape == "vllm" and plug.keyed:
         shape = "vllm_keyed"
     out = {"model_name": plug.model_name, "provider_shape": shape, "kv_overflow": rec.get("kv_overflow", "")}
-    for field in ("caching", "max_tokens", "kv_slots", "no_repeat_ngram_size", "repetition_penalty"):
+    for field in ("caching", "max_tokens", "kv_slots", "no_repeat_ngram_size", "repetition_penalty",
+                  "temperature", "stop"):
         out[field] = json.dumps(rec.get(field))
     return out
