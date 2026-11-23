@@ -7,6 +7,7 @@
     python3 e2e/run.py --only-gpu             the gpu tier: a vLLM server, by hand (skips without VLLM_ENDPOINT and its kin)
     python3 e2e/run.py --only-gpu --dry-run   discover the gpu tests and collect their probes; start nothing
     BACKEND=anthropic python3 e2e/run.py --only-gpu   the gpu tests on the anthropic relay instead (by hand; costs money)
+    BACKEND=openai python3 e2e/run.py --only-gpu      the gpu tests on an OpenAI-compatible server, RAW mode (by hand)
     python3 e2e/run.py --only task/one_issue_to_draft_pr
     python3 e2e/run.py --selftest             prove the harness itself, no binary
     python3 e2e/run.py --bin PATH ...         use a built binary instead of building
@@ -14,8 +15,8 @@
 A test is a folder `e2e/tests/<group>/<id>/` with `test.yaml` (`costs`, `timeout`,
 `plug`), a plug's input (`script.json` for the scripted plug) and
 `probe.py`, whose `run(ctx)` returns the exit code of its `Verdict`.
-A `costs: gpu` test takes its plug from `BACKEND` (`vllm` or `anthropic`) when set; no other test
-does. A test whose plug has no key (or, for vllm, no server variables) in the environment is skipped
+A `costs: gpu` test takes its plug from `BACKEND` (`vllm`, `anthropic` or `openai`) when set; no other
+test does. A test whose plug has no key (or, for vllm, no server variables) in the environment is skipped
 (`SKIP`), not failed. `--only-free` never selects a turns or gpu test, and CI never runs them.
 Runs live under `e2e/runs/<stamp>/<group>/<id>/` (gitignored: they hold model output).
 """
@@ -45,6 +46,7 @@ sys.path.insert(0, HERE)
 
 from backends import KNOBS, PLUGS, available, provides_vars, scripted, split_knobs, why_not  # noqa: E402
 from backends import vllm as vllm_mod  # noqa: E402
+from backends import openai as openai_mod  # noqa: E402
 from backends import anthropic as relay_mod  # noqa: E402
 from helpers import forge as forge_mod  # noqa: E402
 from helpers import app as app_mod  # noqa: E402
@@ -109,14 +111,18 @@ def discover() -> list[dict]:
     return sorted(out, key=lambda t: t["name"])
 
 
+#: The plugs `BACKEND` may name for the gpu tests.
+BACKENDS = ("vllm", "anthropic", "openai")
+
+
 def plug_of(meta: dict) -> str:
     """A test's plug: its test.yaml's, except that a model test (costs gpu) takes `BACKEND`
-    when set (`vllm` or `anthropic`), as fantastic picks its backend. A free test never does."""
+    when set (`vllm`, `anthropic` or `openai`), as fantastic picks its backend. A free test never does."""
     plug = meta.get("plug", "scripted")
     backend = os.environ.get("BACKEND")
     if backend and meta.get("costs") == "gpu":
-        if backend not in ("vllm", "anthropic"):
-            raise SystemExit(f"BACKEND must be vllm or anthropic, got {backend!r}")
+        if backend not in BACKENDS:
+            raise SystemExit(f"BACKEND must be one of {' | '.join(BACKENDS)}, got {backend!r}")
         return backend
     return plug
 
@@ -353,6 +359,7 @@ def selftest() -> int:
     selftest_relay(v)
     selftest_fake_vllm(v)
     selftest_vllm_plug(v)
+    selftest_openai_plug(v)
     selftest_selection(v)
     selftest_turns(v)
     selftest_gpu(v)
@@ -423,7 +430,7 @@ def selftest_fleet(v: Verdict) -> None:
         for key, text in t.items():
             if key != "fleet" and not key.startswith("fleet_"):
                 continue
-            for shape in ("anthropic", "vllm", "vllm_keyed"):
+            for shape in ("anthropic", "vllm", "vllm_keyed", "openai"):
                 for layer in text.replace("{{provider_shape}}", shape).split():
                     if not os.path.isdir(os.path.join(cli_mod.FLEETS, layer)):
                         missing.append(f"{t['name']}: {layer}")
@@ -511,9 +518,10 @@ def selftest_relay(v: Verdict) -> None:
 
 VLLM_ENV = ("VLLM_ENDPOINT", "FANTASTIC_AI_MODEL", "VLLM_KV_SLOTS", "VLLM_KV_OVERFLOW", "VLLM_API_KEY",
             "MAX_TOKENS", "E2E_MAX_REQUESTS", "E2E_PRICE_IN_PER_MTOK", "E2E_PRICE_OUT_PER_MTOK")
-#: every model variable: the vllm plug's, the anthropic plug's (its key names, model and caching) and
-#: BACKEND, which points the gpu tests at a plug. A selftest child gets none of them (`child_env`).
-MODEL_ENV = (*VLLM_ENV, "BACKEND", "E2E_MODEL", "E2E_WORKER_MODEL", "ANTHROPIC_CACHING", *relay_mod.KEY_ENVS)
+OPENAI_ENV = ("OPENAI_ENDPOINT", "FANTASTIC_AI_MODEL", "MAX_TOKENS", "OPENAI_STOP", "OPENAI_TEMPERATURE")
+#: every model variable: the vllm plug's, the openai plug's, the anthropic plug's (its key names, model
+#: and caching) and BACKEND, which points the gpu tests at a plug. A selftest child gets none of them (`child_env`).
+MODEL_ENV = (*VLLM_ENV, "OPENAI_ENDPOINT", "OPENAI_STOP", "OPENAI_TEMPERATURE", "BACKEND", "E2E_MODEL", "E2E_WORKER_MODEL", "ANTHROPIC_CACHING", *relay_mod.KEY_ENVS)
 
 
 def child_env(environ) -> dict:
@@ -855,6 +863,66 @@ def selftest_vllm_plug(v: Verdict) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+class openai_env(vllm_env):
+    """The openai plug's variables for a block: set the given ones, clear the rest, restore after."""
+    names = OPENAI_ENV
+
+
+def selftest_openai_plug(v: Verdict) -> None:
+    """The openai plug: what it needs, what its records and recipe say (RAW mode)."""
+    with openai_env():
+        v.check("with none of its variables the openai plug cannot run, and says which are missing",
+                not openai_mod.available() and all(n in openai_mod.problem() for n, _ in openai_mod.REQUIRED),
+                str(openai_mod.problem()))
+    base = {"OPENAI_ENDPOINT": "http://127.0.0.1:8090/v1", "FANTASTIC_AI_MODEL": "m-1"}
+    for gone in base:
+        with openai_env(**{k: val for k, val in base.items() if k != gone}):
+            v.check(f"openai: without {gone} the plug cannot run (the test SKIPs)",
+                    not openai_mod.available() and gone in openai_mod.problem(), str(openai_mod.problem()))
+    for bad, why in (({"MAX_TOKENS": "0"}, "a zero output cap"), ({"MAX_TOKENS": "big"}, "a cap that is no number"),
+                     ({"OPENAI_ENDPOINT": "127.0.0.1:8090/v1"}, "an endpoint with no scheme"),
+                     ({"OPENAI_STOP": "<|x|>"}, "stop strings that are no JSON list")):
+        with openai_env(**{**base, **bad}):
+            v.check(f"openai: {why} is refused", not openai_mod.available(), str(openai_mod.problem()))
+    with openai_env(**base, MAX_TOKENS="4096"):
+        v.check("openai: both variables, the plug can run; why_not agrees",
+                openai_mod.available() and why_not("openai") is None and available("openai"))
+        tmp = tempfile.mkdtemp(prefix="e2e-openai-")
+        try:
+            plug = openai_mod.make(tmp, {"run_dir": tmp}).start()
+            rec = plug.ai_record()
+            prov, knobs = split_knobs(rec)
+            v.check("the AI record is an openai_backend one straight at the server; the output cap is the chat's knob",
+                    prov == {"handler_module": "openai_backend.tools", "model": "m-1",
+                             "endpoint": "http://127.0.0.1:8090/v1"} and knobs == {"max_tokens": 4096}, str(rec))
+            v.check("the openai plug is keyless and real; the provider shape is `openai`",
+                    plug.key_env is None and not plug.keyed and plug.real
+                    and provides_vars(plug)["provider_shape"] == "openai", str(provides_vars(plug)))
+            v.check("the recipe is `ai openai --model M --endpoint URL`; update_agent carries the output cap",
+                    plug.recipe_args() == ["--headless", "ai", "openai", "--model", "m-1", "--endpoint",
+                                           "http://127.0.0.1:8090/v1"]
+                    and plug.recipe_fields() == {"max_tokens": 4096}, f"{plug.recipe_args()} {plug.recipe_fields()}")
+            with openai_env(**base, OPENAI_TEMPERATURE="1.0"):
+                tp = openai_mod.make(tmp, {"run_dir": tmp})
+                v.check("OPENAI_TEMPERATURE is the chats' temperature knob",
+                        split_knobs(tp.ai_record())[1].get("temperature") == 1.0
+                        and tp.recipe_fields().get("temperature") == 1.0, str(tp.ai_record()))
+            with openai_env(**base, OPENAI_STOP='["<|content_invoke_tool_json|>"]'):
+                sp = openai_mod.make(tmp, {"run_dir": tmp})
+                v.check("OPENAI_STOP is the chats' stop knob, on the record and the recipe's update",
+                        split_knobs(sp.ai_record())[1].get("stop") == ["<|content_invoke_tool_json|>"]
+                        and sp.recipe_fields().get("stop") == ["<|content_invoke_tool_json|>"], str(sp.ai_record()))
+            plug.finish(None)
+            v.check("the plug has what the gpu helpers read of a real plug: never capped, no error reason",
+                    plug.capped is False and plug.errored_reason is None and plug.errored is False)
+            plug.stop()
+            cost = json.load(open(os.path.join(tmp, "cost.json")))
+            v.check("cost.json names the model; its counts are null (no usage verb)",
+                    cost["model"] == "m-1" and cost["requests"] is None, str(cost))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def selftest_gpu(v: Verdict) -> None:
     """Run the launcher as a child with no model variable (`child_env`), with every one of them set
     here (fakes; BACKEND=anthropic): the gpu tests would run on the vllm plug and skip, exit 0, and
@@ -865,7 +933,7 @@ def selftest_gpu(v: Verdict) -> None:
                "VLLM_ENDPOINT": "https://gpu.example.invalid/v1", "FANTASTIC_AI_MODEL": "m-1",
                "VLLM_KV_SLOTS": "2", "VLLM_KV_OVERFLOW": "evict", "VLLM_API_KEY": "door-" + secrets.token_hex(8),
                "MAX_TOKENS": "16", "E2E_MAX_REQUESTS": "1", "E2E_PRICE_IN_PER_MTOK": "1",
-               "E2E_PRICE_OUT_PER_MTOK": "2",
+               "E2E_PRICE_OUT_PER_MTOK": "2", "OPENAI_ENDPOINT": "http://127.0.0.1:9", "OPENAI_STOP": "[\"<|x|>\"]", "OPENAI_TEMPERATURE": "1.0",
                "E2E_UPSTREAM": "http://127.0.0.1:9"}  # discard: had a child kept a key, nothing would answer
     with model_env(**planted):
         v.check("every model variable is planted for this check", set(MODEL_ENV) <= set(planted))
@@ -919,16 +987,20 @@ def selftest_backend(v: Verdict) -> None:
     with model_env(BACKEND="vllm"):
         v.check("BACKEND=vllm: a gpu test declared on another plug takes vllm; a free test keeps scripted",
                 plug_of({"costs": "gpu", "plug": "anthropic"}) == "vllm" and plug_of(free) == "scripted")
-    with model_env(BACKEND="openai"):
+    with model_env(BACKEND="gemini"):
         try:
             plug_of(gpu)
             refused = ""
         except SystemExit as e:
             refused = str(e)
-        v.check("a BACKEND that is neither vllm nor anthropic is refused (a free test never reads it)",
-                "BACKEND must be vllm or anthropic" in refused and plug_of(free) == "scripted", refused)
+        v.check("a BACKEND that is not vllm, anthropic or openai is refused (a free test never reads it)",
+                "BACKEND must be one of vllm | anthropic | openai" in refused and plug_of(free) == "scripted", refused)
+    with model_env(BACKEND="openai"):
+        v.check("BACKEND=openai: a gpu test takes the openai plug; a free test keeps scripted",
+                plug_of(gpu) == "openai" and plug_of(free) == "scripted")
     me = os.path.abspath(__file__)
-    for backend, why in (("vllm", "not set: VLLM_ENDPOINT"), ("anthropic", "no key in the environment")):
+    for backend, why in (("vllm", "not set: VLLM_ENDPOINT"), ("anthropic", "no key in the environment"),
+                         ("openai", "not set: OPENAI_ENDPOINT")):
         env = dict(child_env(os.environ), BACKEND=backend)
         r = subprocess.run([sys.executable, me, "--only-gpu", "--dry-run"], env=env, capture_output=True,
                            text=True, timeout=120)

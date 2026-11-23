@@ -4,6 +4,8 @@ provider_id: provider
 max_tokens: {{max_tokens}}
 no_repeat_ngram_size: {{no_repeat_ngram_size}}
 repetition_penalty: {{repetition_penalty}}
+temperature: {{temperature}}
+stop: {{stop}}
 memory_store_id: memory
 model: "{{worker_model}}"
 can_call:

@@ -185,6 +185,10 @@ def start(ctx, extra_args=team_mod.HEADLESS, registry: bool = False, sub: str | 
     default = ctx.model.ai_record().get("model")
     if PROVIDER in laid and default:  # a RAM store starts empty: every start plants the default again
         ctx.team.on_start = [*getattr(ctx.team, "on_start", []), lambda t: plant_provider_default(t, default)]
+    webui = os.environ.get("E2E_WEBUI_PORT")
+    if webui and tuple(extra_args) == team_mod.HEADLESS:  # watch a headless test in the browser: the same team, `webui --port N`
+        extra_args = ["webui", "--port", webui]
+        print(f"WEBUI {'/'.join(ctx.work.rstrip(os.sep).split(os.sep)[-2:])} http://127.0.0.1:{webui}/", flush=True)
     ctx.team.start(extra_args=extra_args)
     missing = [i for i in laid if i not in ctx.team.agents()]
     if missing:

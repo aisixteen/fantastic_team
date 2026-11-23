@@ -317,6 +317,10 @@ The agents the person makes later (`dispatcher`, `cadencer`) still carry their o
 
 `Cargo.lock` pins fantastic `4aa40a0` (base PRs #734–#735: #722 test setups, canvas docs, TUI selection and reboot-continuity grants; a chain in flight survives a kernel restart; py_agent's man text names its wire; e2e for a model-written tool and a typed peer call).
 
+## Pin at `e481afa9`
+
+`Cargo.lock` pins fantastic `e481afa9` (base PRs #748, #749, #750 the chat's `stop` knob sent, and #751 no built-in temperature: `openai_backend`, an OpenAI-compatible `/chat/completions` provider in raw text, and its recipe `ai openai --model M --endpoint URL`; the e2e's `openai` plug uses both).
+
 ## Pin at `0087f69c`
 
 `Cargo.lock` pins fantastic `0087f69c` (base PR #741: an inquiry whose recipient's turn fails tells the asker and the scheduler fires without waiting, #722; the parser refuses the inline call form, #528; a 14-day publish age, #661; the chat's line summary unified with fold titles, #709; only `ts` reaches the model as a local-time head, #652/#653; shared providers, the request knobs on the chat, #632).
